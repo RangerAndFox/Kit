@@ -19,7 +19,7 @@ const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   appToken: process.env.SLACK_APP_TOKEN,
   socketMode: true,
-  logLevel: LogLevel.INFO,
+  logLevel: LogLevel.DEBUG, // verbose: log every event received over Socket Mode
 })
 
 // ─── Register Assistant ────────────────────────────────────
