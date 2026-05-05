@@ -44,12 +44,22 @@ export async function createProjectSlackChannel(opts: {
   client: string
   projectType?: string
   targetDelivery?: string
+  /** Slack user ID(s) to auto-invite after creation (e.g., the requesting user) */
+  inviteUserIds?: string[]
 }): Promise<SlackChannelResult> {
   if (!process.env.SLACK_BOT_TOKEN) {
     throw new Error('SLACK_BOT_TOKEN not configured — cannot create channel')
   }
 
-  const { projectId, projectName, client, projectType, targetDelivery } = opts
+  const { projectId, projectName, client, projectType, targetDelivery, inviteUserIds } = opts
+
+  // Validate required fields up front so we don't ship a "client-undefined" channel.
+  if (!projectName || !projectName.trim()) {
+    throw new Error('createProjectSlackChannel: projectName is required')
+  }
+  if (!client || !client.trim()) {
+    throw new Error('createProjectSlackChannel: client is required')
+  }
 
   // Build channel name slug
   let slug = `${client}-${projectName}`
@@ -91,6 +101,16 @@ export async function createProjectSlackChannel(opts: {
     channel: channelId,
     topic,
   }).catch(() => {}) // non-critical
+
+  // Invite the requesting user so they actually see the channel
+  if (inviteUserIds && inviteUserIds.length > 0) {
+    await slackPost('conversations.invite', {
+      channel: channelId,
+      users: inviteUserIds.join(','),
+    }).catch((err: any) => {
+      console.warn('[Slack] conversations.invite failed (non-fatal):', err.message)
+    })
+  }
 
   // Post welcome message
   const lines = [

@@ -192,14 +192,26 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
   await setThinking(app, channelId, replyThreadTs || threadTs, 'thinking…')
 
   try {
-    // Inject channel-resolved project context so Kit can interpret
-    // "this project" / "this one" without asking.
-    const augmentedMessage = channelProject
-      ? `[Context: this conversation is in the Slack channel for project "${channelProject.name}"` +
-        (channelProject.client ? ` (client: ${channelProject.client})` : '') +
-        (channelProject.code ? `, code ${channelProject.code}` : '') +
-        `. When the user says "this project" or omits a project, they mean this one.]\n\n${messageText}`
-      : messageText
+    // Build a context preamble Kit always sees:
+    //  - Who's talking (Slack user ID, name, tier when known)
+    //  - Which project this channel belongs to (when known)
+    // This means Kit never has to ask "who are you?" or "which project?"
+    // when the answer is already in the request metadata.
+    const contextLines: string[] = []
+    contextLines.push(
+      user
+        ? `[You are talking to ${user.name} — Slack user <@${userId}>, ${user.tier} tier]`
+        : `[You are talking to Slack user <@${userId}> (no team-member record found)]`,
+    )
+    if (channelProject) {
+      contextLines.push(
+        `[This conversation is in the Slack channel for project "${channelProject.name}"` +
+          (channelProject.client ? ` (client: ${channelProject.client})` : '') +
+          (channelProject.code ? `, code ${channelProject.code}` : '') +
+          `. When the user says "this project" or omits a project, they mean this one.]`,
+      )
+    }
+    const augmentedMessage = `${contextLines.join('\n')}\n\n${messageText}`
 
     const { reply } = await runOrchestrator({
       teamId,

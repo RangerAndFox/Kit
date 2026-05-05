@@ -39,12 +39,30 @@ async function slackPost(method: string, body: Record<string, unknown>): Promise
 
 async function provision(payload: Record<string, unknown>): Promise<AgentResult> {
   try {
+    // Accept either `client` or `clientName` for client identity — the
+    // modal flow sends `clientName`, while NL specialists tend to send `client`.
+    const client = (payload.client as string) || (payload.clientName as string) || ''
+    const projectName = (payload.projectName as string) || ''
+    if (!client || !projectName) {
+      return {
+        agent: 'slack',
+        action: 'provision',
+        success: false,
+        error: `Slack provision needs both \`client\` and \`projectName\` (got client="${client}", projectName="${projectName}")`,
+      }
+    }
+
+    // Auto-invite the requesting user (if known) so they actually see the channel.
+    const inviteUserIds: string[] = []
+    if (payload.slackUserId) inviteUserIds.push(payload.slackUserId as string)
+
     const channel = await createProjectSlackChannel({
       projectId: payload.projectId as string,
-      projectName: payload.projectName as string,
-      client: payload.client as string,
+      projectName,
+      client,
       projectType: payload.projectType as string | undefined,
       targetDelivery: payload.targetDelivery as string | undefined,
+      inviteUserIds: inviteUserIds.length > 0 ? inviteUserIds : undefined,
     })
 
     // Post collected links if any
