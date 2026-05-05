@@ -37,10 +37,12 @@ const assistant = new Assistant({
       /* non-fatal */
     }
   },
-  userMessage: async ({ message, client }) => {
+  userMessage: async ({ message }) => {
     const m = message as any
     if (m.bot_id || m.subtype) return
 
+    // The Assistant userMessage callback always fires inside an
+    // Assistant thread, so we always have a thread_ts to reply into.
     await handleConversationalMessage({
       app,
       channelId: m.channel,
@@ -50,6 +52,8 @@ const assistant = new Assistant({
       messageTs: m.ts,
       threadTs: m.thread_ts || m.ts,
       isDirectMention: false,
+      channelType: m.channel_type,
+      assistantThreadTs: m.thread_ts,
     })
   },
 })
