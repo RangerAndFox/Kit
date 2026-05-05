@@ -1,15 +1,9 @@
 import { withRetry } from '../retry'
 import type { ServiceResult, ProjectIntakeForm } from '../types'
 import { buildProjectLabel } from '../types'
+import { dropboxHeaders } from '@/lib/dropbox/client'
 
 const BASE_URL = 'https://api.dropboxapi.com/2'
-
-function headers() {
-  return {
-    Authorization: `Bearer ${process.env.DROPBOX_ACCESS_TOKEN}`,
-    'Content-Type': 'application/json',
-  }
-}
 
 /**
  * Copies the template folder to:
@@ -29,10 +23,10 @@ export async function provisionDropbox(
       return { service: 'Dropbox', success: true, url: `https://dropbox.com/home${destPath}` }
     }
 
-    await withRetry(() =>
+    await withRetry(async () =>
       fetch(`${BASE_URL}/files/copy_v2`, {
         method: 'POST',
-        headers: headers(),
+        headers: await dropboxHeaders(),
         body: JSON.stringify({ from_path: templatePath, to_path: destPath, allow_ownership_transfer: false }),
       }).then(async (r) => {
         if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
@@ -40,10 +34,10 @@ export async function provisionDropbox(
       })
     )
 
-    const linkRes = await withRetry(() =>
+    const linkRes = await withRetry(async () =>
       fetch(`${BASE_URL}/sharing/create_shared_link_with_settings`, {
         method: 'POST',
-        headers: headers(),
+        headers: await dropboxHeaders(),
         body: JSON.stringify({ path: destPath, settings: { requested_visibility: 'team_only' } }),
       }).then(async (r) => {
         if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)

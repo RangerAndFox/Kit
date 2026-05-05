@@ -13,6 +13,7 @@
 
 import { withRetry } from '../provisioner/retry'
 import folderStructure from '../provisioner/folder-structure.json'
+import { dropboxHeaders, getDropboxAccessToken } from '@/lib/dropbox/client'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -37,21 +38,16 @@ export interface ProvisionResult {
 
 const DROPBOX_API = 'https://api.dropboxapi.com/2'
 
-function dropboxHeaders() {
-  return {
-    Authorization: `Bearer ${process.env.DROPBOX_ACCESS_TOKEN}`,
-    'Content-Type': 'application/json',
-  }
-}
-
 /**
  * Clone the Dropbox template folder into a new project folder.
  * Path: /Ranger & Fox/Production/{year}/{client}_{project}
  */
 export async function provisionDropbox(input: ProvisionInput): Promise<ProvisionResult | null> {
-  const token = process.env.DROPBOX_ACCESS_TOKEN
-  if (!token) {
-    console.warn('[Provision:Dropbox] DROPBOX_ACCESS_TOKEN not set, skipping')
+  // Validate Dropbox creds via the centralized client (refresh-token or static)
+  try {
+    await getDropboxAccessToken()
+  } catch (err: any) {
+    console.warn('[Provision:Dropbox] Dropbox credentials not configured:', err.message)
     return null
   }
 
@@ -62,10 +58,10 @@ export async function provisionDropbox(input: ProvisionInput): Promise<Provision
 
   try {
     // Copy template folder
-    await withRetry(() =>
+    await withRetry(async () =>
       fetch(`${DROPBOX_API}/files/copy_v2`, {
         method: 'POST',
-        headers: dropboxHeaders(),
+        headers: await dropboxHeaders(),
         body: JSON.stringify({
           from_path: templatePath,
           to_path: destPath,
@@ -79,10 +75,10 @@ export async function provisionDropbox(input: ProvisionInput): Promise<Provision
     )
 
     // Create a team-only shared link
-    const linkRes = await withRetry(() =>
+    const linkRes = await withRetry(async () =>
       fetch(`${DROPBOX_API}/sharing/create_shared_link_with_settings`, {
         method: 'POST',
-        headers: dropboxHeaders(),
+        headers: await dropboxHeaders(),
         signal: AbortSignal.timeout(8_000),
         body: JSON.stringify({
           path: destPath,

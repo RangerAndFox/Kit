@@ -8,22 +8,16 @@
  */
 
 import { withRetry } from '@/lib/provisioner/retry'
+import { dropboxHeaders } from '@/lib/dropbox/client'
 import type { AgentDefinition, AgentResult } from './types'
 
 const DROPBOX_API = 'https://api.dropboxapi.com/2'
 
-function headers() {
-  return {
-    Authorization: `Bearer ${process.env.DROPBOX_ACCESS_TOKEN}`,
-    'Content-Type': 'application/json',
-  }
-}
-
 async function dropboxPost(endpoint: string, body: Record<string, unknown>): Promise<any> {
-  return withRetry(() =>
+  return withRetry(async () =>
     fetch(`${DROPBOX_API}${endpoint}`, {
       method: 'POST',
-      headers: headers(),
+      headers: await dropboxHeaders(),
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(15_000),
     }).then(async (r) => {
