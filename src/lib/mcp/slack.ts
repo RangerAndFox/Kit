@@ -161,7 +161,24 @@ export async function postProjectLinks(opts: {
   })
 }
 
-// ─── Project Channel Canvas ────────────────────────────────
+// ─── Project Channel Canvases ──────────────────────────────
+//
+// Per the Ranger & Fox Operations Blueprint §5, every project gets TWO
+// canvases pinned to its Slack channel:
+//
+//   1. Source of Truth (SoT) — the structured project record. Sections
+//      are fixed (§5): Identification, Scope, Budget, Schedule, Status,
+//      Links, Team, Delivery Spec. Kit edits this only after producer
+//      ✅ confirmation; it's the contract.
+//
+//   2. Running Notes — append-only log of decisions, action items,
+//      feedback round summaries, meeting notes, and blockers. Kit
+//      writes here automatically (Tier 2 / act + notify).
+//
+// Titles use the spine format from §3: `[id] :: SOT` and `[id] :: NOTES`.
+// Today the project ID is whatever `projectCode` is set to; once the
+// naming-spine refactor lands the IDs will conform to
+// `[CLIENT]-[PROJECT#]-[SHORTNAME]` automatically without re-templating.
 
 export interface ProjectCanvasData {
   channelId: string
@@ -180,168 +197,270 @@ export interface ProjectCanvasData {
   }
 }
 
-/**
- * Create a channel canvas from the Project Channel Template,
- * pre-filled with real project data and provisioned links.
- */
-export async function createProjectCanvas(data: ProjectCanvasData): Promise<string | null> {
-  if (!process.env.SLACK_BOT_TOKEN) return null
+export interface ProjectCanvasIds {
+  sotCanvasId: string | null
+  notesCanvasId: string | null
+}
 
-  const {
-    channelId,
-    projectName,
-    projectCode,
-    client,
-    projectType,
-    targetDelivery,
-    startDate,
-    briefSummary,
-    links,
-  } = data
-
-  const deliveryDate = targetDelivery || 'TBD'
-  const phase = 'Discovery'
+function buildSourceOfTruthMarkdown(data: ProjectCanvasData): string {
+  const { projectName, projectCode, client, targetDelivery, startDate, links } = data
   const today = new Date().toISOString().split('T')[0]
+  const kickoff = startDate || today
+  const delivery = targetDelivery || 'TBD'
+  const projectId = projectCode || projectName
 
-  // Build the Links table rows with real provisioned URLs
-  const linkRows: string[] = []
-  linkRows.push('|**:microsoft-word: Script**|[paste link]|')
-  linkRows.push('|**:figma: Figma — Client**|[paste link]|')
-  if (links?.figma) {
-    linkRows.push(`|**:figma: Figma — R&F**|[${links.figma}](${links.figma})|`)
-  } else {
-    linkRows.push('|**:figma: Figma — R&F**|[paste link]|')
-  }
-  if (links?.dropbox) {
-    linkRows.push(`|**:dropbox: Assets Folder**|[Dropbox](${links.dropbox})|`)
-  } else {
-    linkRows.push('|**:dropbox: Assets Folder**|[paste link]|')
-  }
-  if (links?.frameio) {
-    linkRows.push(`|**:frame_with_picture: Frame.io**|[Frame.io](${links.frameio})|`)
-  }
-  if (links?.harvest) {
-    linkRows.push(`|**:timer_clock: Harvest**|[Harvest](${links.harvest})|`)
-  }
-  linkRows.push('|**:page_with_curl: Brief**|[paste link]|')
+  const linkRow = (label: string, url?: string) =>
+    url
+      ? `|**${label}**|[${url}](${url})|`
+      : `|**${label}**|[paste link]|`
 
-  const markdown = `# 🎬 ${projectName}
+  return `# ${projectId} :: Source of Truth
+
+> The single answer to "where are we on this?" — fixed-template per §5 of the R&F Operations Blueprint. Maintained by Kit; producer-confirmed.
 
 ---
 
-## 📌 Project Snapshot
+## 1. Project Identification
 
 |Field|Value|
-|  ---  |  ---  |
-|**Project Name**|${projectName}|
-|**Project Code**|${projectCode || '[TBD]'}|
+|---|---|
+|**Project ID**|${projectId}|
 |**Client**|${client}|
-|**Project Manager**|[@PM]|
-|**Creative Director**|[@CD]|
-|**Lead Editor / Animator**|[@Lead]|
-|**Due Date**|${deliveryDate}|
-|**Status**|🟢 On Track|
-|**Current Phase**|${phase}|
+|**Shortname**|${projectCode || '—'}|
+|**Internal lead (Producer)**|[@PM]|
+|**Client contacts**|[name, role, email]|
+|**Kickoff date**|${kickoff}|
+|**Target delivery**|${delivery}|
+|**Final delivery**|—|
 
 ---
 
-## 📅 This Week
+## 2. Scope of Record
+
+### Deliverables
+
+* [Format · length · language · accessibility tier]
+
+### Out of Scope
+
+* —
+
+### Change Orders
+
+|Date|Scope delta|Signed-off by|
+|---|---|---|
+|—|—|—|
+
+---
+
+## 3. Budget
 
 |Field|Value|
-|  ---  |  ---  |
-|**This Week's Goal**|[What we're trying to land this week]|
-|**What's Due Next**|[Specific deliverable + owner]|
-|**Next Milestone**|[Date — milestone name]|
-
-### Top 3 priorities
-
-* [ ] [Priority 1]
-* [ ] [Priority 2]
-* [ ] [Priority 3]
-
-### Open blockers
-
-* [ ] [Blocker / decision needed / waiting on client]
+|---|---|
+|**Total budget**|$—|
+|**Concept / Strategy**|$—|
+|**Design / Boards**|$—|
+|**Animation**|$—|
+|**Finishing / Color / Sound**|$—|
+|**Delivery / Accessibility**|$—|
+|**Burn %**|0% _(auto-updated daily by Kit from Harvest)_|
+|**Projected EAC**|— _(at current velocity)_|
 
 ---
 
-## 🎯 Milestones
+## 4. Schedule
 
-|Milestone|Date|Link|
-|  ---  |  ---  |  ---  |
-|Kickoff call|![](slack_date:${startDate || today}) |—|
-|Discovery|![](slack_date:${today}) |—|
-|Script v1|![](slack_date:${today}) |—|
-|Style frames|![](slack_date:${today}) |—|
-|Design v1|![](slack_date:${today}) |—|
-|Boardomatic v1|![](slack_date:${today}) |—|
-|Boardomatic v2|![](slack_date:${today}) |—|
-|Animation v1|![](slack_date:${today}) |—|
-|Animation v2|![](slack_date:${today}) |—|
-|Final review|![](slack_date:${today}) |—|
-|Delivery|![](slack_date:${deliveryDate !== 'TBD' ? deliveryDate : today}) |—|
+|Milestone|Date|Status|
+|---|---|---|
+|Kickoff|${kickoff}|—|
+|Concept|—|—|
+|Design / Boards|—|—|
+|Animation v1|—|—|
+|Final review|—|—|
+|Delivery|${delivery}|—|
+
+**Critical path:** —
 
 ---
 
-## 🔗 Links
+## 5. Status
+
+|Field|Value|
+|---|---|
+|**Phase**|Concept|
+|**Stoplight**|🟢 Green|
+|**Last updated**|${today} _(auto)_|
+
+---
+
+## 6. Links
 
 |Resource|Link|
-|  ---  |  ---  |
-${linkRows.join('\n')}
+|---|---|
+${linkRow(':dropbox: Dropbox folder', links?.dropbox)}
+${linkRow(':frame_with_picture: Frame.io project', links?.frameio)}
+${linkRow(':timer_clock: Harvest project', links?.harvest)}
+${linkRow(':page_with_curl: Brief / SOW PDF')}
 
 ---
 
-## 🗒️ Notes & Feedback
+## 7. Team
 
-:email: **_Email note from client | ${new Date().toLocaleDateString('en-US', { month: '2-digit', day: '2-digit' })}_**
-
-[paste notes here]
+|Role|Person|
+|---|---|
+|Producer|[@PM]|
+|Senior Animator|[@Lead]|
+|Animators|—|
+|Editor|—|
+|Sound|—|
+|QC|—|
 
 ---
 
-## 👥 Team & Channels
+## 8. Delivery Spec
 
-* **Internal channel:** this channel
-* **Client channel:** [#client-channel]${links?.frameio ? `\n* **Frame.io project:** [${links.frameio}](${links.frameio})` : '\n* **Frame.io project:** [paste link]'}
-* **Project Manager:** [@PM]
-* **Creative Director:** [@CD]
-* **Producer:** [@Producer]
-* **Lead Artist:** [@Lead]
+_Default: Microsoft standard. Edit if the client spec differs._
+
+* MP4 master · H.264 · 1920×1080 or 3840×2160 · 23.976 fps · AAC stereo
+* Burn-in captions: Segoe UI Semibold, white, semi-transparent black bg
+* Caption sidecars: SRT (UTF-8), TTML, TXT
+* Descriptive audio: ElevenLabs synthesis, R&F-standard voice, ducked −18 dB
+* Naming: \`${projectId}_Master_FINAL.[ext]\`
 
 ---`
+}
 
+function buildRunningNotesMarkdown(data: ProjectCanvasData): string {
+  const { projectName, projectCode } = data
+  const projectId = projectCode || projectName
+
+  return `# ${projectId} :: Running Notes
+
+> Append-only log of decisions, change orders, blockers, and meeting notes. Kit captures automatically; producers add nuance. Per §5 of the R&F Operations Blueprint.
+
+---
+
+## Decisions Log
+
+_Format: [YYYY-MM-DD HH:MM] — Decision summary — Decided by — Source link_
+
+* —
+
+---
+
+## Action Items
+
+### Open
+
+* [ ] Owner — Item — Due
+
+### Closed
+
+* [x] Owner — Item — Closed date
+
+---
+
+## Client Feedback Summary
+
+_Round-by-round summary; details live in Frame.io._
+
+### Round 1 — [date]
+
+* Frame.io link: —
+* Themes: —
+* Resolved in v—
+
+---
+
+## Meeting Notes
+
+### [YYYY-MM-DD] — Meeting title — Attendees
+
+* Bullet summary
+* Source: Plaud / Granola transcript link
+
+---
+
+## Blockers
+
+|Date|Blocker|Owner|Resolution|
+|---|---|---|---|
+|—|—|—|—|
+
+---`
+}
+
+async function createSingleCanvas(opts: {
+  title: string
+  markdown: string
+  channelId: string
+  label: string
+}): Promise<string | null> {
   try {
     const result = await slackPost('canvases.create', {
-      title: projectName,
-      document_content: {
-        type: 'markdown',
-        markdown,
-      },
+      title: opts.title,
+      document_content: { type: 'markdown', markdown: opts.markdown },
+    })
+    const canvasId = result.canvas_id as string | undefined
+    if (!canvasId) return null
+
+    await slackPost('canvases.access.set', {
+      canvas_id: canvasId,
+      access_level: 'write',
+      channel_ids: [opts.channelId],
+    }).catch((err: any) => {
+      console.warn(`[Slack] Could not share ${opts.label} canvas:`, err.message)
     })
 
-    const canvasId = result.canvas_id
-
-    // Share the canvas to the project channel
-    if (canvasId) {
-      await slackPost('canvases.access.set', {
-        canvas_id: canvasId,
-        access_level: 'write',
-        channel_ids: [channelId],
-      }).catch((err: any) => {
-        console.warn('[Slack] Could not share canvas to channel:', err.message)
-      })
-
-      // Post the canvas link in the channel
-      await slackPost('chat.postMessage', {
-        channel: channelId,
-        text: `:notebook_with_decorative_cover: *Project canvas is ready:* <https://slack.com/docs/${canvasId}|Open Canvas>`,
-      }).catch(() => {})
-    }
-
-    console.log(`[Slack] Created project canvas: ${canvasId}`)
     return canvasId
   } catch (err: any) {
-    console.error('[Slack] Canvas creation failed:', err.message)
+    console.error(`[Slack] ${opts.label} canvas creation failed:`, err.message)
     return null
   }
+}
+
+/**
+ * Create both project canvases (SoT + Running Notes) and post a single
+ * combined link message to the channel. Each canvas creation is
+ * independent — if one fails, the other still succeeds and is reported.
+ */
+export async function createProjectCanvases(data: ProjectCanvasData): Promise<ProjectCanvasIds> {
+  if (!process.env.SLACK_BOT_TOKEN) {
+    return { sotCanvasId: null, notesCanvasId: null }
+  }
+
+  const projectId = data.projectCode || data.projectName
+
+  const [sotCanvasId, notesCanvasId] = await Promise.all([
+    createSingleCanvas({
+      title: `${projectId} :: SOT`,
+      markdown: buildSourceOfTruthMarkdown(data),
+      channelId: data.channelId,
+      label: 'SoT',
+    }),
+    createSingleCanvas({
+      title: `${projectId} :: NOTES`,
+      markdown: buildRunningNotesMarkdown(data),
+      channelId: data.channelId,
+      label: 'Running Notes',
+    }),
+  ])
+
+  // Post a single combined link message rather than two separate posts.
+  const lines: string[] = []
+  if (sotCanvasId) {
+    lines.push(`• :clipboard: *Source of Truth* — <https://slack.com/docs/${sotCanvasId}|Open SoT>`)
+  }
+  if (notesCanvasId) {
+    lines.push(`• :pencil: *Running Notes* — <https://slack.com/docs/${notesCanvasId}|Open Notes>`)
+  }
+  if (lines.length > 0) {
+    await slackPost('chat.postMessage', {
+      channel: data.channelId,
+      text: `:notebook_with_decorative_cover: *Project canvases are ready:*\n${lines.join('\n')}`,
+    }).catch(() => {})
+  }
+
+  console.log(`[Slack] Created project canvases — SoT=${sotCanvasId} Notes=${notesCanvasId}`)
+  return { sotCanvasId, notesCanvasId }
 }
