@@ -36,7 +36,7 @@ There is no root-level test script — tests live only in `bolt/test/`.
 
 ### Two parallel "agent" concepts — don't confuse them
 
-1. **Service-domain agents** in `src/lib/inngest/agents/` (`harvest`, `dropbox`, `frameio`, `slack`). Each owns one external API. Registered in `src/lib/inngest/agents/registry.ts`. Dispatched via `dispatch()` from that registry. These are what the Slack bot's specialists call.
+1. **Service-domain agents** in `src/lib/inngest/agents/` (`harvest`, `dropbox`, `frameio`, `slack`, `boords`). Each owns one external API. Registered in `src/lib/inngest/agents/registry.ts`. Dispatched via `dispatch()` from that registry. These are what the Slack bot's specialists call. Boords is the exception — there's no first-party API, so the agent POSTs to a Zapier webhook (`BOORDS_ZAPIER_WEBHOOK_URL`) and expects a sync response with the Boords URL.
 
 2. **Managed Kit agents** in `agents/` at the repo root (`production-monitor`, `sow-generator`, `script-writer`, etc.). Registered with Anthropic's Managed Agents API via `src/lib/managed-agents/`. Different runtime entirely.
 
