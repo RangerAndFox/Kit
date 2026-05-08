@@ -14,6 +14,7 @@
 import { withRetry } from '../provisioner/retry'
 import folderStructure from '../provisioner/folder-structure.json'
 import { dropboxHeaders, getDropboxAccessToken } from '@/lib/dropbox/client'
+import { frameIoAuthHeaders } from '@/lib/frameio/auth'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -104,23 +105,26 @@ export async function provisionDropbox(input: ProvisionInput): Promise<Provision
 
 // ─── Frame.io ───────────────────────────────────────────────
 
-const FRAMEIO_API = 'https://api.frame.io/v2'
+const FRAMEIO_API = 'https://api.frame.io/v4'
 
-function frameioHeaders() {
-  return {
-    Authorization: `Bearer ${process.env.FRAMEIO_TOKEN}`,
-    'Content-Type': 'application/json',
-  }
+function unwrap(payload: any): any {
+  return payload && typeof payload === 'object' && 'data' in payload ? payload.data : payload
 }
 
 /**
- * Create a Frame.io project with standard folder structure.
+ * Create a Frame.io project with standard folder structure (v4 API).
+ *
+ * Auth: Adobe IMS OAuth via @/lib/frameio/auth.
+ * Required env: ADOBE_CLIENT_ID, ADOBE_CLIENT_SECRET, ADOBE_REFRESH_TOKEN,
+ *               FRAMEIO_ACCOUNT_ID, FRAMEIO_WORKSPACE_ID
  */
 export async function provisionFrameIo(input: ProvisionInput): Promise<ProvisionResult | null> {
-  const token = process.env.FRAMEIO_TOKEN
-  const teamId = process.env.FRAMEIO_TEAM_ID
-  if (!token || !teamId) {
-    console.warn('[Provision:FrameIo] FRAMEIO_TOKEN or FRAMEIO_TEAM_ID not set, skipping')
+  const accountId = process.env.FRAMEIO_ACCOUNT_ID
+  const workspaceId = process.env.FRAMEIO_WORKSPACE_ID
+  if (!accountId || !workspaceId) {
+    console.warn(
+      '[Provision:FrameIo] FRAMEIO_ACCOUNT_ID or FRAMEIO_WORKSPACE_ID not set, skipping'
+    )
     return null
   }
 
@@ -129,50 +133,52 @@ export async function provisionFrameIo(input: ProvisionInput): Promise<Provision
     : `${input.client}_${input.projectName}`
 
   try {
-    // Create the project
-    const project = await withRetry(() =>
-      fetch(`${FRAMEIO_API}/projects`, {
-        method: 'POST',
-        headers: frameioHeaders(),
-        body: JSON.stringify({ name: projectLabel, team_id: teamId }),
-        signal: AbortSignal.timeout(8_000),
-      }).then(async (r) => {
+    const project = unwrap(
+      await withRetry(async () => {
+        const headers = await frameIoAuthHeaders()
+        const r = await fetch(
+          `${FRAMEIO_API}/accounts/${accountId}/workspaces/${workspaceId}/projects`,
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ data: { name: projectLabel } }),
+            signal: AbortSignal.timeout(8_000),
+          }
+        )
         if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
         return r.json()
       })
     )
 
     const projectId: string = project.id
-    const rootAssetId: string = project.root_asset_id
+    const rootFolderId: string = project.root_folder_id || project.root_asset_id
 
-    // Create standard subfolders in parallel
     const folders = folderStructure.frameio || []
     await Promise.allSettled(
       folders.map((folderName: string) =>
-        withRetry(() =>
-          fetch(`${FRAMEIO_API}/assets`, {
-            method: 'POST',
-            headers: frameioHeaders(),
-            body: JSON.stringify({
-              name: folderName,
-              type: 'folder',
-              parent_id: rootAssetId,
-            }),
-            signal: AbortSignal.timeout(8_000),
-          }).then(async (r) => {
-            if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
-          })
-        )
+        withRetry(async () => {
+          const headers = await frameIoAuthHeaders()
+          const r = await fetch(
+            `${FRAMEIO_API}/accounts/${accountId}/folders/${rootFolderId}/folders`,
+            {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({ data: { name: folderName } }),
+              signal: AbortSignal.timeout(8_000),
+            }
+          )
+          if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
+        })
       )
     )
 
-    const url = `https://app.frame.io/projects/${projectId}`
+    const url = `https://next.frame.io/project/${projectId}`
     console.log(`[Provision:FrameIo] Created project: ${projectLabel} → ${url}`)
     return {
       id: projectId,
       url,
       name: projectLabel,
-      extra: { rootAssetId, foldersCreated: folders.length },
+      extra: { rootFolderId, foldersCreated: folders.length },
     }
   } catch (err: any) {
     console.error('[Provision:FrameIo] Failed:', err.message)
