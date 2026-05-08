@@ -1,58 +1,74 @@
 import { withRetry } from '../retry'
 import type { ServiceResult, ProjectIntakeForm } from '../types'
 import { buildProjectLabel } from '../types'
+import { frameIoAuthHeaders } from '@/lib/frameio/auth'
 import folderStructure from '../folder-structure.json'
 
-const BASE_URL = 'https://api.frame.io/v2'
+const BASE_URL = 'https://api.frame.io/v4'
 
-function headers() {
-  return {
-    Authorization: `Bearer ${process.env.FRAMEIO_TOKEN}`,
-    'Content-Type': 'application/json',
-  }
+function unwrap(payload: any): any {
+  return payload && typeof payload === 'object' && 'data' in payload ? payload.data : payload
 }
 
 export async function provisionFrameIo(
   form: ProjectIntakeForm,
   dryRun = false
 ): Promise<ServiceResult> {
-  const teamId = process.env.FRAMEIO_TEAM_ID ?? ''
+  const accountId = process.env.FRAMEIO_ACCOUNT_ID ?? ''
+  const workspaceId = process.env.FRAMEIO_WORKSPACE_ID ?? ''
   const label = buildProjectLabel(form)
 
   try {
     if (dryRun) {
-      return { service: 'FrameIo', success: true, url: 'https://app.frame.io/projects/dry-run' }
+      return { service: 'FrameIo', success: true, url: 'https://next.frame.io/project/dry-run' }
     }
 
-    const project = await withRetry(() =>
-      fetch(`${BASE_URL}/projects`, {
-        method: 'POST',
-        headers: headers(),
-        body: JSON.stringify({ name: label, team_id: teamId }),
-      }).then(async (r) => {
+    if (!accountId || !workspaceId) {
+      throw new Error('FRAMEIO_ACCOUNT_ID and FRAMEIO_WORKSPACE_ID must be set')
+    }
+
+    const project = unwrap(
+      await withRetry(async () => {
+        const headers = await frameIoAuthHeaders()
+        const r = await fetch(
+          `${BASE_URL}/accounts/${accountId}/workspaces/${workspaceId}/projects`,
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ data: { name: label } }),
+          }
+        )
         if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
         return r.json()
       })
     )
 
     const projectId: string = project.id
-    const rootAssetId: string = project.root_asset_id
+    const rootFolderId: string = project.root_folder_id || project.root_asset_id
 
     await Promise.allSettled(
       folderStructure.frameio.map((folderName) =>
-        withRetry(() =>
-          fetch(`${BASE_URL}/assets`, {
-            method: 'POST',
-            headers: headers(),
-            body: JSON.stringify({ name: folderName, type: 'folder', parent_id: rootAssetId }),
-          }).then(async (r) => {
-            if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
-          })
-        )
+        withRetry(async () => {
+          const headers = await frameIoAuthHeaders()
+          const r = await fetch(
+            `${BASE_URL}/accounts/${accountId}/folders/${rootFolderId}/folders`,
+            {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({ data: { name: folderName } }),
+            }
+          )
+          if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
+        })
       )
     )
 
-    return { service: 'FrameIo', success: true, url: `https://app.frame.io/projects/${projectId}`, id: projectId }
+    return {
+      service: 'FrameIo',
+      success: true,
+      url: `https://next.frame.io/project/${projectId}`,
+      id: projectId,
+    }
   } catch (err) {
     return { service: 'FrameIo', success: false, error: err instanceof Error ? err.message : String(err) }
   }
