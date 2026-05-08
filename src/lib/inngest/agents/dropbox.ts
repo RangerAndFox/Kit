@@ -210,7 +210,7 @@ export const dropboxAgent: AgentDefinition = {
   domain: 'Dropbox',
   expertise:
     'File storage, project folder structures, asset organization, file search, and share links. Ask me to find files, get share links, browse project folders, or set up new project folder structures from templates.',
-  requiredEnvVars: ['DROPBOX_ACCESS_TOKEN'],
+  requiredEnvVars: ['DROPBOX_APP_KEY', 'DROPBOX_APP_SECRET', 'DROPBOX_REFRESH_TOKEN'],
   capabilities: [
     {
       action: 'provision',

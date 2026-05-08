@@ -1,27 +1,47 @@
 // @ts-nocheck
 /**
- * Frame.io v2 API Client
+ * Frame.io v4 API Client
  *
- * Handles auth, review-link resolution, comment fetching, and
- * thumbnail/frame retrieval for the notes-extraction pipeline.
+ * Migrated from v2 to v4 (Adobe-era API).
+ * Key changes:
+ *   - Base URL: /v4 instead of /v2
+ *   - "teams" → "workspaces", "assets" → "files/folders", "review_links" → "shares"
+ *   - All resource paths include account_id prefix
+ *   - Responses wrapped in { data: ... }
+ *   - Request bodies use { data: { ... } }
+ *   - Auth via Adobe IMS OAuth (handled by ./auth.ts)
  */
 
-const BASE_URL = 'https://api.frame.io/v2'
+import { frameioHeaders } from './auth'
 
-function headers() {
-  const token = process.env.FRAMEIO_TOKEN
-  if (!token) throw new Error('FRAMEIO_TOKEN not configured')
-  return {
-    Authorization: `Bearer ${token}`,
-    'Content-Type': 'application/json',
-  }
+const BASE_URL = 'https://api.frame.io/v4'
+
+function getAccountId(): string {
+  const id = process.env.FRAMEIO_ACCOUNT_ID
+  if (!id) throw new Error('FRAMEIO_ACCOUNT_ID is required for Frame.io v4 API')
+  return id
 }
 
 async function frameioGet(path: string): Promise<any> {
-  const res = await fetch(`${BASE_URL}${path}`, { headers: headers() })
+  const hdrs = await frameioHeaders()
+  const res = await fetch(`${BASE_URL}${path}`, { headers: hdrs })
   if (!res.ok) {
     const body = await res.text().catch(() => '')
     throw new Error(`Frame.io ${path}: ${res.status} ${body}`)
+  }
+  return res.json()
+}
+
+async function frameioPost(path: string, body: Record<string, unknown>): Promise<any> {
+  const hdrs = await frameioHeaders()
+  const res = await fetch(`${BASE_URL}${path}`, {
+    method: 'POST',
+    headers: hdrs,
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => '')
+    throw new Error(`Frame.io POST ${path}: ${res.status} ${errBody}`)
   }
   return res.json()
 }
@@ -41,7 +61,7 @@ export interface FrameIoComment {
 export interface FrameIoAsset {
   id: string
   name: string
-  type: string
+  type: string               // 'file' | 'folder' | 'version_stack'
   duration: number | null     // seconds
   thumbUrl: string | null
   proxyUrl: string | null
@@ -49,23 +69,53 @@ export interface FrameIoAsset {
   hlsUrl: string | null
 }
 
-// ─── Review Link Resolution ─────────────────────────────────
+// ─── User / Account ────────────────────────────────────────
 
 /**
- * Extract the review link ID from a Frame.io URL.
- * Supports formats:
+ * Get current authenticated user info.
+ * GET /v4/me
+ */
+export async function getMe(): Promise<any> {
+  const resp = await frameioGet('/me')
+  return resp.data || resp
+}
+
+/**
+ * List accounts the authenticated user belongs to.
+ * GET /v4/accounts
+ */
+export async function listAccounts(): Promise<any[]> {
+  const resp = await frameioGet('/accounts')
+  return resp.data || resp
+}
+
+/**
+ * List workspaces (formerly "teams") in an account.
+ * GET /v4/accounts/{account_id}/workspaces
+ */
+export async function listWorkspaces(accountId?: string): Promise<any[]> {
+  const acct = accountId || getAccountId()
+  const resp = await frameioGet(`/accounts/${acct}/workspaces`)
+  return resp.data || resp
+}
+
+// ─── Review Link / Share Resolution ─────────────────────────
+
+/**
+ * Extract a share (review link) ID from a Frame.io URL.
+ * v4 renamed "review_links" to "shares"
+ * Supports:
  *   https://app.frame.io/reviews/{id}
- *   https://app.frame.io/reviews/{id}/...
- *   https://app.frame.io/reviews/{id}?version=...
+ *   https://app.frame.io/shares/{id}
  */
 export function parseReviewUrl(url: string): string | null {
-  const match = url.match(/frame\.io\/reviews\/([a-f0-9-]+)/i)
+  const match = url.match(/frame\.io\/(?:reviews|shares)\/([a-f0-9-]+)/i)
   return match ? match[1] : null
 }
 
 /**
- * Extract an asset ID directly from a Frame.io asset URL.
- *   https://app.frame.io/player/{asset_id}
+ * Extract a file ID from a Frame.io player URL.
+ *   https://app.frame.io/player/{file_id}
  */
 export function parseAssetUrl(url: string): string | null {
   const match = url.match(/frame\.io\/player\/([a-f0-9-]+)/i)
@@ -73,42 +123,56 @@ export function parseAssetUrl(url: string): string | null {
 }
 
 /**
- * Resolve a review link to its assets.
- * GET /v2/review_links/{id}/items
+ * Resolve a share to its files.
+ * v4: GET /v4/shares/{share_id}/items  (shares may be account-agnostic)
  */
-export async function getReviewLinkAssets(reviewLinkId: string): Promise<FrameIoAsset[]> {
-  const data = await frameioGet(`/review_links/${reviewLinkId}/items`)
-  const items = Array.isArray(data) ? data : (data.assets || data.items || [])
-  return items.map(normalizeAsset)
+export async function getReviewLinkAssets(shareId: string): Promise<FrameIoAsset[]> {
+  const acct = getAccountId()
+  try {
+    const data = await frameioGet(`/accounts/${acct}/shares/${shareId}/items`)
+    const items = data.data || data.items || data
+    return (Array.isArray(items) ? items : []).map(normalizeAsset)
+  } catch {
+    // Fallback: try without account prefix
+    try {
+      const data = await frameioGet(`/shares/${shareId}/items`)
+      const items = data.data || data.items || data
+      return (Array.isArray(items) ? items : []).map(normalizeAsset)
+    } catch {
+      return []
+    }
+  }
 }
 
 /**
- * Get a single asset by ID.
- * GET /v2/assets/{id}
+ * Get a single file by ID.
+ * GET /v4/accounts/{account_id}/files/{file_id}
  */
-export async function getAsset(assetId: string): Promise<FrameIoAsset> {
-  const data = await frameioGet(`/assets/${assetId}`)
-  return normalizeAsset(data)
+export async function getAsset(fileId: string): Promise<FrameIoAsset> {
+  const acct = getAccountId()
+  const data = await frameioGet(`/accounts/${acct}/files/${fileId}`)
+  return normalizeAsset(data.data || data)
 }
 
 // ─── Comments ───────────────────────────────────────────────
 
 /**
- * Fetch all comments for an asset.
- * GET /v2/assets/{asset_id}/comments
+ * Fetch all comments for a file.
+ * GET /v4/accounts/{account_id}/files/{file_id}/comments
  */
-export async function getAssetComments(assetId: string): Promise<FrameIoComment[]> {
-  const data = await frameioGet(`/assets/${assetId}/comments`)
-  const items = Array.isArray(data) ? data : (data.comments || data.items || [])
+export async function getAssetComments(fileId: string): Promise<FrameIoComment[]> {
+  const acct = getAccountId()
+  const data = await frameioGet(`/accounts/${acct}/files/${fileId}/comments`)
+  const items = data.data || data.comments || data.items || data
 
-  return items.map((c: any) => ({
+  return (Array.isArray(items) ? items : []).map((c: any) => ({
     id: c.id,
     text: c.text || '',
     timestamp: typeof c.timestamp === 'number' ? c.timestamp : null,
-    ownerName: c.owner?.name || c.owner_name || 'Unknown',
-    ownerEmail: c.owner?.email || c.owner_email || '',
+    ownerName: c.owner?.name || c.owner_name || c.creator?.name || 'Unknown',
+    ownerEmail: c.owner?.email || c.owner_email || c.creator?.email || '',
     createdAt: c.inserted_at || c.created_at || '',
-    completed: c.completed || false,
+    completed: c.completed || c.resolved || false,
   }))
 }
 
@@ -116,44 +180,16 @@ export async function getAssetComments(assetId: string): Promise<FrameIoComment[
 
 /**
  * Get a thumbnail URL for a specific timecode.
- *
- * Strategy:
- * 1. If the asset has a thumb_urls array (proxy storyboard), find closest
- * 2. Fall back to proxy URL + seek (caller handles frame extraction)
- * 3. Fall back to asset thumbnail (poster frame)
  */
 export async function getFrameAtTimecode(
-  assetId: string,
+  fileId: string,
   timecodeSeconds: number
 ): Promise<{ url: string; source: 'frame' | 'thumb' | 'poster' } | null> {
   try {
-    // Try to get the asset details which may include thumb/proxy info
-    const asset = await getAsset(assetId)
-
-    // Frame.io assets often have a thumb endpoint
-    // Try: /assets/{id}/thumb?time={seconds}
-    try {
-      const thumbRes = await fetch(`${BASE_URL}/assets/${assetId}/thumb?time=${timecodeSeconds}`, {
-        headers: headers(),
-      })
-      if (thumbRes.ok) {
-        const thumbData = await thumbRes.json()
-        if (thumbData.url || thumbData.thumb_url || thumbData.src) {
-          return {
-            url: thumbData.url || thumbData.thumb_url || thumbData.src,
-            source: 'frame',
-          }
-        }
-      }
-    } catch {
-      // Not available — fall through
-    }
-
-    // Fall back to poster thumbnail
+    const asset = await getAsset(fileId)
     if (asset.thumbUrl) {
       return { url: asset.thumbUrl, source: 'poster' }
     }
-
     return null
   } catch {
     return null
@@ -180,9 +216,9 @@ function normalizeAsset(raw: any): FrameIoAsset {
   return {
     id: raw.id,
     name: raw.name || 'Untitled',
-    type: raw.type || 'file',
+    type: raw.type || raw.resource_type || 'file',
     duration: typeof raw.duration === 'number' ? raw.duration : null,
-    thumbUrl: raw.thumb || raw.thumb_url || raw.thumbnail_url || null,
+    thumbUrl: raw.thumb || raw.thumb_url || raw.thumbnail_url || raw.thumbnail || null,
     proxyUrl: raw.proxy || raw.proxy_url || null,
     originalUrl: raw.original || raw.original_url || null,
     hlsUrl: raw.hls_manifest || raw.hls_url || null,
@@ -202,31 +238,23 @@ export function formatTimecode(seconds: number, fps = 24): string {
 
 /**
  * Detect if a string contains a Frame.io URL and return the parsed info.
- * Supports:
- *   - Full URLs: https://app.frame.io/reviews/... , https://app.frame.io/player/...
- *   - Short links: https://f.io/xxxxx
- *   - Slack-formatted: <https://f.io/xxx|f.io/xxx>
  */
 export function detectFrameIoLink(text: string): {
   type: 'review' | 'asset' | 'short'
   id: string
   url: string
 } | null {
-  // Match Frame.io URLs: frame.io or f.io domains
   const urlMatch = text.match(/<?(https?:\/\/[^\s>|]*(?:frame\.io|f\.io)[^\s>|]*)>?/)
   if (!urlMatch) return null
 
   const url = urlMatch[1]
 
-  // Check for full review URL
   const reviewId = parseReviewUrl(url)
   if (reviewId) return { type: 'review', id: reviewId, url }
 
-  // Check for full asset/player URL
   const assetId = parseAssetUrl(url)
   if (assetId) return { type: 'asset', id: assetId, url }
 
-  // Check for short link (f.io/xxxxx)
   const shortMatch = url.match(/f\.io\/([a-zA-Z0-9]+)/i)
   if (shortMatch) return { type: 'short', id: shortMatch[1], url }
 
@@ -234,8 +262,7 @@ export function detectFrameIoLink(text: string): {
 }
 
 /**
- * Resolve a short Frame.io link (f.io/xxx) by following the redirect
- * to get the full URL, then parse that.
+ * Resolve a short Frame.io link (f.io/xxx) by following the redirect.
  */
 export async function resolveShortLink(shortUrl: string): Promise<{
   type: 'review' | 'asset'
@@ -243,7 +270,6 @@ export async function resolveShortLink(shortUrl: string): Promise<{
   url: string
 } | null> {
   try {
-    // Follow redirect but don't download the page
     const res = await fetch(shortUrl, { redirect: 'follow' })
     const finalUrl = res.url
 
@@ -255,15 +281,12 @@ export async function resolveShortLink(shortUrl: string): Promise<{
     const assetId = parseAssetUrl(finalUrl)
     if (assetId) return { type: 'asset', id: assetId, url: finalUrl }
 
-    // If the final URL has /reviews/ or /player/ in a different format, try broader match
-    // Frame.io review URLs sometimes have extra path segments
-    const anyReviewMatch = finalUrl.match(/frame\.io.*?\/reviews?\/([a-f0-9-]+)/i)
+    const anyReviewMatch = finalUrl.match(/frame\.io.*?\/(?:reviews?|shares?)\/([a-f0-9-]+)/i)
     if (anyReviewMatch) return { type: 'review', id: anyReviewMatch[1], url: finalUrl }
 
     const anyPlayerMatch = finalUrl.match(/frame\.io.*?\/player\/([a-f0-9-]+)/i)
     if (anyPlayerMatch) return { type: 'asset', id: anyPlayerMatch[1], url: finalUrl }
 
-    // Last resort: try to extract any UUID-like ID from the URL
     const uuidMatch = finalUrl.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i)
     if (uuidMatch) return { type: 'review', id: uuidMatch[1], url: finalUrl }
 
