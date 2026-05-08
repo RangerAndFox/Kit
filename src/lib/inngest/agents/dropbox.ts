@@ -9,6 +9,7 @@
 
 import { withRetry } from '@/lib/provisioner/retry'
 import { dropboxHeaders } from '@/lib/dropbox/client'
+import { isProjectId, projectFolderName } from '@/lib/provisioner/naming'
 import type { AgentDefinition, AgentResult } from './types'
 
 const DROPBOX_API = 'https://api.dropboxapi.com/2'
@@ -32,10 +33,17 @@ async function dropboxPost(endpoint: string, body: Record<string, unknown>): Pro
 async function provision(payload: Record<string, unknown>): Promise<AgentResult> {
   const templatePath = process.env.DROPBOX_TEMPLATE_PATH ?? '/_TEMPLATES/New Project Template'
   const year = new Date().getFullYear()
-  const slug = payload.projectCode
-    ? `${payload.projectCode}_${payload.client}_${payload.projectName}`
-    : `${payload.client}_${payload.projectName}`
-  const safeName = (slug as string).replace(/[^\w\s-]/g, '').replace(/\s+/g, '_')
+
+  // When projectCode is a spine ID, it IS the folder name. NL-driven
+  // provisioning calls without a spine ID fall back to the legacy slug.
+  const projectCode = payload.projectCode as string | undefined
+  const safeName = isProjectId(projectCode)
+    ? projectFolderName(projectCode!)
+    : ((projectCode
+        ? `${projectCode}_${payload.client}_${payload.projectName}`
+        : `${payload.client}_${payload.projectName}`) as string)
+        .replace(/[^\w\s-]/g, '')
+        .replace(/\s+/g, '_')
   const destPath = `/Ranger & Fox/Production/${year}/${safeName}`
 
   try {
