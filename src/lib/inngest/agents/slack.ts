@@ -10,7 +10,7 @@
 import {
   createProjectSlackChannel,
   postProjectLinks,
-  createProjectCanvases,
+  createProjectCanvas,
 } from '@/lib/mcp/slack'
 import type { AgentDefinition, AgentResult } from './types'
 
@@ -78,17 +78,14 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       await postProjectLinks({ channelId: channel.channelId, links })
     }
 
-    // Create the two project canvases (SoT + Running Notes) per §5 of the
-    // R&F Operations Blueprint. Either may fail independently and that's
-    // non-fatal — channel provisioning still succeeds.
-    let sotCanvasId: string | null = null
-    let notesCanvasId: string | null = null
+    // Create canvas
+    let canvasId: string | null = null
     try {
-      const ids = await createProjectCanvases({
+      canvasId = await createProjectCanvas({
         channelId: channel.channelId,
         projectName: payload.projectName as string,
         projectCode: payload.projectCode as string | undefined,
-        client,
+        client: payload.client as string,
         projectType: payload.projectType as string | undefined,
         targetDelivery: payload.targetDelivery as string | undefined,
         startDate: payload.startDate as string | undefined,
@@ -99,16 +96,9 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
           harvest: collected?.harvest,
         },
       })
-      sotCanvasId = ids.sotCanvasId
-      notesCanvasId = ids.notesCanvasId
     } catch (e: any) {
-      console.warn('[SlackAgent] Canvas creation threw (non-fatal):', e.message)
+      console.warn('[SlackAgent] Canvas failed (non-fatal):', e.message)
     }
-
-    const canvasParts: string[] = []
-    if (sotCanvasId) canvasParts.push('SoT')
-    if (notesCanvasId) canvasParts.push('Notes')
-    const canvasSuffix = canvasParts.length > 0 ? ` with ${canvasParts.join(' + ')} canvas${canvasParts.length === 1 ? '' : 'es'}` : ''
 
     return {
       agent: 'slack',
@@ -116,11 +106,8 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       success: true,
       url: channel.url,
       id: channel.channelId,
-      message: `Created #${channel.channelName}${canvasSuffix}`,
-      data: {
-        channelName: channel.channelName,
-        canvasIds: { sot: sotCanvasId, notes: notesCanvasId },
-      },
+      message: `Created #${channel.channelName}${canvasId ? ' with project canvas' : ''}`,
+      data: { channelName: channel.channelName, canvasId },
     }
   } catch (err: any) {
     return { agent: 'slack', action: 'provision', success: false, error: err.message }
@@ -274,7 +261,7 @@ export const slackAgent: AgentDefinition = {
   capabilities: [
     {
       action: 'provision',
-      description: 'Create a project Slack channel with welcome message, two project canvases (SoT + Running Notes per the R&F blueprint), and provisioned links',
+      description: 'Create a project Slack channel with welcome message, project canvas, and provisioned links',
       mutates: true,
     },
     {
