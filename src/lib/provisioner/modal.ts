@@ -1,12 +1,5 @@
 /**
  * Builds the Block Kit modal for the /kit newproject intake form.
- *
- * Field set follows §3 of the R&F Operations Blueprint: every project
- * has a four-part spine identifier — Client Code, Project Number,
- * Shortname — that becomes the canonical name in every system. The
- * Client display name is stored separately for human-facing display
- * but is never used as an identifier.
- *
  * private_metadata carries channel_id so the interaction handler
  * knows where to post the summary.
  */
@@ -20,62 +13,22 @@ export function buildNewProjectModal(channelId: string) {
     close: { type: 'plain_text' as const, text: 'Cancel' },
     blocks: [
       {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text:
-            '*Project ID format:* `[CLIENT]-[NUMBER]-[SHORTNAME]`\n' +
-            '_e.g. `MS-2612B-D365-CustomerService` — used as the name in Slack, Dropbox, Frame.io, Harvest, and on the project canvases._',
-        },
+        type: 'input',
+        block_id: 'project_number',
+        label: { type: 'plain_text', text: 'Project Number' },
+        element: { type: 'plain_text_input', action_id: 'val', placeholder: { type: 'plain_text', text: 'e.g. 2601' } },
       },
       {
         type: 'input',
-        block_id: 'client_code',
-        label: { type: 'plain_text', text: 'Client Code' },
-        hint: { type: 'plain_text', text: 'Short uppercase identifier. Example: MS, GOOG, NRG.' },
-        element: {
-          type: 'plain_text_input',
-          action_id: 'val',
-          max_length: 8,
-          placeholder: { type: 'plain_text', text: 'e.g. MS' },
-        },
+        block_id: 'project_name',
+        label: { type: 'plain_text', text: 'Project Name' },
+        element: { type: 'plain_text_input', action_id: 'val', placeholder: { type: 'plain_text', text: 'e.g. Summer Campaign' } },
       },
       {
         type: 'input',
         block_id: 'client_name',
-        label: { type: 'plain_text', text: 'Client (display name)' },
-        element: {
-          type: 'plain_text_input',
-          action_id: 'val',
-          placeholder: { type: 'plain_text', text: 'e.g. Microsoft' },
-        },
-      },
-      {
-        type: 'input',
-        block_id: 'project_number',
-        label: { type: 'plain_text', text: 'Project Number' },
-        hint: { type: 'plain_text', text: 'Studio job number. Letters and digits only.' },
-        element: {
-          type: 'plain_text_input',
-          action_id: 'val',
-          max_length: 12,
-          placeholder: { type: 'plain_text', text: 'e.g. 2612B' },
-        },
-      },
-      {
-        type: 'input',
-        block_id: 'shortname',
-        label: { type: 'plain_text', text: 'Shortname' },
-        hint: {
-          type: 'plain_text',
-          text: 'PascalCase, hyphenated. Becomes the descriptive part of the Project ID.',
-        },
-        element: {
-          type: 'plain_text_input',
-          action_id: 'val',
-          max_length: 60,
-          placeholder: { type: 'plain_text', text: 'e.g. D365-CustomerService' },
-        },
+        label: { type: 'plain_text', text: 'Client Name' },
+        element: { type: 'plain_text_input', action_id: 'val', placeholder: { type: 'plain_text', text: 'e.g. Nike' } },
       },
       {
         type: 'input',
@@ -136,7 +89,7 @@ export function buildNewProjectModal(channelId: string) {
           {
             type: 'mrkdwn',
             text:
-              ':sparkles: *Will provision everything available* — Harvest project, Dropbox folder, Frame.io project, and a `#proj-` Slack channel with SoT and Running Notes canvases. ' +
+              ':sparkles: *Will provision everything available* — Harvest project, Dropbox folder, Frame.io project, and a dedicated Slack channel. ' +
               'Hit *Create Project* to confirm.',
           },
         ],

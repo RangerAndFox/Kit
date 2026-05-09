@@ -18,7 +18,6 @@ import {
   listUsers,
   listAccountTasks,
 } from '@/lib/harvest/client'
-import { isProjectId } from '@/lib/provisioner/naming'
 import type { AgentDefinition, AgentResult } from './types'
 
 // ─── Action Handlers ───────────────────────────────────────
@@ -26,19 +25,10 @@ import type { AgentDefinition, AgentResult } from './types'
 async function provision(payload: Record<string, unknown>): Promise<AgentResult> {
   try {
     const harvestClient = await findOrCreateClient(payload.client as string)
-
-    // When projectCode is a spine ID, it IS the canonical project name in
-    // Harvest. Otherwise we keep the human-friendly projectName from older
-    // NL-driven flows.
-    const projectCode = payload.projectCode as string | undefined
-    const harvestProjectName = isProjectId(projectCode)
-      ? projectCode!
-      : (payload.projectName as string)
-
     const project = await createHarvestProject({
-      name: harvestProjectName,
+      name: payload.projectName as string,
       clientId: harvestClient.id,
-      code: projectCode || undefined,
+      code: (payload.projectCode as string) || undefined,
       isBillable: true,
       budgetTotal: (payload.budgetTotal as number) || undefined,
       startDate: (payload.startDate as string) || undefined,

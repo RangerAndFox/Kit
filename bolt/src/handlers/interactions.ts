@@ -18,7 +18,6 @@ import {
   getAvailableAgents,
 } from '../../../src/lib/inngest/agents/registry'
 import { buildSummaryBlocks } from '../../../src/lib/provisioner/slack-summary'
-import { formatProjectId } from '../../../src/lib/provisioner/naming'
 import type { ServiceKey } from '../../../src/lib/provisioner/types'
 
 export function registerInteractionHandlers(app: App) {
@@ -35,10 +34,9 @@ export function registerInteractionHandlers(app: App) {
     // Extract form values. Services are no longer user-selectable — the modal
     // confirms intent and we provision every available agent that supports it.
     const form = {
-      clientCode: values.client_code?.val?.value || '',
-      clientName: values.client_name?.val?.value || '',
       projectNumber: values.project_number?.val?.value || '',
-      shortname: values.shortname?.val?.value || '',
+      projectName: values.project_name?.val?.value || '',
+      clientName: values.client_name?.val?.value || '',
       projectType: values.project_type?.val?.selected_option?.value || 'Other',
       projectManager: values.project_manager?.val?.selected_user || userId,
       teamMembers: values.team_members?.val?.selected_users || [],
@@ -46,24 +44,6 @@ export function registerInteractionHandlers(app: App) {
       deadline: values.deadline?.val?.selected_date || undefined,
       description: values.description?.val?.value || undefined,
       selectedServices: getProvisionableServices(),
-    }
-
-    // Build the canonical project ID (the spine). This becomes the project's
-    // name in every external system — Slack channel, Dropbox folder,
-    // Frame.io project, Harvest project, canvas titles.
-    let projectId: string
-    try {
-      projectId = formatProjectId({
-        clientCode: form.clientCode,
-        projectNumber: form.projectNumber,
-        shortname: form.shortname,
-      })
-    } catch (err: any) {
-      await client.chat.postMessage({
-        channel: userId,
-        text: `❌ Could not build a project ID: ${err.message}`,
-      })
-      return
     }
 
     // Resolve workspace
@@ -78,8 +58,11 @@ export function registerInteractionHandlers(app: App) {
       // DM the user that we're starting
       await client.chat.postMessage({
         channel: userId,
-        text: `⚡ Provisioning *${projectId}* for ${form.clientName}...`,
+        text: `⚡ Provisioning *${form.projectName}* for ${form.clientName}...`,
       })
+
+      // Build the project code
+      const projectCode = `${form.projectNumber}-${form.clientName.replace(/\s+/g, '')}`
 
       // ── Create project record in Supabase ─────────────────
       const supabase = createAdminClient()
@@ -87,9 +70,9 @@ export function registerInteractionHandlers(app: App) {
         .from('projects')
         .insert({
           workspace_id: workspaceId,
-          name: projectId,
+          name: form.projectName,
           client: form.clientName,
-          project_code: projectId,
+          project_code: projectCode,
           project_type: form.projectType,
           status: 'provisioning',
           created_by: userId,
@@ -105,25 +88,17 @@ export function registerInteractionHandlers(app: App) {
       }
 
       // ── Fan-out to agents in parallel ─────────────────────
-      // The spine ID is sent as both projectName and projectCode so every
-      // agent that names something uses the same identifier. Display name
-      // (`client`) is sent separately for human-facing output (canvases,
-      // welcome messages) and is never an identifier.
       const services = form.selectedServices
       const provisionPayload = {
         projectId: project.id,
-        projectName: projectId,
-        projectCode: projectId,
-        client: form.clientName,
+        projectName: form.projectName,
         clientName: form.clientName,
+        projectCode,
         projectType: form.projectType,
-        startDate: form.startDate,
-        targetDelivery: form.deadline,
-        briefSummary: form.description,
         workspaceId,
       }
 
-      console.log(`[Bolt] Provisioning ${projectId} across ${services.length} services`)
+      console.log(`[Bolt] Provisioning ${form.projectName} across ${services.length} services`)
 
       const results = await Promise.allSettled(
         services.map(async (service) => {
@@ -182,10 +157,10 @@ export function registerInteractionHandlers(app: App) {
       // ── Post summary to the project channel ───────────────
       const targetChannel = serviceResults.slack?.id || channelId
       if (targetChannel) {
-        const summaryBlocks = buildSummaryBlocks(serviceResults, projectId)
+        const summaryBlocks = buildSummaryBlocks(serviceResults, form.projectName)
         await client.chat.postMessage({
           channel: targetChannel,
-          text: `${projectId} — Project Provisioned`,
+          text: `${form.projectName} — Project Provisioned`,
           blocks: summaryBlocks as any,
         })
       }
@@ -196,15 +171,15 @@ export function registerInteractionHandlers(app: App) {
       await client.chat.postMessage({
         channel: userId,
         text: failed === 0
-          ? `✅ *${projectId}* is fully provisioned! (${succeeded}/${services.length} services)`
-          : `⚠️ *${projectId}* provisioned with ${failed} issue(s). Check the project channel for details.`,
+          ? `✅ *${form.projectName}* is fully provisioned! (${succeeded}/${services.length} services)`
+          : `⚠️ *${form.projectName}* provisioned with ${failed} issue(s). Check the project channel for details.`,
       })
 
     } catch (err: any) {
       console.error('[Bolt] Provisioning failed:', err)
       await client.chat.postMessage({
         channel: userId,
-        text: `❌ Provisioning *${projectId}* failed: ${err.message || 'unknown error'}`,
+        text: `❌ Provisioning *${form.projectName}* failed: ${err.message || 'unknown error'}`,
       })
     }
   })

@@ -5,8 +5,6 @@
  * simple project fields instead of a full ProjectIntakeForm.
  */
 
-import { isProjectId, parseProjectId, projectChannelName } from '@/lib/provisioner/naming'
-
 const SLACK_API = 'https://slack.com/api'
 
 function headers() {
@@ -44,8 +42,6 @@ export async function createProjectSlackChannel(opts: {
   projectId: string
   projectName: string
   client: string
-  /** The spine project ID, when available — drives the `proj-` channel naming. */
-  projectCode?: string
   projectType?: string
   targetDelivery?: string
   /** Slack user ID(s) to auto-invite after creation (e.g., the requesting user) */
@@ -55,7 +51,7 @@ export async function createProjectSlackChannel(opts: {
     throw new Error('SLACK_BOT_TOKEN not configured — cannot create channel')
   }
 
-  const { projectId, projectName, client, projectCode, projectType, targetDelivery, inviteUserIds } = opts
+  const { projectId, projectName, client, projectType, targetDelivery, inviteUserIds } = opts
 
   // Validate required fields up front so we don't ship a "client-undefined" channel.
   if (!projectName || !projectName.trim()) {
@@ -65,18 +61,13 @@ export async function createProjectSlackChannel(opts: {
     throw new Error('createProjectSlackChannel: client is required')
   }
 
-  // Build channel name slug. Per §4 of the blueprint, project channels use
-  // the `proj-` prefix when we have a spine-formatted project ID. NL-driven
-  // provisioning calls (without a spine ID) fall back to the legacy
-  // `{client}-{projectName}` slug.
-  let slug = isProjectId(projectCode)
-    ? projectChannelName(projectCode!)
-    : `${client}-${projectName}`
-        .toLowerCase()
-        .replace(/[^a-z0-9-]/g, '-')
-        .replace(/-+/g, '-')
-        .replace(/^-|-$/g, '')
-        .slice(0, 80)
+  // Build channel name slug
+  let slug = `${client}-${projectName}`
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 80)
 
   // Try to create the channel
   let channelId: string
@@ -218,11 +209,6 @@ function buildSourceOfTruthMarkdown(data: ProjectCanvasData): string {
   const delivery = targetDelivery || 'TBD'
   const projectId = projectCode || projectName
 
-  // Pull the descriptive piece out of the spine ID for the Shortname cell;
-  // for legacy non-spine codes, fall back to the raw projectCode.
-  const parsed = parseProjectId(projectId)
-  const shortname = parsed ? parsed.shortname : (projectCode || '—')
-
   const linkRow = (label: string, url?: string) =>
     url
       ? `|**${label}**|[${url}](${url})|`
@@ -240,7 +226,7 @@ function buildSourceOfTruthMarkdown(data: ProjectCanvasData): string {
 |---|---|
 |**Project ID**|${projectId}|
 |**Client**|${client}|
-|**Shortname**|${shortname}|
+|**Shortname**|${projectCode || '—'}|
 |**Internal lead (Producer)**|[@PM]|
 |**Client contacts**|[name, role, email]|
 |**Kickoff date**|${kickoff}|

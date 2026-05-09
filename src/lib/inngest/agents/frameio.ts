@@ -13,7 +13,6 @@
 import { withRetry } from '@/lib/provisioner/retry'
 import folderStructure from '@/lib/provisioner/folder-structure.json'
 import { frameIoAuthHeaders } from '@/lib/frameio/auth'
-import { isProjectId } from '@/lib/provisioner/naming'
 import type { AgentDefinition, AgentResult } from './types'
 
 const FRAMEIO_API = 'https://api.frame.io/v4'
@@ -63,14 +62,9 @@ function unwrap(payload: any): any {
 // ─── Action Handlers ───────────────────────────────────────
 
 async function provision(payload: Record<string, unknown>): Promise<AgentResult> {
-  // When projectCode is a spine ID, it IS the project label. NL-driven
-  // provisioning calls without a spine ID fall back to the legacy label.
-  const projectCode = payload.projectCode as string | undefined
-  const projectLabel = isProjectId(projectCode)
-    ? projectCode!
-    : projectCode
-      ? `${projectCode}_${payload.client}_${payload.projectName}`
-      : `${payload.client}_${payload.projectName}`
+  const projectLabel = payload.projectCode
+    ? `${payload.projectCode}_${payload.client}_${payload.projectName}`
+    : `${payload.client}_${payload.projectName}`
 
   try {
     const acct = accountId()
