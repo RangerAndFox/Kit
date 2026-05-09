@@ -150,8 +150,19 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
 
   // Resolve workspace + user context
   const workspaceId = await resolveWorkspaceId(teamId)
+
+  // Look up the Slack user's email so resolveUserContext can apply the
+  // hardcoded-admin override (founder access works before team_members is seeded).
+  let userEmail: string | undefined
+  try {
+    const info = await app.client.users.info({ user: userId })
+    userEmail = info.user?.profile?.email || undefined
+  } catch (err) {
+    console.warn('[Bolt] users.info lookup failed:', (err as any)?.message)
+  }
+
   const user = workspaceId
-    ? await resolveUserContext(workspaceId, userId)
+    ? await resolveUserContext(workspaceId, userId, userEmail)
     : null
 
   // Resolve project from channel (if this is a project channel)

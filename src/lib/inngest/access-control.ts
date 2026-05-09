@@ -52,12 +52,29 @@ const ROLE_TO_TIER: Record<string, AccessTier> = {
 }
 
 /**
+ * Emails that always resolve to admin tier, even without a team_members row.
+ * Why: founder access can't depend on the team_members table being seeded —
+ * Steve must be able to talk to Kit before any other user is provisioned.
+ */
+const HARDCODED_ADMIN_EMAILS = new Set<string>([
+  'steve@rangerandfox.tv',
+])
+
+function isHardcodedAdmin(email: string | undefined | null): boolean {
+  return !!email && HARDCODED_ADMIN_EMAILS.has(email.toLowerCase())
+}
+
+/**
  * Resolve a user's access tier from their Slack user ID.
  * This is the primary entry point — Kit identifies users by Slack ID.
+ *
+ * If `email` is provided and matches a hardcoded admin (and no team_members
+ * row exists for the slack user), returns a synthetic admin context.
  */
 export async function resolveUserContext(
   workspaceId: string,
-  slackUserId: string
+  slackUserId: string,
+  email?: string,
 ): Promise<UserContext | null> {
   const db = createAdminClient()
 
@@ -68,27 +85,45 @@ export async function resolveUserContext(
     .eq('slack_user_id', slackUserId)
     .maybeSingle()
 
-  if (error || !member) return null
+  if (!error && member) {
+    // Get project-level financial overrides
+    const { data: accessOverrides } = await db
+      .from('project_access')
+      .select('project_id')
+      .eq('team_member_id', member.id)
+      .eq('can_see_financials', true)
 
-  // Get project-level financial overrides
-  const { data: accessOverrides } = await db
-    .from('project_access')
-    .select('project_id')
-    .eq('team_member_id', member.id)
-    .eq('can_see_financials', true)
+    const projectFinancials = new Set(
+      (accessOverrides || []).map((a: any) => a.project_id)
+    )
 
-  const projectFinancials = new Set(
-    (accessOverrides || []).map((a: any) => a.project_id)
-  )
+    // Hardcoded admin override even if DB role disagrees
+    const dbTier = ROLE_TO_TIER[member.role] || 'artist'
+    const tier: AccessTier = isHardcodedAdmin(member.email) ? 'admin' : dbTier
 
-  return {
-    teamMemberId: member.id,
-    workspaceId,
-    tier: ROLE_TO_TIER[member.role] || 'artist',
-    name: member.display_name || member.name || member.email,
-    slackUserId,
-    projectFinancials,
+    return {
+      teamMemberId: member.id,
+      workspaceId,
+      tier,
+      name: member.display_name || member.name || member.email,
+      slackUserId,
+      projectFinancials,
+    }
   }
+
+  // No team_members row — fall back to hardcoded admin if email matches
+  if (isHardcodedAdmin(email)) {
+    return {
+      teamMemberId: `hardcoded:${email}`,
+      workspaceId,
+      tier: 'admin',
+      name: email!,
+      slackUserId,
+      projectFinancials: new Set(),
+    }
+  }
+
+  return null
 }
 
 // ─── Gateway Rules ──────────────────────────────────────────
