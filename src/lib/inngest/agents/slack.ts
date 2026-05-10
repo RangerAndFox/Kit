@@ -52,9 +52,17 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       }
     }
 
-    // Auto-invite the requesting user (if known) so they actually see the channel.
-    const inviteUserIds: string[] = []
-    if (payload.slackUserId) inviteUserIds.push(payload.slackUserId as string)
+    // Auto-invite the requesting user, the PM, and the selected team members so
+    // the channel isn't an empty room. Dedupe + drop falsy.
+    const inviteUserIds: string[] = Array.from(
+      new Set(
+        [
+          payload.slackUserId as string | undefined,
+          payload.projectManager as string | undefined,
+          ...((payload.teamMembers as string[] | undefined) || []),
+        ].filter((id): id is string => !!id),
+      ),
+    )
 
     const channel = await createProjectSlackChannel({
       projectId: payload.projectId as string,

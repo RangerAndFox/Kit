@@ -92,10 +92,20 @@ export function registerInteractionHandlers(app: App) {
       const provisionPayload = {
         projectId: project.id,
         projectName: form.projectName,
+        // Send both `client` and `clientName` — different agents read different keys.
+        client: form.clientName,
         clientName: form.clientName,
+        projectNumber: form.projectNumber,
         projectCode,
         projectType: form.projectType,
         workspaceId,
+        // Identity + invitees so Slack channel auto-invites the requester + PM + team.
+        slackUserId: userId,
+        projectManager: form.projectManager,
+        teamMembers: form.teamMembers,
+        startDate: form.startDate,
+        deadline: form.deadline,
+        briefSummary: form.description,
       }
 
       console.log(`[Bolt] Provisioning ${form.projectName} across ${services.length} services`)

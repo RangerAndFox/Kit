@@ -62,9 +62,24 @@ async function framePost(path: string, body: Record<string, unknown>): Promise<a
 // ─── Action Handlers ───────────────────────────────────────
 
 async function provision(payload: Record<string, unknown>): Promise<AgentResult> {
-  const projectLabel = payload.projectCode
-    ? `${payload.projectCode}_${payload.client}_${payload.projectName}`
-    : `${payload.client}_${payload.projectName}`
+  // Accept `client` or `clientName` — modal flow sends both, NL specialists vary.
+  const client = (payload.client as string) || (payload.clientName as string) || ''
+  const projectName = (payload.projectName as string) || ''
+  const projectNumber = (payload.projectNumber as string) || ''
+
+  // Standard label: {number}_{client}_{project}, falling back gracefully.
+  const projectLabel = [projectNumber, client, projectName]
+    .filter((part) => part && part.trim())
+    .join('_')
+
+  if (!projectLabel) {
+    return {
+      agent: 'frameio',
+      action: 'provision',
+      success: false,
+      error: 'Frame.io provision needs at least one of projectNumber, client, projectName',
+    }
+  }
 
   try {
     const acct = getAccountId()
