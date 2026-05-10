@@ -285,6 +285,8 @@ export const frameioAgent: AgentDefinition = {
     {
       action: 'provision',
       description: 'Create a new Frame.io project with standard review folder structure',
+      inputDescription:
+        'projectName (required), client (required), projectNumber (the project ID, e.g. "2654" — REQUIRED for proper {number}_{client}_{project} naming)',
       mutates: true,
     },
     {

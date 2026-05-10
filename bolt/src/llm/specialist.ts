@@ -69,7 +69,15 @@ export async function runSpecialist(
       }
 
       const action = toolUseBlock.name.replace(`${agentId}_`, '')
-      const payload = (toolUseBlock.input?.payload || {}) as Record<string, unknown>
+      const llmPayload = (toolUseBlock.input?.payload || {}) as Record<string, unknown>
+
+      // Inject identity context the LLM can't see. Agents that care
+      // (e.g., slack:provision auto-invite) read these.
+      const payload: Record<string, unknown> = {
+        ...llmPayload,
+        slackUserId: llmPayload.slackUserId ?? user?.slackUserId,
+        teamMemberId: llmPayload.teamMemberId ?? user?.teamMemberId,
+      }
 
       let result: { success: boolean; data?: any; error?: string; message?: string }
       try {
@@ -81,6 +89,14 @@ export async function runSpecialist(
         }
       } catch (err: any) {
         result = { success: false, error: err?.message || String(err) }
+      }
+
+      // Surface raw failures in Railway logs so we can debug API errors
+      // without having to puzzle them out of the LLM's paraphrase.
+      if (!result.success) {
+        console.error(
+          `[${agentId}:${action}] failed: ${result.error || '(no message)'}`,
+        )
       }
 
       messages.push({ role: 'assistant', content: response.content })

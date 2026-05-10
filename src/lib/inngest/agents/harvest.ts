@@ -249,6 +249,8 @@ export const harvestAgent: AgentDefinition = {
     {
       action: 'provision',
       description: 'Create a new Harvest project with client and default creative tasks',
+      inputDescription:
+        'projectName (required), client (required, will be created if new), projectCode (recommended, e.g. "2654-Microsoft"), budgetTotal (optional number), startDate (optional YYYY-MM-DD), targetDelivery (optional YYYY-MM-DD), briefSummary (optional)',
       mutates: true,
     },
     {

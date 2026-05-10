@@ -270,6 +270,8 @@ export const slackAgent: AgentDefinition = {
     {
       action: 'provision',
       description: 'Create a project Slack channel with welcome message, project canvas, and provisioned links',
+      inputDescription:
+        'projectName (required), client (required), projectNumber (the project ID, e.g. "2654"), projectType, projectManager (Slack user ID), teamMembers (array of Slack user IDs), targetDelivery, briefSummary',
       mutates: true,
     },
     {
