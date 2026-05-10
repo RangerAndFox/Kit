@@ -15,20 +15,20 @@ export function buildNewProjectModal(channelId: string) {
       {
         type: 'input',
         block_id: 'project_number',
-        label: { type: 'plain_text', text: 'Project Number' },
+        label: { type: 'plain_text', text: 'Project ID' },
         element: { type: 'plain_text_input', action_id: 'val', placeholder: { type: 'plain_text', text: 'e.g. 2601' } },
+      },
+      {
+        type: 'input',
+        block_id: 'client_name',
+        label: { type: 'plain_text', text: 'Client' },
+        element: { type: 'plain_text_input', action_id: 'val', placeholder: { type: 'plain_text', text: 'e.g. Nike' } },
       },
       {
         type: 'input',
         block_id: 'project_name',
         label: { type: 'plain_text', text: 'Project Name' },
         element: { type: 'plain_text_input', action_id: 'val', placeholder: { type: 'plain_text', text: 'e.g. Summer Campaign' } },
-      },
-      {
-        type: 'input',
-        block_id: 'client_name',
-        label: { type: 'plain_text', text: 'Client Name' },
-        element: { type: 'plain_text_input', action_id: 'val', placeholder: { type: 'plain_text', text: 'e.g. Nike' } },
       },
       {
         type: 'input',
