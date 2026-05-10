@@ -68,6 +68,7 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       projectId: payload.projectId as string,
       projectName,
       client,
+      projectNumber: (payload.projectNumber as string) || undefined,
       projectType: payload.projectType as string | undefined,
       targetDelivery: payload.targetDelivery as string | undefined,
       inviteUserIds: inviteUserIds.length > 0 ? inviteUserIds : undefined,

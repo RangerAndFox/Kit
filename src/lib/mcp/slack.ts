@@ -42,6 +42,8 @@ export async function createProjectSlackChannel(opts: {
   projectId: string
   projectName: string
   client: string
+  /** Project ID (e.g. "2655") — prepended to channel slug to match the naming spine. */
+  projectNumber?: string
   projectType?: string
   targetDelivery?: string
   /** Slack user ID(s) to auto-invite after creation (e.g., the requesting user) */
@@ -51,7 +53,7 @@ export async function createProjectSlackChannel(opts: {
     throw new Error('SLACK_BOT_TOKEN not configured — cannot create channel')
   }
 
-  const { projectId, projectName, client, projectType, targetDelivery, inviteUserIds } = opts
+  const { projectId, projectName, client, projectNumber, projectType, targetDelivery, inviteUserIds } = opts
 
   // Validate required fields up front so we don't ship a "client-undefined" channel.
   if (!projectName || !projectName.trim()) {
@@ -61,8 +63,13 @@ export async function createProjectSlackChannel(opts: {
     throw new Error('createProjectSlackChannel: client is required')
   }
 
-  // Build channel name slug
-  let slug = `${client}-${projectName}`
+  // Build channel name slug — {projectNumber}-{client}-{projectName}, matching
+  // the {ID}_{Client}_{Project} spine. Skip the prefix if no number provided.
+  const slugParts = [projectNumber, client, projectName].filter(
+    (part) => part && String(part).trim(),
+  )
+  let slug = slugParts
+    .join('-')
     .toLowerCase()
     .replace(/[^a-z0-9-]/g, '-')
     .replace(/-+/g, '-')
