@@ -32,11 +32,30 @@ async function dropboxPost(endpoint: string, body: Record<string, unknown>): Pro
 async function provision(payload: Record<string, unknown>): Promise<AgentResult> {
   const templatePath = process.env.DROPBOX_TEMPLATE_PATH ?? '/_TEMPLATES/New Project Template'
   const year = new Date().getFullYear()
-  const slug = payload.projectCode
-    ? `${payload.projectCode}_${payload.client}_${payload.projectName}`
-    : `${payload.client}_${payload.projectName}`
-  const safeName = (slug as string).replace(/[^\w\s-]/g, '').replace(/\s+/g, '_')
-  const destPath = `/Ranger & Fox/Production/${year}/${safeName}`
+
+  // Accept either `client`/`clientName` and either explicit projectNumber or
+  // a parseable projectCode like "2655-Microsoft". Match the {ID}_{Client}_{Project} spine.
+  const client = (payload.client as string) || (payload.clientName as string) || ''
+  const projectName = (payload.projectName as string) || ''
+  const projectNumber =
+    (payload.projectNumber as string) ||
+    (typeof payload.projectCode === 'string' ? (payload.projectCode as string).split('-')[0] : '') ||
+    ''
+
+  const labelParts = [projectNumber, client, projectName]
+    .map((p) => (p ? String(p).trim() : ''))
+    .filter(Boolean)
+  if (labelParts.length === 0) {
+    return {
+      agent: 'dropbox',
+      action: 'provision',
+      success: false,
+      error: 'Dropbox provision needs at least one of projectNumber, client, projectName',
+    }
+  }
+  const slug = labelParts.join('_')
+  const safeName = slug.replace(/[^\w\s-]/g, '').replace(/\s+/g, '_')
+  const destPath = `/Ranger & Fox/production/${year}/${safeName}`
 
   try {
     await dropboxPost('/files/copy_v2', {
@@ -215,6 +234,8 @@ export const dropboxAgent: AgentDefinition = {
     {
       action: 'provision',
       description: 'Clone the project template folder into a new project directory with a team share link',
+      inputDescription:
+        'projectName (required), client (required), projectNumber (the project ID, e.g. "2655" — REQUIRED for proper {number}_{client}_{project} folder naming)',
       mutates: true,
     },
     {
