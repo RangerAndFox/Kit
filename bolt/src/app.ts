@@ -85,11 +85,6 @@ process.on('SIGINT', () => {
   process.exit(0)
 })
 
-// Heartbeat so we can see how long we live and whether anything happens before SIGTERM
-setInterval(() => {
-  console.log(`[Bolt] heartbeat — uptime ${Math.floor(process.uptime())}s, mem ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB`)
-}, 5000)
-
 // ─── Health Server ─────────────────────────────────────────
 // Railway expects a service to bind to $PORT — without it, the platform
 // kills the container after ~7s thinking it's broken. Bolt's Socket Mode

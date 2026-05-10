@@ -16,7 +16,7 @@ export async function provisionDropbox(
   const templatePath = process.env.DROPBOX_TEMPLATE_PATH ?? '/_TEMPLATES/New Project Template'
   const year = new Date().getFullYear()
   const label = buildProjectLabel(form)
-  const destPath = `/Ranger & Fox/Production/${year}/${label}`
+  const destPath = `/Ranger & Fox/production/${year}/${label}`
 
   try {
     if (dryRun) {
