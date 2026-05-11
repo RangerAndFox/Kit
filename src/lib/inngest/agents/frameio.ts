@@ -59,6 +59,56 @@ async function framePost(path: string, body: Record<string, unknown>): Promise<a
   })
 }
 
+/**
+ * Recursively mirror a Frame.io folder tree, structure only.
+ * Walks every folder under `sourceFolderId` and creates an equivalent under
+ * `destFolderId` in the new project. Files, comments, and shares are not
+ * copied — just the folder names + hierarchy.
+ *
+ * Bounded by MAX_DEPTH so a pathological template can't run away.
+ */
+const MAX_TEMPLATE_DEPTH = 8
+
+async function copyFrameioFolderTree(
+  acct: string,
+  sourceFolderId: string,
+  destFolderId: string,
+  depth: number,
+): Promise<{ created: number; total: number }> {
+  if (depth > MAX_TEMPLATE_DEPTH) return { created: 0, total: 0 }
+
+  const childrenResp = await frameGet(`/accounts/${acct}/folders/${sourceFolderId}/children`)
+  const children = childrenResp.data || childrenResp.items || childrenResp || []
+  const folderChildren = (Array.isArray(children) ? children : []).filter((c: any) => {
+    const t = c.type || c.resource_type
+    return t === 'folder'
+  })
+
+  let created = 0
+  let total = folderChildren.length
+
+  for (const child of folderChildren) {
+    try {
+      const resp = await framePost(`/accounts/${acct}/folders/${destFolderId}/folders`, {
+        data: { name: child.name },
+      })
+      const newFolder = resp.data || resp
+      const newFolderId: string | undefined = newFolder.id
+      created++
+
+      if (newFolderId) {
+        const sub = await copyFrameioFolderTree(acct, child.id, newFolderId, depth + 1)
+        created += sub.created
+        total += sub.total
+      }
+    } catch (err: any) {
+      console.warn(`[frameio] could not copy folder "${child.name}":`, err.message)
+    }
+  }
+
+  return { created, total }
+}
+
 // ─── Action Handlers ───────────────────────────────────────
 
 async function provision(payload: Record<string, unknown>): Promise<AgentResult> {
@@ -105,17 +155,45 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
 
     const parentId = rootFolderId || project.root_folder_id
 
-    // v4: POST /v4/accounts/{account_id}/folders/{parent_id}/folders
-    const folders = folderStructure.frameio || []
-    const results = await Promise.allSettled(
-      folders.map((name: string) =>
-        framePost(`/accounts/${acct}/folders/${parentId}/folders`, {
-          data: { name },
-        })
-      )
-    )
+    // If a template project is configured, mirror its folder structure
+    // (recursively, folders only — files/comments are not duplicated).
+    // Falls back to folder-structure.json frameio list when env var is unset.
+    const templateProjectId = process.env.FRAMEIO_TEMPLATE_PROJECT_ID
+    let foldersCreated = 0
+    let foldersTotal = 0
+    let mode: 'template' | 'static' = 'static'
 
-    const created = results.filter((r) => r.status === 'fulfilled').length
+    if (templateProjectId) {
+      mode = 'template'
+      try {
+        const tmplResp = await frameGet(`/accounts/${acct}/projects/${templateProjectId}`)
+        const tmpl = tmplResp.data || tmplResp
+        const tmplRootId: string | undefined = tmpl.root_folder_id || tmpl.root_asset_id
+        if (!tmplRootId) {
+          throw new Error('template project has no root_folder_id')
+        }
+        const result = await copyFrameioFolderTree(acct, tmplRootId, parentId, 0)
+        foldersCreated = result.created
+        foldersTotal = result.total
+      } catch (err: any) {
+        console.error('[frameio] template folder mirror failed:', err.message)
+        // Fall through to static fallback
+        mode = 'static'
+      }
+    }
+
+    if (mode === 'static') {
+      const folders = folderStructure.frameio || []
+      foldersTotal = folders.length
+      const results = await Promise.allSettled(
+        folders.map((name: string) =>
+          framePost(`/accounts/${acct}/folders/${parentId}/folders`, {
+            data: { name },
+          }),
+        ),
+      )
+      foldersCreated = results.filter((r) => r.status === 'fulfilled').length
+    }
 
     return {
       agent: 'frameio',
@@ -123,8 +201,8 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       success: true,
       url: `https://app.frame.io/projects/${project.id}`,
       id: project.id,
-      message: `Created Frame.io project "${projectLabel}" with ${created}/${folders.length} folders`,
-      data: { rootFolderId: parentId, foldersCreated: created },
+      message: `Created Frame.io project "${projectLabel}" with ${foldersCreated}/${foldersTotal} folders (${mode})`,
+      data: { rootFolderId: parentId, foldersCreated, foldersTotal, mode },
     }
   } catch (err: any) {
     return { agent: 'frameio', action: 'provision', success: false, error: err.message }
