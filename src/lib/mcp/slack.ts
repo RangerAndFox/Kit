@@ -5,7 +5,46 @@
  * simple project fields instead of a full ProjectIntakeForm.
  */
 
+import TurndownService from 'turndown'
+import { gfm } from 'turndown-plugin-gfm'
+
 const SLACK_API = 'https://slack.com/api'
+
+// Slack canvas downloads come back as Quip-flavored HTML (canvases run on
+// Quip under the hood). canvases.create accepts markdown, so we convert
+// HTML → markdown before posting. Tables need the GFM plugin.
+const turndown = new TurndownService({
+  headingStyle: 'atx',
+  bulletListMarker: '-',
+  codeBlockStyle: 'fenced',
+  emDelimiter: '_',
+})
+turndown.use(gfm)
+
+// Quip canvas HTML has a few non-standard wrappers that confuse turndown:
+//   - <control id="..." data-remapped="true">text</control> — date controls,
+//     emoji controls, etc. We just want the inner text.
+//   - <img alt=":emoji_name:" src="..."> with a shortcode in the alt attr —
+//     these should become `:emoji_name:` (Slack canvas markdown's emoji form),
+//     not a broken markdown image.
+// Pre-process before handing to turndown.
+function preprocessCanvasHtml(html: string): string {
+  let s = html
+  // <img ... alt="..." ...> → :alt: (do this before stripping <control>
+  // so we don't lose the alt-text inside emoji controls).
+  s = s.replace(/<img\b[^>]*\balt="([^"]+)"[^>]*\/?>/gi, ':$1:')
+  // <control ...>inner</control> → inner (handles dates + the now-flattened
+  // emoji shortcodes inside).
+  s = s.replace(/<control\b[^>]*>([\s\S]*?)<\/control>/gi, '$1')
+  // Drop the wrapper <div class="quip-canvas-content"> and any other divs;
+  // markdown doesn't care about them and turndown would emit empty paras.
+  s = s.replace(/<\/?div\b[^>]*>/gi, '')
+  return s
+}
+
+function canvasHtmlToMarkdown(html: string): string {
+  return turndown.turndown(preprocessCanvasHtml(html)).trim()
+}
 
 function headers() {
   return {
@@ -295,20 +334,22 @@ export async function duplicateTemplateCanvases(opts: {
         continue
       }
 
-      // 2. Fetch the markdown body
+      // 2. Fetch the canvas body. Slack returns it as Quip-flavored HTML,
+      //    not markdown, so we convert before posting to canvases.create.
       let markdown: string
       try {
         const res = await fetch(downloadUrl, {
           headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
         })
         if (!res.ok) {
-          console.error(`[Slack canvas] ${fileId}: markdown download HTTP ${res.status}`)
+          console.error(`[Slack canvas] ${fileId}: download HTTP ${res.status}`)
           continue
         }
-        markdown = await res.text()
-        console.log(`[Slack canvas] ${fileId}: markdown fetched (${markdown.length} chars)`)
+        const html = await res.text()
+        markdown = canvasHtmlToMarkdown(html)
+        console.log(`[Slack canvas] ${fileId}: html=${html.length} chars → markdown=${markdown.length} chars`)
       } catch (err: any) {
-        console.error(`[Slack canvas] ${fileId}: markdown fetch threw: ${err.message}`)
+        console.error(`[Slack canvas] ${fileId}: fetch/convert threw: ${err.message}`)
         continue
       }
 
