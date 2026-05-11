@@ -55,7 +55,10 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
   }
   const slug = labelParts.join('_')
   const safeName = slug.replace(/[^\w\s-]/g, '').replace(/\s+/g, '_')
-  const destPath = `/Ranger & Fox/production/${year}/${safeName}`
+  // Bot's Dropbox home namespace is already the team folder root, so paths
+  // are relative to it. Prefixing /Ranger & Fox/ would create a duplicate
+  // top-level folder inside the team folder. Same logic for DROPBOX_TEMPLATE_PATH.
+  const destPath = `/production/${year}/${safeName}`
 
   try {
     await dropboxPost('/files/copy_v2', {

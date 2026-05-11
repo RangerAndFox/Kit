@@ -16,7 +16,9 @@ export async function provisionDropbox(
   const templatePath = process.env.DROPBOX_TEMPLATE_PATH ?? '/_TEMPLATES/New Project Template'
   const year = new Date().getFullYear()
   const label = buildProjectLabel(form)
-  const destPath = `/Ranger & Fox/production/${year}/${label}`
+  // Bot's Dropbox home is already the team folder root. Prefixing /Ranger & Fox/
+  // would create a duplicate top-level folder. See agents/dropbox.ts for context.
+  const destPath = `/production/${year}/${label}`
 
   try {
     if (dryRun) {
