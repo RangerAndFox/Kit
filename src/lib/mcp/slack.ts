@@ -242,34 +242,58 @@ export async function duplicateTemplateCanvases(opts: {
     ? fileIdsEnv.split(',').map((s) => s.trim()).filter(Boolean)
     : DEFAULT_CANVAS_TEMPLATE_FILE_IDS
 
-  for (const fileId of templateFileIds) {
+  for (const [idx, fileId] of templateFileIds.entries()) {
     try {
-      // Pull the template title so the new canvas keeps its descriptor
-      // (e.g. "Project Brief"), but strip the word "Template" so the
-      // duplicate doesn't read "Project Brief Template — <project>".
-      let originalTitle = `${opts.projectName} canvas`
+      // Best-effort: read the template's existing title so the duplicate keeps
+      // its descriptor (e.g. "Project Brief"). Strip the word "Template".
+      // Slack's "canvas template" type can return template_not_visible here —
+      // we just fall back to a generic title in that case.
+      let originalTitle = `Canvas ${idx + 1}`
       try {
         const info = await slackGet('files.info', { file: fileId })
         const raw: string = info.file?.title || info.file?.name || originalTitle
         originalTitle = raw.replace(/\btemplate\b/gi, '').replace(/\s+/g, ' ').trim() || originalTitle
       } catch (err: any) {
-        console.warn(`[Slack] canvas template ${fileId}: files.info failed:`, err.message)
-      }
-
-      const markdown = await fetchCanvasMarkdown(fileId)
-      if (!markdown) {
-        console.warn(`[Slack] canvas template ${fileId}: no markdown; skipping`)
-        continue
+        console.warn(`[Slack] canvas template ${fileId}: files.info failed (using generic title):`, err.message)
       }
 
       const newTitle = `${opts.projectName} — ${originalTitle}`
-      const created = await slackPost('canvases.create', {
-        title: newTitle,
-        document_content: { type: 'markdown', markdown },
-      })
-      const canvasId: string | undefined = created.canvas_id
+
+      // Two strategies, in order:
+      //   1. canvases.create with template_id — works for Slack canvas templates
+      //      ("Save as template" canvases) without needing file visibility.
+      //   2. Fall back to fetching markdown and cloning it — works for regular
+      //      canvases the bot has been added to as a collaborator.
+      let canvasId: string | undefined
+      try {
+        const created = await slackPost('canvases.create', {
+          title: newTitle,
+          template_id: fileId,
+        })
+        canvasId = created.canvas_id
+      } catch (err: any) {
+        console.warn(`[Slack] canvas template ${fileId}: template_id create failed:`, err.message)
+      }
+
       if (!canvasId) {
-        console.warn(`[Slack] canvas template ${fileId}: create returned no canvas_id`)
+        const markdown = await fetchCanvasMarkdown(fileId)
+        if (markdown) {
+          try {
+            const created = await slackPost('canvases.create', {
+              title: newTitle,
+              document_content: { type: 'markdown', markdown },
+            })
+            canvasId = created.canvas_id
+          } catch (err: any) {
+            console.error(`[Slack] canvas template ${fileId}: markdown create failed:`, err.message)
+          }
+        }
+      }
+
+      if (!canvasId) {
+        console.error(
+          `[Slack] canvas template ${fileId}: could not duplicate — bot may need to be added as a collaborator on the canvas`,
+        )
         continue
       }
       out.standaloneCanvasIds.push(canvasId)
