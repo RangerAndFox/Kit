@@ -24,21 +24,52 @@ turndown.use(gfm)
 // Quip canvas HTML has a few non-standard wrappers that confuse turndown:
 //   - <control id="..." data-remapped="true">text</control> — date controls,
 //     emoji controls, etc. We just want the inner text.
-//   - <img alt=":emoji_name:" src="..."> with a shortcode in the alt attr —
-//     these should become `:emoji_name:` (Slack canvas markdown's emoji form),
-//     not a broken markdown image.
-// Pre-process before handing to turndown.
+//   - <img alt=":emoji_name:" src="...">:emoji_name:</img> — Quip emojis are
+//     emitted as <img> with both an alt attr AND inner text holding the
+//     shortcode, plus a non-standard closing </img>. Collapse the whole
+//     thing (open tag + inner + close) to a single :emoji_name:.
+//   - Tables come back as <table><tbody><tr><td>...</td></tr>...</tbody></table>
+//     with no <th>/<thead>. turndown-plugin-gfm needs <th> to recognize a
+//     table, so we promote each table's first row of <td>s to <th>s.
 function preprocessCanvasHtml(html: string): string {
   let s = html
-  // <img ... alt="..." ...> → :alt: (do this before stripping <control>
-  // so we don't lose the alt-text inside emoji controls).
-  s = s.replace(/<img\b[^>]*\balt="([^"]+)"[^>]*\/?>/gi, ':$1:')
-  // <control ...>inner</control> → inner (handles dates + the now-flattened
-  // emoji shortcodes inside).
+
+  // <img ... alt="X" ...>...optional inner...</img>  →  :X:
+  // Greedy [^>]* on the opening tag, non-greedy [\s\S]*? on the inner.
+  s = s.replace(
+    /<img\b[^>]*\balt="([^"]+)"[^>]*>(?:[\s\S]*?<\/img>)?/gi,
+    ':$1:',
+  )
+
+  // Any leftover stray </img> tags from Quip output.
+  s = s.replace(/<\/img>/gi, '')
+
+  // <control ...>inner</control>  →  inner. Dates ("May 1st"), emojis we
+  // just flattened, etc.
   s = s.replace(/<control\b[^>]*>([\s\S]*?)<\/control>/gi, '$1')
-  // Drop the wrapper <div class="quip-canvas-content"> and any other divs;
-  // markdown doesn't care about them and turndown would emit empty paras.
+
+  // Drop wrapper <div class="quip-canvas-content"> and any other divs.
   s = s.replace(/<\/?div\b[^>]*>/gi, '')
+
+  // Promote first <tr>'s <td>s to <th>s so turndown-plugin-gfm recognizes
+  // these as GFM tables. Without a header row, the plugin leaves the
+  // <table> markup untouched and we ship raw HTML.
+  s = s.replace(/<table\b[^>]*>([\s\S]*?)<\/table>/gi, (_match, inner) => {
+    let firstRowSeen = false
+    const rewritten = inner.replace(
+      /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi,
+      (rowMatch: string, rowInner: string) => {
+        if (firstRowSeen) return rowMatch
+        firstRowSeen = true
+        const headered = rowInner
+          .replace(/<td\b/gi, '<th')
+          .replace(/<\/td>/gi, '</th>')
+        return rowMatch.replace(rowInner, headered)
+      },
+    )
+    return `<table>${rewritten}</table>`
+  })
+
   return s
 }
 
