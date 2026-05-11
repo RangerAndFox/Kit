@@ -25,6 +25,19 @@ async function slackPost(method: string, body: Record<string, unknown>): Promise
   return data
 }
 
+// Some Slack read methods (conversations.info, files.info) reject JSON bodies
+// with `invalid_arguments` and only reliably accept GET with query-string params.
+async function slackGet(method: string, params: Record<string, string>): Promise<any> {
+  const qs = new URLSearchParams(params).toString()
+  const res = await fetch(`${SLACK_API}/${method}?${qs}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+  })
+  const data = await res.json()
+  if (!data.ok) throw new Error(`Slack ${method}: ${data.error}`)
+  return data
+}
+
 export interface SlackChannelResult {
   channelId: string
   channelName: string
@@ -183,7 +196,7 @@ export interface DuplicateCanvasesResult {
  */
 async function fetchCanvasMarkdown(fileId: string): Promise<string | null> {
   try {
-    const info = await slackPost('files.info', { file: fileId })
+    const info = await slackGet('files.info', { file: fileId })
     const url: string | undefined =
       info.file?.url_private_download || info.file?.url_private
     if (!url) {
@@ -228,7 +241,7 @@ export async function duplicateTemplateCanvases(opts: {
   // 1. Look up the template channel to find its channel canvas
   let templateChannelCanvasFileId: string | undefined
   try {
-    const info = await slackPost('conversations.info', { channel: templateId })
+    const info = await slackGet('conversations.info', { channel: templateId })
     templateChannelCanvasFileId = info.channel?.properties?.canvas?.file_id
   } catch (err: any) {
     console.warn('[Slack] template channel info failed:', err.message)
