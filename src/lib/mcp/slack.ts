@@ -217,94 +217,85 @@ async function fetchCanvasMarkdown(fileId: string): Promise<string | null> {
   }
 }
 
+// Two production canvas templates that get cloned into every new project
+// channel and pinned as bookmark tabs. Override at runtime via
+// SLACK_CANVAS_TEMPLATE_FILE_IDS (comma-separated list of file IDs).
+const DEFAULT_CANVAS_TEMPLATE_FILE_IDS = ['F0B1GTVJV5F', 'F0B1GUWHYTB']
+
 /**
- * Duplicate the canvases attached to SLACK_TEMPLATE_CHANNEL_ID into a freshly
- * created project channel:
- *   1. The template channel's channel-canvas (header-pinned) becomes the new
- *      channel's channel-canvas.
- *   2. Any standalone canvas files shared in the template channel are recreated
- *      as new standalone canvases and shared to the project channel.
+ * Clone each canvas template into a new standalone canvas titled after the
+ * project, share it to the channel with write access, and pin it as a
+ * bookmark so it shows up as a tab at the top of the channel.
  *
- * Content is copied verbatim — producers customize per-project after creation.
+ * Content is copied verbatim from the templates — producers customize per
+ * project after creation.
  */
 export async function duplicateTemplateCanvases(opts: {
   newChannelId: string
   projectName: string
 }): Promise<DuplicateCanvasesResult> {
   const out: DuplicateCanvasesResult = { channelCanvasId: null, standaloneCanvasIds: [] }
-  const templateId = process.env.SLACK_TEMPLATE_CHANNEL_ID
-  if (!process.env.SLACK_BOT_TOKEN || !templateId) {
-    if (!templateId) console.warn('[Slack] SLACK_TEMPLATE_CHANNEL_ID not set; skipping canvas copy')
-    return out
-  }
+  if (!process.env.SLACK_BOT_TOKEN) return out
 
-  // 1. Look up the template channel to find its channel canvas
-  let templateChannelCanvasFileId: string | undefined
-  try {
-    const info = await slackGet('conversations.info', { channel: templateId })
-    templateChannelCanvasFileId = info.channel?.properties?.canvas?.file_id
-  } catch (err: any) {
-    console.warn('[Slack] template channel info failed:', err.message)
-  }
+  const fileIdsEnv = process.env.SLACK_CANVAS_TEMPLATE_FILE_IDS
+  const templateFileIds = fileIdsEnv
+    ? fileIdsEnv.split(',').map((s) => s.trim()).filter(Boolean)
+    : DEFAULT_CANVAS_TEMPLATE_FILE_IDS
 
-  // 2. Recreate the channel canvas on the new channel
-  if (templateChannelCanvasFileId) {
-    const markdown = await fetchCanvasMarkdown(templateChannelCanvasFileId)
-    if (markdown) {
+  for (const fileId of templateFileIds) {
+    try {
+      // Pull the template title so the new canvas keeps its descriptor
+      // (e.g. "Project Brief"), but strip the word "Template" so the
+      // duplicate doesn't read "Project Brief Template — <project>".
+      let originalTitle = `${opts.projectName} canvas`
       try {
-        const created = await slackPost('conversations.canvases.create', {
-          channel_id: opts.newChannelId,
-          document_content: { type: 'markdown', markdown },
-        })
-        out.channelCanvasId = created.canvas_id || null
+        const info = await slackGet('files.info', { file: fileId })
+        const raw: string = info.file?.title || info.file?.name || originalTitle
+        originalTitle = raw.replace(/\btemplate\b/gi, '').replace(/\s+/g, ' ').trim() || originalTitle
       } catch (err: any) {
-        console.error('[Slack] channel canvas create failed:', err.message)
+        console.warn(`[Slack] canvas template ${fileId}: files.info failed:`, err.message)
       }
-    }
-  }
 
-  // 3. Find standalone canvases shared in the template channel and recreate them
-  try {
-    const filesRes = await slackPost('files.list', {
-      channel: templateId,
-      types: 'canvases',
-      count: 50,
-    })
-    const files: any[] = filesRes.files || []
-    for (const file of files) {
-      // Skip the channel canvas itself — it's already handled above
-      if (file.id === templateChannelCanvasFileId) continue
-
-      const markdown = await fetchCanvasMarkdown(file.id)
-      if (!markdown) continue
-
-      try {
-        const created = await slackPost('canvases.create', {
-          title: file.title || file.name || `${opts.projectName} canvas`,
-          document_content: { type: 'markdown', markdown },
-        })
-        const canvasId: string | undefined = created.canvas_id
-        if (!canvasId) continue
-        out.standaloneCanvasIds.push(canvasId)
-
-        await slackPost('canvases.access.set', {
-          canvas_id: canvasId,
-          access_level: 'write',
-          channel_ids: [opts.newChannelId],
-        }).catch((err: any) =>
-          console.warn('[Slack] canvas access.set failed:', err.message),
-        )
-
-        await slackPost('chat.postMessage', {
-          channel: opts.newChannelId,
-          text: `:notebook_with_decorative_cover: <https://slack.com/docs/${canvasId}|${file.title || 'Project canvas'}>`,
-        }).catch(() => {})
-      } catch (err: any) {
-        console.error('[Slack] standalone canvas create failed:', err.message)
+      const markdown = await fetchCanvasMarkdown(fileId)
+      if (!markdown) {
+        console.warn(`[Slack] canvas template ${fileId}: no markdown; skipping`)
+        continue
       }
+
+      const newTitle = `${opts.projectName} — ${originalTitle}`
+      const created = await slackPost('canvases.create', {
+        title: newTitle,
+        document_content: { type: 'markdown', markdown },
+      })
+      const canvasId: string | undefined = created.canvas_id
+      if (!canvasId) {
+        console.warn(`[Slack] canvas template ${fileId}: create returned no canvas_id`)
+        continue
+      }
+      out.standaloneCanvasIds.push(canvasId)
+
+      // Give the new channel write access so members can edit
+      await slackPost('canvases.access.set', {
+        canvas_id: canvasId,
+        access_level: 'write',
+        channel_ids: [opts.newChannelId],
+      }).catch((err: any) =>
+        console.warn('[Slack] canvas access.set failed:', err.message),
+      )
+
+      // Pin as a bookmark so it shows as a tab at the top of the channel
+      await slackPost('bookmarks.add', {
+        channel_id: opts.newChannelId,
+        title: newTitle,
+        type: 'link',
+        link: `https://slack.com/docs/${canvasId}`,
+        emoji: ':notebook_with_decorative_cover:',
+      }).catch((err: any) =>
+        console.warn('[Slack] bookmarks.add failed:', err.message),
+      )
+    } catch (err: any) {
+      console.error(`[Slack] canvas template ${fileId} duplication failed:`, err.message)
     }
-  } catch (err: any) {
-    console.warn('[Slack] files.list (template canvases) failed:', err.message)
   }
 
   return out

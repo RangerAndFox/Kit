@@ -33,6 +33,8 @@ export function registerInteractionHandlers(app: App) {
 
     // Extract form values. Services are no longer user-selectable — the modal
     // confirms intent and we provision every available agent that supports it.
+    const rawBudget = values.budget?.val?.value
+    const parsedBudget = rawBudget ? parseFloat(String(rawBudget).replace(/[$,\s]/g, '')) : NaN
     const form = {
       projectNumber: values.project_number?.val?.value || '',
       projectName: values.project_name?.val?.value || '',
@@ -43,6 +45,7 @@ export function registerInteractionHandlers(app: App) {
       startDate: values.start_date?.val?.selected_date || undefined,
       deadline: values.deadline?.val?.selected_date || undefined,
       description: values.description?.val?.value || undefined,
+      budgetTotal: Number.isFinite(parsedBudget) && parsedBudget > 0 ? parsedBudget : undefined,
       selectedServices: getProvisionableServices(),
     }
 
@@ -105,7 +108,11 @@ export function registerInteractionHandlers(app: App) {
         teamMembers: form.teamMembers,
         startDate: form.startDate,
         deadline: form.deadline,
+        targetDelivery: form.deadline,
         briefSummary: form.description,
+        // Harvest only accepts budget at creation time; carry it through so
+        // the Harvest agent can attach budget_by='project' + budget=<amount>.
+        budgetTotal: form.budgetTotal,
       }
 
       console.log(`[Bolt] Provisioning ${form.projectName} across ${services.length} services`)

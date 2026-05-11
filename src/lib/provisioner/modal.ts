@@ -32,6 +32,14 @@ export function buildNewProjectModal(channelId: string) {
       },
       {
         type: 'input',
+        block_id: 'budget',
+        optional: true,
+        label: { type: 'plain_text', text: 'Budget (USD)' },
+        hint: { type: 'plain_text', text: 'Harvest budget cannot be set after the project is created — enter it now if known.' },
+        element: { type: 'plain_text_input', action_id: 'val', placeholder: { type: 'plain_text', text: 'e.g. 25000' } },
+      },
+      {
+        type: 'input',
         block_id: 'project_type',
         label: { type: 'plain_text', text: 'Project Type' },
         element: {
