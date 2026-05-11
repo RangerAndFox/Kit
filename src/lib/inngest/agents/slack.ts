@@ -10,7 +10,7 @@
 import {
   createProjectSlackChannel,
   postProjectLinks,
-  createProjectCanvas,
+  duplicateTemplateCanvases,
 } from '@/lib/mcp/slack'
 import type { AgentDefinition, AgentResult } from './types'
 
@@ -87,27 +87,21 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       await postProjectLinks({ channelId: channel.channelId, links })
     }
 
-    // Create canvas
-    let canvasId: string | null = null
+    // Duplicate canvases from the template channel (header canvas + standalones)
+    let canvasResult: { channelCanvasId: string | null; standaloneCanvasIds: string[] } = {
+      channelCanvasId: null,
+      standaloneCanvasIds: [],
+    }
     try {
-      canvasId = await createProjectCanvas({
-        channelId: channel.channelId,
-        projectName: payload.projectName as string,
-        projectCode: payload.projectCode as string | undefined,
-        client: payload.client as string,
-        projectType: payload.projectType as string | undefined,
-        targetDelivery: payload.targetDelivery as string | undefined,
-        startDate: payload.startDate as string | undefined,
-        briefSummary: payload.briefSummary as string | undefined,
-        links: {
-          dropbox: collected?.dropbox,
-          frameio: collected?.frameio,
-          harvest: collected?.harvest,
-        },
+      canvasResult = await duplicateTemplateCanvases({
+        newChannelId: channel.channelId,
+        projectName,
       })
     } catch (e: any) {
-      console.warn('[SlackAgent] Canvas failed (non-fatal):', e.message)
+      console.warn('[SlackAgent] Template canvas copy failed (non-fatal):', e.message)
     }
+    const totalCanvases =
+      (canvasResult.channelCanvasId ? 1 : 0) + canvasResult.standaloneCanvasIds.length
 
     return {
       agent: 'slack',
@@ -115,8 +109,12 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       success: true,
       url: channel.url,
       id: channel.channelId,
-      message: `Created #${channel.channelName}${canvasId ? ' with project canvas' : ''}`,
-      data: { channelName: channel.channelName, canvasId },
+      message: `Created #${channel.channelName}${totalCanvases ? ` with ${totalCanvases} canvas${totalCanvases === 1 ? '' : 'es'}` : ''}`,
+      data: {
+        channelName: channel.channelName,
+        channelCanvasId: canvasResult.channelCanvasId,
+        standaloneCanvasIds: canvasResult.standaloneCanvasIds,
+      },
     }
   } catch (err: any) {
     return { agent: 'slack', action: 'provision', success: false, error: err.message }

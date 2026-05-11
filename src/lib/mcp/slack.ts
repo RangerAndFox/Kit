@@ -168,187 +168,132 @@ export async function postProjectLinks(opts: {
   })
 }
 
-// ─── Project Channel Canvas ────────────────────────────────
+// ─── Project Channel Canvases (template duplication) ──────
 
-export interface ProjectCanvasData {
-  channelId: string
-  projectName: string
-  projectCode?: string
-  client: string
-  projectType?: string
-  targetDelivery?: string
-  startDate?: string
-  briefSummary?: string
-  links?: {
-    dropbox?: string
-    frameio?: string
-    harvest?: string
-    figma?: string
+export interface DuplicateCanvasesResult {
+  /** ID of the new channel canvas attached to the project channel header */
+  channelCanvasId: string | null
+  /** IDs of standalone canvases copied from the template and shared to the channel */
+  standaloneCanvasIds: string[]
+}
+
+/**
+ * Fetch a canvas file's markdown content via the file's download URL.
+ * Slack canvases are served as markdown text behind url_private_download.
+ */
+async function fetchCanvasMarkdown(fileId: string): Promise<string | null> {
+  try {
+    const info = await slackPost('files.info', { file: fileId })
+    const url: string | undefined =
+      info.file?.url_private_download || info.file?.url_private
+    if (!url) {
+      console.warn(`[Slack] canvas file ${fileId}: no download url`)
+      return null
+    }
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+    })
+    if (!res.ok) {
+      console.warn(`[Slack] canvas file ${fileId}: download ${res.status}`)
+      return null
+    }
+    return await res.text()
+  } catch (err: any) {
+    console.warn(`[Slack] fetchCanvasMarkdown(${fileId}) failed:`, err.message)
+    return null
   }
 }
 
 /**
- * Create a channel canvas from the Project Channel Template,
- * pre-filled with real project data and provisioned links.
+ * Duplicate the canvases attached to SLACK_TEMPLATE_CHANNEL_ID into a freshly
+ * created project channel:
+ *   1. The template channel's channel-canvas (header-pinned) becomes the new
+ *      channel's channel-canvas.
+ *   2. Any standalone canvas files shared in the template channel are recreated
+ *      as new standalone canvases and shared to the project channel.
+ *
+ * Content is copied verbatim — producers customize per-project after creation.
  */
-export async function createProjectCanvas(data: ProjectCanvasData): Promise<string | null> {
-  if (!process.env.SLACK_BOT_TOKEN) return null
-
-  const {
-    channelId,
-    projectName,
-    projectCode,
-    client,
-    projectType,
-    targetDelivery,
-    startDate,
-    briefSummary,
-    links,
-  } = data
-
-  const deliveryDate = targetDelivery || 'TBD'
-  const phase = 'Discovery'
-  const today = new Date().toISOString().split('T')[0]
-
-  // Build the Links table rows with real provisioned URLs
-  const linkRows: string[] = []
-  linkRows.push('|**:microsoft-word: Script**|[paste link]|')
-  linkRows.push('|**:figma: Figma — Client**|[paste link]|')
-  if (links?.figma) {
-    linkRows.push(`|**:figma: Figma — R&F**|[${links.figma}](${links.figma})|`)
-  } else {
-    linkRows.push('|**:figma: Figma — R&F**|[paste link]|')
+export async function duplicateTemplateCanvases(opts: {
+  newChannelId: string
+  projectName: string
+}): Promise<DuplicateCanvasesResult> {
+  const out: DuplicateCanvasesResult = { channelCanvasId: null, standaloneCanvasIds: [] }
+  const templateId = process.env.SLACK_TEMPLATE_CHANNEL_ID
+  if (!process.env.SLACK_BOT_TOKEN || !templateId) {
+    if (!templateId) console.warn('[Slack] SLACK_TEMPLATE_CHANNEL_ID not set; skipping canvas copy')
+    return out
   }
-  if (links?.dropbox) {
-    linkRows.push(`|**:dropbox: Assets Folder**|[Dropbox](${links.dropbox})|`)
-  } else {
-    linkRows.push('|**:dropbox: Assets Folder**|[paste link]|')
-  }
-  if (links?.frameio) {
-    linkRows.push(`|**:frame_with_picture: Frame.io**|[Frame.io](${links.frameio})|`)
-  }
-  if (links?.harvest) {
-    linkRows.push(`|**:timer_clock: Harvest**|[Harvest](${links.harvest})|`)
-  }
-  linkRows.push('|**:page_with_curl: Brief**|[paste link]|')
 
-  const markdown = `# 🎬 ${projectName}
-
----
-
-## 📌 Project Snapshot
-
-|Field|Value|
-|  ---  |  ---  |
-|**Project Name**|${projectName}|
-|**Project Code**|${projectCode || '[TBD]'}|
-|**Client**|${client}|
-|**Project Manager**|[@PM]|
-|**Creative Director**|[@CD]|
-|**Lead Editor / Animator**|[@Lead]|
-|**Due Date**|${deliveryDate}|
-|**Status**|🟢 On Track|
-|**Current Phase**|${phase}|
-
----
-
-## 📅 This Week
-
-|Field|Value|
-|  ---  |  ---  |
-|**This Week's Goal**|[What we're trying to land this week]|
-|**What's Due Next**|[Specific deliverable + owner]|
-|**Next Milestone**|[Date — milestone name]|
-
-### Top 3 priorities
-
-* [ ] [Priority 1]
-* [ ] [Priority 2]
-* [ ] [Priority 3]
-
-### Open blockers
-
-* [ ] [Blocker / decision needed / waiting on client]
-
----
-
-## 🎯 Milestones
-
-|Milestone|Date|Link|
-|  ---  |  ---  |  ---  |
-|Kickoff call|![](slack_date:${startDate || today}) |—|
-|Discovery|![](slack_date:${today}) |—|
-|Script v1|![](slack_date:${today}) |—|
-|Style frames|![](slack_date:${today}) |—|
-|Design v1|![](slack_date:${today}) |—|
-|Boardomatic v1|![](slack_date:${today}) |—|
-|Boardomatic v2|![](slack_date:${today}) |—|
-|Animation v1|![](slack_date:${today}) |—|
-|Animation v2|![](slack_date:${today}) |—|
-|Final review|![](slack_date:${today}) |—|
-|Delivery|![](slack_date:${deliveryDate !== 'TBD' ? deliveryDate : today}) |—|
-
----
-
-## 🔗 Links
-
-|Resource|Link|
-|  ---  |  ---  |
-${linkRows.join('\n')}
-
----
-
-## 🗒️ Notes & Feedback
-
-:email: **_Email note from client | ${new Date().toLocaleDateString('en-US', { month: '2-digit', day: '2-digit' })}_**
-
-[paste notes here]
-
----
-
-## 👥 Team & Channels
-
-* **Internal channel:** this channel
-* **Client channel:** [#client-channel]${links?.frameio ? `\n* **Frame.io project:** [${links.frameio}](${links.frameio})` : '\n* **Frame.io project:** [paste link]'}
-* **Project Manager:** [@PM]
-* **Creative Director:** [@CD]
-* **Producer:** [@Producer]
-* **Lead Artist:** [@Lead]
-
----`
-
+  // 1. Look up the template channel to find its channel canvas
+  let templateChannelCanvasFileId: string | undefined
   try {
-    const result = await slackPost('canvases.create', {
-      title: projectName,
-      document_content: {
-        type: 'markdown',
-        markdown,
-      },
-    })
-
-    const canvasId = result.canvas_id
-
-    // Share the canvas to the project channel
-    if (canvasId) {
-      await slackPost('canvases.access.set', {
-        canvas_id: canvasId,
-        access_level: 'write',
-        channel_ids: [channelId],
-      }).catch((err: any) => {
-        console.warn('[Slack] Could not share canvas to channel:', err.message)
-      })
-
-      // Post the canvas link in the channel
-      await slackPost('chat.postMessage', {
-        channel: channelId,
-        text: `:notebook_with_decorative_cover: *Project canvas is ready:* <https://slack.com/docs/${canvasId}|Open Canvas>`,
-      }).catch(() => {})
-    }
-
-    console.log(`[Slack] Created project canvas: ${canvasId}`)
-    return canvasId
+    const info = await slackPost('conversations.info', { channel: templateId })
+    templateChannelCanvasFileId = info.channel?.properties?.canvas?.file_id
   } catch (err: any) {
-    console.error('[Slack] Canvas creation failed:', err.message)
-    return null
+    console.warn('[Slack] template channel info failed:', err.message)
   }
+
+  // 2. Recreate the channel canvas on the new channel
+  if (templateChannelCanvasFileId) {
+    const markdown = await fetchCanvasMarkdown(templateChannelCanvasFileId)
+    if (markdown) {
+      try {
+        const created = await slackPost('conversations.canvases.create', {
+          channel_id: opts.newChannelId,
+          document_content: { type: 'markdown', markdown },
+        })
+        out.channelCanvasId = created.canvas_id || null
+      } catch (err: any) {
+        console.error('[Slack] channel canvas create failed:', err.message)
+      }
+    }
+  }
+
+  // 3. Find standalone canvases shared in the template channel and recreate them
+  try {
+    const filesRes = await slackPost('files.list', {
+      channel: templateId,
+      types: 'canvases',
+      count: 50,
+    })
+    const files: any[] = filesRes.files || []
+    for (const file of files) {
+      // Skip the channel canvas itself — it's already handled above
+      if (file.id === templateChannelCanvasFileId) continue
+
+      const markdown = await fetchCanvasMarkdown(file.id)
+      if (!markdown) continue
+
+      try {
+        const created = await slackPost('canvases.create', {
+          title: file.title || file.name || `${opts.projectName} canvas`,
+          document_content: { type: 'markdown', markdown },
+        })
+        const canvasId: string | undefined = created.canvas_id
+        if (!canvasId) continue
+        out.standaloneCanvasIds.push(canvasId)
+
+        await slackPost('canvases.access.set', {
+          canvas_id: canvasId,
+          access_level: 'write',
+          channel_ids: [opts.newChannelId],
+        }).catch((err: any) =>
+          console.warn('[Slack] canvas access.set failed:', err.message),
+        )
+
+        await slackPost('chat.postMessage', {
+          channel: opts.newChannelId,
+          text: `:notebook_with_decorative_cover: <https://slack.com/docs/${canvasId}|${file.title || 'Project canvas'}>`,
+        }).catch(() => {})
+      } catch (err: any) {
+        console.error('[Slack] standalone canvas create failed:', err.message)
+      }
+    }
+  } catch (err: any) {
+    console.warn('[Slack] files.list (template canvases) failed:', err.message)
+  }
+
+  return out
 }
+
