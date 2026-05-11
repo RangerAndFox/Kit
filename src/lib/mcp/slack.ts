@@ -233,6 +233,8 @@ const DEFAULT_CANVAS_TEMPLATE_FILE_IDS = ['F0B1GTVJV5F', 'F0B1GUWHYTB']
 export async function duplicateTemplateCanvases(opts: {
   newChannelId: string
   projectName: string
+  projectNumber?: string
+  client?: string
 }): Promise<DuplicateCanvasesResult> {
   const out: DuplicateCanvasesResult = { channelCanvasId: null, standaloneCanvasIds: [] }
   if (!process.env.SLACK_BOT_TOKEN) {
@@ -247,6 +249,29 @@ export async function duplicateTemplateCanvases(opts: {
 
   console.log(`[Slack canvas] duplicating ${templateFileIds.length} template(s) for channel ${opts.newChannelId}: ${templateFileIds.join(', ')}`)
 
+  // Build the project spine prefix used in every new canvas title:
+  //   {projectNumber}_{client}_{projectName} — matches Frame.io / Dropbox / Harvest.
+  // Fall back gracefully if any part is missing.
+  const spineParts = [opts.projectNumber, opts.client, opts.projectName]
+    .map((p) => (p ? String(p).trim() : ''))
+    .filter(Boolean)
+  const spine = spineParts.join('_') || opts.projectName
+
+  // Clean a template canvas title for use in the new canvas name:
+  //  - strip :emoji_shortcode: patterns (don't render in canvas titles)
+  //  - strip the "2xxx" placeholder Slack templates use for project IDs
+  //  - strip the word "Template"
+  //  - collapse whitespace
+  const cleanTemplateTitle = (raw: string, fallback: string): string => {
+    const cleaned = raw
+      .replace(/:[a-z0-9_+-]+:/gi, '') // :clapper:, :memo:, etc.
+      .replace(/\b2x{2,}\b/gi, '') // 2xxx, 2xxxx — template project-ID placeholder
+      .replace(/\btemplate\b/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    return cleaned || fallback
+  }
+
   for (const [idx, fileId] of templateFileIds.entries()) {
     try {
       // 1. Read the template's title + markdown via files.info (requires the
@@ -256,7 +281,7 @@ export async function duplicateTemplateCanvases(opts: {
       try {
         const info = await slackGet('files.info', { file: fileId })
         const raw: string = info.file?.title || info.file?.name || originalTitle
-        originalTitle = raw.replace(/\btemplate\b/gi, '').replace(/\s+/g, ' ').trim() || originalTitle
+        originalTitle = cleanTemplateTitle(raw, originalTitle)
         downloadUrl = info.file?.url_private_download || info.file?.url_private
         console.log(`[Slack canvas] ${fileId}: title="${originalTitle}", has_download=${!!downloadUrl}`)
       } catch (err: any) {
@@ -287,7 +312,7 @@ export async function duplicateTemplateCanvases(opts: {
       }
 
       // 3. Create the new canvas with the duplicated content
-      const newTitle = `${opts.projectName} — ${originalTitle}`
+      const newTitle = `${spine} — ${originalTitle}`
       let canvasId: string | undefined
       try {
         const created = await slackPost('canvases.create', {
@@ -319,16 +344,18 @@ export async function duplicateTemplateCanvases(opts: {
         console.warn(`[Slack canvas] ${canvasId}: access.set failed: ${err.message}`)
       }
 
-      // 5. Pin as a bookmark so it shows as a tab at the top of the channel
+      // 5. Pin at the top of the channel. Passing entity_id makes Slack render
+      //    this as a native canvas chip rather than a generic link bookmark —
+      //    same surface as clicking "+" → "Share a canvas" in the channel UI.
       try {
         await slackPost('bookmarks.add', {
           channel_id: opts.newChannelId,
           title: newTitle,
           type: 'link',
           link: `https://slack.com/docs/${canvasId}`,
-          emoji: ':notebook_with_decorative_cover:',
+          entity_id: canvasId,
         })
-        console.log(`[Slack canvas] ${canvasId}: pinned as bookmark on ${opts.newChannelId}`)
+        console.log(`[Slack canvas] ${canvasId}: pinned at top of ${opts.newChannelId}`)
       } catch (err: any) {
         console.warn(`[Slack canvas] ${canvasId}: bookmarks.add failed: ${err.message}`)
       }

@@ -96,6 +96,8 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       canvasResult = await duplicateTemplateCanvases({
         newChannelId: channel.channelId,
         projectName,
+        projectNumber: (payload.projectNumber as string) || undefined,
+        client,
       })
     } catch (e: any) {
       console.warn('[SlackAgent] Template canvas copy failed (non-fatal):', e.message)
