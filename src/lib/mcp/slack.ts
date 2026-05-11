@@ -418,7 +418,26 @@ export async function duplicateTemplateCanvases(opts: {
         console.log(`[Slack canvas] ${fileId}: created canvas ${canvasId} tabbed to ${opts.newChannelId} as "${newTitle}"`)
       } catch (err: any) {
         console.error(`[Slack canvas] ${fileId}: canvases.create failed: ${err.message}`)
-        continue
+        // Log the first chunk of the rejected markdown so we can see what
+        // Slack didn't like. Most likely culprits: workspace-custom emoji
+        // shortcodes (:microsoft-word:), heading-looking text in cells
+        // (####), or a too-large/malformed GFM table.
+        console.error(
+          `[Slack canvas] ${fileId}: rejected markdown (first 1500 chars):\n${markdown.slice(0, 1500)}`,
+        )
+        // Fallback: create the canvas empty but still tabbed to the channel.
+        // Better to have a placeholder chip than nothing at all.
+        try {
+          const fallback = await slackPost('canvases.create', {
+            title: newTitle,
+            channel_id: opts.newChannelId,
+          })
+          canvasId = fallback.canvas_id
+          console.log(`[Slack canvas] ${fileId}: fallback empty canvas ${canvasId} tabbed to ${opts.newChannelId}`)
+        } catch (fallbackErr: any) {
+          console.error(`[Slack canvas] ${fileId}: empty fallback also failed: ${fallbackErr.message}`)
+          continue
+        }
       }
 
       if (!canvasId) {
