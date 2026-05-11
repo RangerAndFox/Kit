@@ -332,7 +332,23 @@ export async function duplicateTemplateCanvases(opts: {
       }
       out.standaloneCanvasIds.push(canvasId)
 
-      // 4. Give the new channel write access so members can edit
+      // 4. Post the canvas link in the channel. Slack's canvases.access.set
+      //    docs explicitly require the canvas link to be shared in the channel
+      //    first — that's what registers the canvas as a channel canvas chip
+      //    (instead of an invisibly-shared standalone canvas). This is the
+      //    same surface as clicking "+" → "Share a canvas" in the UI.
+      try {
+        await slackPost('chat.postMessage', {
+          channel: opts.newChannelId,
+          text: `<https://slack.com/docs/${canvasId}|${newTitle}>`,
+          unfurl_links: true,
+        })
+        console.log(`[Slack canvas] ${canvasId}: posted link in ${opts.newChannelId}`)
+      } catch (err: any) {
+        console.warn(`[Slack canvas] ${canvasId}: link post failed: ${err.message}`)
+      }
+
+      // 5. Now grant the channel write access so members can edit.
       try {
         await slackPost('canvases.access.set', {
           canvas_id: canvasId,
@@ -342,22 +358,6 @@ export async function duplicateTemplateCanvases(opts: {
         console.log(`[Slack canvas] ${canvasId}: granted write access to ${opts.newChannelId}`)
       } catch (err: any) {
         console.warn(`[Slack canvas] ${canvasId}: access.set failed: ${err.message}`)
-      }
-
-      // 5. Pin at the top of the channel. Passing entity_id makes Slack render
-      //    this as a native canvas chip rather than a generic link bookmark —
-      //    same surface as clicking "+" → "Share a canvas" in the channel UI.
-      try {
-        await slackPost('bookmarks.add', {
-          channel_id: opts.newChannelId,
-          title: newTitle,
-          type: 'link',
-          link: `https://slack.com/docs/${canvasId}`,
-          entity_id: canvasId,
-        })
-        console.log(`[Slack canvas] ${canvasId}: pinned at top of ${opts.newChannelId}`)
-      } catch (err: any) {
-        console.warn(`[Slack canvas] ${canvasId}: bookmarks.add failed: ${err.message}`)
       }
     } catch (err: any) {
       console.error(`[Slack canvas] ${fileId}: unexpected failure: ${err.message}`)
