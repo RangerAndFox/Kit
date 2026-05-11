@@ -38,26 +38,6 @@ async function slackGet(method: string, params: Record<string, string>): Promise
   return data
 }
 
-// Cache the workspace's URL + team ID so we can build proper canvas links.
-// Slack's plain `https://slack.com/docs/{canvasId}` URLs don't resolve reliably;
-// the working format is `https://{workspace}.slack.com/docs/{teamId}/{canvasId}`.
-let cachedWorkspace: { url: string; teamId: string } | null = null
-async function getWorkspaceInfo(): Promise<{ url: string; teamId: string }> {
-  if (cachedWorkspace) return cachedWorkspace
-  const data = await slackPost('auth.test', {})
-  cachedWorkspace = {
-    url: String(data.url || 'https://slack.com/'),
-    teamId: String(data.team_id || ''),
-  }
-  return cachedWorkspace
-}
-
-function buildCanvasUrl(workspace: { url: string; teamId: string }, canvasId: string): string {
-  const base = workspace.url.endsWith('/') ? workspace.url : `${workspace.url}/`
-  return workspace.teamId
-    ? `${base}docs/${workspace.teamId}/${canvasId}`
-    : `${base}docs/${canvasId}`
-}
 
 export interface SlackChannelResult {
   channelId: string
@@ -270,16 +250,6 @@ export async function duplicateTemplateCanvases(opts: {
 
   console.log(`[Slack canvas] duplicating ${templateFileIds.length} template(s) for channel ${opts.newChannelId}: ${templateFileIds.join(', ')}`)
 
-  // Resolve workspace URL + team ID once so we can build proper canvas links.
-  let workspace: { url: string; teamId: string }
-  try {
-    workspace = await getWorkspaceInfo()
-    console.log(`[Slack canvas] workspace resolved: ${workspace.url} (team ${workspace.teamId})`)
-  } catch (err: any) {
-    console.warn(`[Slack canvas] auth.test failed (falling back to slack.com): ${err.message}`)
-    workspace = { url: 'https://slack.com/', teamId: '' }
-  }
-
   // Build the project spine prefix used in every new canvas title:
   //   {projectNumber}_{client}_{projectName} — matches Frame.io / Dropbox / Harvest.
   // Fall back gracefully if any part is missing.
@@ -342,16 +312,22 @@ export async function duplicateTemplateCanvases(opts: {
         continue
       }
 
-      // 3. Create the new canvas with the duplicated content
+      // 3. Create the new canvas, tabbed directly to the channel.
+      //    Per Slack's canvases.create reference, `channel_id` is the
+      //    "Channel ID for tabbing the canvas" — this is what the
+      //    "+ Share a canvas" UI calls internally. Doing it as part of
+      //    create (rather than canvases.access.set after the fact) is
+      //    what makes the canvas appear in the channel header as a tab.
       const newTitle = `${spine} — ${originalTitle}`
       let canvasId: string | undefined
       try {
         const created = await slackPost('canvases.create', {
           title: newTitle,
+          channel_id: opts.newChannelId,
           document_content: { type: 'markdown', markdown },
         })
         canvasId = created.canvas_id
-        console.log(`[Slack canvas] ${fileId}: created new canvas ${canvasId} titled "${newTitle}"`)
+        console.log(`[Slack canvas] ${fileId}: created canvas ${canvasId} tabbed to ${opts.newChannelId} as "${newTitle}"`)
       } catch (err: any) {
         console.error(`[Slack canvas] ${fileId}: canvases.create failed: ${err.message}`)
         continue
@@ -363,26 +339,8 @@ export async function duplicateTemplateCanvases(opts: {
       }
       out.standaloneCanvasIds.push(canvasId)
 
-      // 4. Post the canvas link in the channel. Slack's canvases.access.set
-      //    docs explicitly require the canvas link to be shared in the channel
-      //    first — that's what registers the canvas as a channel canvas chip
-      //    (instead of an invisibly-shared standalone canvas). This is the
-      //    same surface as clicking "+" → "Share a canvas" in the UI.
-      //    Use the workspace-scoped URL so the link actually resolves AND
-      //    Slack auto-recognizes it as an internal canvas reference.
-      const canvasUrl = buildCanvasUrl(workspace, canvasId)
-      try {
-        await slackPost('chat.postMessage', {
-          channel: opts.newChannelId,
-          text: `<${canvasUrl}|${newTitle}>`,
-          unfurl_links: true,
-        })
-        console.log(`[Slack canvas] ${canvasId}: posted link in ${opts.newChannelId} (${canvasUrl})`)
-      } catch (err: any) {
-        console.warn(`[Slack canvas] ${canvasId}: link post failed: ${err.message}`)
-      }
-
-      // 5. Now grant the channel write access so members can edit.
+      // 4. Also grant the channel write access so members can edit, not
+      //    just read. The channel_id on create gives read; this upgrades it.
       try {
         await slackPost('canvases.access.set', {
           canvas_id: canvasId,
