@@ -52,11 +52,12 @@ function preprocessCanvasHtml(html: string): string {
   s = s.replace(/<\/?div\b[^>]*>/gi, '')
 
   // Promote first <tr>'s <td>s to <th>s so turndown-plugin-gfm recognizes
-  // these as GFM tables. Without a header row, the plugin leaves the
-  // <table> markup untouched and we ship raw HTML.
+  // these as GFM tables. Also flatten <p class="line"> wrappers inside
+  // cells — they're block-level to turndown and emit newlines, which
+  // shatters markdown pipe-tables (cells must be a single line).
   s = s.replace(/<table\b[^>]*>([\s\S]*?)<\/table>/gi, (_match, inner) => {
     let firstRowSeen = false
-    const rewritten = inner.replace(
+    let rewritten = inner.replace(
       /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi,
       (rowMatch: string, rowInner: string) => {
         if (firstRowSeen) return rowMatch
@@ -65,6 +66,21 @@ function preprocessCanvasHtml(html: string): string {
           .replace(/<td\b/gi, '<th')
           .replace(/<\/td>/gi, '</th>')
         return rowMatch.replace(rowInner, headered)
+      },
+    )
+    // Flatten <p> wrappers inside every cell (after the header promotion
+    // so we match <th> too). Keep inline markup like <b>, just drop the
+    // block tags and collapse whitespace.
+    rewritten = rewritten.replace(
+      /<(t[dh])\b[^>]*>([\s\S]*?)<\/\1>/gi,
+      (_m: string, tag: string, cellInner: string) => {
+        const flat = cellInner
+          .replace(/<p\b[^>]*>/gi, '')
+          .replace(/<\/p>/gi, ' ')
+          .replace(/<br\s*\/?>/gi, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+        return `<${tag}>${flat}</${tag}>`
       },
     )
     return `<table>${rewritten}</table>`
