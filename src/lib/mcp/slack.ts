@@ -18,8 +18,34 @@ const turndown = new TurndownService({
   bulletListMarker: '-',
   codeBlockStyle: 'fenced',
   emDelimiter: '_',
+  hr: '---', // not '* * *' — Slack canvas's parser only recognizes ---
 })
 turndown.use(gfm)
+
+// Slack canvas markdown is stricter than CommonMark/GFM. Things that
+// turndown emits by default but trip canvases.create with
+// canvas_creation_failed include:
+//   - escaped brackets: \[Foo\] (turndown does this to protect link
+//     syntax). Slack treats the backslash as literal.
+//   - workspace-custom emoji shortcodes like :microsoft-word:, :figma:.
+//     Standard Unicode-mapped shortcodes (:smile:) are fine; custom ones
+//     are not resolved.
+//   - heading markers (####) appearing inside table cells.
+function sanitizeCanvasMarkdown(md: string): string {
+  let s = md
+  // Unescape brackets — Slack canvas treats \[ as a literal backslash
+  // followed by a bracket, not as an escaped bracket.
+  s = s.replace(/\\\[/g, '[').replace(/\\\]/g, ']')
+  // Strip ALL :shortcode: emoji references. The templates use workspace-
+  // custom emoji that canvas won't resolve; we'd rather have the text
+  // sans icon than the API rejecting the whole document. Headings keep
+  // their Unicode emoji (🎬 📌 📅 etc.) which are direct codepoints,
+  // not shortcodes, so this only strips the icon names.
+  s = s.replace(/:[a-z0-9_+-]+:/gi, '')
+  // Collapse any double whitespace left where emoji used to sit.
+  s = s.replace(/[ \t]+\n/g, '\n').replace(/  +/g, ' ')
+  return s
+}
 
 // Quip canvas HTML has a few non-standard wrappers that confuse turndown:
 //   - <control id="..." data-remapped="true">text</control> — date controls,
@@ -90,7 +116,8 @@ function preprocessCanvasHtml(html: string): string {
 }
 
 function canvasHtmlToMarkdown(html: string): string {
-  return turndown.turndown(preprocessCanvasHtml(html)).trim()
+  const raw = turndown.turndown(preprocessCanvasHtml(html))
+  return sanitizeCanvasMarkdown(raw).trim()
 }
 
 function headers() {
