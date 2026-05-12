@@ -30,6 +30,12 @@ export interface StoryboardIntake {
   channelId: string
   /** Triggering user ID. */
   userId: string
+  /**
+   * If the user invoked from inside a Slack Assistant thread (Agents & AI
+   * Apps), this is the thread_ts. Progress messages + the summary card must
+   * be threaded with this ts to appear inside the assistant view.
+   */
+  assistantThreadTs?: string
   /** When this entry was created (ms). */
   createdAt: number
 }

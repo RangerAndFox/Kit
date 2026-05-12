@@ -60,6 +60,7 @@ const assistant = new Assistant({
           file: scriptFile,
           channelId: m.channel,
           userId: m.user,
+          assistantThreadTs: m.thread_ts,
         })
         return
       }
@@ -72,6 +73,7 @@ const assistant = new Assistant({
       await handleStoryboardKeywordFromAssistant(app, {
         channelId: m.channel,
         userId: m.user,
+        assistantThreadTs: m.thread_ts,
       })
       return
     }

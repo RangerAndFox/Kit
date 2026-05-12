@@ -73,6 +73,12 @@ export function registerInteractionHandlers(app: App) {
     const intake = takeIntake(stashToken)
     const userId = body.user.id
     const channelId = intake?.channelId || userId
+    const threadTs = intake?.assistantThreadTs
+    const postOpts = (extra: Record<string, unknown> = {}) => ({
+      channel: channelId,
+      ...(threadTs ? { thread_ts: threadTs } : {}),
+      ...extra,
+    })
     const values = view.state?.values || {}
 
     const form = {
@@ -93,10 +99,9 @@ export function registerInteractionHandlers(app: App) {
     let scriptSource = 'none'
     try {
       if (intake?.file) {
-        await client.chat.postMessage({
-          channel: channelId,
+        await client.chat.postMessage(postOpts({
           text: `📥 Downloading *${intake.file.name}*…`,
-        })
+        }))
         script = await extractScriptFromFile(intake.file)
         scriptSource = 'file'
       } else if (intake?.script) {
@@ -108,26 +113,23 @@ export function registerInteractionHandlers(app: App) {
       }
     } catch (err: any) {
       console.error('[Bolt] storyboard file ingest failed:', err)
-      await client.chat.postMessage({
-        channel: channelId,
+      await client.chat.postMessage(postOpts({
         text: `❌ Couldn't read the script file: ${err.message || 'unknown error'}`,
-      })
+      }))
       return
     }
 
     const blank = !script
     if (blank) {
-      await client.chat.postMessage({
-        channel: channelId,
+      await client.chat.postMessage(postOpts({
         text: `📝 Creating a blank storyboard *${form.projectName}*…`,
-      })
+      }))
     } else {
-      await client.chat.postMessage({
-        channel: channelId,
+      await client.chat.postMessage(postOpts({
         text:
           `⚙️ Parsing script (${scriptSource}, mode: ${form.mode}) and creating ` +
           `*${form.projectName}* in Boords…`,
-      })
+      }))
     }
 
     // ── Dispatch to Boords agent ────────────────────────────
@@ -146,12 +148,11 @@ export function registerInteractionHandlers(app: App) {
 
       if (!result.success) {
         const hint = (result.data as any)?.hint
-        await client.chat.postMessage({
-          channel: channelId,
+        await client.chat.postMessage(postOpts({
           text:
             `❌ Storyboard failed: ${result.error || 'unknown error'}` +
             (hint ? `\n${hint}` : ''),
-        })
+        }))
         return
       }
 
@@ -209,17 +210,15 @@ export function registerInteractionHandlers(app: App) {
         })
       }
 
-      await client.chat.postMessage({
-        channel: channelId,
+      await client.chat.postMessage(postOpts({
         text: result.message || `Storyboard created: ${url || data.storyboardName}`,
         blocks,
-      })
+      }))
     } catch (err: any) {
       console.error('[Bolt] storyboard provision error:', err)
-      await client.chat.postMessage({
-        channel: channelId,
+      await client.chat.postMessage(postOpts({
         text: `❌ Storyboard failed: ${err.message || String(err)}`,
-      })
+      }))
     }
   })
 

@@ -74,11 +74,16 @@ export function registerMessageHandlers(app: App) {
     ) {
       const scriptFile = msgEvent.files.find(isStoryboardScriptFile)
       if (scriptFile) {
+        const assistantThreadTs =
+          msgEvent.assistant_thread && msgEvent.thread_ts
+            ? msgEvent.thread_ts
+            : undefined
         await handleStoryboardFileDrop({
           app,
           file: scriptFile,
           channelId: msgEvent.channel,
           userId: msgEvent.user,
+          assistantThreadTs,
         })
         return
       }
@@ -97,10 +102,15 @@ export function registerMessageHandlers(app: App) {
     // intent, not just any mention of the word. The orchestrator handles
     // looser phrasings conversationally.
     if (isDM && isStoryboardTrigger((msgEvent.text || '').trim())) {
+      const assistantThreadTs =
+        msgEvent.assistant_thread && msgEvent.thread_ts
+          ? msgEvent.thread_ts
+          : undefined
       await handleStoryboardKeyword({
         app,
         channelId,
         userId,
+        assistantThreadTs,
       })
       return
     }
@@ -374,7 +384,12 @@ export function isStoryboardTrigger(text: string): boolean {
 /** Wrapper for the Assistant-thread caller (app.ts). */
 export async function handleStoryboardFileDropFromAssistant(
   app: App,
-  opts: { file: any; channelId: string; userId: string },
+  opts: {
+    file: any
+    channelId: string
+    userId: string
+    assistantThreadTs?: string
+  },
 ): Promise<void> {
   return handleStoryboardFileDrop({ app, ...opts })
 }
@@ -382,7 +397,11 @@ export async function handleStoryboardFileDropFromAssistant(
 /** Wrapper for the Assistant-thread caller (app.ts). */
 export async function handleStoryboardKeywordFromAssistant(
   app: App,
-  opts: { channelId: string; userId: string },
+  opts: {
+    channelId: string
+    userId: string
+    assistantThreadTs?: string
+  },
 ): Promise<void> {
   return handleStoryboardKeyword({ app, ...opts })
 }
@@ -392,11 +411,13 @@ async function handleStoryboardFileDrop(opts: {
   file: any
   channelId: string
   userId: string
+  assistantThreadTs?: string
 }) {
-  const { app, file, channelId, userId } = opts
+  const { app, file, channelId, userId, assistantThreadTs } = opts
   const stashToken = stashIntake({
     channelId,
     userId,
+    assistantThreadTs,
     suggestedName: projectNameFromFilename(file.name || ''),
     file: {
       id: file.id,
@@ -409,6 +430,7 @@ async function handleStoryboardFileDrop(opts: {
 
   await app.client.chat.postMessage({
     channel: channelId,
+    ...(assistantThreadTs ? { thread_ts: assistantThreadTs } : {}),
     text: `Got *${file.name}* — open the storyboard settings to continue.`,
     blocks: [
       {
@@ -451,12 +473,14 @@ async function handleStoryboardKeyword(opts: {
   app: App
   channelId: string
   userId: string
+  assistantThreadTs?: string
 }) {
-  const { app, channelId, userId } = opts
-  const stashToken = stashIntake({ channelId, userId })
+  const { app, channelId, userId, assistantThreadTs } = opts
+  const stashToken = stashIntake({ channelId, userId, assistantThreadTs })
 
   await app.client.chat.postMessage({
     channel: channelId,
+    ...(assistantThreadTs ? { thread_ts: assistantThreadTs } : {}),
     text: 'Storyboard — pick your settings to start.',
     blocks: [
       {
