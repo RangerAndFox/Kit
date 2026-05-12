@@ -26,6 +26,9 @@ import { isTimeEntryMessage, handleTimeEntry } from '../../../src/lib/harvest/sl
 import { runOrchestrator } from '../llm/orchestrator'
 import { hasPendingClarification } from '../llm/memory'
 import { setThinking, clearThinking } from '../llm/status'
+import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
+import { stashIntake } from '../../../src/lib/storyboard/stash'
+import { projectNameFromFilename } from '../../../src/lib/storyboard/parser'
 
 export function registerMessageHandlers(app: App) {
   // ─── @mentions ────────────────────────────────────────────
@@ -56,13 +59,51 @@ export function registerMessageHandlers(app: App) {
   app.event('message', async ({ event }) => {
     const msgEvent = event as any
 
-    // Skip bot/system messages
-    if (msgEvent.bot_id || msgEvent.subtype) return
+    // Skip bot messages always
+    if (msgEvent.bot_id) return
+
+    // ── Storyboard file drop (DM only) ────────────────────
+    // file_share carries subtype: 'file_share' and a files[] array.
+    // We special-case this BEFORE the generic subtype skip so .docx/.txt
+    // uploads trigger the storyboard intake card.
+    if (
+      msgEvent.subtype === 'file_share' &&
+      msgEvent.channel_type === 'im' &&
+      Array.isArray(msgEvent.files) &&
+      msgEvent.files.length > 0
+    ) {
+      const scriptFile = msgEvent.files.find(isStoryboardScriptFile)
+      if (scriptFile) {
+        await handleStoryboardFileDrop({
+          app,
+          file: scriptFile,
+          channelId: msgEvent.channel,
+          userId: msgEvent.user,
+        })
+        return
+      }
+    }
+
+    // Skip other system/edit/delete subtypes
+    if (msgEvent.subtype) return
 
     const isDM = msgEvent.channel_type === 'im'
     const userId = msgEvent.user
     const channelId = msgEvent.channel
     const teamId = msgEvent.team || ''
+
+    // ── Storyboard keyword shortcut (DM only) ─────────────
+    // Strict match: the message must be a clear "make me a storyboard"
+    // intent, not just any mention of the word. The orchestrator handles
+    // looser phrasings conversationally.
+    if (isDM && isStoryboardTrigger((msgEvent.text || '').trim())) {
+      await handleStoryboardKeyword({
+        app,
+        channelId,
+        userId,
+      })
+      return
+    }
 
     // For non-DM messages without @mention, only act if Kit is awaiting clarification
     if (!isDM) {
@@ -279,6 +320,174 @@ async function resolveProjectFromChannel(
   } catch {
     return null
   }
+}
+
+// ─── Storyboard intake helpers ─────────────────────────────
+
+/**
+ * Detect a Slack file that looks like a storyboard script source.
+ * We accept .docx and plain text.
+ */
+export function isStoryboardScriptFile(f: any): boolean {
+  const ft = String(f?.filetype || '').toLowerCase()
+  const mt = String(f?.mimetype || '').toLowerCase()
+  const name = String(f?.name || '').toLowerCase()
+  if (ft === 'docx' || mt.includes('officedocument.wordprocessingml')) return true
+  if (ft === 'text' || ft === 'txt' || mt.startsWith('text/')) return true
+  if (name.endsWith('.docx') || name.endsWith('.txt')) return true
+  return false
+}
+
+/**
+ * Conservative keyword matcher. Returns true for messages whose entire
+ * intent is "I want to create a storyboard now" — not for messages that
+ * merely mention storyboarding in passing.
+ */
+export function isStoryboardTrigger(text: string): boolean {
+  if (!text) return false
+  const t = text.toLowerCase().trim()
+  if (t.length > 60) return false // long messages go to the orchestrator
+  const exact = new Set([
+    'storyboard',
+    '/storyboard',
+    'new storyboard',
+    'make a storyboard',
+    'create a storyboard',
+    'create storyboard',
+    'make storyboard',
+    'start a storyboard',
+    'script to storyboard',
+    'script',
+    'new script',
+  ])
+  if (exact.has(t)) return true
+  // Common multi-word phrasings.
+  return /^(new|make|create|start)\s+(a\s+)?storyboard(\s+please)?\.?$/i.test(t)
+}
+
+/**
+ * A user dropped a .docx/.txt in our DM. Stash a reference to the file
+ * and post a card with a button that opens the settings modal pre-filled.
+ * We don't download the file here — that happens at view-submit so we
+ * don't waste bytes if the user abandons the modal.
+ */
+/** Wrapper for the Assistant-thread caller (app.ts). */
+export async function handleStoryboardFileDropFromAssistant(
+  app: App,
+  opts: { file: any; channelId: string; userId: string },
+): Promise<void> {
+  return handleStoryboardFileDrop({ app, ...opts })
+}
+
+/** Wrapper for the Assistant-thread caller (app.ts). */
+export async function handleStoryboardKeywordFromAssistant(
+  app: App,
+  opts: { channelId: string; userId: string },
+): Promise<void> {
+  return handleStoryboardKeyword({ app, ...opts })
+}
+
+async function handleStoryboardFileDrop(opts: {
+  app: App
+  file: any
+  channelId: string
+  userId: string
+}) {
+  const { app, file, channelId, userId } = opts
+  const stashToken = stashIntake({
+    channelId,
+    userId,
+    suggestedName: projectNameFromFilename(file.name || ''),
+    file: {
+      id: file.id,
+      url_private: file.url_private,
+      name: file.name,
+      filetype: file.filetype,
+      mimetype: file.mimetype,
+    },
+  })
+
+  await app.client.chat.postMessage({
+    channel: channelId,
+    text: `Got *${file.name}* — open the storyboard settings to continue.`,
+    blocks: [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text:
+            `:page_facing_up: Got *${file.name || 'your script'}*. ` +
+            `Click below to set up the storyboard — I'll parse the script and create it in Boords.`,
+        },
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            style: 'primary',
+            text: { type: 'plain_text', text: 'Open storyboard settings' },
+            action_id: 'kit_open_storyboard_modal',
+            value: stashToken,
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Cancel' },
+            action_id: 'kit_cancel_storyboard',
+            value: stashToken,
+          },
+        ],
+      },
+    ],
+  })
+}
+
+/**
+ * A user typed a storyboard trigger phrase. Post the same card we'd post
+ * for a file drop, minus the file ref — they'll paste a script into the
+ * modal (or pick blank).
+ */
+async function handleStoryboardKeyword(opts: {
+  app: App
+  channelId: string
+  userId: string
+}) {
+  const { app, channelId, userId } = opts
+  const stashToken = stashIntake({ channelId, userId })
+
+  await app.client.chat.postMessage({
+    channel: channelId,
+    text: 'Storyboard — pick your settings to start.',
+    blocks: [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text:
+            ':clapper: *New storyboard.* Pick your settings — you can paste a script ' +
+            'into the next step, or leave it empty for a blank storyboard.',
+        },
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            style: 'primary',
+            text: { type: 'plain_text', text: 'Open storyboard settings' },
+            action_id: 'kit_open_storyboard_modal',
+            value: stashToken,
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Cancel' },
+            action_id: 'kit_cancel_storyboard',
+            value: stashToken,
+          },
+        ],
+      },
+    ],
+  })
 }
 
 async function resolveWorkspaceId(teamId: string): Promise<string> {

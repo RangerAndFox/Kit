@@ -13,6 +13,8 @@
 
 import type { App } from '@slack/bolt'
 import { buildNewProjectModal } from '../../../src/lib/provisioner/modal'
+import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
+import { stashIntake } from '../../../src/lib/storyboard/stash'
 import { dispatch } from '../../../src/lib/inngest/agents/registry'
 
 export function registerCommandHandlers(app: App) {
@@ -100,11 +102,76 @@ export function registerCommandHandlers(app: App) {
             '*Kit Commands*\n\n' +
             '`/kit newproject` — Open the new project intake form\n' +
             '`/kit status <name>` — Quick project lookup\n' +
+            '`/storyboard` — Turn a script into a Boords storyboard\n' +
             '`/kit help` — Show this message\n\n' +
             'You can also @mention Kit or DM me directly to ask about projects, budgets, files, reviews, or to log time.',
         })
         break
       }
+    }
+  })
+
+  // ─── /storyboard ──────────────────────────────────────────
+  // Opens the storyboard settings modal with no script attached;
+  // the user can paste a script into the multiline field or leave
+  // it blank for a placeholder storyboard.
+  app.command('/storyboard', async ({ command, ack, client, respond }) => {
+    await ack()
+
+    const args = (command.text || '').trim()
+
+    // Resume path: `/storyboard resume <jobId>`
+    if (/^resume\b/i.test(args)) {
+      const jobId = args.replace(/^resume\s+/i, '').trim()
+      if (!jobId) {
+        await respond({
+          response_type: 'ephemeral',
+          text: 'Usage: `/storyboard resume <jobId>`',
+        })
+        return
+      }
+      try {
+        const result = await dispatch('boords', 'resume', { jobId })
+        if (result.success) {
+          const url = (result as any).url
+          await respond({
+            response_type: 'ephemeral',
+            text: url
+              ? `${result.message || 'Resumed.'} → ${url}`
+              : result.message || 'Resumed.',
+          })
+        } else {
+          await respond({
+            response_type: 'ephemeral',
+            text: `Couldn't resume: ${result.error || 'unknown error'}`,
+          })
+        }
+      } catch (err: any) {
+        console.error('[Bolt] /storyboard resume failed:', err)
+        await respond({
+          response_type: 'ephemeral',
+          text: `Resume failed: ${err.message || String(err)}`,
+        })
+      }
+      return
+    }
+
+    const stashToken = stashIntake({
+      channelId: command.channel_id,
+      userId: command.user_id,
+    })
+
+    try {
+      await client.views.open({
+        trigger_id: command.trigger_id,
+        view: buildStoryboardModal({ stashToken, scriptAttached: false }) as any,
+      })
+    } catch (err: any) {
+      console.error('[Bolt] storyboard views.open failed:', err.data?.error || err.message)
+      await respond({
+        response_type: 'ephemeral',
+        text: `Couldn't open the storyboard form: ${err.data?.error || err.message}`,
+      })
     }
   })
 }

@@ -7,6 +7,7 @@
 
 import TurndownService from 'turndown'
 import { gfm } from 'turndown-plugin-gfm'
+import * as nodeEmoji from 'node-emoji'
 
 const SLACK_API = 'https://slack.com/api'
 
@@ -36,11 +37,13 @@ function sanitizeCanvasMarkdown(md: string): string {
   // Unescape brackets — Slack canvas treats \[ as a literal backslash
   // followed by a bracket, not as an escaped bracket.
   s = s.replace(/\\\[/g, '[').replace(/\\\]/g, ']')
-  // Strip ALL :shortcode: emoji references. The templates use workspace-
-  // custom emoji that canvas won't resolve; we'd rather have the text
-  // sans icon than the API rejecting the whole document. Headings keep
-  // their Unicode emoji (🎬 📌 📅 etc.) which are direct codepoints,
-  // not shortcodes, so this only strips the icon names.
+  // Convert standard emoji shortcodes (:telephone_receiver:, :speech_balloon:,
+  // :email:, etc.) to their Unicode codepoints. Canvas renders codepoints as
+  // glyphs reliably; raw :shortcodes: come through as literal text.
+  s = nodeEmoji.emojify(s)
+  // Strip any leftover :shortcode: patterns — those are workspace-custom
+  // emoji that node-emoji didn't recognize, which canvas can't resolve and
+  // which sometimes trigger canvas_creation_failed.
   s = s.replace(/:[a-z0-9_+-]+:/gi, '')
   // Collapse any double whitespace left where emoji used to sit.
   s = s.replace(/[ \t]+\n/g, '\n').replace(/  +/g, ' ')

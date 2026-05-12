@@ -19,8 +19,216 @@ import {
 } from '../../../src/lib/inngest/agents/registry'
 import { buildSummaryBlocks } from '../../../src/lib/provisioner/slack-summary'
 import type { ServiceKey } from '../../../src/lib/provisioner/types'
+import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
+import { peekIntake, takeIntake } from '../../../src/lib/storyboard/stash'
+import { extractScriptFromFile } from '../../../src/lib/storyboard/files'
 
 export function registerInteractionHandlers(app: App) {
+  // ─── Storyboard intake: open modal from card button ───────
+  // The card posted on file-drop / keyword-trigger carries the stash
+  // token as the button value. We re-open the modal here with a fresh
+  // trigger_id (which message events don't have).
+  app.action('kit_open_storyboard_modal', async ({ ack, body, client }) => {
+    await ack()
+    const stashToken = (body as any).actions?.[0]?.value || ''
+    const intake = peekIntake(stashToken)
+    if (!intake) {
+      await client.chat.postMessage({
+        channel: (body as any).user?.id,
+        text: "That storyboard session expired — type `storyboard` again to start fresh.",
+      })
+      return
+    }
+    try {
+      await client.views.open({
+        trigger_id: (body as any).trigger_id,
+        view: buildStoryboardModal({
+          stashToken,
+          suggestedName: intake.suggestedName,
+          scriptAttached: !!(intake.file || intake.script),
+        }) as any,
+      })
+    } catch (err: any) {
+      console.error('[Bolt] storyboard modal open failed:', err.data?.error || err.message)
+    }
+  })
+
+  app.action('kit_cancel_storyboard', async ({ ack, body, client, respond }) => {
+    await ack()
+    const stashToken = (body as any).actions?.[0]?.value || ''
+    takeIntake(stashToken) // discard
+    if (typeof respond === 'function') {
+      await respond({ replace_original: true, text: '_Storyboard cancelled._' })
+    }
+  })
+
+  // ─── Storyboard Settings Modal Submission ─────────────────
+  app.view('kit_provision_storyboard', async ({ ack, view, body, client }) => {
+    // Ack immediately so Slack dismisses the modal. The work happens
+    // after — we DM the user with progress and the final summary.
+    await ack()
+
+    const meta = JSON.parse(view.private_metadata || '{}')
+    const stashToken = meta.stashToken || ''
+    const intake = takeIntake(stashToken)
+    const userId = body.user.id
+    const channelId = intake?.channelId || userId
+    const values = view.state?.values || {}
+
+    const form = {
+      projectName: (values.project_name?.val?.value || '').trim(),
+      pastedScript: (values.script?.val?.value || '').trim(),
+      videoStyle: values.video_style?.val?.selected_option?.value || undefined,
+      aspectRatio: values.aspect_ratio?.val?.selected_option?.value || '16:9',
+      secondsPerFrame: Number(
+        values.seconds_per_frame?.val?.selected_option?.value || 5,
+      ),
+      mode: values.mode?.val?.selected_option?.value || 'auto',
+    }
+
+    // ── Resolve script source ───────────────────────────────
+    // Priority: stashed file → stashed pasted script (from earlier) →
+    // script typed into the modal → blank.
+    let script = ''
+    let scriptSource = 'none'
+    try {
+      if (intake?.file) {
+        await client.chat.postMessage({
+          channel: channelId,
+          text: `📥 Downloading *${intake.file.name}*…`,
+        })
+        script = await extractScriptFromFile(intake.file)
+        scriptSource = 'file'
+      } else if (intake?.script) {
+        script = intake.script
+        scriptSource = 'stashed-paste'
+      } else if (form.pastedScript) {
+        script = form.pastedScript
+        scriptSource = 'modal-paste'
+      }
+    } catch (err: any) {
+      console.error('[Bolt] storyboard file ingest failed:', err)
+      await client.chat.postMessage({
+        channel: channelId,
+        text: `❌ Couldn't read the script file: ${err.message || 'unknown error'}`,
+      })
+      return
+    }
+
+    const blank = !script
+    if (blank) {
+      await client.chat.postMessage({
+        channel: channelId,
+        text: `📝 Creating a blank storyboard *${form.projectName}*…`,
+      })
+    } else {
+      await client.chat.postMessage({
+        channel: channelId,
+        text:
+          `⚙️ Parsing script (${scriptSource}, mode: ${form.mode}) and creating ` +
+          `*${form.projectName}* in Boords…`,
+      })
+    }
+
+    // ── Dispatch to Boords agent ────────────────────────────
+    try {
+      const result = await dispatch('boords', 'provision', {
+        projectName: form.projectName,
+        script,
+        blank,
+        mode: form.mode,
+        aspectRatio: form.aspectRatio,
+        secondsPerFrame: form.secondsPerFrame,
+        videoStyle: form.videoStyle,
+        slackUserId: userId,
+        channelId,
+      })
+
+      if (!result.success) {
+        const hint = (result.data as any)?.hint
+        await client.chat.postMessage({
+          channel: channelId,
+          text:
+            `❌ Storyboard failed: ${result.error || 'unknown error'}` +
+            (hint ? `\n${hint}` : ''),
+        })
+        return
+      }
+
+      // ── Final summary card ────────────────────────────────
+      const data = (result.data as any) || {}
+      const frames = data.frameCount || 0
+      const runtimeSec = data.runtimeSeconds || frames * form.secondsPerFrame
+      const mins = Math.floor(runtimeSec / 60)
+      const secs = runtimeSec % 60
+      const runtime = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
+      const url = result.url || data.url
+      const preview = Array.isArray(data.preview) ? data.preview : []
+
+      const blocks: any[] = [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text:
+              `:clapper: *${data.storyboardName || form.projectName}* is ready in Boords.\n` +
+              `${frames} frame${frames === 1 ? '' : 's'} · ${runtime} · ` +
+              `${form.aspectRatio}${data.detectedTable ? ' · A/V table detected' : ''}`,
+          },
+        },
+      ]
+      if (preview.length > 0) {
+        const previewLines = preview
+          .map(
+            (p: any) =>
+              `*${p.label}* — ${p.sound || '_(no VO)_'}` +
+              (p.action ? `\n   _${p.action}_` : ''),
+          )
+          .join('\n\n')
+        blocks.push({
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `*Preview*\n\n${previewLines}` +
+              (frames > preview.length ? `\n\n…and ${frames - preview.length} more` : ''),
+          },
+        })
+      }
+      if (url) {
+        blocks.push({
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              style: 'primary',
+              text: { type: 'plain_text', text: 'Open in Boords' },
+              url,
+              action_id: 'kit_open_storyboard_url',
+            },
+          ],
+        })
+      }
+
+      await client.chat.postMessage({
+        channel: channelId,
+        text: result.message || `Storyboard created: ${url || data.storyboardName}`,
+        blocks,
+      })
+    } catch (err: any) {
+      console.error('[Bolt] storyboard provision error:', err)
+      await client.chat.postMessage({
+        channel: channelId,
+        text: `❌ Storyboard failed: ${err.message || String(err)}`,
+      })
+    }
+  })
+
+  // The "Open in Boords" link button is link-only; ack so Slack doesn't
+  // warn about an unhandled action.
+  app.action('kit_open_storyboard_url', async ({ ack }) => {
+    await ack()
+  })
+
   // ─── Project Provisioning Modal ───────────────────────────
   app.view('kit_provision_project', async ({ ack, view, body, client }) => {
     // Ack immediately to dismiss the modal

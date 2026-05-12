@@ -9,7 +9,14 @@
 import 'dotenv/config'
 import http from 'node:http'
 import { App, Assistant, LogLevel } from '@slack/bolt'
-import { registerMessageHandlers, handleConversationalMessage } from './handlers/messages'
+import {
+  registerMessageHandlers,
+  handleConversationalMessage,
+  handleStoryboardFileDropFromAssistant,
+  isStoryboardScriptFile,
+  isStoryboardTrigger,
+  handleStoryboardKeywordFromAssistant,
+} from './handlers/messages'
 import { registerCommandHandlers } from './handlers/commands'
 import { registerInteractionHandlers } from './handlers/interactions'
 
@@ -39,7 +46,35 @@ const assistant = new Assistant({
   },
   userMessage: async ({ message }) => {
     const m = message as any
-    if (m.bot_id || m.subtype) return
+    if (m.bot_id) return
+
+    // ── Storyboard file drop in an Assistant thread ────────
+    if (
+      m.subtype === 'file_share' &&
+      Array.isArray(m.files) &&
+      m.files.length > 0
+    ) {
+      const scriptFile = m.files.find(isStoryboardScriptFile)
+      if (scriptFile) {
+        await handleStoryboardFileDropFromAssistant(app, {
+          file: scriptFile,
+          channelId: m.channel,
+          userId: m.user,
+        })
+        return
+      }
+    }
+
+    if (m.subtype) return
+
+    // ── Storyboard keyword shortcut in an Assistant thread ─
+    if (isStoryboardTrigger((m.text || '').trim())) {
+      await handleStoryboardKeywordFromAssistant(app, {
+        channelId: m.channel,
+        userId: m.user,
+      })
+      return
+    }
 
     // The Assistant userMessage callback always fires inside an
     // Assistant thread, so we always have a thread_ts to reply into.
