@@ -3,8 +3,20 @@
  * Boords v1 API Client
  *
  * Auth: X-API-KEY header. Tokens start with "bap_" and are tied to a user.
- * Required env vars:
- *   BOORDS_API_KEY — token from Settings → Team → API
+ * Env vars:
+ *   BOORDS_API_KEY — token from Settings → Team → API (required)
+ *   BOORDS_TEAM_ID — short Team id (e.g. "p4k9az") to scope project creates.
+ *                   Optional — when missing we GET /teams and use the first
+ *                   team returned, cached for the process lifetime.
+ *
+ * Resource model: Team → Project → Storyboard → Frames.
+ * Project create MUST be scoped under a team, so the endpoint is
+ *   POST /v1/teams/{teamId}/projects
+ * (a flat POST /v1/projects returns 403 — Boords can't infer which team
+ * the new project should belong to without it being in the URL).
+ *
+ * Storyboards still post flat at /v1/storyboards with project_id in the
+ * body — that endpoint accepts the project's id directly.
  *
  * Project model: every storyboard lives inside a Boords project. We do
  * NOT share one "default" project across storyboards — each provision
@@ -110,11 +122,42 @@ export interface CreateStoryboardInput {
 // ─── Endpoints ─────────────────────────────────────────────────
 
 /**
- * Create a new Boords project. We make one per storyboard so each
- * Ranger & Fox project gets its own Boords project (no shared bucket).
+ * Resolve the team id we should create projects under. Cached for the
+ * process lifetime — the team membership doesn't change often.
+ *
+ * Order of resolution:
+ *   1. BOORDS_TEAM_ID env var (explicit override)
+ *   2. GET /teams → first team's id
+ */
+let _cachedTeamId: string | null = null
+export async function getCurrentTeamId(): Promise<string> {
+  if (_cachedTeamId) return _cachedTeamId
+  const fromEnv = process.env.BOORDS_TEAM_ID?.trim()
+  if (fromEnv) {
+    _cachedTeamId = fromEnv
+    return fromEnv
+  }
+  const res = await boordsFetch('GET', '/teams')
+  const first = (res?.data || [])[0]
+  if (!first?.id) {
+    throw new Error(
+      'No Boords team found for this API key. Set BOORDS_TEAM_ID or check that the token belongs to a team.',
+    )
+  }
+  _cachedTeamId = first.id
+  return first.id
+}
+
+/**
+ * Create a new Boords project under the resolved team. We make one per
+ * storyboard so each Ranger & Fox project gets its own Boords project
+ * (no shared bucket).
  */
 export async function createProject(input: { name: string }): Promise<BoordsProject> {
-  const res = await boordsFetch('POST', '/projects', { name: input.name })
+  const teamId = await getCurrentTeamId()
+  const res = await boordsFetch('POST', `/teams/${teamId}/projects`, {
+    name: input.name,
+  })
   const data = res?.data || {}
   return {
     id: data.id,
