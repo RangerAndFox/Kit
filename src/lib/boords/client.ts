@@ -4,25 +4,25 @@
  *
  * Auth: X-API-KEY header. Tokens start with "bap_" and are tied to a user.
  * Env vars:
- *   BOORDS_API_KEY — token from Settings → Team → API (required)
- *   BOORDS_TEAM_ID — short Team id (e.g. "p4k9az") to scope project creates.
- *                   Optional — when missing we GET /teams and use the first
- *                   team returned, cached for the process lifetime.
+ *   BOORDS_API_KEY            — token from Settings → Team → API (required)
+ *   BOORDS_DEFAULT_PROJECT_ID — short Project id (e.g. "p4k9az"). Optional.
+ *                               When set, every new storyboard lands inside
+ *                               this project — useful when the token is
+ *                               project-scoped and can't create new
+ *                               projects on the fly (the common case).
+ *   BOORDS_TEAM_ID            — short Team id. Optional. Only used by the
+ *                               auto-create-project path when no default
+ *                               project is set. Avoids a GET /teams hop.
  *
  * Resource model: Team → Project → Storyboard → Frames.
- * Project create MUST be scoped under a team, so the endpoint is
- *   POST /v1/teams/{teamId}/projects
- * (a flat POST /v1/projects returns 403 — Boords can't infer which team
- * the new project should belong to without it being in the URL).
  *
- * Storyboards still post flat at /v1/storyboards with project_id in the
- * body — that endpoint accepts the project's id directly.
- *
- * Project model: every storyboard lives inside a Boords project. We do
- * NOT share one "default" project across storyboards — each provision
- * call creates a fresh Boords project named after the storyboard, then
- * drops the storyboard inside it. Callers can override by passing an
- * explicit projectId.
+ * Project resolution order in createStoryboard:
+ *   1. Explicit projectId argument (per-call override)
+ *   2. BOORDS_DEFAULT_PROJECT_ID env var (one bucket for all storyboards)
+ *   3. Auto-create a fresh project under the resolved team
+ *      (POST /v1/teams/{teamId}/projects) — only works if the token has
+ *      team-admin scope. If your token is project-scoped (the default),
+ *      this returns 403 and you should set BOORDS_DEFAULT_PROJECT_ID.
  *
  * Rate limit: 120 req/min. We honor Retry-After on 429 with one bounded
  * retry; beyond that callers can re-call.
@@ -169,8 +169,8 @@ export async function createProject(input: { name: string }): Promise<BoordsProj
  * Create a storyboard with all its frames in a single POST.
  * The docs explicitly support this pattern via the `frames` array.
  *
- * If no `projectId` is passed we first create a fresh Boords project
- * named after the storyboard — every storyboard gets its own project.
+ * Project resolution: explicit input.projectId → BOORDS_DEFAULT_PROJECT_ID
+ * → auto-create (requires team-admin scope on the token).
  *
  * Returns the new storyboard's ID and (if present) a viewable URL,
  * plus the field_key_map echo so callers can update fields later.
@@ -182,11 +182,28 @@ export async function createStoryboard(input: CreateStoryboardInput): Promise<{
 }> {
   let projectId = input.projectId
   let project: BoordsProject
+
   if (!projectId) {
-    project = await createProject({ name: input.name })
-    projectId = project.id
-  } else {
+    const envDefault = process.env.BOORDS_DEFAULT_PROJECT_ID?.trim()
+    if (envDefault) {
+      projectId = envDefault
+    }
+  }
+
+  if (projectId) {
     project = { id: projectId, name: '' }
+  } else {
+    try {
+      project = await createProject({ name: input.name })
+      projectId = project.id
+    } catch (err: any) {
+      throw new Error(
+        `Couldn't auto-create a Boords project (${err.message}). ` +
+          `This usually means your API token is project-scoped. ` +
+          `Set BOORDS_DEFAULT_PROJECT_ID to an existing project id (Boords UI → ` +
+          `open the project → copy the short id from the URL).`,
+      )
+    }
   }
 
   const body: Record<string, unknown> = {
