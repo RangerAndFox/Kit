@@ -2,27 +2,28 @@
 /**
  * Boords v1 API Client
  *
- * Auth: X-API-KEY header. Tokens start with "bap_" and are tied to a user.
- * Env vars:
- *   BOORDS_API_KEY            — token from Settings → Team → API (required)
- *   BOORDS_DEFAULT_PROJECT_ID — short Project id (e.g. "p4k9az"). Optional.
- *                               When set, every new storyboard lands inside
- *                               this project — useful when the token is
- *                               project-scoped and can't create new
- *                               projects on the fly (the common case).
- *   BOORDS_TEAM_ID            — short Team id. Optional. Only used by the
- *                               auto-create-project path when no default
- *                               project is set. Avoids a GET /teams hop.
+ * Spec: https://app.boords.com — Public API v1 (OpenAPI 3.0.1)
+ * Auth: X-API-KEY header. Tokens have a "bap_" prefix and are per-user.
  *
- * Resource model: Team → Project → Storyboard → Frames.
+ * Required env vars:
+ *   BOORDS_API_KEY — token from Settings → Team → API
  *
- * Project resolution order in createStoryboard:
- *   1. Explicit projectId argument (per-call override)
- *   2. BOORDS_DEFAULT_PROJECT_ID env var (one bucket for all storyboards)
- *   3. Auto-create a fresh project under the resolved team
- *      (POST /v1/teams/{teamId}/projects) — only works if the token has
- *      team-admin scope. If your token is project-scoped (the default),
- *      this returns 403 and you should set BOORDS_DEFAULT_PROJECT_ID.
+ * Optional env vars:
+ *   BOORDS_TEAM_ID            — short Team hashid. Skips the GET /me call
+ *                               on the auto-create-project path.
+ *   BOORDS_DEFAULT_PROJECT_ID — short Project hashid. When set, every new
+ *                               storyboard lands here and no project is
+ *                               created. Used only if you want a single
+ *                               shared bucket.
+ *
+ * Default behavior (no env overrides): each storyboard creates its own
+ * Boords project named after the storyboard, then drops the storyboard
+ * inside it.
+ *
+ * Resource model: Team → Project → Storyboard → Frames → Comments.
+ *
+ * JSON:API envelope: every request body must be wrapped in `{ data: {...} }`.
+ * Every response is `{ data: {...}, meta?: {...} }`.
  *
  * Rate limit: 120 req/min. We honor Retry-After on 429 with one bounded
  * retry; beyond that callers can re-call.
@@ -97,10 +98,13 @@ export interface BoordsStoryboard {
 }
 
 /**
- * Per-frame payload sent to POST /v1/storyboards. The `label` becomes the
- * frame's "reference" field; any other keys become Boords custom fields
- * (auto-detected on create). We use `sound` for VO/narration and `action`
- * for visuals to match Boords' canonical example in their docs.
+ * Per-frame payload sent to POST /v1/storyboards in script-import mode.
+ * `label` becomes the frame's `reference` (the small caption). Any other
+ * string key becomes a custom field — Boords builds the field schema on
+ * the fly and echoes the generated field IDs in `meta.field_key_map`.
+ *
+ * We use `sound` for VO/narration and `action` for visuals to match the
+ * conventional A/V table headers.
  */
 export interface BoordsFrame {
   label?: string
@@ -108,26 +112,33 @@ export interface BoordsFrame {
   action?: string
   dialogue?: string
   notes?: string
+  /** Display-only — Boords doesn't store per-frame duration. */
   duration?: number
 }
 
 export interface CreateStoryboardInput {
   name: string
+  /** Override the auto-create flow and drop the storyboard into this project. */
   projectId?: string
+  /** Description for the auto-created Boords project (ignored when projectId given). */
   description?: string
-  aspectRatio?: '16:9' | '9:16' | '1:1' | '4:5' | '21:9'
+  /** Accepts "16:9" or "16x9" — we normalize to Boords' "16x9" form. */
+  aspectRatio?: '16:9' | '9:16' | '1:1' | '4:5' | '21:9' | string
   frames: BoordsFrame[]
 }
 
 // ─── Endpoints ─────────────────────────────────────────────────
 
 /**
- * Resolve the team id we should create projects under. Cached for the
- * process lifetime — the team membership doesn't change often.
+ * Resolve the team hashid for project creation. Cached for the process.
  *
- * Order of resolution:
- *   1. BOORDS_TEAM_ID env var (explicit override)
- *   2. GET /teams → first team's id
+ * Order:
+ *   1. BOORDS_TEAM_ID env override
+ *   2. GET /v1/me → meta.teams[0].id
+ *
+ * GET /v1/me is the official way to discover teams: it works on any
+ * valid token (no special role required), and the spec documents the
+ * `meta.teams` array on its response.
  */
 let _cachedTeamId: string | null = null
 export async function getCurrentTeamId(): Promise<string> {
@@ -137,27 +148,36 @@ export async function getCurrentTeamId(): Promise<string> {
     _cachedTeamId = fromEnv
     return fromEnv
   }
-  const res = await boordsFetch('GET', '/teams')
-  const first = (res?.data || [])[0]
-  if (!first?.id) {
+  const res = await boordsFetch('GET', '/me')
+  const teams = (res?.meta?.teams || []) as Array<{ id: string; name?: string; role?: string }>
+  if (teams.length === 0) {
     throw new Error(
-      'No Boords team found for this API key. Set BOORDS_TEAM_ID or check that the token belongs to a team.',
+      'GET /v1/me returned no teams. Set BOORDS_TEAM_ID in Railway with your team\'s short hashid.',
     )
   }
-  _cachedTeamId = first.id
-  return first.id
+  // Prefer a team where the user has create-project permissions.
+  const writable = teams.find((t) =>
+    ['admin', 'manager', 'supermember'].includes((t.role || '').toLowerCase()),
+  )
+  const chosen = writable || teams[0]
+  _cachedTeamId = chosen.id
+  return chosen.id
 }
 
 /**
- * Create a new Boords project under the resolved team. We make one per
- * storyboard so each Ranger & Fox project gets its own Boords project
- * (no shared bucket).
+ * Create a Boords project under the resolved team.
+ * POST /v1/projects with body `{ data: { name, team_id, description? } }`.
+ * Requires admin/manager/supermember role on the team.
  */
-export async function createProject(input: { name: string }): Promise<BoordsProject> {
-  const teamId = await getCurrentTeamId()
-  const res = await boordsFetch('POST', `/teams/${teamId}/projects`, {
-    name: input.name,
-  })
+export async function createProject(input: {
+  name: string
+  description?: string
+  teamId?: string
+}): Promise<BoordsProject> {
+  const teamId = input.teamId || (await getCurrentTeamId())
+  const body: Record<string, unknown> = { name: input.name, team_id: teamId }
+  if (input.description) body.description = input.description
+  const res = await boordsFetch('POST', '/projects', { data: body })
   const data = res?.data || {}
   return {
     id: data.id,
@@ -165,145 +185,108 @@ export async function createProject(input: { name: string }): Promise<BoordsProj
   }
 }
 
-/** Shape the frames payload identically across all create paths. */
-function buildFramesPayload(frames: BoordsFrame[]): any[] {
-  return frames.map((f, i) => ({
-    label: f.label ?? String(i + 1),
-    ...(f.sound !== undefined ? { sound: f.sound } : {}),
-    ...(f.action !== undefined ? { action: f.action } : {}),
-    ...(f.dialogue !== undefined ? { dialogue: f.dialogue } : {}),
-    ...(f.notes !== undefined ? { notes: f.notes } : {}),
-    ...(f.duration !== undefined ? { duration: f.duration } : {}),
-  }))
-}
-
-function parseStoryboardResponse(
-  res: any,
-  fallbackName: string,
-  frameCount: number,
-  projectIdHint?: string,
-): {
-  storyboard: BoordsStoryboard
-  project: BoordsProject
-  fieldKeyMap: Record<string, string>
-} {
-  const data = res?.data || {}
-  const attrs = data?.attributes || {}
-  const projectId =
-    projectIdHint ||
-    attrs.project_id ||
-    data?.relationships?.project?.data?.id ||
-    ''
-  return {
-    storyboard: {
-      id: data.id,
-      name: attrs.name || fallbackName,
-      url: attrs.url || attrs.share_url || attrs.viewer_url,
-      frameCount,
-    },
-    project: { id: projectId, name: attrs.project_name || '' },
-    fieldKeyMap: res?.meta?.field_key_map || {},
-  }
+/**
+ * Normalize aspect ratio strings to Boords' "WxH" format ("16x9" not "16:9").
+ */
+function normalizeAspectRatio(raw?: string): string | undefined {
+  if (!raw) return undefined
+  return raw.replace(':', 'x')
 }
 
 /**
- * Create a storyboard with all its frames in a single POST.
+ * Frame payload for storyboard create (script-import mode). The spec
+ * accepts `label` plus arbitrary string properties; we keep our four
+ * conventional fields and drop anything non-string (Boords ignores
+ * unknown numeric props but it's cleaner to send a clean payload).
+ */
+function buildFramesPayload(frames: BoordsFrame[]): any[] {
+  return frames.map((f, i) => {
+    const out: Record<string, string> = { label: f.label ?? String(i + 1) }
+    if (f.sound) out.sound = String(f.sound)
+    if (f.action) out.action = String(f.action)
+    if (f.dialogue) out.dialogue = String(f.dialogue)
+    if (f.notes) out.notes = String(f.notes)
+    return out
+  })
+}
+
+/**
+ * Create a storyboard. The flow:
+ *   1. Resolve a project: explicit → env default → auto-create (new project).
+ *   2. POST /v1/storyboards in script-import mode with all frames inline.
  *
- * Project resolution — we try the cheapest path first and fall back as
- * each one fails so a project-scoped token still works without manual
- * setup whenever Boords' API allows it:
- *
- *   1. Explicit input.projectId → POST /storyboards with project_id
- *   2. BOORDS_DEFAULT_PROJECT_ID env var → same
- *   3. Inline create: POST /storyboards with project_name (no project_id)
- *      — Boords spins up a new project named project_name as a side effect.
- *      Works with project-scoped tokens because no /projects call is made.
- *   4. Explicit project create: POST /projects → POST /storyboards
- *      — only works if the token has team-admin scope (rare).
- *
- * Whichever path succeeds first wins. Errors are aggregated so the final
- * thrown error explains every attempt.
+ * Returns the new storyboard's hashid, public URL, and the field-key map
+ * Boords echoes (so callers can later PATCH fields by their generated ID).
  */
 export async function createStoryboard(input: CreateStoryboardInput): Promise<{
   storyboard: BoordsStoryboard
   project: BoordsProject
   fieldKeyMap: Record<string, string>
 }> {
-  const frames = buildFramesPayload(input.frames)
-  const baseBody: Record<string, unknown> = { name: input.name, frames }
-  if (input.description) baseBody.description = input.description
-  if (input.aspectRatio) baseBody.aspect_ratio = input.aspectRatio
-
-  // ── Path 1 & 2: explicit projectId or env default ────────────
+  // ── Resolve project ──────────────────────────────────────────
+  let project: BoordsProject
   const explicitProjectId =
     input.projectId || process.env.BOORDS_DEFAULT_PROJECT_ID?.trim()
   if (explicitProjectId) {
-    const res = await boordsFetch('POST', '/storyboards', {
-      ...baseBody,
-      project_id: explicitProjectId,
+    project = { id: explicitProjectId, name: '' }
+  } else {
+    project = await createProject({
+      name: input.name,
+      description: input.description,
     })
-    return parseStoryboardResponse(
-      res,
-      input.name,
-      input.frames.length,
-      explicitProjectId,
-    )
   }
 
-  // ── Path 3: inline create via storyboard endpoint ────────────
-  // Pass project_name so Boords auto-creates a project. If the API
-  // doesn't honor this field it'll error 4xx and we move on.
-  const attempts: Array<{ path: string; error: string }> = []
-  try {
-    const res = await boordsFetch('POST', '/storyboards', {
-      ...baseBody,
-      project_name: input.name,
-    })
-    return parseStoryboardResponse(res, input.name, input.frames.length)
-  } catch (err: any) {
-    attempts.push({ path: 'POST /storyboards (project_name)', error: err.message })
+  // ── Create storyboard ────────────────────────────────────────
+  const body: Record<string, unknown> = {
+    name: input.name,
+    project_id: project.id,
+    frames: buildFramesPayload(input.frames),
   }
+  const ar = normalizeAspectRatio(input.aspectRatio)
+  if (ar) body.frame_aspect_ratio = ar
 
-  // ── Path 4: explicit POST /projects then POST /storyboards ───
-  try {
-    const project = await createProject({ name: input.name })
-    const res = await boordsFetch('POST', '/storyboards', {
-      ...baseBody,
-      project_id: project.id,
-    })
-    return parseStoryboardResponse(res, input.name, input.frames.length, project.id)
-  } catch (err: any) {
-    attempts.push({ path: 'POST /projects → /storyboards', error: err.message })
+  const res = await boordsFetch('POST', '/storyboards', { data: body })
+  const data = res?.data || {}
+  const attrs = data?.attributes || {}
+
+  return {
+    storyboard: {
+      id: data.id,
+      name: attrs.name || input.name,
+      url: attrs.public_url || attrs.edit_url,
+      frameCount: input.frames.length,
+    },
+    project,
+    fieldKeyMap: res?.meta?.field_key_map || {},
   }
-
-  const detail = attempts.map((a) => `${a.path}: ${a.error}`).join(' | ')
-  throw new Error(
-    `Couldn't create a Boords project for "${input.name}". Tried: ${detail}. ` +
-      `If your token is project-scoped, set BOORDS_DEFAULT_PROJECT_ID in Railway.`,
-  )
 }
 
 /**
- * Append additional frames to an existing storyboard. Used by the resume
- * flow when an initial create succeeded for some frames but failed before
- * Boords accepted the rest.
+ * Append additional frames to an existing storyboard, one per call.
+ * POST /v1/storyboards/{storyboardId}/frames with body
+ *   `{ data: { reference, field_data: { sound, action, ... }, position: "end" } }`.
+ *
+ * Used by `/storyboard resume` when the initial create succeeded but a
+ * follow-up call left the storyboard incomplete.
  */
 export async function appendFrames(
   storyboardId: string,
   frames: BoordsFrame[],
   startLabelOffset = 0,
 ): Promise<void> {
-  // The docs reference a frame-creation endpoint; conservatively use one
-  // call per frame. Rate-limit headers will signal if we need to throttle.
   for (let i = 0; i < frames.length; i++) {
     const f = frames[i]
+    const fieldData: Record<string, string> = {}
+    if (f.sound) fieldData.sound = String(f.sound)
+    if (f.action) fieldData.action = String(f.action)
+    if (f.dialogue) fieldData.dialogue = String(f.dialogue)
+    if (f.notes) fieldData.notes = String(f.notes)
     await boordsFetch('POST', `/storyboards/${storyboardId}/frames`, {
-      label: f.label ?? String(startLabelOffset + i + 1),
-      ...(f.sound !== undefined ? { sound: f.sound } : {}),
-      ...(f.action !== undefined ? { action: f.action } : {}),
-      ...(f.dialogue !== undefined ? { dialogue: f.dialogue } : {}),
-      ...(f.notes !== undefined ? { notes: f.notes } : {}),
-      ...(f.duration !== undefined ? { duration: f.duration } : {}),
+      data: {
+        reference: f.label ?? String(startLabelOffset + i + 1),
+        field_data: fieldData,
+        position: 'end',
+      },
     })
   }
 }
@@ -326,6 +309,6 @@ export async function listStoryboards(
   return (res?.data || []).map((s: any) => ({
     id: s.id,
     name: s?.attributes?.name || s.id,
-    url: s?.attributes?.url,
+    url: s?.attributes?.public_url || s?.attributes?.edit_url,
   }))
 }
