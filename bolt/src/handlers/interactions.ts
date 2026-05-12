@@ -19,11 +19,38 @@ import {
 } from '../../../src/lib/inngest/agents/registry'
 import { buildSummaryBlocks } from '../../../src/lib/provisioner/slack-summary'
 import type { ServiceKey } from '../../../src/lib/provisioner/types'
+import { buildNewProjectModal } from '../../../src/lib/provisioner/modal'
 import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
 import { peekIntake, takeIntake } from '../../../src/lib/storyboard/stash'
 import { extractScriptFromFile } from '../../../src/lib/storyboard/files'
 
 export function registerInteractionHandlers(app: App) {
+  // ─── New Project: open modal from card button ─────────────
+  // The card posted by /kit newproject and the chat-keyword trigger
+  // carries the originating channel id in the button value, so we can
+  // open the modal with a fresh trigger_id and route the summary back.
+  app.action('kit_open_newproject_modal', async ({ ack, body, client }) => {
+    await ack()
+    const channelId =
+      (body as any).actions?.[0]?.value || (body as any).channel?.id || ''
+    const availableServiceIds = getProvisionableServices() as string[]
+    try {
+      await client.views.open({
+        trigger_id: (body as any).trigger_id,
+        view: buildNewProjectModal(channelId, availableServiceIds) as any,
+      })
+    } catch (err: any) {
+      console.error('[Bolt] newproject modal open failed:', err.data?.error || err.message)
+    }
+  })
+
+  app.action('kit_cancel_newproject', async ({ ack, respond }) => {
+    await ack()
+    if (typeof respond === 'function') {
+      await respond({ replace_original: true, text: '_New project cancelled._' })
+    }
+  })
+
   // ─── Storyboard intake: open modal from card button ───────
   // The card posted on file-drop / keyword-trigger carries the stash
   // token as the button value. We re-open the modal here with a fresh
@@ -238,10 +265,13 @@ export function registerInteractionHandlers(app: App) {
     const channelId = meta.channel_id || ''
     const values = view.state?.values || {}
 
-    // Extract form values. Services are no longer user-selectable — the modal
-    // confirms intent and we provision every available agent that supports it.
+    // Extract form values. Services are read from the checkbox group;
+    // if for any reason the field is empty (older modal, etc.) we fall back
+    // to provisioning everything available.
     const rawBudget = values.budget?.val?.value
     const parsedBudget = rawBudget ? parseFloat(String(rawBudget).replace(/[$,\s]/g, '')) : NaN
+    const selectedFromForm = (values.services?.val?.selected_options || [])
+      .map((o: any) => o.value as ServiceKey)
     const form = {
       projectNumber: values.project_number?.val?.value || '',
       projectName: values.project_name?.val?.value || '',
@@ -253,7 +283,8 @@ export function registerInteractionHandlers(app: App) {
       deadline: values.deadline?.val?.selected_date || undefined,
       description: values.description?.val?.value || undefined,
       budgetTotal: Number.isFinite(parsedBudget) && parsedBudget > 0 ? parsedBudget : undefined,
-      selectedServices: getProvisionableServices(),
+      selectedServices:
+        selectedFromForm.length > 0 ? selectedFromForm : getProvisionableServices(),
     }
 
     // Resolve workspace

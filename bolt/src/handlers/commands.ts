@@ -12,10 +12,10 @@
  */
 
 import type { App } from '@slack/bolt'
-import { buildNewProjectModal } from '../../../src/lib/provisioner/modal'
 import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
 import { stashIntake } from '../../../src/lib/storyboard/stash'
 import { dispatch } from '../../../src/lib/inngest/agents/registry'
+import { buildNewProjectCard } from './newproject-card'
 
 export function registerCommandHandlers(app: App) {
   // ─── /kit ─────────────────────────────────────────────────
@@ -29,20 +29,18 @@ export function registerCommandHandlers(app: App) {
       case 'new': {
         // Ack immediately — Slack needs a response within 3s
         await ack()
-
-        // Open the intake modal
-        const modal = buildNewProjectModal(command.channel_id)
-
+        // Post the new-project card; the button click opens the modal
+        // with a fresh trigger_id. Same UX as the storyboard flow and
+        // as typing "new project" in a DM.
         try {
-          await client.views.open({
-            trigger_id: command.trigger_id,
-            view: modal as any,
-          })
+          await client.chat.postMessage(
+            buildNewProjectCard(command.channel_id),
+          )
         } catch (err: any) {
-          console.error('[Bolt] views.open failed:', err.data?.error || err.message)
+          console.error('[Bolt] newproject card post failed:', err.data?.error || err.message)
           await respond({
             response_type: 'ephemeral',
-            text: `Failed to open the project form: ${err.data?.error || err.message}`,
+            text: `Couldn't post the new-project card: ${err.data?.error || err.message}`,
           })
         }
         break
@@ -100,11 +98,11 @@ export function registerCommandHandlers(app: App) {
           response_type: 'ephemeral',
           text:
             '*Kit Commands*\n\n' +
-            '`/kit newproject` — Open the new project intake form\n' +
+            '`/kit newproject` — Post the new-project card (pick services, fill in details)\n' +
             '`/kit status <name>` — Quick project lookup\n' +
             '`/storyboard` — Turn a script into a Boords storyboard\n' +
             '`/kit help` — Show this message\n\n' +
-            'You can also @mention Kit or DM me directly to ask about projects, budgets, files, reviews, or to log time.',
+            'You can also DM me and type *new project* or *new storyboard* to get the same cards. Or @mention me to ask about projects, budgets, files, reviews, or to log time.',
         })
         break
       }

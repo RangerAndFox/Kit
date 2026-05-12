@@ -2,8 +2,30 @@
  * Builds the Block Kit modal for the /kit newproject intake form.
  * private_metadata carries channel_id so the interaction handler
  * knows where to post the summary.
+ *
+ * `availableServices` is the list of agent IDs (e.g. ['slack', 'frameio',
+ * 'harvest', 'dropbox']) that are online — only those become checkboxes,
+ * and all are pre-checked by default.
  */
-export function buildNewProjectModal(channelId: string) {
+const SERVICE_LABELS: Record<string, string> = {
+  slack: 'Slack — channel + canvases',
+  frameio: 'Frame.io — project + folders',
+  harvest: 'Harvest — project + budget',
+  dropbox: 'Dropbox — project folder',
+}
+
+export function buildNewProjectModal(
+  channelId: string,
+  availableServices: string[] = ['slack', 'frameio', 'harvest', 'dropbox'],
+) {
+  const serviceOptions = availableServices.map((id) => ({
+    text: {
+      type: 'plain_text' as const,
+      text: SERVICE_LABELS[id] || id,
+    },
+    value: id,
+  }))
+
   return {
     type: 'modal' as const,
     callback_id: 'kit_provision_project',
@@ -92,13 +114,22 @@ export function buildNewProjectModal(channelId: string) {
       },
       { type: 'divider' },
       {
+        type: 'input',
+        block_id: 'services',
+        label: { type: 'plain_text', text: 'Services to provision' },
+        element: {
+          type: 'checkboxes',
+          action_id: 'val',
+          initial_options: serviceOptions,
+          options: serviceOptions,
+        },
+      },
+      {
         type: 'context',
         elements: [
           {
             type: 'mrkdwn',
-            text:
-              ':sparkles: *Will provision everything available* — Harvest project, Dropbox folder, Frame.io project, and a dedicated Slack channel. ' +
-              'Hit *Create Project* to confirm.',
+            text: ':sparkles: Uncheck anything you don\'t need. Hit *Create Project* to provision.',
           },
         ],
       },

@@ -29,6 +29,7 @@ import { setThinking, clearThinking } from '../llm/status'
 import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
 import { stashIntake } from '../../../src/lib/storyboard/stash'
 import { projectNameFromFilename } from '../../../src/lib/storyboard/parser'
+import { buildNewProjectCard } from './newproject-card'
 
 export function registerMessageHandlers(app: App) {
   // ─── @mentions ────────────────────────────────────────────
@@ -112,6 +113,18 @@ export function registerMessageHandlers(app: App) {
         userId,
         assistantThreadTs,
       })
+      return
+    }
+
+    // ── New-project keyword shortcut (DM only) ────────────
+    if (isDM && isNewProjectTrigger((msgEvent.text || '').trim())) {
+      const assistantThreadTs =
+        msgEvent.assistant_thread && msgEvent.thread_ts
+          ? msgEvent.thread_ts
+          : undefined
+      await app.client.chat.postMessage(
+        buildNewProjectCard(channelId, assistantThreadTs),
+      )
       return
     }
 
@@ -353,6 +366,44 @@ export function isStoryboardScriptFile(f: any): boolean {
  * intent is "I want to create a storyboard now" — not for messages that
  * merely mention storyboarding in passing.
  */
+/**
+ * Conservative matcher for "I want to start a new project right now"
+ * phrasings. Mirrors the storyboard trigger style: only strict, short
+ * intents fire the shortcut; everything looser goes to the orchestrator.
+ */
+export function isNewProjectTrigger(text: string): boolean {
+  if (!text) return false
+  const t = text.toLowerCase().trim()
+  if (t.length > 60) return false
+  const exact = new Set([
+    'new project',
+    '/newproject',
+    '/new project',
+    'newproject',
+    'make a project',
+    'create a project',
+    'create project',
+    'make project',
+    'start a project',
+    'start project',
+    'spin up a project',
+    'spin up project',
+    'new gig',
+  ])
+  if (exact.has(t)) return true
+  return /^(new|make|create|start|spin up)\s+(a\s+)?project(\s+please)?\.?$/i.test(t)
+}
+
+/** Wrapper for the Assistant-thread caller (app.ts). */
+export async function handleNewProjectKeywordFromAssistant(
+  app: App,
+  opts: { channelId: string; assistantThreadTs?: string },
+): Promise<void> {
+  await app.client.chat.postMessage(
+    buildNewProjectCard(opts.channelId, opts.assistantThreadTs),
+  )
+}
+
 export function isStoryboardTrigger(text: string): boolean {
   if (!text) return false
   const t = text.toLowerCase().trim()

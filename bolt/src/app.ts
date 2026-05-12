@@ -16,6 +16,8 @@ import {
   isStoryboardScriptFile,
   isStoryboardTrigger,
   handleStoryboardKeywordFromAssistant,
+  isNewProjectTrigger,
+  handleNewProjectKeywordFromAssistant,
 } from './handlers/messages'
 import { registerCommandHandlers } from './handlers/commands'
 import { registerInteractionHandlers } from './handlers/interactions'
@@ -73,6 +75,15 @@ const assistant = new Assistant({
       await handleStoryboardKeywordFromAssistant(app, {
         channelId: m.channel,
         userId: m.user,
+        assistantThreadTs: m.thread_ts,
+      })
+      return
+    }
+
+    // ── New-project keyword shortcut in an Assistant thread ─
+    if (isNewProjectTrigger((m.text || '').trim())) {
+      await handleNewProjectKeywordFromAssistant(app, {
+        channelId: m.channel,
         assistantThreadTs: m.thread_ts,
       })
       return
