@@ -44,13 +44,13 @@ export function buildStoryboardModal(args: BuildStoryboardModalArgs) {
       label: { type: 'plain_text', text: 'Script' },
       hint: {
         type: 'plain_text',
-        text: 'Paste the script (plain text or an Audio/Visual table). Leave empty for a blank storyboard.',
+        text: 'Paste the script (up to 3000 chars). For longer scripts, cancel and drop a .docx or .txt in the DM. Leave empty for a blank storyboard.',
       },
       element: {
         type: 'plain_text_input',
         action_id: 'val',
         multiline: true,
-        max_length: 10000,
+        max_length: 3000,
       },
     })
   } else {
