@@ -32,14 +32,39 @@ turndown.use(gfm)
 //     Standard Unicode-mapped shortcodes (:smile:) are fine; custom ones
 //     are not resolved.
 //   - heading markers (####) appearing inside table cells.
+// Slack emoji shortcodes that node-emoji@^2 doesn't recognize (its
+// emojilib-based dataset uses different primary names for these). Applied
+// before nodeEmoji.emojify so the leftover-shortcode stripper doesn't eat
+// them. Extend this map as we hit more.
+const SLACK_EMOJI_OVERRIDES: Record<string, string> = {
+  telephone_receiver: '📞',
+  speech_balloon: '💬',
+  envelope: '✉️',
+  email: '✉️',
+  e_mail: '📧',
+  memo: '📝',
+  clapper: '🎬',
+  movie_camera: '🎥',
+  film_projector: '📽️',
+  film_strip: '🎞️',
+  page_facing_up: '📄',
+  bookmark_tabs: '📑',
+  open_file_folder: '📂',
+  file_folder: '📁',
+  pencil2: '✏️',
+}
+
 function sanitizeCanvasMarkdown(md: string): string {
   let s = md
   // Unescape brackets — Slack canvas treats \[ as a literal backslash
   // followed by a bracket, not as an escaped bracket.
   s = s.replace(/\\\[/g, '[').replace(/\\\]/g, ']')
-  // Convert standard emoji shortcodes (:telephone_receiver:, :speech_balloon:,
-  // :email:, etc.) to their Unicode codepoints. Canvas renders codepoints as
-  // glyphs reliably; raw :shortcodes: come through as literal text.
+  // First pass: apply our overrides for Slack shortcodes node-emoji misses.
+  s = s.replace(/:([a-z0-9_+-]+):/gi, (m, name) => {
+    const key = String(name).toLowerCase()
+    return SLACK_EMOJI_OVERRIDES[key] ?? m
+  })
+  // Second pass: emojify everything else node-emoji does know.
   s = nodeEmoji.emojify(s)
   // Strip any leftover :shortcode: patterns — those are workspace-custom
   // emoji that node-emoji didn't recognize, which canvas can't resolve and
