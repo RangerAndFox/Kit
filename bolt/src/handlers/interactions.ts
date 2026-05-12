@@ -316,7 +316,6 @@ export function registerInteractionHandlers(app: App) {
           project_code: projectCode,
           project_type: form.projectType,
           status: 'provisioning',
-          created_by: userId,
           start_date: form.startDate || null,
           deadline: form.deadline || null,
           description: form.description || null,
@@ -446,11 +445,17 @@ export function registerInteractionHandlers(app: App) {
  * Every registered agent (with required env vars present) that declares a
  * `provision` capability. Single source of truth — adding a new agent with
  * provision support automatically extends the new-project flow.
+ *
+ * Boords is excluded: it provisions a storyboard, not a project, and has
+ * its own dedicated flow (/storyboard).
  */
+const NEW_PROJECT_EXCLUDED_SERVICES = new Set(['boords'])
+
 function getProvisionableServices(): ServiceKey[] {
   return getAvailableAgents()
     .filter((agent) => agent.capabilities.some((c) => c.action === 'provision'))
     .map((agent) => agent.id as ServiceKey)
+    .filter((id) => !NEW_PROJECT_EXCLUDED_SERVICES.has(id as string))
 }
 
 async function resolveWorkspaceId(teamId: string): Promise<string> {
