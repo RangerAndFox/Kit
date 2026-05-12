@@ -462,6 +462,12 @@ export async function duplicateTemplateCanvases(opts: {
       //    create (rather than canvases.access.set after the fact) is
       //    what makes the canvas appear in the channel header as a tab.
       const newTitle = `${spine} — ${originalTitle}`
+      // Debug: emit the first 800 chars of the markdown so we can see what
+      // actually ships to Slack — useful when emoji shortcodes or other
+      // template tokens come through as literal text.
+      console.log(
+        `[Slack canvas] ${fileId}: markdown preview (first 800 chars):\n${markdown.slice(0, 800)}`,
+      )
       let canvasId: string | undefined
       try {
         const created = await slackPost('canvases.create', {
