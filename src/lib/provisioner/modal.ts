@@ -17,6 +17,7 @@ const SERVICE_LABELS: Record<string, string> = {
 export function buildNewProjectModal(
   channelId: string,
   availableServices: string[] = ['slack', 'frameio', 'harvest', 'dropbox'],
+  threadTs?: string,
 ) {
   const serviceOptions = availableServices.map((id) => ({
     text: {
@@ -29,7 +30,7 @@ export function buildNewProjectModal(
   return {
     type: 'modal' as const,
     callback_id: 'kit_provision_project',
-    private_metadata: JSON.stringify({ channel_id: channelId }),
+    private_metadata: JSON.stringify({ channel_id: channelId, thread_ts: threadTs || '' }),
     title: { type: 'plain_text' as const, text: 'New Project' },
     submit: { type: 'plain_text' as const, text: 'Create Project' },
     close: { type: 'plain_text' as const, text: 'Cancel' },

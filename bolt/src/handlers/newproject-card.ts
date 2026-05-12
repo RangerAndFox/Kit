@@ -19,6 +19,9 @@ export interface NewProjectCardArgs {
 }
 
 export function buildNewProjectCard(channelId: string, threadTs?: string) {
+  // Pack channel + thread into the button value so the modal can route
+  // progress messages back into the same Assistant thread.
+  const ctx = JSON.stringify({ c: channelId, t: threadTs || '' })
   return {
     channel: channelId,
     ...(threadTs ? { thread_ts: threadTs } : {}),
@@ -41,13 +44,13 @@ export function buildNewProjectCard(channelId: string, threadTs?: string) {
             style: 'primary',
             text: { type: 'plain_text', text: 'Open project form' },
             action_id: 'kit_open_newproject_modal',
-            value: channelId,
+            value: ctx,
           },
           {
             type: 'button',
             text: { type: 'plain_text', text: 'Cancel' },
             action_id: 'kit_cancel_newproject',
-            value: channelId,
+            value: ctx,
           },
         ],
       },

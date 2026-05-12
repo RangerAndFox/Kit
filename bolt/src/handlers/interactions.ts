@@ -31,13 +31,22 @@ export function registerInteractionHandlers(app: App) {
   // open the modal with a fresh trigger_id and route the summary back.
   app.action('kit_open_newproject_modal', async ({ ack, body, client }) => {
     await ack()
-    const channelId =
-      (body as any).actions?.[0]?.value || (body as any).channel?.id || ''
+    const raw = (body as any).actions?.[0]?.value || ''
+    let channelId = ''
+    let threadTs: string | undefined
+    try {
+      const parsed = JSON.parse(raw)
+      channelId = parsed.c || ''
+      threadTs = parsed.t || undefined
+    } catch {
+      // Backwards compatibility: older cards stored just the channel id.
+      channelId = raw || (body as any).channel?.id || ''
+    }
     const availableServiceIds = getProvisionableServices() as string[]
     try {
       await client.views.open({
         trigger_id: (body as any).trigger_id,
-        view: buildNewProjectModal(channelId, availableServiceIds) as any,
+        view: buildNewProjectModal(channelId, availableServiceIds, threadTs) as any,
       })
     } catch (err: any) {
       console.error('[Bolt] newproject modal open failed:', err.data?.error || err.message)
@@ -263,6 +272,16 @@ export function registerInteractionHandlers(app: App) {
     const userId = body.user.id
     const meta = JSON.parse(view.private_metadata || '{}')
     const channelId = meta.channel_id || ''
+    const threadTs = meta.thread_ts || undefined
+    // Progress and errors post into the same channel/thread the user
+    // launched the flow from. Falls back to DMing the user when we
+    // somehow don't have a channel (shouldn't happen via the card).
+    const statusChannel = channelId || userId
+    const postOpts = (extra: Record<string, unknown> = {}) => ({
+      channel: statusChannel,
+      ...(threadTs ? { thread_ts: threadTs } : {}),
+      ...extra,
+    })
     const values = view.state?.values || {}
 
     // Extract form values. Services are read from the checkbox group;
@@ -296,11 +315,10 @@ export function registerInteractionHandlers(app: App) {
     // No after(), no Inngest, no 60s ceiling. Just do the work.
 
     try {
-      // DM the user that we're starting
-      await client.chat.postMessage({
-        channel: userId,
+      // Tell the user we're starting (in the same thread the flow started in)
+      await client.chat.postMessage(postOpts({
         text: `⚡ Provisioning *${form.projectName}* for ${form.clientName}...`,
-      })
+      }))
 
       // Build the project code
       const projectCode = `${form.projectNumber}-${form.clientName.replace(/\s+/g, '')}`
@@ -361,17 +379,15 @@ export function registerInteractionHandlers(app: App) {
 
             // Progress update
             const status = result.success ? '✅' : '⚠️'
-            await client.chat.postMessage({
-              channel: userId,
+            await client.chat.postMessage(postOpts({
               text: `${status} *${service}*: ${result.message || (result.success ? 'Done' : result.error || 'Failed')}`,
-            })
+            }))
 
             return { service, ...result }
           } catch (err: any) {
-            await client.chat.postMessage({
-              channel: userId,
+            await client.chat.postMessage(postOpts({
               text: `❌ *${service}*: ${err.message}`,
-            })
+            }))
             return {
               service,
               agent: service,
@@ -419,22 +435,20 @@ export function registerInteractionHandlers(app: App) {
         })
       }
 
-      // ── Final DM ──────────────────────────────────────────
+      // ── Final summary ─────────────────────────────────────
       const succeeded = Object.values(serviceResults).filter((r: any) => r.success).length
       const failed = services.length - succeeded
-      await client.chat.postMessage({
-        channel: userId,
+      await client.chat.postMessage(postOpts({
         text: failed === 0
           ? `✅ *${form.projectName}* is fully provisioned! (${succeeded}/${services.length} services)`
           : `⚠️ *${form.projectName}* provisioned with ${failed} issue(s). Check the project channel for details.`,
-      })
+      }))
 
     } catch (err: any) {
       console.error('[Bolt] Provisioning failed:', err)
-      await client.chat.postMessage({
-        channel: userId,
+      await client.chat.postMessage(postOpts({
         text: `❌ Provisioning *${form.projectName}* failed: ${err.message || 'unknown error'}`,
-      })
+      }))
     }
   })
 }
