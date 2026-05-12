@@ -165,75 +165,122 @@ export async function createProject(input: { name: string }): Promise<BoordsProj
   }
 }
 
+/** Shape the frames payload identically across all create paths. */
+function buildFramesPayload(frames: BoordsFrame[]): any[] {
+  return frames.map((f, i) => ({
+    label: f.label ?? String(i + 1),
+    ...(f.sound !== undefined ? { sound: f.sound } : {}),
+    ...(f.action !== undefined ? { action: f.action } : {}),
+    ...(f.dialogue !== undefined ? { dialogue: f.dialogue } : {}),
+    ...(f.notes !== undefined ? { notes: f.notes } : {}),
+    ...(f.duration !== undefined ? { duration: f.duration } : {}),
+  }))
+}
+
+function parseStoryboardResponse(
+  res: any,
+  fallbackName: string,
+  frameCount: number,
+  projectIdHint?: string,
+): {
+  storyboard: BoordsStoryboard
+  project: BoordsProject
+  fieldKeyMap: Record<string, string>
+} {
+  const data = res?.data || {}
+  const attrs = data?.attributes || {}
+  const projectId =
+    projectIdHint ||
+    attrs.project_id ||
+    data?.relationships?.project?.data?.id ||
+    ''
+  return {
+    storyboard: {
+      id: data.id,
+      name: attrs.name || fallbackName,
+      url: attrs.url || attrs.share_url || attrs.viewer_url,
+      frameCount,
+    },
+    project: { id: projectId, name: attrs.project_name || '' },
+    fieldKeyMap: res?.meta?.field_key_map || {},
+  }
+}
+
 /**
  * Create a storyboard with all its frames in a single POST.
- * The docs explicitly support this pattern via the `frames` array.
  *
- * Project resolution: explicit input.projectId → BOORDS_DEFAULT_PROJECT_ID
- * → auto-create (requires team-admin scope on the token).
+ * Project resolution — we try the cheapest path first and fall back as
+ * each one fails so a project-scoped token still works without manual
+ * setup whenever Boords' API allows it:
  *
- * Returns the new storyboard's ID and (if present) a viewable URL,
- * plus the field_key_map echo so callers can update fields later.
+ *   1. Explicit input.projectId → POST /storyboards with project_id
+ *   2. BOORDS_DEFAULT_PROJECT_ID env var → same
+ *   3. Inline create: POST /storyboards with project_name (no project_id)
+ *      — Boords spins up a new project named project_name as a side effect.
+ *      Works with project-scoped tokens because no /projects call is made.
+ *   4. Explicit project create: POST /projects → POST /storyboards
+ *      — only works if the token has team-admin scope (rare).
+ *
+ * Whichever path succeeds first wins. Errors are aggregated so the final
+ * thrown error explains every attempt.
  */
 export async function createStoryboard(input: CreateStoryboardInput): Promise<{
   storyboard: BoordsStoryboard
   project: BoordsProject
   fieldKeyMap: Record<string, string>
 }> {
-  let projectId = input.projectId
-  let project: BoordsProject
+  const frames = buildFramesPayload(input.frames)
+  const baseBody: Record<string, unknown> = { name: input.name, frames }
+  if (input.description) baseBody.description = input.description
+  if (input.aspectRatio) baseBody.aspect_ratio = input.aspectRatio
 
-  if (!projectId) {
-    const envDefault = process.env.BOORDS_DEFAULT_PROJECT_ID?.trim()
-    if (envDefault) {
-      projectId = envDefault
-    }
+  // ── Path 1 & 2: explicit projectId or env default ────────────
+  const explicitProjectId =
+    input.projectId || process.env.BOORDS_DEFAULT_PROJECT_ID?.trim()
+  if (explicitProjectId) {
+    const res = await boordsFetch('POST', '/storyboards', {
+      ...baseBody,
+      project_id: explicitProjectId,
+    })
+    return parseStoryboardResponse(
+      res,
+      input.name,
+      input.frames.length,
+      explicitProjectId,
+    )
   }
 
-  if (projectId) {
-    project = { id: projectId, name: '' }
-  } else {
-    try {
-      project = await createProject({ name: input.name })
-      projectId = project.id
-    } catch (err: any) {
-      throw new Error(
-        `Couldn't auto-create a Boords project (${err.message}). ` +
-          `This usually means your API token is project-scoped. ` +
-          `Set BOORDS_DEFAULT_PROJECT_ID to an existing project id (Boords UI → ` +
-          `open the project → copy the short id from the URL).`,
-      )
-    }
+  // ── Path 3: inline create via storyboard endpoint ────────────
+  // Pass project_name so Boords auto-creates a project. If the API
+  // doesn't honor this field it'll error 4xx and we move on.
+  const attempts: Array<{ path: string; error: string }> = []
+  try {
+    const res = await boordsFetch('POST', '/storyboards', {
+      ...baseBody,
+      project_name: input.name,
+    })
+    return parseStoryboardResponse(res, input.name, input.frames.length)
+  } catch (err: any) {
+    attempts.push({ path: 'POST /storyboards (project_name)', error: err.message })
   }
 
-  const body: Record<string, unknown> = {
-    name: input.name,
-    project_id: projectId,
-    frames: input.frames.map((f, i) => ({
-      label: f.label ?? String(i + 1),
-      ...(f.sound !== undefined ? { sound: f.sound } : {}),
-      ...(f.action !== undefined ? { action: f.action } : {}),
-      ...(f.dialogue !== undefined ? { dialogue: f.dialogue } : {}),
-      ...(f.notes !== undefined ? { notes: f.notes } : {}),
-      ...(f.duration !== undefined ? { duration: f.duration } : {}),
-    })),
+  // ── Path 4: explicit POST /projects then POST /storyboards ───
+  try {
+    const project = await createProject({ name: input.name })
+    const res = await boordsFetch('POST', '/storyboards', {
+      ...baseBody,
+      project_id: project.id,
+    })
+    return parseStoryboardResponse(res, input.name, input.frames.length, project.id)
+  } catch (err: any) {
+    attempts.push({ path: 'POST /projects → /storyboards', error: err.message })
   }
-  if (input.description) body.description = input.description
-  if (input.aspectRatio) body.aspect_ratio = input.aspectRatio
 
-  const res = await boordsFetch('POST', '/storyboards', body)
-  const data = res?.data || {}
-  const attrs = data?.attributes || {}
-  return {
-    storyboard: {
-      id: data.id,
-      name: attrs.name || input.name,
-      url: attrs.url || attrs.share_url || attrs.viewer_url,
-      frameCount: input.frames.length,
-    },
-    project,
-    fieldKeyMap: res?.meta?.field_key_map || {},
-  }
+  const detail = attempts.map((a) => `${a.path}: ${a.error}`).join(' | ')
+  throw new Error(
+    `Couldn't create a Boords project for "${input.name}". Tried: ${detail}. ` +
+      `If your token is project-scoped, set BOORDS_DEFAULT_PROJECT_ID in Railway.`,
+  )
 }
 
 /**
