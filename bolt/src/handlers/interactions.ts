@@ -335,8 +335,9 @@ export function registerInteractionHandlers(app: App) {
           project_type: form.projectType,
           status: 'provisioning',
           start_date: form.startDate || null,
-          deadline: form.deadline || null,
-          description: form.description || null,
+          target_delivery: form.deadline || null,
+          brief_summary: form.description || null,
+          budget_total: form.budgetTotal ?? null,
         })
         .select()
         .single()
@@ -420,7 +421,7 @@ export function registerInteractionHandlers(app: App) {
         .from('projects')
         .update({
           status: allSucceeded ? 'active' : 'partial',
-          service_links: projectLinks,
+          external_links: projectLinks,
         })
         .eq('id', project.id)
 
