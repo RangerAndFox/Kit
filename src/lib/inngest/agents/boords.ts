@@ -321,7 +321,7 @@ export const boordsAgent: AgentDefinition = {
   domain: 'Boords (storyboards)',
   expertise:
     'Storyboards and visual scripts. Turn a script (pasted text, .docx, or .txt) into a Boords storyboard with one frame per beat — voiceover in the sound field, visuals in the action field. Auto-detects Audio/Visual tables; falls back to sentence split or AI scene extraction.',
-  requiredEnvVars: ['BOORDS_API_KEY'],
+  requiredEnvVars: ['BOORDS_API_KEY', 'BOORDS_DEFAULT_PROJECT_ID'],
   capabilities: [
     {
       action: 'provision',

@@ -4,25 +4,22 @@
  *
  * Auth: X-API-KEY header. Tokens start with "bap_" and are tied to a user.
  * Env vars:
- *   BOORDS_API_KEY — token from Settings → Team → API (required)
- *   BOORDS_TEAM_ID — short Team id (e.g. "p4k9az") to scope project creates.
- *                   Optional — when missing we GET /teams and use the first
- *                   team returned, cached for the process lifetime.
+ *   BOORDS_API_KEY            — token from Settings → Team → API (required)
+ *   BOORDS_DEFAULT_PROJECT_ID — short Project id (e.g. "p4k9az") that owns
+ *                               every new storyboard. Required, because the
+ *                               default API token scope is project-level
+ *                               write only — it cannot create projects or
+ *                               list teams (those return 403). Pre-create a
+ *                               "Kit Storyboards" project in the Boords UI
+ *                               and paste its id here.
  *
  * Resource model: Team → Project → Storyboard → Frames.
- * Project create MUST be scoped under a team, so the endpoint is
- *   POST /v1/teams/{teamId}/projects
- * (a flat POST /v1/projects returns 403 — Boords can't infer which team
- * the new project should belong to without it being in the URL).
  *
- * Storyboards still post flat at /v1/storyboards with project_id in the
- * body — that endpoint accepts the project's id directly.
- *
- * Project model: every storyboard lives inside a Boords project. We do
- * NOT share one "default" project across storyboards — each provision
- * call creates a fresh Boords project named after the storyboard, then
- * drops the storyboard inside it. Callers can override by passing an
- * explicit projectId.
+ * Why we don't auto-create one Boords project per storyboard: the standard
+ * Boords API token can write storyboards into existing projects but cannot
+ * POST /projects (403) and cannot GET /teams (also 403). So all storyboards
+ * land in the configured default project; producers can re-home them in the
+ * Boords UI after creation if needed.
  *
  * Rate limit: 120 req/min. We honor Retry-After on 429 with one bounded
  * retry; beyond that callers can re-call.
@@ -122,71 +119,29 @@ export interface CreateStoryboardInput {
 // ─── Endpoints ─────────────────────────────────────────────────
 
 /**
- * Resolve the team id we should create projects under. Cached for the
- * process lifetime — the team membership doesn't change often.
- *
- * Order of resolution:
- *   1. BOORDS_TEAM_ID env var (explicit override)
- *   2. GET /teams → first team's id
- */
-let _cachedTeamId: string | null = null
-export async function getCurrentTeamId(): Promise<string> {
-  if (_cachedTeamId) return _cachedTeamId
-  const fromEnv = process.env.BOORDS_TEAM_ID?.trim()
-  if (fromEnv) {
-    _cachedTeamId = fromEnv
-    return fromEnv
-  }
-  const res = await boordsFetch('GET', '/teams')
-  const first = (res?.data || [])[0]
-  if (!first?.id) {
-    throw new Error(
-      'No Boords team found for this API key. Set BOORDS_TEAM_ID or check that the token belongs to a team.',
-    )
-  }
-  _cachedTeamId = first.id
-  return first.id
-}
-
-/**
- * Create a new Boords project under the resolved team. We make one per
- * storyboard so each Ranger & Fox project gets its own Boords project
- * (no shared bucket).
- */
-export async function createProject(input: { name: string }): Promise<BoordsProject> {
-  const teamId = await getCurrentTeamId()
-  const res = await boordsFetch('POST', `/teams/${teamId}/projects`, {
-    name: input.name,
-  })
-  const data = res?.data || {}
-  return {
-    id: data.id,
-    name: data?.attributes?.name || input.name,
-  }
-}
-
-/**
  * Create a storyboard with all its frames in a single POST.
  * The docs explicitly support this pattern via the `frames` array.
  *
- * If no `projectId` is passed we first create a fresh Boords project
- * named after the storyboard — every storyboard gets its own project.
+ * `projectId` defaults to BOORDS_DEFAULT_PROJECT_ID. The Boords API token
+ * is project-scoped and can't create projects on its own, so all new
+ * storyboards land in that one bucket. Pass an explicit `projectId` to
+ * override (e.g. for the rare case where a producer has set up a
+ * dedicated project in Boords for a specific client).
  *
  * Returns the new storyboard's ID and (if present) a viewable URL,
  * plus the field_key_map echo so callers can update fields later.
  */
 export async function createStoryboard(input: CreateStoryboardInput): Promise<{
   storyboard: BoordsStoryboard
-  project: BoordsProject
   fieldKeyMap: Record<string, string>
 }> {
-  let projectId = input.projectId
-  let project: BoordsProject
+  const projectId = input.projectId || process.env.BOORDS_DEFAULT_PROJECT_ID
   if (!projectId) {
-    project = await createProject({ name: input.name })
-    projectId = project.id
-  } else {
-    project = { id: projectId, name: '' }
+    throw new Error(
+      'BOORDS_DEFAULT_PROJECT_ID is not set. Create a project in the Boords UI ' +
+        '(e.g. "Kit Storyboards"), copy its short id, and add it as BOORDS_DEFAULT_PROJECT_ID ' +
+        'in Railway. New storyboards will land inside that project.',
+    )
   }
 
   const body: Record<string, unknown> = {
@@ -214,7 +169,6 @@ export async function createStoryboard(input: CreateStoryboardInput): Promise<{
       url: attrs.url || attrs.share_url || attrs.viewer_url,
       frameCount: input.frames.length,
     },
-    project,
     fieldKeyMap: res?.meta?.field_key_map || {},
   }
 }
