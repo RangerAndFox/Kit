@@ -69,3 +69,14 @@ export function peekIntake(token: string): StoryboardIntake | null {
   gc()
   return store.get(token) || null
 }
+
+/** Merge partial fields into an existing intake; used when later steps
+ *  (like the button click) carry context we didn't have when stashing. */
+export function updateIntake(
+  token: string,
+  patch: Partial<Omit<StoryboardIntake, 'createdAt'>>,
+): void {
+  const entry = store.get(token)
+  if (!entry) return
+  store.set(token, { ...entry, ...patch })
+}

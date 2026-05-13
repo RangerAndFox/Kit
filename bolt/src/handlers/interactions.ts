@@ -21,7 +21,7 @@ import { buildSummaryBlocks } from '../../../src/lib/provisioner/slack-summary'
 import type { ServiceKey } from '../../../src/lib/provisioner/types'
 import { buildNewProjectModal } from '../../../src/lib/provisioner/modal'
 import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
-import { peekIntake, takeIntake } from '../../../src/lib/storyboard/stash'
+import { peekIntake, takeIntake, updateIntake } from '../../../src/lib/storyboard/stash'
 import { extractScriptFromFile } from '../../../src/lib/storyboard/files'
 
 export function registerInteractionHandlers(app: App) {
@@ -74,6 +74,13 @@ export function registerInteractionHandlers(app: App) {
         text: "That storyboard session expired — type `storyboard` again to start fresh.",
       })
       return
+    }
+    // Backfill thread context from the button click container — works for
+    // /storyboard slash command that didn't capture thread context up front,
+    // and also for any future entry points that drop the card without it.
+    const containerThreadTs = (body as any).container?.thread_ts as string | undefined
+    if (containerThreadTs && !intake.assistantThreadTs) {
+      updateIntake(stashToken, { assistantThreadTs: containerThreadTs })
     }
     try {
       await client.views.open({
