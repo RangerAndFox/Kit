@@ -330,6 +330,15 @@ export function registerInteractionHandlers(app: App) {
       // Build the project code
       const projectCode = `${form.projectNumber}-${form.clientName.replace(/\s+/g, '')}`
 
+      // Same shape the Dropbox provisioner uses (`/production/{year}/{safeName}`).
+      // Persisted so the file watcher can reverse-match Dropbox paths to projects.
+      const dropboxSafeName = [form.projectNumber, form.clientName, form.projectName]
+        .map((p) => (p ? String(p).trim() : ''))
+        .filter(Boolean)
+        .join('_')
+        .replace(/[^\w\s-]/g, '')
+        .replace(/\s+/g, '_')
+
       // ── Create project record in Supabase ─────────────────
       const supabase = createAdminClient()
       const { data: project, error: dbError } = await supabase
@@ -345,6 +354,8 @@ export function registerInteractionHandlers(app: App) {
           target_delivery: form.deadline || null,
           brief_summary: form.description || null,
           budget_total: form.budgetTotal ?? null,
+          project_manager_slack_id: form.projectManager || null,
+          external_ids: { dropbox_safe_name: dropboxSafeName },
         })
         .select()
         .single()

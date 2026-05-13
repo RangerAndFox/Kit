@@ -21,6 +21,10 @@ import {
 } from './handlers/messages'
 import { registerCommandHandlers } from './handlers/commands'
 import { registerInteractionHandlers } from './handlers/interactions'
+import {
+  verifyDropboxSignature,
+  processDropboxNotification,
+} from './watchers/dropbox'
 
 // ─── Boot ──────────────────────────────────────────────────
 
@@ -133,20 +137,64 @@ process.on('SIGINT', () => {
   process.exit(0)
 })
 
-// ─── Health Server ─────────────────────────────────────────
-// Railway expects a service to bind to $PORT — without it, the platform
-// kills the container after ~7s thinking it's broken. Bolt's Socket Mode
-// is outbound-only, so we run a tiny HTTP server alongside that responds
-// 200 to anything. It's purely a Railway lifecycle formality.
+// ─── HTTP Server: Health + Dropbox Webhook ─────────────────
+// Railway needs us bound to $PORT. The same server hosts:
+//   • Any path / method → 200 OK (Railway health pings)
+//   • GET  /webhooks/dropbox?challenge=... → echo challenge (one-time verify)
+//   • POST /webhooks/dropbox → HMAC-verify and trigger cursor processing
+// The webhook handler responds 200 within milliseconds; the cursor pull
+// + uploads run after the response has been sent.
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001
+
 http
-  .createServer((_req, res) => {
+  .createServer((req, res) => {
+    const url = req.url || '/'
+
+    // Dropbox verification — echo the challenge back as text/plain.
+    if (req.method === 'GET' && url.startsWith('/webhooks/dropbox')) {
+      const challenge = new URL(url, 'http://localhost').searchParams.get('challenge') || ''
+      res.writeHead(200, {
+        'Content-Type': 'text/plain',
+        'X-Content-Type-Options': 'nosniff',
+      })
+      res.end(challenge)
+      return
+    }
+
+    // Dropbox notification — HMAC-verify, ACK fast, process async.
+    if (req.method === 'POST' && url.startsWith('/webhooks/dropbox')) {
+      const chunks: Buffer[] = []
+      req.on('data', (c) => chunks.push(Buffer.from(c)))
+      req.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8')
+        const sig = (req.headers['x-dropbox-signature'] as string) || ''
+
+        if (!verifyDropboxSignature(raw, sig)) {
+          console.warn('[Dropbox webhook] signature mismatch — rejecting')
+          res.writeHead(403, { 'Content-Type': 'text/plain' })
+          res.end('invalid signature')
+          return
+        }
+
+        // ACK immediately so Dropbox doesn't retry.
+        res.writeHead(200, { 'Content-Type': 'text/plain' })
+        res.end('ok')
+
+        // Fire-and-forget the actual delta pull.
+        processDropboxNotification(app).catch((err) => {
+          console.error('[Dropbox webhook] processing failed:', err)
+        })
+      })
+      return
+    }
+
+    // Fallback: Railway health pings + anything else.
     res.writeHead(200, { 'Content-Type': 'text/plain' })
     res.end('Kit OK')
   })
   .listen(PORT, () => {
-    console.log(`   Health server: listening on :${PORT}`)
+    console.log(`   Health + webhook server: listening on :${PORT}`)
   })
 
 // ─── Start ─────────────────────────────────────────────────
