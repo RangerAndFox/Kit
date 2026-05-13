@@ -305,9 +305,13 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
  *   "2620_Microsoft_FoundryIQSizzle" → "2620"
  *   "2612B_Microsoft_D365 CI - ..."  → "2612B"
  *   "2620 Foundry IQ Sizzle"         → "2620"
+ *
+ * Uses an explicit "next char is non-alphanumeric or end" lookahead
+ * rather than \b, because \b doesn't fire between "B" and "_" (both
+ * are word chars to the regex engine).
  */
 function extractProjectNumber(safeName: string): string | null {
-  const m = safeName.match(/^(\d+[A-Za-z]?)\b/)
+  const m = safeName.match(/^(\d+[A-Za-z]?)(?=[^A-Za-z0-9]|$)/)
   return m ? m[1] : null
 }
 
@@ -401,26 +405,75 @@ async function findFrameioProjectByNumber(
   ws: string,
   projectNumber: string,
 ): Promise<{ id: string; name: string } | null> {
-  // Match the number followed by `_`, ` `, `-`, or end-of-string. Prevents
-  // "2620" from matching "26200" or "2620B".
-  const matchRe = new RegExp(`^${projectNumber}(?:[_\\s\\-]|$)`, 'i')
+  // Strict: project name starts with the number, followed by a separator
+  // or end. Catches 99% of correctly-formatted projects.
+  const startMatch = new RegExp(
+    `^${projectNumber}(?=[^A-Za-z0-9]|$)`,
+    'i',
+  )
+  // Lenient fallback: number appears anywhere in the name, surrounded by
+  // non-alphanumerics on both sides. Used when no start-match is found
+  // (e.g., the project's Frame.io name was set as "Microsoft - 2620 Foo"
+  // instead of the studio's "2620_Microsoft_Foo" convention).
+  const containsMatch = new RegExp(
+    `(?:^|[^A-Za-z0-9])${projectNumber}(?=[^A-Za-z0-9]|$)`,
+    'i',
+  )
 
-  // Paginate through workspace projects. Frame.io v4 typically returns
-  // ~25/page; bail at 20 pages so a bug can't infinite-loop.
   let url: string | null =
     `/accounts/${acct}/workspaces/${ws}/projects?page_size=100`
   let pages = 0
+  let totalScanned = 0
+  const sampleNames: string[] = []
+  let lenientHit: { id: string; name: string } | null = null
+
   while (url && pages++ < 20) {
     const r = await frameioGet(url)
     const items: any[] = r.data || r.projects || []
-    for (const p of items) {
-      if (p.name && matchRe.test(p.name)) return { id: p.id, name: p.name }
+    if (pages === 1) {
+      console.log(
+        `[dropbox-watcher] frameio list response shape: top-keys=[${Object.keys(r).join(',')}] item-keys=[${items[0] ? Object.keys(items[0]).join(',') : 'empty'}]`,
+      )
     }
-    // Frame.io v4 paginates via `next_page` or `links.next`. Defensive
-    // lookup so we work with either shape.
-    const next = r.links?.next || r.next_page || r.pagination?.next
-    url = typeof next === 'string' ? (next.startsWith('http') ? next.split('frame.io')[1] : next) : null
+    for (const p of items) {
+      totalScanned++
+      if (sampleNames.length < 6 && p.name) sampleNames.push(p.name)
+      if (p.name && startMatch.test(p.name)) {
+        console.log(
+          `[dropbox-watcher] frameio search hit (start-match) after scanning ${totalScanned}: "${p.name}"`,
+        )
+        return { id: p.id, name: p.name }
+      }
+      if (!lenientHit && p.name && containsMatch.test(p.name)) {
+        lenientHit = { id: p.id, name: p.name }
+      }
+    }
+    // Frame.io v4 pagination: try common shapes. Logs first response
+    // shape above so we can correct this if needed.
+    const next =
+      r.links?.next ||
+      r.next_page ||
+      r.pagination?.next ||
+      r.pagination?.next_cursor ||
+      null
+    url =
+      typeof next === 'string'
+        ? next.startsWith('http')
+          ? next.split('frame.io')[1]
+          : next
+        : null
   }
+
+  if (lenientHit) {
+    console.log(
+      `[dropbox-watcher] frameio search hit (contains-match fallback) after scanning ${totalScanned}: "${lenientHit.name}"`,
+    )
+    return lenientHit
+  }
+
+  console.warn(
+    `[dropbox-watcher] frameio search: scanned ${totalScanned} projects, no match for "${projectNumber}". Sample names: ${sampleNames.join(' | ')}`,
+  )
   return null
 }
 
