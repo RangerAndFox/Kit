@@ -59,6 +59,13 @@ function sanitizeCanvasMarkdown(md: string): string {
   // Unescape brackets — Slack canvas treats \[ as a literal backslash
   // followed by a bracket, not as an escaped bracket.
   s = s.replace(/\\\[/g, '[').replace(/\\\]/g, ']')
+  // Unescape underscores. Turndown escapes them so plain text like
+  // "telephone_receiver" doesn't get italicized as "telephone<em>receiver</em>".
+  // But for emoji shortcodes (:telephone_receiver:) the escape is what makes
+  // the emojify regex below fail to match — so the shortcode passes through
+  // and renders as literal text in the canvas. Canvas treats `_` as italic
+  // start/end only when paired, so a bare underscore in shortcodes is safe.
+  s = s.replace(/\\_/g, '_')
   // First pass: apply our overrides for Slack shortcodes node-emoji misses.
   s = s.replace(/:([a-z0-9_+-]+):/gi, (m, name) => {
     const key = String(name).toLowerCase()
