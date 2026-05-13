@@ -265,6 +265,9 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
     },
   )
   const file = createResp.data || createResp
+  console.log(
+    `[dropbox-watcher] frameio file response keys: [${Object.keys(file).join(',')}]`,
+  )
   const breadcrumb =
     traversedNames.length > 0
       ? `03_Outgoing / ${d.subfolder} / ${traversedNames.join(' / ')}`
@@ -273,27 +276,40 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
     `[dropbox-watcher] queued Frame.io upload for ${fileName} → ${project.name} / ${breadcrumb} (file id ${file.id})`,
   )
 
-  // ── Create a review link (file may still be processing) ─
-  // The review link is valid even while the asset transcodes.
-  const reviewLinkName =
+  // ── Create a Frame.io share link ────────────────────────
+  // Frame.io v4 uses /accounts/{acct}/share_links, not review_links.
+  // The previous /projects/{id}/review_links endpoint 404s on v4.
+  // If the create fails, fall back to the file's view_url (logged-in
+  // Frame.io view) so the PM at least gets a working link.
+  const shareName =
     traversedNames.length > 0
       ? `${d.subfolder} / ${traversedNames.join(' / ')} – ${fileName}`
       : `${d.subfolder} – ${fileName}`
   let reviewUrl: string | undefined
   try {
     const linkResp = await frameioPost(
-      `/accounts/${acct}/projects/${frameioId}/review_links`,
+      `/accounts/${acct}/share_links`,
       {
         data: {
-          name: reviewLinkName,
-          items: [{ file_id: file.id }],
+          name: shareName,
+          items: [{ id: file.id, type: 'file' }],
         },
       },
     )
     const link = linkResp.data || linkResp
-    reviewUrl = link.review_url || link.short_url || link.url
+    reviewUrl =
+      link.short_url || link.url || link.share_url || link.view_url
+    console.log(`[dropbox-watcher] share link created: ${reviewUrl}`)
   } catch (err: any) {
-    console.warn(`[dropbox-watcher] review link failed: ${err.message}`)
+    console.warn(
+      `[dropbox-watcher] share_link create failed (${err.message}); falling back to file view_url`,
+    )
+  }
+
+  if (!reviewUrl) {
+    reviewUrl =
+      file.view_url ||
+      `https://next.frame.io/project/${frameioId}/view/${file.id}`
   }
 
   // ── Notify ──────────────────────────────────────────────
