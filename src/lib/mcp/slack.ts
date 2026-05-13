@@ -514,6 +514,15 @@ export async function duplicateTemplateCanvases(opts: {
           continue
         }
         const html = await res.text()
+        // Dump raw HTML so we can diagnose conversion problems on richer
+        // canvases (toggles, columns, multi-row tables). Chunk it because
+        // Railway truncates very long log lines.
+        const HTML_CHUNK = 4000
+        for (let off = 0; off < html.length; off += HTML_CHUNK) {
+          console.log(
+            `[Slack canvas] ${fileId}: RAW_HTML[${off}..${Math.min(off + HTML_CHUNK, html.length)}]\n${html.slice(off, off + HTML_CHUNK)}`,
+          )
+        }
         markdown = canvasHtmlToMarkdown(html)
         console.log(`[Slack canvas] ${fileId}: html=${html.length} chars → markdown=${markdown.length} chars`)
       } catch (err: any) {
