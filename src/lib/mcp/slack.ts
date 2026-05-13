@@ -89,14 +89,17 @@ function sanitizeCanvasMarkdown(md: string): string {
 //     emitted as <img> with both an alt attr AND inner text holding the
 //     shortcode, plus a non-standard closing </img>. Collapse the whole
 //     thing (open tag + inner + close) to a single :emoji_name:.
-//   - Tables come back as <table><tbody><tr><td>...</td></tr>...</tbody></table>
+//   - <lnk href="...">text</lnk> — Quip's non-standard link tag.
+//   - Tables come back as <table><tr><td>...</td></tr>...</table>
 //     with no <th>/<thead>. turndown-plugin-gfm needs <th> to recognize a
 //     table, so we promote each table's first row of <td>s to <th>s.
+//   - Inside cells: block-level <h1>-<h6>, <p>, <div>, <ul>/<ol>/<li> all
+//     emit newlines in turndown, which shatters GFM pipe-tables (each cell
+//     must fit on one line). We flatten them to inline.
 function preprocessCanvasHtml(html: string): string {
   let s = html
 
   // <img ... alt="X" ...>...optional inner...</img>  →  :X:
-  // Greedy [^>]* on the opening tag, non-greedy [\s\S]*? on the inner.
   s = s.replace(
     /<img\b[^>]*\balt="([^"]+)"[^>]*>(?:[\s\S]*?<\/img>)?/gi,
     ':$1:',
@@ -105,17 +108,23 @@ function preprocessCanvasHtml(html: string): string {
   // Any leftover stray </img> tags from Quip output.
   s = s.replace(/<\/img>/gi, '')
 
-  // <control ...>inner</control>  →  inner. Dates ("May 1st"), emojis we
-  // just flattened, etc.
+  // <control ...>inner</control>  →  inner.
   s = s.replace(/<control\b[^>]*>([\s\S]*?)<\/control>/gi, '$1')
+
+  // <lnk href="...">text</lnk> → text. Quip's non-standard link tag.
+  s = s.replace(/<lnk\b[^>]*>([\s\S]*?)<\/lnk>/gi, '$1')
 
   // Drop wrapper <div class="quip-canvas-content"> and any other divs.
   s = s.replace(/<\/?div\b[^>]*>/gi, '')
 
+  // Drop entirely-empty <p class="line"></p> placeholders. The template
+  // ships ~80 of these after the content; they round-trip through turndown
+  // as blank lines that just add noise without any structural meaning.
+  s = s.replace(/<p\b[^>]*>\s*<\/p>/gi, '')
+
   // Promote first <tr>'s <td>s to <th>s so turndown-plugin-gfm recognizes
-  // these as GFM tables. Also flatten <p class="line"> wrappers inside
-  // cells — they're block-level to turndown and emit newlines, which
-  // shatters markdown pipe-tables (cells must be a single line).
+  // these as GFM tables, then flatten every cell's inner content to a
+  // single inline string (no block tags).
   s = s.replace(/<table\b[^>]*>([\s\S]*?)<\/table>/gi, (_match, inner) => {
     let firstRowSeen = false
     let rewritten = inner.replace(
@@ -129,17 +138,26 @@ function preprocessCanvasHtml(html: string): string {
         return rowMatch.replace(rowInner, headered)
       },
     )
-    // Flatten <p> wrappers inside every cell (after the header promotion
-    // so we match <th> too). Keep inline markup like <b>, just drop the
-    // block tags and collapse whitespace.
     rewritten = rewritten.replace(
       /<(t[dh])\b[^>]*>([\s\S]*?)<\/\1>/gi,
       (_m: string, tag: string, cellInner: string) => {
-        const flat = cellInner
+        let flat = cellInner
+          // <li>X</li> → "X, ". Joining multi-item lists in a cell as a
+          // comma list keeps the cell on one line (Audio Descripion MP3,
+          // SRT, TTML, TXT, VTT) instead of newline-separated bullets.
+          .replace(/<li\b[^>]*>([\s\S]*?)<\/li>/gi, '$1, ')
+          // Drop list wrappers and span wrappers — keep inner text.
+          .replace(/<\/?(?:ul|ol|span)\b[^>]*>/gi, '')
+          // Strip headings (<h1>..<h6>) — keep inner text only, no markdown
+          // heading syntax inside a table cell.
+          .replace(/<\/?h[1-6]\b[^>]*>/gi, '')
+          // Flatten paragraphs and line breaks.
           .replace(/<p\b[^>]*>/gi, '')
           .replace(/<\/p>/gi, ' ')
           .replace(/<br\s*\/?>/gi, ' ')
+          // Collapse whitespace and trim trailing punctuation from list join.
           .replace(/\s+/g, ' ')
+          .replace(/,\s*$/, '')
           .trim()
         return `<${tag}>${flat}</${tag}>`
       },
