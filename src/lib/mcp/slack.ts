@@ -387,11 +387,59 @@ async function fetchChannelCanvasFileId(channelId: string): Promise<string | nul
       channel: channelId,
       include_locale: 'false',
     })
-    const fileId: string | undefined = info.channel?.properties?.canvas?.file_id
-    return fileId || null
+    const ch = info.channel || {}
+    // Slack's docs say channel.properties.canvas.file_id is the channel
+    // canvas. Some shapes also surface canvas info under channel.canvas
+    // or include only a sentinel `is_canvas`. Log the whole properties
+    // blob so we can see what's actually present.
+    console.log(
+      `[Slack channel canvas] conversations.info(${channelId}) properties: ${JSON.stringify(ch.properties || null)}`,
+    )
+    const fileId: string | undefined =
+      ch.properties?.canvas?.file_id || ch.canvas?.file_id
+    if (!fileId) {
+      console.log(
+        `[Slack channel canvas] no channel canvas on ${channelId}. Falling back to most-recently-edited canvas file in the channel.`,
+      )
+      return await fetchLatestCanvasInChannel(channelId)
+    }
+    return fileId
   } catch (err: any) {
     console.warn(
       `[Slack channel canvas] conversations.info(${channelId}) failed: ${err.message}`,
+    )
+    return null
+  }
+}
+
+/**
+ * Fallback when the channel has no header-pinned canvas: find any canvas
+ * file shared into the channel and pick the most recently edited one.
+ * This lets producers customize a regular canvas file in the template
+ * channel and have it cloned into new project channels.
+ */
+async function fetchLatestCanvasInChannel(channelId: string): Promise<string | null> {
+  try {
+    const res = await slackGet('files.list', {
+      channel: channelId,
+      types: 'canvases',
+      count: '20',
+    })
+    const files: any[] = res.files || []
+    if (files.length === 0) {
+      console.log(`[Slack channel canvas] files.list found no canvases in ${channelId}`)
+      return null
+    }
+    // Pick most recently edited / updated.
+    files.sort((a, b) => (b.updated || b.created || 0) - (a.updated || a.created || 0))
+    const top = files[0]
+    console.log(
+      `[Slack channel canvas] fallback selected canvas ${top.id} "${top.title || top.name}" (updated=${top.updated})`,
+    )
+    return top.id || null
+  } catch (err: any) {
+    console.warn(
+      `[Slack channel canvas] files.list(${channelId}) failed: ${err.message}`,
     )
     return null
   }
