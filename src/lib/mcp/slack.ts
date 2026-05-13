@@ -371,6 +371,111 @@ async function fetchCanvasMarkdown(fileId: string): Promise<string | null> {
 // SLACK_CANVAS_TEMPLATE_FILE_IDS (comma-separated list of file IDs).
 const DEFAULT_CANVAS_TEMPLATE_FILE_IDS = ['F0B1GTVJV5F', 'F0B1GUWHYTB']
 
+// Slack channel whose *channel canvas* (the one pinned at the very top of
+// the channel header) gets cloned into every new project channel.
+// Override at runtime via SLACK_TEMPLATE_CHANNEL_ID. The bot must be a
+// member of this channel for files.info on the canvas to succeed.
+const DEFAULT_TEMPLATE_CHANNEL_ID = 'C0B1312H89L'
+
+/**
+ * Resolve a channel's channel-canvas file ID (the one pinned at the channel
+ * header via the `+` icon). Returns null if the channel has no channel canvas.
+ */
+async function fetchChannelCanvasFileId(channelId: string): Promise<string | null> {
+  try {
+    const info = await slackGet('conversations.info', {
+      channel: channelId,
+      include_locale: 'false',
+    })
+    const fileId: string | undefined = info.channel?.properties?.canvas?.file_id
+    return fileId || null
+  } catch (err: any) {
+    console.warn(
+      `[Slack channel canvas] conversations.info(${channelId}) failed: ${err.message}`,
+    )
+    return null
+  }
+}
+
+/**
+ * Clone the template channel's channel canvas into a fresh channel canvas
+ * on the new project channel. Slack distinguishes channel canvases from
+ * standalone canvases — this uses conversations.canvases.create which makes
+ * the new canvas the channel's official header-pinned canvas.
+ *
+ * Returns the new canvas ID, or null if anything in the chain failed.
+ */
+async function duplicateChannelCanvas(opts: {
+  templateChannelId: string
+  newChannelId: string
+}): Promise<string | null> {
+  // 1. Find the template channel's canvas
+  const templateFileId = await fetchChannelCanvasFileId(opts.templateChannelId)
+  if (!templateFileId) {
+    console.warn(
+      `[Slack channel canvas] template channel ${opts.templateChannelId} has no channel canvas; skipping`,
+    )
+    return null
+  }
+  console.log(
+    `[Slack channel canvas] template ${opts.templateChannelId} → canvas file ${templateFileId}`,
+  )
+
+  // 2. Fetch the template's content + convert HTML → markdown
+  let markdown: string
+  try {
+    const info = await slackGet('files.info', { file: templateFileId })
+    const url: string | undefined =
+      info.file?.url_private_download || info.file?.url_private
+    if (!url) {
+      console.error(
+        `[Slack channel canvas] template canvas ${templateFileId} has no download URL — bot may not be a collaborator`,
+      )
+      return null
+    }
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+    })
+    if (!res.ok) {
+      console.error(`[Slack channel canvas] download HTTP ${res.status}`)
+      return null
+    }
+    const html = await res.text()
+    markdown = canvasHtmlToMarkdown(html)
+    console.log(
+      `[Slack channel canvas] fetched template: html=${html.length} chars → markdown=${markdown.length} chars`,
+    )
+  } catch (err: any) {
+    console.error(`[Slack channel canvas] fetch/convert failed: ${err.message}`)
+    return null
+  }
+
+  // 3. Create the new channel canvas on the project channel.
+  //    conversations.canvases.create — distinct from canvases.create —
+  //    is what makes this the official header-pinned channel canvas.
+  try {
+    const created = await slackPost('conversations.canvases.create', {
+      channel_id: opts.newChannelId,
+      document_content: { type: 'markdown', markdown },
+    })
+    const newCanvasId: string | undefined = created.canvas_id
+    console.log(
+      `[Slack channel canvas] created channel canvas ${newCanvasId} on ${opts.newChannelId}`,
+    )
+    return newCanvasId || null
+  } catch (err: any) {
+    console.error(
+      `[Slack channel canvas] conversations.canvases.create failed: ${err.message}`,
+    )
+    // Log a preview so we can see what tripped Slack (most likely emoji or
+    // GFM oddities, same as the standalone path).
+    console.error(
+      `[Slack channel canvas] rejected markdown (first 1500 chars):\n${markdown.slice(0, 1500)}`,
+    )
+    return null
+  }
+}
+
 /**
  * Clone each canvas template into a new standalone canvas titled after the
  * project, share it to the channel with write access, and pin it as a
@@ -391,6 +496,23 @@ export async function duplicateTemplateCanvases(opts: {
     return out
   }
 
+  // ── Channel canvas (header-pinned) ──────────────────────
+  // Clone first so it's visible at the top by the time the user sees the
+  // channel; failures here are non-fatal — standalones still run below.
+  const templateChannelId =
+    process.env.SLACK_TEMPLATE_CHANNEL_ID || DEFAULT_TEMPLATE_CHANNEL_ID
+  try {
+    out.channelCanvasId = await duplicateChannelCanvas({
+      templateChannelId,
+      newChannelId: opts.newChannelId,
+    })
+  } catch (err: any) {
+    console.error(
+      `[Slack canvas] channel-canvas duplication threw (non-fatal): ${err.message}`,
+    )
+  }
+
+  // ── Standalone canvases (Files tab) ─────────────────────
   const fileIdsEnv = process.env.SLACK_CANVAS_TEMPLATE_FILE_IDS
   const templateFileIds = fileIdsEnv
     ? fileIdsEnv.split(',').map((s) => s.trim()).filter(Boolean)
