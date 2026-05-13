@@ -222,6 +222,32 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
   const subId = await findChildFolder(acct, outgoingId, d.subfolder)
   if (!subId) throw new Error(`No "${d.subfolder}" subfolder under 03_Outgoing`)
 
+  // ── Mirror any intermediate Dropbox subfolders ──────────
+  // d.name is the path *under* the subfolder, so for a Dropbox file at
+  //   .../09_Outgoing/02_Delivery/051326/v1/asset.mp4
+  // d.name = "051326/v1/asset.mp4"
+  // We walk the path, finding-or-creating each Frame.io folder, so the
+  // file lands in the same hierarchy on Frame.io's side.
+  const pathParts = d.name.split('/').filter(Boolean)
+  const fileName = pathParts.pop() || d.name
+  let targetFolderId = subId
+  const traversedNames: string[] = []
+  for (const folderName of pathParts) {
+    let child = await findChildFolder(acct, targetFolderId, folderName)
+    if (!child) {
+      const created = await frameioPost(
+        `/accounts/${acct}/folders/${targetFolderId}/folders`,
+        { data: { name: folderName } },
+      )
+      child = (created.data || created).id
+      console.log(
+        `[dropbox-watcher] created Frame.io folder "${folderName}" under ${targetFolderId}`,
+      )
+    }
+    targetFolderId = child
+    traversedNames.push(folderName)
+  }
+
   // ── Get a temporary Dropbox download URL ────────────────
   const tempLinkResp = await dbxPost('/files/get_temporary_link', { path: d.path })
   const sourceUrl: string = tempLinkResp.link
@@ -230,28 +256,36 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
   // ── Hand it to Frame.io remote_upload ───────────────────
   // Frame.io v4 remote_upload accepts a source_url and pulls async.
   const createResp = await frameioPost(
-    `/accounts/${acct}/folders/${subId}/files/remote_upload`,
+    `/accounts/${acct}/folders/${targetFolderId}/files/remote_upload`,
     {
       data: {
-        name: d.name,
+        name: fileName,
         source_url: sourceUrl,
       },
     },
   )
   const file = createResp.data || createResp
+  const breadcrumb =
+    traversedNames.length > 0
+      ? `03_Outgoing / ${d.subfolder} / ${traversedNames.join(' / ')}`
+      : `03_Outgoing / ${d.subfolder}`
   console.log(
-    `[dropbox-watcher] queued Frame.io upload for ${d.name} → ${project.name} / 03_Outgoing / ${d.subfolder} (file id ${file.id})`,
+    `[dropbox-watcher] queued Frame.io upload for ${fileName} → ${project.name} / ${breadcrumb} (file id ${file.id})`,
   )
 
   // ── Create a review link (file may still be processing) ─
   // The review link is valid even while the asset transcodes.
+  const reviewLinkName =
+    traversedNames.length > 0
+      ? `${d.subfolder} / ${traversedNames.join(' / ')} – ${fileName}`
+      : `${d.subfolder} – ${fileName}`
   let reviewUrl: string | undefined
   try {
     const linkResp = await frameioPost(
       `/accounts/${acct}/projects/${frameioId}/review_links`,
       {
         data: {
-          name: `${d.subfolder} – ${d.name}`,
+          name: reviewLinkName,
           items: [{ file_id: file.id }],
         },
       },
@@ -269,10 +303,14 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
   //   3. DM the fallback user (KIT_FALLBACK_PM_SLACK_ID)
   //   4. Skip silently
   const linkLine = reviewUrl ? `<${reviewUrl}|Open review on Frame.io>` : '_(no review link)_'
+  const subfolderLine =
+    traversedNames.length > 0
+      ? `${d.subfolder} / ${traversedNames.join(' / ')}`
+      : d.subfolder
   const text =
     `📦 *New delivery for ${project.name}* (${project.client})\n` +
-    `• Subfolder: \`${d.subfolder}\`\n` +
-    `• File: \`${d.name}\`\n` +
+    `• Subfolder: \`${subfolderLine}\`\n` +
+    `• File: \`${fileName}\`\n` +
     `• ${linkLine}`
 
   const pmId: string | undefined = project.project_manager_slack_id
