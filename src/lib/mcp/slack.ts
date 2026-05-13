@@ -66,17 +66,23 @@ function sanitizeCanvasMarkdown(md: string): string {
   // and renders as literal text in the canvas. Canvas treats `_` as italic
   // start/end only when paired, so a bare underscore in shortcodes is safe.
   s = s.replace(/\\_/g, '_')
-  // First pass: apply our overrides for Slack shortcodes node-emoji misses.
+  // First pass: apply our overrides for Slack shortcodes node-emoji misses
+  // and which DON'T exist as workspace-custom emoji (so we want them as
+  // Unicode, not literal text).
   s = s.replace(/:([a-z0-9_+-]+):/gi, (m, name) => {
     const key = String(name).toLowerCase()
     return SLACK_EMOJI_OVERRIDES[key] ?? m
   })
   // Second pass: emojify everything else node-emoji does know.
   s = nodeEmoji.emojify(s)
-  // Strip any leftover :shortcode: patterns — those are workspace-custom
-  // emoji that node-emoji didn't recognize, which canvas can't resolve and
-  // which sometimes trigger canvas_creation_failed.
-  s = s.replace(/:[a-z0-9_+-]+:/gi, '')
+  // Leave remaining :shortcode: patterns in place — these are workspace-
+  // custom emojis (:microsoft-word:, :figma:, etc.). Slack canvases resolve
+  // them at render time the same way regular messages do. Previously we
+  // stripped these defensively after a canvas_creation_failed incident,
+  // but that turned out to be caused by other things (escaped underscores,
+  // unknown shortcodes for which we now have overrides). If a workspace
+  // emoji ever breaks canvas creation, the per-canvas try/catch will log
+  // the failing markdown so we can target the specific shortcode.
   // Collapse any double whitespace left where emoji used to sit.
   s = s.replace(/[ \t]+\n/g, '\n').replace(/  +/g, ' ')
   return s
