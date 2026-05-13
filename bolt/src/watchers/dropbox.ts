@@ -175,9 +175,9 @@ interface Delivery {
 }
 
 async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
-  // ── Lookup project ───────────────────────────────────────
+  // ── Lookup project (or discover from Frame.io) ──────────
   const sb = createAdminClient()
-  const { data: project, error } = await sb
+  const { data: existing, error } = await sb
     .from('projects')
     .select(
       'id, name, client, project_code, project_manager_slack_id, external_links, external_ids',
@@ -186,9 +186,19 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
     .maybeSingle()
 
   if (error) throw new Error(`project lookup failed: ${error.message}`)
+
+  let project = existing
   if (!project) {
-    console.warn(`[dropbox-watcher] no project matches safeName=${d.safeName}`)
-    return
+    project = await discoverAndBackfillProject(d.safeName)
+    if (!project) {
+      console.warn(
+        `[dropbox-watcher] no project (Supabase OR Frame.io) matches safeName=${d.safeName}`,
+      )
+      return
+    }
+    console.log(
+      `[dropbox-watcher] auto-backfilled project ${project.id} for safeName=${d.safeName}`,
+    )
   }
 
   const frameioId = project.external_links?.frameio_id
@@ -252,31 +262,166 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
     console.warn(`[dropbox-watcher] review link failed: ${err.message}`)
   }
 
-  // ── DM the PM ───────────────────────────────────────────
-  const pmId = project.project_manager_slack_id
-  if (!pmId) {
-    console.warn(`[dropbox-watcher] project ${project.id} has no PM Slack id; skipping DM`)
+  // ── Notify ──────────────────────────────────────────────
+  // Preference order:
+  //   1. DM the project's PM if we have one
+  //   2. Post in the project's Slack channel if linked
+  //   3. DM the fallback user (KIT_FALLBACK_PM_SLACK_ID)
+  //   4. Skip silently
+  const linkLine = reviewUrl ? `<${reviewUrl}|Open review on Frame.io>` : '_(no review link)_'
+  const text =
+    `📦 *New delivery for ${project.name}* (${project.client})\n` +
+    `• Subfolder: \`${d.subfolder}\`\n` +
+    `• File: \`${d.name}\`\n` +
+    `• ${linkLine}`
+
+  const pmId: string | undefined = project.project_manager_slack_id
+  const channelId: string | undefined = project.external_links?.slack_id
+  const fallbackPm = process.env.KIT_FALLBACK_PM_SLACK_ID
+  const target = pmId || channelId || fallbackPm
+
+  if (!target) {
+    console.warn(
+      `[dropbox-watcher] project ${project.id} has no PM, no Slack channel, and no KIT_FALLBACK_PM_SLACK_ID set; skipping notification`,
+    )
     return
   }
 
-  const linkLine = reviewUrl ? `<${reviewUrl}|Open review on Frame.io>` : '_(no review link)_'
   await app.client.chat.postMessage({
-    channel: pmId,
+    channel: target,
     text: `📦 New delivery for *${project.name}*`,
-    blocks: [
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text:
-            `📦 *New delivery for ${project.name}* (${project.client})\n` +
-            `• Subfolder: \`${d.subfolder}\`\n` +
-            `• File: \`${d.name}\`\n` +
-            `• ${linkLine}`,
-        },
-      },
-    ],
+    blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }],
   })
+  console.log(
+    `[dropbox-watcher] notified ${pmId ? `PM ${pmId}` : channelId ? `channel ${channelId}` : `fallback ${fallbackPm}`}`,
+  )
+}
+
+// ─── Discovery + auto-backfill ──────────────────────────────
+
+/**
+ * Pull the leading project number out of a safeName, regardless of casing
+ * or separator. Examples:
+ *   "2620_Microsoft_FoundryIQSizzle" → "2620"
+ *   "2612B_Microsoft_D365 CI - ..."  → "2612B"
+ *   "2620 Foundry IQ Sizzle"         → "2620"
+ */
+function extractProjectNumber(safeName: string): string | null {
+  const m = safeName.match(/^(\d+[A-Za-z]?)\b/)
+  return m ? m[1] : null
+}
+
+/**
+ * Best-effort parse of an existing project label into the three fields
+ * NOT NULL on `projects`: name, client, project_code. Used only when
+ * inserting a discovered Frame.io project into Supabase.
+ */
+function deriveProjectFields(safeName: string, frameioName: string): {
+  projectNumber: string
+  client: string
+  name: string
+} {
+  // Prefer the Frame.io project name as source of truth; fall back to safeName.
+  const source = frameioName || safeName
+  const parts = source.split('_').map((s) => s.trim()).filter(Boolean)
+  const projectNumber = (extractProjectNumber(source) || parts[0] || '').trim()
+  const client = (parts[1] || 'Unknown').trim()
+  const name = parts.slice(2).join(' ').trim() || client
+  return { projectNumber, client, name }
+}
+
+async function discoverAndBackfillProject(safeName: string): Promise<any | null> {
+  const projectNumber = extractProjectNumber(safeName)
+  if (!projectNumber) {
+    console.warn(`[dropbox-watcher] could not extract project number from "${safeName}"`)
+    return null
+  }
+
+  const acct = process.env.FRAMEIO_ACCOUNT_ID
+  const ws = process.env.FRAMEIO_WORKSPACE_ID
+  if (!acct || !ws) {
+    console.warn('[dropbox-watcher] FRAMEIO_ACCOUNT_ID/WORKSPACE_ID missing; cannot discover')
+    return null
+  }
+
+  const found = await findFrameioProjectByNumber(acct, ws, projectNumber)
+  if (!found) {
+    console.warn(
+      `[dropbox-watcher] no Frame.io project starts with "${projectNumber}_" in workspace`,
+    )
+    return null
+  }
+  console.log(
+    `[dropbox-watcher] discovery: ${safeName} → Frame.io project ${found.id} "${found.name}"`,
+  )
+
+  // Reuse the default Supabase workspace (single-tenant for this studio).
+  const sb = createAdminClient()
+  const { data: anyRow } = await sb
+    .from('projects')
+    .select('workspace_id')
+    .limit(1)
+    .maybeSingle()
+  const workspaceId = anyRow?.workspace_id
+  if (!workspaceId) {
+    console.warn('[dropbox-watcher] no existing workspace_id in projects table; cannot backfill')
+    return null
+  }
+
+  const fields = deriveProjectFields(safeName, found.name)
+  const projectCode = `${fields.projectNumber}-${fields.client.replace(/\s+/g, '')}`
+
+  // Insert a row capturing what we know. Future file drops for this
+  // project will hit the Supabase lookup and skip discovery.
+  const { data: inserted, error: insertErr } = await sb
+    .from('projects')
+    .insert({
+      workspace_id: workspaceId,
+      name: fields.name,
+      client: fields.client,
+      project_code: projectCode,
+      status: 'active',
+      external_ids: { dropbox_safe_name: safeName },
+      external_links: { frameio_id: found.id, frameio: `https://app.frame.io/projects/${found.id}` },
+    })
+    .select(
+      'id, name, client, project_code, project_manager_slack_id, external_links, external_ids',
+    )
+    .single()
+
+  if (insertErr) {
+    console.error(`[dropbox-watcher] backfill insert failed: ${insertErr.message}`)
+    return null
+  }
+  return inserted
+}
+
+async function findFrameioProjectByNumber(
+  acct: string,
+  ws: string,
+  projectNumber: string,
+): Promise<{ id: string; name: string } | null> {
+  // Match the number followed by `_`, ` `, `-`, or end-of-string. Prevents
+  // "2620" from matching "26200" or "2620B".
+  const matchRe = new RegExp(`^${projectNumber}(?:[_\\s\\-]|$)`, 'i')
+
+  // Paginate through workspace projects. Frame.io v4 typically returns
+  // ~25/page; bail at 20 pages so a bug can't infinite-loop.
+  let url: string | null =
+    `/accounts/${acct}/workspaces/${ws}/projects?page_size=100`
+  let pages = 0
+  while (url && pages++ < 20) {
+    const r = await frameioGet(url)
+    const items: any[] = r.data || r.projects || []
+    for (const p of items) {
+      if (p.name && matchRe.test(p.name)) return { id: p.id, name: p.name }
+    }
+    // Frame.io v4 paginates via `next_page` or `links.next`. Defensive
+    // lookup so we work with either shape.
+    const next = r.links?.next || r.next_page || r.pagination?.next
+    url = typeof next === 'string' ? (next.startsWith('http') ? next.split('frame.io')[1] : next) : null
+  }
+  return null
 }
 
 // ─── Frame.io helpers ───────────────────────────────────────
