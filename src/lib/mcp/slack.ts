@@ -515,7 +515,6 @@ export async function duplicateTemplateCanvases(opts: {
         const raw: string = info.file?.title || info.file?.name || originalTitle
         originalTitle = cleanTemplateTitle(raw, originalTitle)
         downloadUrl = info.file?.url_private_download || info.file?.url_private
-        console.log(`[Slack canvas] ${fileId}: title="${originalTitle}", has_download=${!!downloadUrl}`)
       } catch (err: any) {
         console.error(`[Slack canvas] ${fileId}: files.info failed — bot may need to be added as a collaborator: ${err.message}`)
         continue
@@ -538,17 +537,7 @@ export async function duplicateTemplateCanvases(opts: {
           continue
         }
         const html = await res.text()
-        // Dump raw HTML so we can diagnose conversion problems on richer
-        // canvases (toggles, columns, multi-row tables). Chunk it because
-        // Railway truncates very long log lines.
-        const HTML_CHUNK = 4000
-        for (let off = 0; off < html.length; off += HTML_CHUNK) {
-          console.log(
-            `[Slack canvas] ${fileId}: RAW_HTML[${off}..${Math.min(off + HTML_CHUNK, html.length)}]\n${html.slice(off, off + HTML_CHUNK)}`,
-          )
-        }
         markdown = canvasHtmlToMarkdown(html)
-        console.log(`[Slack canvas] ${fileId}: html=${html.length} chars → markdown=${markdown.length} chars`)
       } catch (err: any) {
         console.error(`[Slack canvas] ${fileId}: fetch/convert threw: ${err.message}`)
         continue
@@ -561,12 +550,6 @@ export async function duplicateTemplateCanvases(opts: {
       //    create (rather than canvases.access.set after the fact) is
       //    what makes the canvas appear in the channel header as a tab.
       const newTitle = `${spine} — ${originalTitle}`
-      // Debug: emit the first 800 chars of the markdown so we can see what
-      // actually ships to Slack — useful when emoji shortcodes or other
-      // template tokens come through as literal text.
-      console.log(
-        `[Slack canvas] ${fileId}: markdown preview (first 800 chars):\n${markdown.slice(0, 800)}`,
-      )
       let canvasId: string | undefined
       try {
         const created = await slackPost('canvases.create', {

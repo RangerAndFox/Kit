@@ -265,9 +265,6 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
     },
   )
   const file = createResp.data || createResp
-  console.log(
-    `[dropbox-watcher] frameio file response keys: [${Object.keys(file).join(',')}]`,
-  )
   const breadcrumb =
     traversedNames.length > 0
       ? `03_Outgoing / ${d.subfolder} / ${traversedNames.join(' / ')}`
@@ -478,32 +475,21 @@ async function findFrameioProjectByNumber(
     `/accounts/${acct}/workspaces/${ws}/projects?page_size=100`
   let pages = 0
   let totalScanned = 0
-  const sampleNames: string[] = []
   let lenientHit: { id: string; name: string } | null = null
 
   while (url && pages++ < 20) {
     const r = await frameioGet(url)
     const items: any[] = r.data || r.projects || []
-    if (pages === 1) {
-      console.log(
-        `[dropbox-watcher] frameio list response shape: top-keys=[${Object.keys(r).join(',')}] item-keys=[${items[0] ? Object.keys(items[0]).join(',') : 'empty'}]`,
-      )
-    }
     for (const p of items) {
       totalScanned++
-      if (sampleNames.length < 6 && p.name) sampleNames.push(p.name)
       if (p.name && startMatch.test(p.name)) {
-        console.log(
-          `[dropbox-watcher] frameio search hit (start-match) after scanning ${totalScanned}: "${p.name}"`,
-        )
         return { id: p.id, name: p.name }
       }
       if (!lenientHit && p.name && containsMatch.test(p.name)) {
         lenientHit = { id: p.id, name: p.name }
       }
     }
-    // Frame.io v4 pagination: try common shapes. Logs first response
-    // shape above so we can correct this if needed.
+    // Frame.io v4 pagination: try common shapes for the "next" cursor.
     const next =
       r.links?.next ||
       r.next_page ||
@@ -518,15 +504,10 @@ async function findFrameioProjectByNumber(
         : null
   }
 
-  if (lenientHit) {
-    console.log(
-      `[dropbox-watcher] frameio search hit (contains-match fallback) after scanning ${totalScanned}: "${lenientHit.name}"`,
-    )
-    return lenientHit
-  }
+  if (lenientHit) return lenientHit
 
   console.warn(
-    `[dropbox-watcher] frameio search: scanned ${totalScanned} projects, no match for "${projectNumber}". Sample names: ${sampleNames.join(' | ')}`,
+    `[dropbox-watcher] no Frame.io project starts with or contains "${projectNumber}" after scanning ${totalScanned}`,
   )
   return null
 }
