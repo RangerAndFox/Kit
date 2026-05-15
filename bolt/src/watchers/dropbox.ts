@@ -496,12 +496,17 @@ async function findFrameioProjectByNumber(
       r.pagination?.next ||
       r.pagination?.next_cursor ||
       null
-    url =
-      typeof next === 'string'
-        ? next.startsWith('http')
-          ? next.split('frame.io')[1]
-          : next
-        : null
+    if (typeof next === 'string') {
+      // Absolute URLs from Frame.io look like:
+      //   https://api.frame.io/v4/accounts/.../projects?after=...
+      // FRAMEIO_API already includes /v4, so we strip both the host and
+      // the leading /v4 to avoid emitting /v4/v4/... and 404ing.
+      let rel = next.startsWith('http') ? next.split('frame.io')[1] : next
+      rel = rel.replace(/^\/v4(?=\/)/, '')
+      url = rel || null
+    } else {
+      url = null
+    }
   }
 
   if (lenientHit) return lenientHit
