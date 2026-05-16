@@ -14,6 +14,7 @@
 import { withRetry } from '../provisioner/retry'
 import folderStructure from '../provisioner/folder-structure.json'
 import { dropboxHeaders, getDropboxAccessToken } from '@/lib/dropbox/client'
+import { frameioHeaders } from '@/lib/frameio/auth'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -104,23 +105,20 @@ export async function provisionDropbox(input: ProvisionInput): Promise<Provision
 
 // ─── Frame.io ───────────────────────────────────────────────
 
-const FRAMEIO_API = 'https://api.frame.io/v2'
-
-function frameioHeaders() {
-  return {
-    Authorization: `Bearer ${process.env.FRAMEIO_TOKEN}`,
-    'Content-Type': 'application/json',
-  }
-}
+const FRAMEIO_API = 'https://api.frame.io/v4'
 
 /**
  * Create a Frame.io project with standard folder structure.
+ *
+ * Uses Frame.io v4 API via Adobe IMS auth (see src/lib/frameio/auth.ts).
+ * Requires FRAMEIO_ACCOUNT_ID + FRAMEIO_WORKSPACE_ID env vars (the v4
+ * equivalents of the legacy team_id concept).
  */
 export async function provisionFrameIo(input: ProvisionInput): Promise<ProvisionResult | null> {
-  const token = process.env.FRAMEIO_TOKEN
-  const teamId = process.env.FRAMEIO_TEAM_ID
-  if (!token || !teamId) {
-    console.warn('[Provision:FrameIo] FRAMEIO_TOKEN or FRAMEIO_TEAM_ID not set, skipping')
+  const accountId = process.env.FRAMEIO_ACCOUNT_ID
+  const workspaceId = process.env.FRAMEIO_WORKSPACE_ID
+  if (!accountId || !workspaceId) {
+    console.warn('[Provision:FrameIo] FRAMEIO_ACCOUNT_ID or FRAMEIO_WORKSPACE_ID not set, skipping')
     return null
   }
 
@@ -129,40 +127,39 @@ export async function provisionFrameIo(input: ProvisionInput): Promise<Provision
     : `${input.client}_${input.projectName}`
 
   try {
-    // Create the project
-    const project = await withRetry(() =>
-      fetch(`${FRAMEIO_API}/projects`, {
+    // v4: POST /v4/accounts/{account_id}/workspaces/{workspace_id}/projects
+    const projectResp = await withRetry(async () => {
+      const hdrs = await frameioHeaders()
+      return fetch(`${FRAMEIO_API}/accounts/${accountId}/workspaces/${workspaceId}/projects`, {
         method: 'POST',
-        headers: frameioHeaders(),
-        body: JSON.stringify({ name: projectLabel, team_id: teamId }),
+        headers: hdrs,
+        body: JSON.stringify({ data: { name: projectLabel } }),
         signal: AbortSignal.timeout(8_000),
       }).then(async (r) => {
         if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
         return r.json()
       })
-    )
+    })
 
+    const project = projectResp.data || projectResp
     const projectId: string = project.id
-    const rootAssetId: string = project.root_asset_id
+    const rootFolderId: string = project.root_folder_id || project.root_asset_id
 
-    // Create standard subfolders in parallel
+    // v4: POST /v4/accounts/{account_id}/folders/{parent_id}/folders
     const folders = folderStructure.frameio || []
     await Promise.allSettled(
       folders.map((folderName: string) =>
-        withRetry(() =>
-          fetch(`${FRAMEIO_API}/assets`, {
+        withRetry(async () => {
+          const hdrs = await frameioHeaders()
+          return fetch(`${FRAMEIO_API}/accounts/${accountId}/folders/${rootFolderId}/folders`, {
             method: 'POST',
-            headers: frameioHeaders(),
-            body: JSON.stringify({
-              name: folderName,
-              type: 'folder',
-              parent_id: rootAssetId,
-            }),
+            headers: hdrs,
+            body: JSON.stringify({ data: { name: folderName } }),
             signal: AbortSignal.timeout(8_000),
           }).then(async (r) => {
             if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
           })
-        )
+        })
       )
     )
 
@@ -172,7 +169,7 @@ export async function provisionFrameIo(input: ProvisionInput): Promise<Provision
       id: projectId,
       url,
       name: projectLabel,
-      extra: { rootAssetId, foldersCreated: folders.length },
+      extra: { rootFolderId, foldersCreated: folders.length },
     }
   } catch (err: any) {
     console.error('[Provision:FrameIo] Failed:', err.message)

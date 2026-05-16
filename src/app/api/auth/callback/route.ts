@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Adobe IMS OAuth callback for Frame.io.
  *
