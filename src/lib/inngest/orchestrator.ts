@@ -60,8 +60,8 @@ export const provisionProject = inngest.createFunction(
     id: 'provision-project',
     name: 'Provision Project',
     retries: 0,
+    triggers: [{ event: 'kit/project.provision' }],
   },
-  { event: 'kit/project.provision' },
   async ({ event, step }) => {
     const data: ProvisionEventData = event.data
     const services = new Set(data.services)
