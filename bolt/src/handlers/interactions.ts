@@ -24,6 +24,8 @@ import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
 import { peekIntake, takeIntake, updateIntake } from '../../../src/lib/storyboard/stash'
 import { extractScriptFromFile } from '../../../src/lib/storyboard/files'
 import { handleCheckinConfirm, handleCheckinRedo } from '../checkins/confirm'
+import { parseOnboardSubmission } from '../onboarding/modal'
+import { runOnboarding, buildRequesterSummary } from '../onboarding/orchestrator'
 
 export function registerInteractionHandlers(app: App) {
   // ─── Daily hours check-in: Confirm / Redo ─────────────────
@@ -43,6 +45,74 @@ export function registerInteractionHandlers(app: App) {
     handleCheckinRedo({ app, client, body, checkinId }).catch((err) =>
       console.error('[checkin] redo failed:', err),
     )
+  })
+
+  // ─── Freelancer Onboarding: modal submit ──────────────────
+  app.view('kit_onboard_submit', async ({ ack, view, body, client }) => {
+    const parsed = parseOnboardSubmission(view)
+    if (!parsed) {
+      await ack({
+        response_action: 'errors',
+        errors: { project: 'Pick a project and at least one artist (name + email).' },
+      })
+      return
+    }
+    await ack()
+
+    const requestedBy = body.user?.id || ''
+    const targetChannel = parsed.channelId || (body.user?.id ? body.user.id : '')
+
+    // Run each artist's onboarding sequentially so we don't hammer any
+    // single service with parallel writes; per-artist services still run
+    // in parallel internally.
+    for (const artist of parsed.artists) {
+      try {
+        const { results } = await runOnboarding({
+          app,
+          input: {
+            projectId: parsed.projectId,
+            artistEmail: artist.email,
+            artistName: artist.name,
+            requestedBy,
+          },
+        })
+
+        // Pull project name for the summary.
+        let projectName = parsed.projectId
+        try {
+          const proj = await (
+            await import('../../../src/lib/supabase/admin')
+          ).createAdminClient()
+          const { data } = await proj
+            .from('projects')
+            .select('name')
+            .eq('id', parsed.projectId)
+            .maybeSingle()
+          if (data?.name) projectName = data.name
+        } catch {
+          /* fallback to id */
+        }
+
+        const summary = buildRequesterSummary({
+          artistName: artist.name,
+          artistEmail: artist.email,
+          projectName,
+          results,
+        })
+        await client.chat.postEphemeral({
+          channel: targetChannel || requestedBy,
+          user: requestedBy,
+          text: summary,
+        })
+      } catch (err: any) {
+        console.error(`[onboarding] ${artist.email} failed:`, err)
+        await client.chat.postEphemeral({
+          channel: targetChannel || requestedBy,
+          user: requestedBy,
+          text: `:x: Onboarding *${artist.name}* (${artist.email}) crashed: ${err.message || String(err)}`,
+        })
+      }
+    }
   })
 
   // ─── New Project: open modal from card button ─────────────

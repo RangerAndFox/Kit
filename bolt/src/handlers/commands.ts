@@ -16,6 +16,8 @@ import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
 import { stashIntake } from '../../../src/lib/storyboard/stash'
 import { dispatch } from '../../../src/lib/inngest/agents/registry'
 import { buildNewProjectCard } from './newproject-card'
+import { buildOnboardModal } from '../onboarding/modal'
+import { canOnboard } from '../onboarding/permissions'
 
 export function registerCommandHandlers(app: App) {
   // ─── /kit ─────────────────────────────────────────────────
@@ -41,6 +43,32 @@ export function registerCommandHandlers(app: App) {
           await respond({
             response_type: 'ephemeral',
             text: `Couldn't post the new-project card: ${err.data?.error || err.message}`,
+          })
+        }
+        break
+      }
+
+      // ── Onboard Freelancer ──────────────────────────────────
+      case 'onboard': {
+        await ack()
+        // Permission check
+        const allowed = await canOnboard(command.user_id)
+        if (!allowed) {
+          await respond({
+            response_type: 'ephemeral',
+            text:
+              ":lock: Onboarding is restricted to PMs, CDs, and admins. If that's you and you're seeing this, your role isn't set in the staff directory yet.",
+          })
+          break
+        }
+        try {
+          const view = await buildOnboardModal({ channelId: command.channel_id })
+          await client.views.open({ trigger_id: command.trigger_id, view })
+        } catch (err: any) {
+          console.error('[Bolt] onboard views.open failed:', err.data?.error || err.message)
+          await respond({
+            response_type: 'ephemeral',
+            text: `Couldn't open the onboarding form: ${err.data?.error || err.message}`,
           })
         }
         break
@@ -99,6 +127,7 @@ export function registerCommandHandlers(app: App) {
           text:
             '*Kit Commands*\n\n' +
             '`/kit newproject` — Post the new-project card (pick services, fill in details)\n' +
+            '`/kit onboard` — Onboard a freelancer to a project (Slack/Dropbox/Frame.io/Harvest)\n' +
             '`/kit status <name>` — Quick project lookup\n' +
             '`/storyboard` — Turn a script into a Boords storyboard\n' +
             '`/kit help` — Show this message\n\n' +

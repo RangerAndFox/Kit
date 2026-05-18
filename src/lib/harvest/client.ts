@@ -382,3 +382,64 @@ export async function listUsers(): Promise<HarvestUser[]> {
     is_active: u.is_active,
   }))
 }
+
+/**
+ * Find an existing Harvest user by email, or create one.
+ * Used by freelancer onboarding.
+ */
+export async function findOrCreateUser(opts: {
+  email: string
+  firstName: string
+  lastName: string
+  isContractor?: boolean
+}): Promise<HarvestUser> {
+  const all = await listUsers()
+  const match = all.find((u) => u.email.toLowerCase() === opts.email.toLowerCase())
+  if (match) return match
+
+  const body: Record<string, unknown> = {
+    first_name: opts.firstName,
+    last_name: opts.lastName,
+    email: opts.email,
+    is_contractor: opts.isContractor ?? true,
+  }
+  const data = await harvestPost('/users', body)
+  return {
+    id: data.id,
+    first_name: data.first_name,
+    last_name: data.last_name,
+    email: data.email,
+    is_active: data.is_active,
+  }
+}
+
+/**
+ * Assign a Harvest user to a project (creates a user_assignment).
+ * Idempotent — returns the existing assignment if one already exists.
+ */
+export async function assignUserToProject(opts: {
+  projectId: number
+  userId: number
+  hourlyRate?: number
+}): Promise<{ id: number; user_id: number; project_id: number }> {
+  // Check existing assignments first to make this idempotent.
+  const existing = await harvestGet(`/projects/${opts.projectId}/user_assignments`, {
+    is_active: 'true',
+    per_page: '100',
+  })
+  const found = (existing.user_assignments || []).find(
+    (ua: any) => ua.user?.id === opts.userId,
+  )
+  if (found) {
+    return {
+      id: found.id,
+      user_id: found.user.id,
+      project_id: opts.projectId,
+    }
+  }
+
+  const body: Record<string, unknown> = { user_id: opts.userId }
+  if (opts.hourlyRate != null) body.hourly_rate = opts.hourlyRate
+  const data = await harvestPost(`/projects/${opts.projectId}/user_assignments`, body)
+  return { id: data.id, user_id: data.user.id, project_id: opts.projectId }
+}
