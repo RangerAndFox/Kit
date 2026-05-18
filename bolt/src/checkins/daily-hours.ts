@@ -192,6 +192,7 @@ export async function sendAllDailyCheckins(app: App): Promise<{
     .from('staff')
     .select('id, slack_user_id, email, full_name, harvest_user_id')
     .eq('role', 'creative')
+    .eq('employment_type', 'employee')
     .eq('is_active', true)
   if (error) throw new Error(`load staff failed: ${error.message}`)
 

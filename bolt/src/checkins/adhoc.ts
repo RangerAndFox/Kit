@@ -34,13 +34,14 @@ interface StaffRow {
   id: string
   slack_user_id: string
   harvest_user_id: number | null
+  employment_type: string | null
 }
 
 async function loadStaffBySlackId(slackUserId: string): Promise<StaffRow | null> {
   const sb = createAdminClient()
   const { data } = await sb
     .from('staff')
-    .select('id, slack_user_id, harvest_user_id')
+    .select('id, slack_user_id, harvest_user_id, employment_type')
     .eq('slack_user_id', slackUserId)
     .maybeSingle()
   return (data as StaffRow) || null
@@ -76,6 +77,18 @@ export async function handleAdhocHoursEntry(opts: {
       thread_ts: threadTs,
       text:
         ":warning: You're in the directory but not mapped to a Harvest user. Ask an admin to check your email matches Harvest.",
+    })
+    return true
+  }
+  if (staff.employment_type !== 'employee') {
+    // Hours-via-Kit is employee-only. Freelancers/contractors log in
+    // Harvest directly. Falling through to the orchestrator would be
+    // confusing here, so we acknowledge and stop.
+    await app.client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      text:
+        ":lock: Hours logging through Kit is only enabled for in-house employees right now. Log freelance hours directly in Harvest.",
     })
     return true
   }
