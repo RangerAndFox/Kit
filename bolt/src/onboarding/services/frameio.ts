@@ -2,18 +2,50 @@
 /**
  * Onboarding — Frame.io service (v4)
  *
- * Invites an artist as a collaborator on the project's Frame.io v4 project.
+ * v4 doesn't have a /collaborators endpoint. The correct flow is:
+ *   1. Resolve the user by email:
+ *      GET /accounts/{acct}/users?filter[email]={email}
+ *   2. PATCH the project's user with a role:
+ *      PATCH /accounts/{acct}/projects/{id}/users/{user_id}
+ *      body: { data: { role: 'team_member' } }
  *
- * The exact v4 endpoint name moved around during Adobe's migration. Best
- * guess is /v4/accounts/{acct}/projects/{id}/collaborators. If this comes
- * back 404 in practice, the alternatives to try are /team, /invitations,
- * or /members.
+ * If the user isn't already in our Frame.io account, the GET returns
+ * nothing — that means they need to be invited at the account/workspace
+ * level first. v4 does not (yet) appear to expose a public email-invite
+ * endpoint, so for now we return 'failed' with a clear message and let
+ * the PM invite manually in Frame.io.
  */
 
 import type { OnboardingProject, ServiceResult } from '../types'
 import { frameioHeaders } from '../../../../src/lib/frameio/auth'
 
 const FRAMEIO_API = 'https://api.frame.io/v4'
+
+/**
+ * Look up a Frame.io v4 user by email. Returns the user id or null.
+ */
+async function lookupFrameIoUserByEmail(
+  accountId: string,
+  email: string,
+): Promise<string | null> {
+  const hdrs = await frameioHeaders()
+  const url =
+    `${FRAMEIO_API}/accounts/${accountId}/users` +
+    `?filter[email]=${encodeURIComponent(email)}`
+  const res = await fetch(url, { headers: hdrs, signal: AbortSignal.timeout(15_000) })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`user lookup ${res.status}: ${text}`)
+  }
+  const data = await res.json()
+  const list = data?.data || []
+  if (!Array.isArray(list) || list.length === 0) return null
+  const exact = list.find(
+    (u: any) =>
+      (u?.email || u?.attributes?.email || '').toLowerCase() === email.toLowerCase(),
+  )
+  return (exact?.id || list[0]?.id) || null
+}
 
 export async function inviteArtistToFrameIo(opts: {
   project: OnboardingProject
@@ -36,35 +68,33 @@ export async function inviteArtistToFrameIo(opts: {
   }
 
   try {
+    const userId = await lookupFrameIoUserByEmail(acct, artistEmail)
+    if (!userId) {
+      return {
+        status: 'failed',
+        message:
+          `${artistEmail} isn't in our Frame.io account yet — invite them via Frame.io's web UI first, then re-run onboarding for this artist.`,
+      }
+    }
+
     const hdrs = await frameioHeaders()
     const res = await fetch(
-      `${FRAMEIO_API}/accounts/${acct}/projects/${frameioId}/collaborators`,
+      `${FRAMEIO_API}/accounts/${acct}/projects/${frameioId}/users/${userId}`,
       {
-        method: 'POST',
+        method: 'PATCH',
         headers: hdrs,
-        body: JSON.stringify({
-          data: { email: artistEmail, role: 'collaborator' },
-        }),
+        body: JSON.stringify({ data: { role: 'team_member' } }),
         signal: AbortSignal.timeout(15_000),
       },
     )
     if (!res.ok) {
       const text = await res.text().catch(() => '')
-      // 409 / 422 usually means already a collaborator — count as ok.
-      if (res.status === 409 || /already/i.test(text)) {
-        return {
-          status: 'ok',
-          message: `Already a collaborator on ${project.name}`,
-        }
-      }
-      throw new Error(`${res.status} ${text}`)
+      throw new Error(`PATCH project user ${res.status}: ${text}`)
     }
-    const data = await res.json()
-    const externalId = data?.data?.id || data?.id
     return {
       status: 'ok',
-      message: `Invited ${artistEmail} as collaborator on Frame.io project ${frameioId}`,
-      externalId,
+      message: `Granted ${artistEmail} team_member access on Frame.io project ${frameioId}`,
+      externalId: userId,
     }
   } catch (err: any) {
     return { status: 'failed', message: err.message || String(err) }
