@@ -15,6 +15,7 @@ import { inviteArtistToSlack, fetchWelcomeCanvas, sendWelcomeDm } from './servic
 import { inviteArtistToDropbox } from './services/dropbox'
 import { inviteArtistToFrameIo } from './services/frameio'
 import { inviteArtistToHarvest } from './services/harvest'
+import { rehydrateProjectExternalLinks } from './rehydrate'
 
 async function loadProject(projectId: string): Promise<OnboardingProject | null> {
   const sb = createAdminClient()
@@ -103,6 +104,20 @@ export async function runOnboarding(opts: {
     }
   }
 
+  // Rehydrate any missing external_links keys via API lookups before
+  // we try to invite the artist. Mutates project.external_links in place
+  // and persists discoveries to Supabase.
+  try {
+    const rehydrated = await rehydrateProjectExternalLinks({ app, project })
+    if (rehydrated.discovered.length > 0) {
+      console.log(
+        `[onboarding] rehydrated ${project.id}: discovered=${rehydrated.discovered.join(',')} missing=${rehydrated.missing.join(',') || 'none'}`,
+      )
+    }
+  } catch (err: any) {
+    console.warn(`[onboarding] rehydrate failed for ${project.id}: ${err.message}`)
+  }
+
   // Insert the tracking row up front so we can attribute later.
   const { data: created, error: createErr } = await sb
     .from('freelancer_onboardings')
@@ -125,8 +140,11 @@ export async function runOnboarding(opts: {
   }
 
   // Run the 4 invites in parallel.
+  // Kit's slack provisioner stores the project channel id as external_links.slack_id.
   const projectChannelId: string | null =
-    project.external_links?.slack_channel_id || null
+    project.external_links?.slack_id ||
+    project.external_links?.slack_channel_id ||
+    null
 
   const [slackR, dropboxR, frameioR, harvestR] = await Promise.all([
     inviteArtistToSlack({

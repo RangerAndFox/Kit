@@ -71,11 +71,15 @@ export async function inviteArtistToDropbox(opts: {
   artistEmail: string
 }): Promise<ServiceResult> {
   const { project, artistEmail } = opts
-  const dropboxPath: string | undefined = project.external_links?.dropbox_path
+  // Kit's Dropbox provisioner stores the project folder path in
+  // external_links.dropbox_id (the "id" returned by the agent is the
+  // destination path, since Dropbox is path-keyed not id-keyed).
+  const dropboxPath: string | undefined =
+    project.external_links?.dropbox_id || project.external_links?.dropbox_path
   if (!dropboxPath) {
     return {
       status: 'skipped',
-      message: 'project has no external_links.dropbox_path',
+      message: 'project has no external_links.dropbox_id (folder path)',
     }
   }
 

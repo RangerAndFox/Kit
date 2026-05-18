@@ -28,12 +28,16 @@ export async function inviteArtistToHarvest(opts: {
   hourlyRate?: number
 }): Promise<ServiceResult & { harvestUserId?: number }> {
   const { project, artistEmail, artistName, hourlyRate } = opts
-  const harvestProjectId: number | undefined =
+  // Kit's Harvest provisioner stores the project id as external_links.harvest_id
+  // (string). The Harvest API expects a number.
+  const rawHarvestId =
+    project.external_links?.harvest_id ||
     project.external_links?.harvest_project_id
-  if (!harvestProjectId) {
+  const harvestProjectId = rawHarvestId ? Number(rawHarvestId) : NaN
+  if (!harvestProjectId || Number.isNaN(harvestProjectId)) {
     return {
       status: 'skipped',
-      message: 'project has no external_links.harvest_project_id',
+      message: 'project has no external_links.harvest_id',
     }
   }
 

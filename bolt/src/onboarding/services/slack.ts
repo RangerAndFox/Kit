@@ -113,6 +113,9 @@ export interface SlackInviteResult extends ServiceResult {
  * Top-level entry: get the artist access to the project channel.
  *  - Existing workspace member → conversations.invite (immediate)
  *  - Non-member               → conversations.inviteShared (Slack Connect, pending)
+ *
+ * `projectChannelId` should come from `project.external_links.slack_id`
+ * (the channel id the Kit provisioner stored at project creation).
  */
 export async function inviteArtistToSlack(opts: {
   email: string
