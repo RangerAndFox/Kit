@@ -143,24 +143,57 @@ export async function runOnboarding(opts: {
     }),
   ])
 
-  // Send welcome DM if Slack invite produced a user id.
+  // Send welcome message. Two paths:
+  //  - Slack user known → open DM and post privately
+  //  - Connect invite pending → post into the project channel so the
+  //    freelancer sees it as channel history when they accept
   let welcomeR: ServiceResult = {
     status: 'skipped',
-    message: 'no slack user id from invite step',
+    message: 'Slack invite did not succeed; no welcome sent.',
   }
-  if (slackR.status === 'ok' && slackR.slackUserId) {
+  const slackInvite: any = slackR
+  if (slackR.status === 'ok') {
     const canvasMarkdown = await fetchWelcomeCanvas()
-    welcomeR = await sendWelcomeDm({
-      artistSlackUserId: slackR.slackUserId,
-      text: composeWelcomeDm({
-        project,
-        artistName: input.artistName,
-        canvasMarkdown,
-      }),
+    const welcomeText = composeWelcomeDm({
+      project,
+      artistName: input.artistName,
+      canvasMarkdown,
     })
+
+    if (slackInvite.slackUserId) {
+      // Path A: existing workspace member → private DM.
+      welcomeR = await sendWelcomeDm({
+        artistSlackUserId: slackInvite.slackUserId,
+        text: welcomeText,
+      })
+    } else if (slackInvite.connectPending && projectChannelId) {
+      // Path B: Connect invite pending → post into channel so they
+      // see it when they accept and land in the channel.
+      try {
+        await app.client.chat.postMessage({
+          channel: projectChannelId,
+          text: `Welcome ${input.artistName} (joining as a freelancer)`,
+          blocks: [
+            {
+              type: 'section',
+              text: { type: 'mrkdwn', text: welcomeText },
+            },
+          ],
+        })
+        welcomeR = {
+          status: 'ok',
+          message: `Welcome posted in <#${projectChannelId}>; visible to ${input.artistName} when they accept the Connect invite.`,
+        }
+      } catch (err: any) {
+        welcomeR = { status: 'failed', message: err.message || String(err) }
+      }
+    }
   }
 
-  // Upsert artist into staff so future ad-hoc paths work (employment_type=freelancer).
+  // Upsert artist into staff so future paths know who they are.
+  // Connect-invited freelancers don't have a Slack user id yet — we'll
+  // backfill on their first message via the staff sync script, or
+  // event-driven if we add a connect-acceptance handler later.
   if (slackR.slackUserId) {
     await sb.from('staff').upsert(
       {
