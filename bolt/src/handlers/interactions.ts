@@ -23,8 +23,28 @@ import { buildNewProjectModal } from '../../../src/lib/provisioner/modal'
 import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
 import { peekIntake, takeIntake, updateIntake } from '../../../src/lib/storyboard/stash'
 import { extractScriptFromFile } from '../../../src/lib/storyboard/files'
+import { handleCheckinConfirm, handleCheckinRedo } from '../checkins/confirm'
 
 export function registerInteractionHandlers(app: App) {
+  // ─── Daily hours check-in: Confirm / Redo ─────────────────
+  app.action('checkin_confirm', async ({ ack, body, client }) => {
+    await ack()
+    const checkinId = (body as any).actions?.[0]?.value || ''
+    if (!checkinId) return
+    handleCheckinConfirm({ app, client, body, checkinId }).catch((err) =>
+      console.error('[checkin] confirm failed:', err),
+    )
+  })
+
+  app.action('checkin_redo', async ({ ack, body, client }) => {
+    await ack()
+    const checkinId = (body as any).actions?.[0]?.value || ''
+    if (!checkinId) return
+    handleCheckinRedo({ app, client, body, checkinId }).catch((err) =>
+      console.error('[checkin] redo failed:', err),
+    )
+  })
+
   // ─── New Project: open modal from card button ─────────────
   // The card posted by /kit newproject and the chat-keyword trigger
   // carries the originating channel id in the button value, so we can

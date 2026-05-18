@@ -25,6 +25,8 @@ import {
   verifyDropboxSignature,
   processDropboxNotification,
 } from './watchers/dropbox'
+import cron from 'node-cron'
+import { sendAllDailyCheckins, nudgePendingCheckins } from './checkins/daily-hours'
 
 // ─── Boot ──────────────────────────────────────────────────
 
@@ -197,6 +199,33 @@ http
     console.log(`   Health + webhook server: listening on :${PORT}`)
   })
 
+// ─── Cron: daily hours check-in ────────────────────────────
+// 5pm local — send the prompt; 10pm — single nudge if no reply.
+// Timezone is configurable; Ranger & Fox defaults to America/Los_Angeles.
+// Set CHECKIN_TIMEZONE to override.
+
+const CHECKIN_TZ = process.env.CHECKIN_TIMEZONE || 'America/Los_Angeles'
+
+cron.schedule(
+  '0 17 * * 1-5',
+  () => {
+    sendAllDailyCheckins(app).catch((err) =>
+      console.error('[cron] daily-checkins fire failed:', err),
+    )
+  },
+  { timezone: CHECKIN_TZ },
+)
+
+cron.schedule(
+  '0 22 * * 1-5',
+  () => {
+    nudgePendingCheckins(app).catch((err) =>
+      console.error('[cron] nudge fire failed:', err),
+    )
+  },
+  { timezone: CHECKIN_TZ },
+)
+
 // ─── Start ─────────────────────────────────────────────────
 
 ;(async () => {
@@ -205,4 +234,5 @@ http
   console.log(`   Bot token: ...${process.env.SLACK_BOT_TOKEN?.slice(-6)}`)
   console.log(`   App token: ...${process.env.SLACK_APP_TOKEN?.slice(-6)}`)
   console.log(`   Anthropic key: ${process.env.ANTHROPIC_API_KEY ? 'set' : 'MISSING'}`)
+  console.log(`   Cron timezone: ${CHECKIN_TZ}`)
 })()

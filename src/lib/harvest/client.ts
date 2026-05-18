@@ -341,6 +341,32 @@ export async function createTimeEntry(opts: {
   }
 }
 
+/**
+ * List time entries for a specific Harvest user between two dates (inclusive).
+ * Used by the daily check-in to build a "recent projects" prior.
+ */
+export async function listTimeEntriesForUser(opts: {
+  userId: number
+  from: string // YYYY-MM-DD
+  to: string // YYYY-MM-DD
+}): Promise<HarvestTimeEntry[]> {
+  const data = await harvestGet('/time_entries', {
+    user_id: String(opts.userId),
+    from: opts.from,
+    to: opts.to,
+    per_page: '100',
+  })
+  return (data.time_entries || []).map((te: any) => ({
+    id: te.id,
+    project: { id: te.project.id, name: te.project.name },
+    task: { id: te.task.id, name: te.task.name },
+    user: { id: te.user.id, name: te.user.name },
+    hours: te.hours,
+    spent_date: te.spent_date,
+    notes: te.notes || '',
+  }))
+}
+
 // ─── Users ──────────────────────────────────────────────────
 
 /**

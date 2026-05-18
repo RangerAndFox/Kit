@@ -30,6 +30,7 @@ import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
 import { stashIntake } from '../../../src/lib/storyboard/stash'
 import { projectNameFromFilename } from '../../../src/lib/storyboard/parser'
 import { buildNewProjectCard } from './newproject-card'
+import { findOpenCheckin, handleCheckinReply } from '../checkins/reply'
 
 export function registerMessageHandlers(app: App) {
   // ─── @mentions ────────────────────────────────────────────
@@ -210,6 +211,24 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
   if (!messageText) {
     await postReply("Hey! What can I help you with?")
     return
+  }
+
+  // ── Daily-hours check-in interception ─────────────────────
+  // If this is a DM (or assistant thread) and the user has an open
+  // check-in for today, route the reply to the check-in parser instead
+  // of the orchestrator. Prevents Kit from "having a conversation"
+  // about hours when we already asked a structured question.
+  if (channelType === 'im' || assistantThreadTs) {
+    const open = await findOpenCheckin(userId)
+    if (open) {
+      const handled = await handleCheckinReply({
+        app,
+        open,
+        replyText: messageText,
+        replyTs: messageTs,
+      })
+      if (handled) return
+    }
   }
 
   // Resolve workspace + user context
