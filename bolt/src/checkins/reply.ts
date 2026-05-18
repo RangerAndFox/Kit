@@ -70,7 +70,7 @@ export async function findOpenCheckin(slackUserId: string): Promise<OpenCheckin 
  * Parse a natural-language hours reply into structured entries.
  * Uses Claude Haiku — fast, cheap, deterministic enough for this.
  */
-async function parseReplyWithLLM(opts: {
+export async function parseReplyWithLLM(opts: {
   replyText: string
   candidateProjects: { harvest_project_name: string }[]
 }): Promise<{ entries: { projectQuery: string; hours: number; notes?: string }[]; skip: boolean }> {
@@ -130,7 +130,7 @@ Return ONLY the JSON object, no prose, no code fences.`
  * Resolve a free-form project query against Harvest. Returns one match,
  * or a list of candidates if ambiguous.
  */
-async function resolveHarvestProject(query: string): Promise<{
+export async function resolveHarvestProject(query: string): Promise<{
   resolution: 'matched' | 'ambiguous' | 'unmatched'
   project?: HarvestProject
   candidates?: HarvestProject[]
@@ -148,7 +148,7 @@ async function resolveHarvestProject(query: string): Promise<{
 /**
  * Render the Block Kit confirmation card.
  */
-function buildConfirmBlocks(opts: {
+export function buildConfirmBlocks(opts: {
   checkinId: string
   entries: ParsedEntry[]
 }) {

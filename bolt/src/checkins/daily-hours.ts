@@ -104,14 +104,17 @@ export async function sendDailyCheckin(opts: {
   const today = isoDate()
   const sb = createAdminClient()
 
-  // Duplicate guard: skip if a row already exists for today.
+  // Duplicate guard: skip if a *scheduled* row already exists for today,
+  // or if the user already logged today via ad-hoc.
   const { data: existing } = await sb
     .from('daily_hours_checkins')
-    .select('id, status')
+    .select('id, status, origin')
     .eq('staff_id', staff.id)
     .eq('check_in_date', today)
-    .maybeSingle()
-  if (existing) return { status: 'duplicate' }
+  const blocked = (existing || []).some(
+    (r: any) => r.origin === 'scheduled' || r.status === 'logged',
+  )
+  if (blocked) return { status: 'duplicate' }
 
   if (!staff.harvest_user_id) {
     return { status: 'skipped', reason: 'no harvest_user_id mapping' }
@@ -161,6 +164,7 @@ export async function sendDailyCheckin(opts: {
     slack_user_id: staff.slack_user_id,
     check_in_date: today,
     status: 'sent',
+    origin: 'scheduled',
     candidate_projects: candidates,
     dm_channel_id: dmChannelId,
     dm_ts: dmTs,

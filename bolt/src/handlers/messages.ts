@@ -2,10 +2,11 @@
 /**
  * Bolt Message Handlers
  *
- * Three paths:
- *   1. Frame.io link detected → handleFrameIoLink (direct, no LLM)
- *   2. Time-entry shorthand detected → handleTimeEntry (direct, no LLM)
- *   3. Everything else → orchestrator (Claude)
+ * Paths (in order):
+ *   1. Open daily-hours check-in for this user → check-in reply parser
+ *   2. Frame.io link detected → handleFrameIoLink (direct, no LLM)
+ *   3. DM mentions hours → ad-hoc parse + confirmation card
+ *   4. Everything else → orchestrator (Claude)
  *
  * Triggers:
  *   - app_mention: any @mention in a channel where Kit is invited
@@ -21,7 +22,7 @@ import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { resolveUserContext } from '../../../src/lib/inngest/access-control'
 import { messageHasFrameIoLink, handleFrameIoLink } from '../../../src/lib/frameio/slack-handler'
-import { isTimeEntryMessage, handleTimeEntry } from '../../../src/lib/harvest/slack-handler'
+import { handleAdhocHoursEntry, looksLikeHoursIntent } from '../checkins/adhoc'
 
 import { runOrchestrator } from '../llm/orchestrator'
 import { hasPendingClarification } from '../llm/memory'
@@ -268,18 +269,21 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
     return
   }
 
-  // ── Fast path 2: Time entry shorthand ───────────────────
-  if (isTimeEntryMessage(messageText)) {
-    console.log('[Bolt] Time-entry shorthand detected')
-    await handleTimeEntry({
-      text: messageText,
+  // ── Fast path 2: Ad-hoc hours entry ─────────────────────
+  // If this is a DM (or assistant thread) and the message mentions hours,
+  // route it through the same parse/confirm/log pipeline as the daily
+  // check-in. Falls through to the orchestrator if the LLM determines
+  // the message isn't actually a time entry.
+  if ((channelType === 'im' || assistantThreadTs) && looksLikeHoursIntent(messageText)) {
+    const handled = await handleAdhocHoursEntry({
+      app,
+      slackUserId: userId,
       channelId,
-      threadTs,
+      messageText,
       messageTs,
-      userId,
-      workspaceId: workspaceId || '',
+      threadTs: assistantThreadTs,
     })
-    return
+    if (handled) return
   }
 
   // ── Path 3: Orchestrator ────────────────────────────────
