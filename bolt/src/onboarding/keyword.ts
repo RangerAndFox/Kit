@@ -39,7 +39,8 @@ interface ExtractedIntent {
  * actually an onboarding request (false positive on the keyword).
  */
 async function parseOnboardIntent(text: string): Promise<ExtractedIntent> {
-  const systemPrompt = `Extract freelancer-onboarding details from a message.
+  const systemPrompt = `Decide if a message is about freelancer onboarding,
+and pull out any details the user gave.
 
 Return strict JSON:
 {
@@ -49,15 +50,23 @@ Return strict JSON:
   "projectQuery": string | null
 }
 
-Rules:
-- isOnboardingIntent=true ONLY if the message is asking to add a person
-  (freelancer/artist/contractor) to a project or to our systems.
-- "onboarding a new project" or "client onboarding" → isOnboardingIntent=false.
-- artistEmail must be a real email (contains "@"). null if absent.
-- artistName: the person's name if mentioned, else null. Common form:
-  "alice smith (alice@…)" → "alice smith". "alice@studio.com" alone → null.
-- projectQuery: whatever they called the project — code, name, or client.
-  Examples: "Rayfin" → "Rayfin"; "project 2622" → "2622"; null if absent.
+Decide isOnboardingIntent like this:
+- true if the user wants to add a person (freelancer/artist/contractor)
+  to a project / Slack / Frame.io / Dropbox / Harvest.
+- true even when no details are given. A bare "onboard" or "onboard a
+  freelancer" should still be true — we'll ask follow-up questions.
+- false ONLY when the context is clearly something else:
+    "let's onboard a new project" → false (different flow)
+    "onboard a new client"        → false
+    "what's the onboarding doc"   → false
+    "the onboarding process"      → false
+
+Extract any details that are present (otherwise null):
+- artistEmail: must contain "@". Pull from anywhere in the message.
+- artistName: the person's name if given. "alice smith (alice@…)"
+  → "alice smith". A bare email like "alice@studio.com" → null.
+- projectQuery: code, client, or name. "to Rayfin" → "Rayfin";
+  "project 2622" → "2622"; "the Microsoft thing" → "Microsoft".
 
 Return ONLY the JSON object — no prose, no code fences.`
 
