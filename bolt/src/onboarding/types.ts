@@ -32,4 +32,12 @@ export interface ServiceResult {
   externalId?: string | number
   /** Slack user id, only filled by the Slack service */
   slackUserId?: string
+  /**
+   * A URL the artist must visit to complete onboarding for this service
+   * (e.g. Frame.io self-signup). Surfaced in the welcome message so the
+   * freelancer sees it when they accept the Connect invite.
+   */
+  actionUrl?: string
+  /** Short label for the action ("Sign up for Frame.io", etc.) */
+  actionLabel?: string
 }

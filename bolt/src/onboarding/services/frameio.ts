@@ -85,14 +85,17 @@ export async function inviteArtistToFrameIo(opts: {
     if (!userId) {
       // Frame.io v4 has no email-invite endpoint (Adobe removed it from v2).
       // Best path is the person self-signs up; then re-running onboarding
-      // finds them and PATCHes the project. Pre-fill the signup URL so the
-      // PM can drop it in DM or the project channel.
+      // finds them and PATCHes the project. We pre-fill a signup URL and
+      // also bubble it up as an actionUrl so the welcome message can
+      // surface it directly to the freelancer in the Connect channel.
       const signupUrl =
         `https://next.frame.io/signup?email=${encodeURIComponent(artistEmail)}`
       return {
         status: 'failed',
         message:
-          `${artistEmail} isn't in our Frame.io account yet. Send them this self-signup link, then re-run \`@Kit onboard\` for this artist once they accept:\n${signupUrl}`,
+          `${artistEmail} isn't in our Frame.io account yet. Self-signup link sent to them in the project channel; once they accept and sign up, re-run \`@Kit onboard\` to grant project access.`,
+        actionUrl: signupUrl,
+        actionLabel: 'Sign up for Frame.io',
       }
     }
 

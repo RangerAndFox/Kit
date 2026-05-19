@@ -35,14 +35,16 @@ async function loadProject(projectId: string): Promise<OnboardingProject | null>
 
 /**
  * Compose the welcome DM markdown. Canvas content first (folder structure,
- * where to work — editable in Slack), then auto-generated project summary.
+ * where to work — editable in Slack), then auto-generated project summary,
+ * then any "action needed" items surfaced by service results.
  */
 function composeWelcomeDm(opts: {
   project: OnboardingProject
   artistName: string
   canvasMarkdown: string | null
+  actions?: { label: string; url: string }[]
 }): string {
-  const { project, artistName, canvasMarkdown } = opts
+  const { project, artistName, canvasMarkdown, actions } = opts
   const firstName = artistName.trim().split(/\s+/)[0] || 'there'
 
   const summaryLines: string[] = [`*Project: ${project.name}*`]
@@ -73,6 +75,15 @@ function composeWelcomeDm(opts: {
     parts.push(canvasMarkdown.trim(), '')
   }
   parts.push('━━━━━━━━━━━━━━━━━━━━', '', ...summaryLines)
+
+  // Surface any "you need to do this" items right next to the project info.
+  if (actions && actions.length > 0) {
+    parts.push('', '*One quick thing to wrap up access:*')
+    for (const a of actions) {
+      parts.push(`• ${a.label}: ${a.url}`)
+    }
+  }
+
   parts.push('', "Reach out anytime — happy to have you on this one.")
   return parts.join('\n')
 }
@@ -172,10 +183,20 @@ export async function runOnboarding(opts: {
   const slackInvite: any = slackR
   if (slackR.status === 'ok') {
     const canvasMarkdown = await fetchWelcomeCanvas()
+    // Collect any actionable follow-ups from per-service results
+    // (currently: Frame.io self-signup link when the artist isn't yet
+    // in the account).
+    const actions: { label: string; url: string }[] = []
+    for (const r of [slackR, dropboxR, frameioR, harvestR]) {
+      if (r.actionUrl && r.actionLabel) {
+        actions.push({ label: r.actionLabel, url: r.actionUrl })
+      }
+    }
     const welcomeText = composeWelcomeDm({
       project,
       artistName: input.artistName,
       canvasMarkdown,
+      actions,
     })
 
     if (slackInvite.slackUserId) {
