@@ -6,7 +6,8 @@
  *   1. Open daily-hours check-in for this user → check-in reply parser
  *   2. Frame.io link detected → handleFrameIoLink (direct, no LLM)
  *   3. DM mentions hours → ad-hoc parse + confirmation card
- *   4. Everything else → orchestrator (Claude)
+ *   4. Message mentions "onboard" → freelancer onboarding flow
+ *   5. Everything else → orchestrator (Claude)
  *
  * Triggers:
  *   - app_mention: any @mention in a channel where Kit is invited
@@ -23,6 +24,7 @@ import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { resolveUserContext } from '../../../src/lib/inngest/access-control'
 import { messageHasFrameIoLink, handleFrameIoLink } from '../../../src/lib/frameio/slack-handler'
 import { handleAdhocHoursEntry, looksLikeHoursIntent } from '../checkins/adhoc'
+import { handleOnboardKeyword, isOnboardTrigger } from '../onboarding/keyword'
 
 import { runOrchestrator } from '../llm/orchestrator'
 import { hasPendingClarification } from '../llm/memory'
@@ -282,6 +284,20 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
       messageText,
       messageTs,
       threadTs: assistantThreadTs,
+    })
+    if (handled) return
+  }
+
+  // ── Fast path 3: Freelancer onboarding ──────────────────
+  // "@Kit onboard alice@studio.com to Rayfin" works in any channel where
+  // Kit is invited, and in DMs. Permission-gated to PMs/CDs/admins.
+  if (isOnboardTrigger(messageText)) {
+    const handled = await handleOnboardKeyword({
+      app,
+      channelId,
+      threadTs: assistantThreadTs || (channelType !== 'im' ? threadTs : undefined),
+      userId,
+      text: messageText,
     })
     if (handled) return
   }

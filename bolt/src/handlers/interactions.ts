@@ -115,6 +115,104 @@ export function registerInteractionHandlers(app: App) {
     }
   })
 
+  // ─── Onboarding: natural-language [Onboard] confirm button ─
+  app.action('kit_onboard_confirm', async ({ ack, body, client, respond }) => {
+    await ack()
+    const raw = (body as any).actions?.[0]?.value || '{}'
+    let payload: { p?: string; n?: string; e?: string }
+    try {
+      payload = JSON.parse(raw)
+    } catch {
+      payload = {}
+    }
+    const projectId = payload.p
+    const artistName = payload.n
+    const artistEmail = payload.e
+    const requestedBy = (body as any).user?.id || ''
+    const channelId = (body as any).channel?.id || ''
+    const threadTs = (body as any).message?.thread_ts
+
+    if (!projectId || !artistName || !artistEmail) {
+      await respond({
+        response_type: 'ephemeral',
+        replace_original: false,
+        text: ":warning: Lost the onboarding details — try the message again.",
+      })
+      return
+    }
+
+    // Replace the card with a "running" state.
+    try {
+      await respond({
+        replace_original: true,
+        text: `:hourglass_flowing_sand: Onboarding *${artistName}* — running invites...`,
+        blocks: [
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: `:hourglass_flowing_sand: Onboarding *${artistName}* (${artistEmail}) — running invites...`,
+            },
+          },
+        ],
+      })
+    } catch {
+      /* non-fatal */
+    }
+
+    try {
+      const { results } = await runOnboarding({
+        app,
+        input: { projectId, artistEmail, artistName, requestedBy },
+      })
+      // Pull project name for the summary
+      let projectName = projectId
+      try {
+        const sb = createAdminClient()
+        const { data } = await sb
+          .from('projects')
+          .select('name')
+          .eq('id', projectId)
+          .maybeSingle()
+        if (data?.name) projectName = data.name
+      } catch {
+        /* fallback to id */
+      }
+      const summary = buildRequesterSummary({
+        artistName,
+        artistEmail,
+        projectName,
+        results,
+      })
+      await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: threadTs,
+        text: summary,
+      })
+    } catch (err: any) {
+      console.error('[onboard-confirm] failed:', err)
+      await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: threadTs,
+        text: `:x: Onboarding *${artistName}* crashed: ${err.message || String(err)}`,
+      })
+    }
+  })
+
+  app.action('kit_onboard_cancel', async ({ ack, respond }) => {
+    await ack()
+    await respond({
+      replace_original: true,
+      text: 'Cancelled onboarding.',
+      blocks: [
+        {
+          type: 'section',
+          text: { type: 'mrkdwn', text: ':white_circle: Cancelled.' },
+        },
+      ],
+    })
+  })
+
   // ─── New Project: open modal from card button ─────────────
   // The card posted by /kit newproject and the chat-keyword trigger
   // carries the originating channel id in the button value, so we can
