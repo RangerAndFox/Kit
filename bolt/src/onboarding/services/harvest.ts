@@ -1,25 +1,26 @@
 // @ts-nocheck
 /**
- * Onboarding — Harvest service
+ * Onboarding — Harvest service (Bucket-user mode)
  *
- * Find or create the artist as a Harvest user (is_contractor=true), then
- * assign them to the Harvest project linked to the Kit project row.
+ * Ranger & Fox runs Harvest at its seat cap, so we don't create a
+ * per-freelancer Harvest user. Instead, ONE shared bucket user
+ * ("Freelancers") is reused — producers log freelancer hours against
+ * that user with the actual person's name in the notes field.
+ *
+ * This service just ensures the bucket user is assigned to the project
+ * (idempotent), so producers have it as a selectable user when logging
+ * time. Per-person reporting happens via grep on the notes column.
+ *
+ * Configuration:
+ *   HARVEST_FREELANCER_USER_ID — Harvest user_id of the bucket account.
+ *
+ * If the env var isn't set, this service returns 'skipped' with a clear
+ * setup hint. If a future Harvest plan upgrade unlocks more seats, we
+ * can swap this back to per-freelancer users.
  */
 
 import type { OnboardingProject, ServiceResult } from '../types'
-import {
-  findOrCreateUser,
-  assignUserToProject,
-} from '../../../../src/lib/harvest/client'
-
-function splitName(full: string): { firstName: string; lastName: string } {
-  const parts = full.trim().split(/\s+/)
-  if (parts.length <= 1) return { firstName: parts[0] || '', lastName: '' }
-  return {
-    firstName: parts[0],
-    lastName: parts.slice(1).join(' '),
-  }
-}
+import { assignUserToProject } from '../../../../src/lib/harvest/client'
 
 export async function inviteArtistToHarvest(opts: {
   project: OnboardingProject
@@ -27,9 +28,8 @@ export async function inviteArtistToHarvest(opts: {
   artistName: string
   hourlyRate?: number
 }): Promise<ServiceResult & { harvestUserId?: number }> {
-  const { project, artistEmail, artistName, hourlyRate } = opts
-  // Kit's Harvest provisioner stores the project id as external_links.harvest_id
-  // (string). The Harvest API expects a number.
+  const { project, artistName } = opts
+  // Kit's Harvest provisioner stores the project id as external_links.harvest_id.
   const rawHarvestId =
     project.external_links?.harvest_id ||
     project.external_links?.harvest_project_id
@@ -41,37 +41,33 @@ export async function inviteArtistToHarvest(opts: {
     }
   }
 
+  const bucketUserIdRaw = process.env.HARVEST_FREELANCER_USER_ID
+  if (!bucketUserIdRaw) {
+    return {
+      status: 'skipped',
+      message:
+        'HARVEST_FREELANCER_USER_ID not set — configure the shared freelancers user in Railway to enable Harvest assignment.',
+    }
+  }
+  const bucketUserId = Number(bucketUserIdRaw)
+  if (Number.isNaN(bucketUserId)) {
+    return {
+      status: 'skipped',
+      message: `HARVEST_FREELANCER_USER_ID is not numeric: ${bucketUserIdRaw}`,
+    }
+  }
+
   try {
-    const { firstName, lastName } = splitName(artistName)
-    const user = await findOrCreateUser({
-      email: artistEmail,
-      firstName: firstName || 'Freelancer',
-      lastName: lastName || ' ',
-      isContractor: true,
-    })
-
-    await assignUserToProject({
-      projectId: harvestProjectId,
-      userId: user.id,
-      hourlyRate,
-    })
-
+    await assignUserToProject({ projectId: harvestProjectId, userId: bucketUserId })
     return {
       status: 'ok',
-      message: `Assigned ${user.first_name} ${user.last_name} to Harvest project ${harvestProjectId}`,
-      externalId: user.id,
-      harvestUserId: user.id,
+      message:
+        `Freelancers bucket user assigned to Harvest project ${harvestProjectId}. ` +
+        `Log ${artistName}'s hours under that user with their name in the notes.`,
+      externalId: bucketUserId,
+      harvestUserId: bucketUserId,
     }
   } catch (err: any) {
-    const msg = err.message || String(err)
-    // Friendlier message for the common "Harvest seat cap" case
-    if (/Maximum number of users reached/i.test(msg)) {
-      return {
-        status: 'failed',
-        message:
-          'Harvest is at its user cap — either upgrade the plan, or this freelancer will track hours outside Harvest until a seat opens up.',
-      }
-    }
-    return { status: 'failed', message: msg }
+    return { status: 'failed', message: err.message || String(err) }
   }
 }
