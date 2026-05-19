@@ -20,6 +20,11 @@ import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { anthropic, SPECIALIST_MODEL } from '../llm/client'
 import { canOnboard } from './permissions'
+import {
+  getPendingOnboarding,
+  setPendingOnboarding,
+  clearPendingOnboarding,
+} from './state'
 
 /** Cheap detector — does this message even mention onboarding? */
 export function isOnboardTrigger(text: string): boolean {
@@ -214,33 +219,55 @@ export async function handleOnboardKeyword(opts: {
 
   // Parse intent
   const intent = await parseOnboardIntent(text)
-  if (!intent.isOnboardingIntent) {
+
+  // Merge with any pending state from a prior turn so the user can
+  // supply missing pieces in follow-up messages without restating.
+  const prior = getPendingOnboarding(channelId, userId)
+  const merged = {
+    isOnboardingIntent: intent.isOnboardingIntent || !!prior,
+    artistName: intent.artistName || prior?.artistName || null,
+    artistEmail: intent.artistEmail || prior?.artistEmail || null,
+    projectQuery: intent.projectQuery || prior?.projectQuery || null,
+  }
+
+  if (!merged.isOnboardingIntent) {
     // False positive — let the orchestrator handle it.
     return false
   }
 
   // Ask for missing pieces if any
   const missing: string[] = []
-  if (!intent.artistEmail) missing.push('artist email')
-  if (!intent.projectQuery) missing.push('project (name, code, or client)')
+  if (!merged.artistEmail) missing.push('artist email')
+  if (!merged.projectQuery) missing.push('project (name, code, or client)')
   if (missing.length > 0) {
+    setPendingOnboarding(channelId, userId, {
+      artistName: merged.artistName,
+      artistEmail: merged.artistEmail,
+      projectQuery: merged.projectQuery,
+    })
     await app.client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,
       text:
-        `Happy to onboard them — can you tell me the ${missing.join(' and ')}? E.g. _"onboard Alice Smith alice@studio.com to Rayfin"_.`,
+        `Happy to onboard them — can you tell me the ${missing.join(' and ')}? E.g. _"Alice Smith alice@studio.com to Rayfin"_.`,
     })
     return true
   }
 
   // Resolve project
-  const r = await resolveProject(intent.projectQuery!)
+  const r = await resolveProject(merged.projectQuery!)
   if (r.kind === 'unmatched') {
+    // Keep pending state so a re-try with a different project name works.
     await app.client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,
       text:
-        `I couldn't find a project matching _"${intent.projectQuery}"_. Try the project code (e.g. \`2622\`), client name, or project name.`,
+        `I couldn't find a project matching _"${merged.projectQuery}"_. Try the project code (e.g. \`2622\`), client name, or project name.`,
+    })
+    setPendingOnboarding(channelId, userId, {
+      artistName: merged.artistName,
+      artistEmail: merged.artistEmail,
+      projectQuery: null, // clear so the next reply replaces it
     })
     return true
   }
@@ -255,19 +282,25 @@ export async function handleOnboardKeyword(opts: {
       channel: channelId,
       thread_ts: threadTs,
       text:
-        `Multiple projects matched _"${intent.projectQuery}"_:\n${opts}\n\nReply with the project code to disambiguate.`,
+        `Multiple projects matched _"${merged.projectQuery}"_:\n${opts}\n\nReply with the project code to disambiguate.`,
+    })
+    setPendingOnboarding(channelId, userId, {
+      artistName: merged.artistName,
+      artistEmail: merged.artistEmail,
+      projectQuery: null,
     })
     return true
   }
 
-  // We have everything — post the confirmation card.
-  const artistName = intent.artistName || intent.artistEmail!.split('@')[0]
+  // We have everything — clear pending state and post the confirmation card.
+  clearPendingOnboarding(channelId, userId)
+  const artistName = merged.artistName || merged.artistEmail!.split('@')[0]
   await app.client.chat.postMessage({
     channel: channelId,
     thread_ts: threadTs,
     ...buildConfirmCard({
       artistName,
-      artistEmail: intent.artistEmail!,
+      artistEmail: merged.artistEmail!,
       project: r.project,
     }),
   })

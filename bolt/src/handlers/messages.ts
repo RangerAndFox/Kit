@@ -25,6 +25,7 @@ import { resolveUserContext } from '../../../src/lib/inngest/access-control'
 import { messageHasFrameIoLink, handleFrameIoLink } from '../../../src/lib/frameio/slack-handler'
 import { handleAdhocHoursEntry, looksLikeHoursIntent } from '../checkins/adhoc'
 import { handleOnboardKeyword, isOnboardTrigger } from '../onboarding/keyword'
+import { getPendingOnboarding } from '../onboarding/state'
 
 import { runOrchestrator } from '../llm/orchestrator'
 import { hasPendingClarification } from '../llm/memory'
@@ -132,9 +133,15 @@ export function registerMessageHandlers(app: App) {
       return
     }
 
-    // For non-DM messages without @mention, only act if Kit is awaiting clarification
+    // For non-DM messages without @mention, only act if Kit is awaiting
+    // clarification from the orchestrator OR has an active onboarding flow
+    // for this user (so they can answer "what's the email?" without @mention).
     if (!isDM) {
-      if (!hasPendingClarification(teamId, channelId, userId)) return
+      if (
+        !hasPendingClarification(teamId, channelId, userId) &&
+        !getPendingOnboarding(channelId, userId)
+      )
+        return
     }
 
     // (App_mention event handles the @mention path; ignore mentions here to avoid double-fire)
@@ -289,13 +296,15 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
   }
 
   // ── Fast path 3: Freelancer onboarding ──────────────────
-  // "@Kit onboard alice@studio.com to Rayfin" works in any channel where
-  // Kit is invited, and in DMs. Permission-gated to PMs/CDs/admins.
+  // Triggers when:
+  //  - "@Kit onboard …" (or "onboard …" in a DM) is mentioned, OR
+  //  - This user has a pending onboarding flow in this channel (they're
+  //    answering an earlier "what's the email?" question without @Kit).
   //
-  // Reply threading mirrors the rest of handleConversationalMessage:
-  //  - Inside a DM Assistant thread → thread the reply
-  //  - Channel @mention → post in main channel flow (no thread_ts)
-  if (isOnboardTrigger(messageText)) {
+  // Reply threading: thread only inside a DM Assistant thread; channel
+  // @mentions post in main channel flow.
+  const hasPendingOnboard = !!getPendingOnboarding(channelId, userId)
+  if (isOnboardTrigger(messageText) || hasPendingOnboard) {
     const handled = await handleOnboardKeyword({
       app,
       channelId,
