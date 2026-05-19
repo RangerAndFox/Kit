@@ -63,6 +63,15 @@ export async function inviteArtistToHarvest(opts: {
       harvestUserId: user.id,
     }
   } catch (err: any) {
-    return { status: 'failed', message: err.message || String(err) }
+    const msg = err.message || String(err)
+    // Friendlier message for the common "Harvest seat cap" case
+    if (/Maximum number of users reached/i.test(msg)) {
+      return {
+        status: 'failed',
+        message:
+          'Harvest is at its user cap — either upgrade the plan, or this freelancer will track hours outside Harvest until a seat opens up.',
+      }
+    }
+    return { status: 'failed', message: msg }
   }
 }

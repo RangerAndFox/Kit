@@ -22,29 +22,42 @@ import { frameioHeaders } from '../../../../src/lib/frameio/auth'
 const FRAMEIO_API = 'https://api.frame.io/v4'
 
 /**
- * Look up a Frame.io v4 user by email. Returns the user id or null.
+ * Look up a Frame.io v4 user by email.
+ *
+ * v4's GET /accounts/{acct}/users does NOT support email filtering — the
+ * only supported query params are sort, after, page_size, etc. We have
+ * to paginate and match client-side. Sorted by email_asc so most lookups
+ * complete within the first page.
  */
 async function lookupFrameIoUserByEmail(
   accountId: string,
   email: string,
 ): Promise<string | null> {
-  const hdrs = await frameioHeaders()
-  const url =
-    `${FRAMEIO_API}/accounts/${accountId}/users` +
-    `?filter[email]=${encodeURIComponent(email)}`
-  const res = await fetch(url, { headers: hdrs, signal: AbortSignal.timeout(15_000) })
-  if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`user lookup ${res.status}: ${text}`)
+  const target = email.toLowerCase()
+  let after: string | undefined
+  // Cap at 10 pages (1000 users) so a misconfigured account doesn't loop forever.
+  for (let page = 0; page < 10; page++) {
+    const hdrs = await frameioHeaders()
+    const qs = new URLSearchParams({ sort: 'email_asc', page_size: '100' })
+    if (after) qs.set('after', after)
+    const url = `${FRAMEIO_API}/accounts/${accountId}/users?${qs.toString()}`
+    const res = await fetch(url, { headers: hdrs, signal: AbortSignal.timeout(15_000) })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      throw new Error(`user lookup ${res.status}: ${text}`)
+    }
+    const data = await res.json()
+    const list = data?.data || []
+    if (Array.isArray(list)) {
+      for (const u of list) {
+        const e = (u?.email || u?.attributes?.email || '').toLowerCase()
+        if (e === target) return u.id
+      }
+    }
+    after = data?.links?.next?.after || data?.meta?.next_cursor || undefined
+    if (!after) break
   }
-  const data = await res.json()
-  const list = data?.data || []
-  if (!Array.isArray(list) || list.length === 0) return null
-  const exact = list.find(
-    (u: any) =>
-      (u?.email || u?.attributes?.email || '').toLowerCase() === email.toLowerCase(),
-  )
-  return (exact?.id || list[0]?.id) || null
+  return null
 }
 
 export async function inviteArtistToFrameIo(opts: {
