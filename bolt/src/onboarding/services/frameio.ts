@@ -83,10 +83,16 @@ export async function inviteArtistToFrameIo(opts: {
   try {
     const userId = await lookupFrameIoUserByEmail(acct, artistEmail)
     if (!userId) {
+      // Frame.io v4 has no email-invite endpoint (Adobe removed it from v2).
+      // Best path is the person self-signs up; then re-running onboarding
+      // finds them and PATCHes the project. Pre-fill the signup URL so the
+      // PM can drop it in DM or the project channel.
+      const signupUrl =
+        `https://next.frame.io/signup?email=${encodeURIComponent(artistEmail)}`
       return {
         status: 'failed',
         message:
-          `${artistEmail} isn't in our Frame.io account yet — invite them via Frame.io's web UI first, then re-run onboarding for this artist.`,
+          `${artistEmail} isn't in our Frame.io account yet. Send them this self-signup link, then re-run \`@Kit onboard\` for this artist once they accept:\n${signupUrl}`,
       }
     }
 
