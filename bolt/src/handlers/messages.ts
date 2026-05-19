@@ -291,11 +291,15 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
   // ── Fast path 3: Freelancer onboarding ──────────────────
   // "@Kit onboard alice@studio.com to Rayfin" works in any channel where
   // Kit is invited, and in DMs. Permission-gated to PMs/CDs/admins.
+  //
+  // Reply threading mirrors the rest of handleConversationalMessage:
+  //  - Inside a DM Assistant thread → thread the reply
+  //  - Channel @mention → post in main channel flow (no thread_ts)
   if (isOnboardTrigger(messageText)) {
     const handled = await handleOnboardKeyword({
       app,
       channelId,
-      threadTs: assistantThreadTs || (channelType !== 'im' ? threadTs : undefined),
+      threadTs: assistantThreadTs,
       userId,
       text: messageText,
     })
