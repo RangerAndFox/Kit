@@ -37,13 +37,22 @@ const checks: Array<[string, boolean]> = [
   ['tampered body fails',
     verifyPlaudSignature(BODY + '{}', TIMESTAMP, VALID_SIG, SECRET) === false],
 
+  ['tampered timestamp fails',
+    verifyPlaudSignature(BODY, TIMESTAMP + 'Z', VALID_SIG, SECRET) === false],
+
   ['missing sha256= prefix fails',
     verifyPlaudSignature(BODY, TIMESTAMP, VALID_SIG.slice('sha256='.length), SECRET) === false],
 
-  ['empty inputs fail',
-    verifyPlaudSignature('', TIMESTAMP, VALID_SIG, SECRET) === false &&
-    verifyPlaudSignature(BODY, '', VALID_SIG, SECRET) === false &&
-    verifyPlaudSignature(BODY, TIMESTAMP, '', SECRET) === false &&
+  ['empty body fails',
+    verifyPlaudSignature('', TIMESTAMP, VALID_SIG, SECRET) === false],
+
+  ['empty timestamp fails',
+    verifyPlaudSignature(BODY, '', VALID_SIG, SECRET) === false],
+
+  ['empty signature fails',
+    verifyPlaudSignature(BODY, TIMESTAMP, '', SECRET) === false],
+
+  ['empty secret fails',
     verifyPlaudSignature(BODY, TIMESTAMP, VALID_SIG, '') === false],
 
   ['non-hex signature fails',
@@ -54,6 +63,9 @@ const checks: Array<[string, boolean]> = [
 
   ['stale timestamp (1 hour old) fails',
     isTimestampFresh(new Date(Date.now() - 3600_000).toISOString()) === false],
+
+  ['future timestamp (1 hour ahead) fails',
+    isTimestampFresh(new Date(Date.now() + 3600_000).toISOString()) === false],
 
   ['malformed timestamp fails',
     isTimestampFresh('not-a-date') === false],

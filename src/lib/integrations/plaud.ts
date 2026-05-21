@@ -84,12 +84,19 @@ export function verifyPlaudSignature(
   const message = `${timestamp}.${rawBody}`
   const expected = crypto.createHmac('sha256', secret).update(message).digest('hex')
 
-  if (provided.length !== expected.length) return false
+  // Compare on byte buffers, not hex-string lengths — invariant is precise
+  // regardless of digest length should the algorithm ever change.
+  let providedBytes: Buffer
+  let expectedBytes: Buffer
   try {
-    return crypto.timingSafeEqual(
-      Buffer.from(provided, 'hex'),
-      Buffer.from(expected, 'hex'),
-    )
+    providedBytes = Buffer.from(provided, 'hex')
+    expectedBytes = Buffer.from(expected, 'hex')
+  } catch {
+    return false
+  }
+  if (providedBytes.length !== expectedBytes.length) return false
+  try {
+    return crypto.timingSafeEqual(providedBytes, expectedBytes)
   } catch {
     return false
   }
@@ -102,7 +109,12 @@ export function verifyPlaudSignature(
 export function isTimestampFresh(timestamp: string, nowMs = Date.now()): boolean {
   const ts = Date.parse(timestamp)
   if (Number.isNaN(ts)) return false
-  const skewSeconds = Number(process.env.PLAUD_TIMESTAMP_SKEW_SECONDS) || 300
+  // Clamp to (0, 3600]: rejects zero/negative/non-numeric (would disable or
+  // brick replay protection) and caps at 1 hour (beyond which the check is
+  // meaningless).
+  const rawSkew = Number(process.env.PLAUD_TIMESTAMP_SKEW_SECONDS)
+  const skewSeconds =
+    Number.isFinite(rawSkew) && rawSkew > 0 ? Math.min(rawSkew, 3600) : 300
   return Math.abs(nowMs - ts) <= skewSeconds * 1000
 }
 
@@ -122,6 +134,7 @@ function plaudHeaders(): Record<string, string> {
   return {
     Authorization: `Bearer ${key}`,
     'Content-Type': 'application/json',
+    'User-Agent': 'Kit (kit@rangerandfox.tv)',
   }
 }
 
