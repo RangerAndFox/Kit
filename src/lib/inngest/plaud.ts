@@ -62,10 +62,14 @@ export const plaudTranscriptionReady = inngest.createFunction(
 
     const sb = createAdminClient()
 
-    // Always write/refresh the skeleton row first so we have a record
-    // even if the hydrate step fails. Use upsert on external_recording_id
-    // to make retries safe.
+    // Always write the skeleton row first so we have a record even if the
+    // hydrate step fails.
     await step.run('upsert-skeleton', async () => {
+      // Insert-only: if a row already exists (idempotency window expired
+      // and Plaud is re-delivering the same event), do not touch it. The
+      // event payload always carries the same IDs, so DO NOTHING preserves
+      // any already-progressed ingest_status (e.g. 'ingested') instead of
+      // regressing it back to 'pending'.
       const { error } = await sb
         .from('call_transcripts' as any)
         .upsert(
@@ -76,7 +80,7 @@ export const plaudTranscriptionReady = inngest.createFunction(
             ingest_status: 'pending',
             updated_at: new Date().toISOString(),
           },
-          { onConflict: 'external_recording_id' },
+          { onConflict: 'external_recording_id', ignoreDuplicates: true },
         )
       if (error) throw new Error(`Skeleton upsert failed: ${error.message}`)
     })
@@ -96,16 +100,23 @@ export const plaudTranscriptionReady = inngest.createFunction(
     //
     // KNOWN LIMITATION: `workspaceId` is required by TriggerContext but
     // is not yet derivable here — the transcript hasn't been classified.
-    // When PLAUD_INGEST_ENABLED is flipped on we'll need to either:
-    //   (a) plumb a default/admin workspace through here so the CALL_PROCESSOR
-    //       session has somewhere to land, or
-    //   (b) refactor TriggerContext.workspaceId to be optional and have the
-    //       agent populate it after classification.
-    // Tracked in the spec's "Open Questions / Risks" section. Not blocking
-    // today because the entire hydrate branch is gated off.
+    // The escape hatch is KIT_DEFAULT_WORKSPACE_ID, an env var the operator
+    // sets when activating the flag. We fail loudly if it's unset rather
+    // than landing empty-string FKs into sessions. Tracked in spec §10.
+    const workspaceId = process.env.KIT_DEFAULT_WORKSPACE_ID
+    if (!workspaceId) {
+      throw new Error(
+        'KIT_DEFAULT_WORKSPACE_ID is required when PLAUD_INGEST_ENABLED=true',
+      )
+    }
+
     await step.run('route-to-call-processor', () =>
       routeWebhook('transcript', {
-        workspaceId: process.env.KIT_DEFAULT_WORKSPACE_ID || '',
+        workspaceId,
+        // `source` lives at both levels intentionally: this top-level value
+        // is consumed by session-manager for session metadata, while the
+        // payload-level value is read by the route's buildPrompt to phrase
+        // the agent's prompt ("Process this meeting transcript from <source>").
         source: 'plaud',
         payload: {
           transcript: transcript.text,
@@ -158,6 +169,11 @@ export const plaudTranscriptionFailed = inngest.createFunction(
     const sb = createAdminClient()
 
     await step.run('record-failure', async () => {
+      // Insert-only: if a row already exists (idempotency window expired
+      // and Plaud is re-delivering the same event), do not touch it. The
+      // event payload always carries the same IDs, so DO NOTHING preserves
+      // any already-progressed ingest_status instead of regressing it back
+      // to 'failed'.
       const { error } = await sb
         .from('call_transcripts' as any)
         .upsert(
@@ -168,7 +184,7 @@ export const plaudTranscriptionFailed = inngest.createFunction(
             ingest_status: 'failed',
             updated_at: new Date().toISOString(),
           },
-          { onConflict: 'external_recording_id' },
+          { onConflict: 'external_recording_id', ignoreDuplicates: true },
         )
       if (error) throw new Error(`Record-failure upsert failed: ${error.message}`)
     })
