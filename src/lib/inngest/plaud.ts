@@ -124,6 +124,9 @@ export const plaudTranscriptionReady = inngest.createFunction(
           attendees: file.participants ?? [],
           external_recording_id: data.transcription_id,
           external_file_id: data.file_id,
+          // TODO(plaud-creds): confirm Plaud File API field name — docs are
+          // ambiguous between `duration`, `duration_seconds`, and `seconds`.
+          // Log the first hydrated response in dev and update PlaudFile if needed.
           duration_seconds: file.duration_seconds,
           title: file.name,
           started_at: file.created_at,
@@ -154,6 +157,10 @@ export const plaudTranscriptionFailed = inngest.createFunction(
   {
     id: 'plaud-transcription-failed',
     name: 'Plaud — Transcription Failed',
+    // No retries: this function only records the failure and pings Slack.
+    // Retrying a failure event would not un-fail Plaud's transcription and
+    // would risk duplicate Slack notices. Slack outages are tolerated via
+    // postPlaudErrorNotice's silent .catch().
     retries: 0,
     idempotency: 'event.data.transcription_id',
     triggers: [{ event: 'plaud/transcription.failed' }],

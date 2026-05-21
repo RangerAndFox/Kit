@@ -39,7 +39,7 @@ Plaud (https://plaud.ai) sends transcription events to `POST /api/webhooks/plaud
 2. Copy the webhook signing secret into `PLAUD_WEBHOOK_SECRET`.
 3. Copy the API token into `PLAUD_API_KEY`.
 4. Leave `PLAUD_INGEST_ENABLED=false` until you've verified a real recording produces a skeleton row in `call_transcripts`.
-5. Once verified, set `KIT_DEFAULT_WORKSPACE_ID` and flip `PLAUD_INGEST_ENABLED=true` to enable transcript fetch + RAG ingest. Backfill any pending skeleton rows by re-firing their `transcription.completed` events from the Plaud console.
+5. Once verified, set `KIT_DEFAULT_WORKSPACE_ID` to a real Supabase `workspaces.id` value (this attributes Plaud-derived sessions to the right workspace; the function throws loudly if unset), then flip `PLAUD_INGEST_ENABLED=true` to enable transcript fetch + RAG ingest. Backfill any pending skeleton rows by re-firing their `transcription.completed` events from the Plaud console.
 
 Docs: https://docs.plaud.ai/
 
