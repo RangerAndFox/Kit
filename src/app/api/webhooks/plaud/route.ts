@@ -22,53 +22,71 @@ export async function POST(request: NextRequest) {
     return Response.json({ error: 'webhook not configured' }, { status: 500 })
   }
 
-  // Raw body needed for HMAC. Do not JSON.parse before verifying.
-  const rawBody = await request.text()
-  const signature = request.headers.get('plaud-signature') || ''
-  const timestamp = request.headers.get('plaud-timestamp') || ''
-
-  if (!verifyPlaudSignature(rawBody, timestamp, signature, secret)) {
-    console.warn('[plaud-webhook] bad signature')
-    return Response.json({ error: 'invalid signature' }, { status: 401 })
-  }
-
-  if (!isTimestampFresh(timestamp)) {
-    console.warn(`[plaud-webhook] stale timestamp ${timestamp}`)
-    return Response.json({ error: 'stale timestamp' }, { status: 401 })
-  }
-
-  let body: any
   try {
-    body = JSON.parse(rawBody)
+    // Raw body needed for HMAC. Do not JSON.parse before verifying.
+    const rawBody = await request.text()
+    const signature = request.headers.get('plaud-signature') || ''
+    const timestamp = request.headers.get('plaud-timestamp') || ''
+
+    if (!verifyPlaudSignature(rawBody, timestamp, signature, secret)) {
+      console.warn('[plaud-webhook] bad signature')
+      return Response.json({ error: 'invalid signature' }, { status: 401 })
+    }
+
+    if (!isTimestampFresh(timestamp)) {
+      console.warn(`[plaud-webhook] stale timestamp ${timestamp}`)
+      return Response.json({ error: 'stale timestamp' }, { status: 401 })
+    }
+
+    let body: any
+    try {
+      body = JSON.parse(rawBody)
+    } catch (err) {
+      console.warn('[plaud-webhook] malformed JSON', err)
+      return Response.json({ error: 'invalid json' }, { status: 400 })
+    }
+
+    const eventName = body?.event
+    const data = body?.data
+
+    if (!eventName || !data) {
+      return Response.json({ error: 'missing event or data' }, { status: 400 })
+    }
+
+    // Dispatch to Inngest. Failures get a controlled 500 so Plaud retries
+    // (Plaud's schedule: 30s, 5m, 30m, 2h, 24h, then drop).
+    try {
+      switch (eventName) {
+        case 'transcription.completed':
+          await inngest.send({
+            name: 'plaud/transcription.ready',
+            data,
+          })
+          break
+        case 'transcription.failed':
+          await inngest.send({
+            name: 'plaud/transcription.failed',
+            data,
+          })
+          break
+        default:
+          // Forward-compatibility: unknown events log + 200 so we don't
+          // trip Plaud's retry loop on payloads we'll handle later.
+          console.warn(
+            `[plaud-webhook] unknown event '${eventName}' — acknowledged but not dispatched`,
+            { data },
+          )
+      }
+    } catch (err) {
+      console.error('[plaud-webhook] inngest.send failed', err)
+      return Response.json({ error: 'dispatch failed' }, { status: 500 })
+    }
+
+    return Response.json({ received: true }, { status: 200 })
   } catch (err) {
-    console.warn('[plaud-webhook] malformed JSON', err)
-    return Response.json({ error: 'invalid json' }, { status: 400 })
+    // Catch-all for unexpected failures (e.g. request.text() throwing on
+    // an aborted client). Logged with our prefix so triage stays clean.
+    console.error('[plaud-webhook] unhandled error', err)
+    return Response.json({ error: 'internal error' }, { status: 500 })
   }
-
-  const eventName = body?.event
-  const data = body?.data
-
-  if (!eventName || !data) {
-    return Response.json({ error: 'missing event or data' }, { status: 400 })
-  }
-
-  // Dispatch to Inngest. Unknown events log + 200 (forward compatibility).
-  switch (eventName) {
-    case 'transcription.completed':
-      await inngest.send({
-        name: 'plaud/transcription.ready',
-        data,
-      })
-      break
-    case 'transcription.failed':
-      await inngest.send({
-        name: 'plaud/transcription.failed',
-        data,
-      })
-      break
-    default:
-      console.log(`[plaud-webhook] unknown event '${eventName}' — acknowledged but not dispatched`)
-  }
-
-  return Response.json({ received: true }, { status: 200 })
 }
