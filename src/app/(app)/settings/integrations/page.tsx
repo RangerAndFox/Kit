@@ -7,7 +7,7 @@ const integrations = [
   { name: 'Clockify', category: 'Time Tracking', description: 'Automatic time entry sync', connected: true },
   { name: 'Frame.io', category: 'Creative', description: 'Feedback and review sync', connected: true },
   { name: 'Figma', category: 'Creative', description: 'Design file monitoring', connected: false },
-  { name: 'Granola', category: 'Transcription', description: 'Founder-stream transcript ingestion', connected: false },
+  { name: 'Plaud', category: 'Transcription', description: 'Hardware AI recorder — meeting transcripts via webhook (https://docs.plaud.ai/)', connected: false },
   { name: 'Otter.ai', category: 'Transcription', description: 'Team meeting transcripts', connected: false },
   { name: 'Vimeo', category: 'Video', description: 'Video hosting and delivery', connected: false },
   { name: 'QuickBooks', category: 'Finance', description: 'Invoice and expense tracking', connected: false },
