@@ -93,8 +93,20 @@ export const plaudTranscriptionReady = inngest.createFunction(
 
     // Hand off to the generic transcript route. The CALL_PROCESSOR agent
     // is responsible for project classification + RAG ingest.
+    //
+    // KNOWN LIMITATION: `workspaceId` is required by TriggerContext but
+    // is not yet derivable here — the transcript hasn't been classified.
+    // When PLAUD_INGEST_ENABLED is flipped on we'll need to either:
+    //   (a) plumb a default/admin workspace through here so the CALL_PROCESSOR
+    //       session has somewhere to land, or
+    //   (b) refactor TriggerContext.workspaceId to be optional and have the
+    //       agent populate it after classification.
+    // Tracked in the spec's "Open Questions / Risks" section. Not blocking
+    // today because the entire hydrate branch is gated off.
     await step.run('route-to-call-processor', () =>
       routeWebhook('transcript', {
+        workspaceId: process.env.KIT_DEFAULT_WORKSPACE_ID || '',
+        source: 'plaud',
         payload: {
           transcript: transcript.text,
           source: 'plaud',
@@ -105,7 +117,6 @@ export const plaudTranscriptionReady = inngest.createFunction(
           title: file.name,
           started_at: file.created_at,
         },
-        receivedAt: new Date().toISOString(),
       }),
     )
 
