@@ -2,6 +2,7 @@
 import { serve } from 'inngest/next'
 import { inngest } from '@/lib/inngest/client'
 import { provisionProject } from '@/lib/inngest/orchestrator'
+import { plaudTranscriptionReady, plaudTranscriptionFailed } from '@/lib/inngest/plaud'
 
 /**
  * Inngest API route.
@@ -17,6 +18,8 @@ export const { GET, POST, PUT } = serve({
   client: inngest,
   functions: [
     provisionProject,
+    plaudTranscriptionReady,
+    plaudTranscriptionFailed,
     // Add new functions here as agents are built
   ],
 })
