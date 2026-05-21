@@ -5,9 +5,21 @@
 
 begin;
 
--- Rename to a provider-neutral column name.
-alter table public.call_transcripts
-  rename column granola_call_id to external_recording_id;
+-- Rename to a provider-neutral column name. Idempotent in case the
+-- column was renamed out-of-band via the Supabase dashboard before
+-- this migration was applied.
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public'
+      and table_name   = 'call_transcripts'
+      and column_name  = 'granola_call_id'
+  ) then
+    alter table public.call_transcripts
+      rename column granola_call_id to external_recording_id;
+  end if;
+end $$;
 
 -- New columns for Plaud's two-id model and ingest status tracking.
 alter table public.call_transcripts
@@ -15,6 +27,7 @@ alter table public.call_transcripts
 
 alter table public.call_transcripts
   add column if not exists ingest_status text not null default 'pending'
+    constraint call_transcripts_ingest_status_check
     check (ingest_status in ('pending', 'ingested', 'failed'));
 
 -- Skeleton rows arrive with IDs only; fields below get hydrated later.
@@ -23,8 +36,12 @@ alter table public.call_transcripts alter column participants drop not null;
 alter table public.call_transcripts alter column start_time drop not null;
 alter table public.call_transcripts alter column end_time drop not null;
 
--- Ensure uniqueness on the recording id (safe if a unique constraint
--- carried over from the rename — IF NOT EXISTS makes this idempotent).
+-- Ensure uniqueness on the recording id. The original column may have
+-- carried a unique constraint from the Supabase dashboard
+-- (call_transcripts_granola_call_id_key); that constraint is preserved
+-- by the rename and continues to enforce uniqueness on the renamed
+-- column under its old name. This index is a defensive add for cases
+-- where no such constraint existed; IF NOT EXISTS keeps it idempotent.
 create unique index if not exists call_transcripts_external_recording_id_key
   on public.call_transcripts (external_recording_id);
 
