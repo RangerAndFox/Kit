@@ -2,9 +2,14 @@
 /**
  * Atomic job claim — picks one pending job and marks it claimed by this worker.
  *
- * Uses RPC-style raw SQL through Supabase's PostgREST + service-role key.
- * For atomicity we rely on UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED)
- * which Postgres handles natively.
+ * Concurrency model: PostgREST doesn't expose FOR UPDATE SKIP LOCKED, so this
+ * uses a two-step pattern:
+ *   1. SELECT the oldest pending job id (advisory — multiple workers may read
+ *      the same id concurrently).
+ *   2. UPDATE ... WHERE id = $1 AND status = 'pending'. Postgres takes an
+ *      exclusive row lock on the UPDATE; only one worker's predicate matches
+ *      (the row's status flips on the first UPDATE, so concurrent UPDATEs
+ *      return 0 rows). The losers silently re-poll on the next tick.
  *
  * Pre-claim checks for fallback workers:
  *   - CPU usage below threshold
@@ -35,13 +40,8 @@ export async function tryClaimJob(): Promise<ClaimedJob | null> {
   }
 
   // For fallback workers we add a created_at age constraint so we don't
-  // race against the primary on fresh jobs. Encoded as a raw `rpc`-style
-  // call via PostgREST's UPDATE...WHERE id IN (SELECT ...) construct.
-  //
-  // PostgREST doesn't expose FOR UPDATE SKIP LOCKED directly, so we rely on
-  // an atomic UPDATE with a returning clause. Two workers attempting the same
-  // job will both succeed at most once because UPDATE is atomic and the
-  // status flip is the dedup.
+  // race against the primary on fresh jobs. The two-step SELECT + UPDATE
+  // approach is explained in the module JSDoc above.
 
   const ageThresholdIso = config.role === 'primary'
     ? null

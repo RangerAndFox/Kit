@@ -37,8 +37,13 @@ function resolveSource(src: string): string | null {
 
 /**
  * Build a `pan=` filter expression from an audio_channels array.
- * Returns null if the channels reference unsupported sources (caller falls
- * back to a worker-built amerge chain).
+ *
+ * Throws if a channel references an external file (`file:...`) — those require
+ * an amerge chain that the caller must build separately. Callers should
+ * pre-check with `requiresAmerge()` and skip this function in that case.
+ *
+ * Returns the pan filter string for all supported source types
+ * (L/R/FL/FR/FC/LFE/SL/SR/silent).
  */
 export function buildChannelMapFilter(channels: AudioChannel[]): string | null {
   if (!channels || channels.length === 0) return null

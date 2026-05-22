@@ -85,10 +85,12 @@ export const deliveryDropboxScan = inngest.createFunction(
           },
         },
       ]
-      const ts = await slackPost(DEFAULT_NOTIFY_CHANNEL, `New file: ${name}`, blocks)
-      if (ts) {
-        await markFileNotified(f.dropbox_id)
-      }
+      // Mark notified BEFORE posting so a Supabase write failure doesn't
+      // cause a re-post on the next cron tick. We tolerate the edge case
+      // where Slack post fails after the mark — operator will see the file
+      // wasn't notified and can `/kit deliver <path>` manually.
+      await markFileNotified(f.dropbox_id)
+      await slackPost(DEFAULT_NOTIFY_CHANNEL, `New file: ${name}`, blocks)
     }
 
     return { notified: newFiles.length }

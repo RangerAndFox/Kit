@@ -14,7 +14,7 @@
  */
 
 import type { DeliveryProfile, SourceFile, LoudnessMeasurement } from '../types'
-import { buildChannelMapFilter } from './channel-mapper'
+import { buildChannelMapFilter, requiresAmerge } from './channel-mapper'
 
 interface CodecSpec {
   encoder: string
@@ -128,6 +128,14 @@ export function buildFFmpegArgs(input: FFmpegBuildInput): string[] {
 
   if (profile.audio_bitrate) {
     args.push('-b:a', profile.audio_bitrate)
+  }
+
+  // External-file audio sources (e.g., "file:mix.wav:L") need an amerge chain
+  // built by the worker. v1 doesn't support that path — flag it clearly.
+  if (requiresAmerge(profile.audio_channels)) {
+    throw new Error(
+      'Audio channels reference external files (file:... sources). This profile requires an amerge chain that v1 does not yet build. Use only L/R/FL/FR/FC/LFE/SL/SR/silent sources for now.',
+    )
   }
 
   // Audio filter chain: loudnorm (if applicable) + channel mapping

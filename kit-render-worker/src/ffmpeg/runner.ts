@@ -9,6 +9,8 @@
 import { spawn } from 'child_process'
 import { parseFFmpegProgress } from './progress-parser'
 
+const STDERR_TAIL_BYTES = 64 * 1024 // 64KB — only the last lines matter for diagnostics
+
 export interface RunOptions {
   ffmpegPath: string
   args: string[]
@@ -29,7 +31,8 @@ export async function runFFmpeg(opts: RunOptions): Promise<RunResult> {
 
     proc.stderr.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf8')
-      stderrBuffer += text
+      stderrBuffer = (stderrBuffer + text).slice(-STDERR_TAIL_BYTES)
+
       const now = Date.now()
       if (now - lastProgressEmitTs >= 2000 && opts.onProgress) {
         // Try to parse the last line containing time= for progress
