@@ -43,6 +43,18 @@ Plaud (https://plaud.ai) sends transcription events to `POST /api/webhooks/plaud
 
 Docs: https://docs.plaud.ai/
 
+### Pre-meeting briefings (Google Calendar)
+
+Kit can DM/post a context briefing ~30 minutes before each meeting. Setup:
+
+1. Create a Google Cloud service account; download its JSON.
+2. Share each Kit-relevant calendar with the service account's `client_email`. Read-only is sufficient.
+3. Set `GOOGLE_SERVICE_ACCOUNT_JSON` (raw or base64-encoded) and `GOOGLE_CALENDAR_IDS` (comma-separated) in Railway.
+4. Flip `GOOGLE_CALENDAR_INGEST_ENABLED=true`.
+5. The `preMeetingScan` cron runs every 15 minutes via Inngest.
+
+Spec: `docs/superpowers/specs/2026-05-21-pre-meeting-briefings-design.md`.
+
 ## Deploy on Vercel
 
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
