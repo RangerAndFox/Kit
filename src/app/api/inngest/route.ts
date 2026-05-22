@@ -3,6 +3,7 @@ import { serve } from 'inngest/next'
 import { inngest } from '@/lib/inngest/client'
 import { provisionProject } from '@/lib/inngest/orchestrator'
 import { plaudTranscriptionReady, plaudTranscriptionFailed } from '@/lib/inngest/plaud'
+import { preMeetingScan, preMeetingDispatch } from '@/lib/inngest/pre-meeting'
 
 /**
  * Inngest API route.
@@ -20,6 +21,8 @@ export const { GET, POST, PUT } = serve({
     provisionProject,
     plaudTranscriptionReady,
     plaudTranscriptionFailed,
+    preMeetingScan,
+    preMeetingDispatch,
     // Add new functions here as agents are built
   ],
 })
