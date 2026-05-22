@@ -26,8 +26,12 @@ import { extractScriptFromFile } from '../../../src/lib/storyboard/files'
 import { handleCheckinConfirm, handleCheckinRedo } from '../checkins/confirm'
 import { parseOnboardSubmission } from '../onboarding/modal'
 import { runOnboarding, buildRequesterSummary } from '../onboarding/orchestrator'
+import { registerDeliveryViewHandlers } from '../delivery/submit-handler'
 
 export function registerInteractionHandlers(app: App) {
+  // ─── Delivery: profile-selection + create-profile modals ──
+  registerDeliveryViewHandlers(app)
+
   // ─── Daily hours check-in: Confirm / Redo ─────────────────
   app.action('checkin_confirm', async ({ ack, body, client }) => {
     await ack()

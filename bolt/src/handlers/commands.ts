@@ -19,6 +19,10 @@ import { buildNewProjectCard } from './newproject-card'
 import { buildOnboardModal } from '../onboarding/modal'
 import { canOnboard } from '../onboarding/permissions'
 import { handleShotListMessage } from '../shotlist/handler'
+import { buildSelectProfileModal } from '../delivery/select-profile-modal'
+import { buildCreateProfileModal } from '../delivery/create-profile-modal'
+import { renderJobsStatusBlocks, renderWorkersStatusBlocks } from '../delivery/status'
+import { setWorkerOptOut, setWorkerOptIn, listProfiles } from '../../../src/lib/delivery/storage'
 
 export function registerCommandHandlers(app: App) {
   // ─── /kit ─────────────────────────────────────────────────
@@ -140,6 +144,87 @@ export function registerCommandHandlers(app: App) {
         break
       }
 
+      // ── Delivery ────────────────────────────────────────────
+      case 'deliver': {
+        await ack()
+        const subArg = (args || '').trim()
+        if (subArg.toLowerCase() === 'status') {
+          const blocks = await renderJobsStatusBlocks()
+          await client.chat.postMessage({
+            channel: command.channel_id,
+            blocks,
+            text: 'Delivery status',
+          })
+          break
+        }
+        // Otherwise open the profile-selection modal
+        try {
+          const view = await buildSelectProfileModal({
+            sourcePath: subArg && subArg !== 'status' ? subArg : undefined,
+            channelId: command.channel_id,
+          })
+          await client.views.open({ trigger_id: command.trigger_id, view })
+        } catch (err: any) {
+          console.error('[Bolt] /kit deliver failed:', err.data?.error || err.message)
+          await respond({
+            response_type: 'ephemeral',
+            text: `Couldn't open delivery modal: ${err.data?.error || err.message}`,
+          })
+        }
+        break
+      }
+
+      // ── Profiles ────────────────────────────────────────────
+      case 'profiles': {
+        await ack()
+        const subArg = (args || '').trim().toLowerCase()
+        if (subArg === 'create') {
+          try {
+            await client.views.open({
+              trigger_id: command.trigger_id,
+              view: buildCreateProfileModal(),
+            })
+          } catch (err: any) {
+            await respond({
+              response_type: 'ephemeral',
+              text: `Couldn't open profile-creation modal: ${err.data?.error || err.message}`,
+            })
+          }
+        } else {
+          // List profiles
+          const profiles = await listProfiles(false)
+          if (profiles.length === 0) {
+            await respond({ response_type: 'ephemeral', text: 'No delivery profiles. `/kit profiles create` to make one.' })
+            break
+          }
+          const lines = profiles.map((p) => `• *${p.name}* — ${p.description || '_no description_'}`).join('\n')
+          await respond({ response_type: 'ephemeral', text: `*Delivery profiles*\n${lines}` })
+        }
+        break
+      }
+
+      // ── Workers ─────────────────────────────────────────────
+      case 'workers': {
+        await ack()
+        const subArg = (args || '').trim().split(/\s+/)
+        const subCmd = (subArg[0] || '').toLowerCase()
+        if (subCmd === 'opt-out' && subArg[1]) {
+          await setWorkerOptOut(subArg[1], command.user_id, subArg.slice(2).join(' ') || 'no reason')
+          await respond({ response_type: 'ephemeral', text: `:white_circle: \`${subArg[1]}\` opted out.` })
+        } else if (subCmd === 'opt-in' && subArg[1]) {
+          await setWorkerOptIn(subArg[1])
+          await respond({ response_type: 'ephemeral', text: `:large_green_circle: \`${subArg[1]}\` opted back in.` })
+        } else {
+          const blocks = await renderWorkersStatusBlocks()
+          await client.chat.postMessage({
+            channel: command.channel_id,
+            blocks,
+            text: 'Render worker status',
+          })
+        }
+        break
+      }
+
       // ── Help ────────────────────────────────────────────────
       case 'help':
       default: {
@@ -151,7 +236,11 @@ export function registerCommandHandlers(app: App) {
             '`/kit newproject` — Post the new-project card (pick services, fill in details)\n' +
             '`/kit onboard` — Onboard a freelancer to a project (Slack/Dropbox/Frame.io/Harvest)\n' +
             '`/kit status <name>` — Quick project lookup\n' +
+            '`/kit shotlist <script>` — Build a shot list canvas in this channel\n' +
             '`/storyboard` — Turn a script into a Boords storyboard\n' +
+            '`/kit deliver [path]` — Submit a transcode job (or run `/kit deliver status` for queue)\n' +
+            '`/kit profiles` — List delivery profiles · `/kit profiles create` to add one\n' +
+            '`/kit workers` — Show render worker fleet · `opt-out <host>` / `opt-in <host>`\n' +
             '`/kit help` — Show this message\n\n' +
             'You can also DM me and type *new project* or *new storyboard* to get the same cards. Or @mention me to ask about projects, budgets, files, reviews, or to log time.',
         })
