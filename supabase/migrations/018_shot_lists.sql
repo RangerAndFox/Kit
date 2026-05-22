@@ -1,4 +1,4 @@
--- 016_shot_lists.sql
+-- 018_shot_lists.sql
 -- Shot lists as Slack Canvases. One canvas per project channel; rows track
 -- the channel↔canvas mapping so Kit can update existing canvases.
 -- Spec: docs/superpowers/specs/2026-05-21-shot-list-canvas-design.md

@@ -20,12 +20,12 @@
 
 ---
 
-## Task 1: Supabase migration `016_shot_lists.sql`
+## Task 1: Supabase migration `018_shot_lists.sql`
 
-**File:** Create `supabase/migrations/016_shot_lists.sql` with:
+**File:** Create `supabase/migrations/018_shot_lists.sql` with:
 
 ```sql
--- 016_shot_lists.sql
+-- 018_shot_lists.sql
 -- Shot lists as Slack Canvases. One canvas per project channel; rows track
 -- the channel↔canvas mapping so Kit can update existing canvases.
 -- Spec: docs/superpowers/specs/2026-05-21-shot-list-canvas-design.md
@@ -56,8 +56,8 @@ commit;
 
 Commit:
 ```bash
-git -C "C:/Users/studi/Kit" add supabase/migrations/016_shot_lists.sql
-git -C "C:/Users/studi/Kit" commit -m "db: 016_shot_lists — schema for Slack canvas shot lists"
+git -C "C:/Users/studi/Kit" add supabase/migrations/018_shot_lists.sql
+git -C "C:/Users/studi/Kit" commit -m "db: 018_shot_lists — schema for Slack canvas shot lists"
 ```
 
 ---
@@ -739,7 +739,7 @@ Expected: 6-7 commits matching the tasks.
 
 ## Definition of Done
 
-- Migration `016_shot_lists.sql` present (not yet applied).
+- Migration `018_shot_lists.sql` present (not yet applied).
 - `bolt/src/shotlist/` module exists with all 6 files (types, parser, renderer, canvas, keyword, storage, handler).
 - `bolt/src/handlers/messages.ts` and `bolt/src/handlers/commands.ts` route to the handler.
 - `npx tsc --noEmit` clean.
@@ -747,7 +747,7 @@ Expected: 6-7 commits matching the tasks.
 
 ## Rollout
 
-1. Apply migration `016_shot_lists.sql`.
+1. Apply migration `018_shot_lists.sql`.
 2. Add Slack scope `canvases:write` to the Kit app manifest in api.slack.com → Permissions.
 3. Reinstall the Slack app in the workspace to pick up the new scope.
 4. In a project channel, message `@Kit shot list from this:` followed by a paragraph or two of script. Confirm a canvas appears in the channel's Canvas tab.

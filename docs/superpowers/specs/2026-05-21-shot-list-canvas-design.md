@@ -101,7 +101,7 @@ re-render canvas
 
 ### Added
 
-- `supabase/migrations/016_shot_lists.sql` — table for canvas tracking.
+- `supabase/migrations/018_shot_lists.sql` — table for canvas tracking.
 - `bolt/src/shotlist/types.ts` — `Shot`, `ShotList`, `ShotMutation` types.
 - `bolt/src/shotlist/parser.ts` — Haiku call: free-form script → `Shot[]`.
 - `bolt/src/shotlist/renderer.ts` — `Shot[]` → markdown table.
