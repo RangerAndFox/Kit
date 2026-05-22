@@ -35,9 +35,10 @@ function matchThreshold(): number {
   return Number.isFinite(t) && t > 0 && t <= 1 ? t : 0.5
 }
 
-async function postSlack(channel: string, text: string): Promise<string | null> {
+async function postSlack(channel: string, text: string): Promise<string> {
   const token = process.env.SLACK_BOT_TOKEN
-  if (!token || !channel) return null
+  if (!token) throw new Error('SLACK_BOT_TOKEN not set')
+  if (!channel) throw new Error('channel required for postSlack')
   const res = await fetch(`${SLACK_API}/chat.postMessage`, {
     method: 'POST',
     headers: {
@@ -46,23 +47,23 @@ async function postSlack(channel: string, text: string): Promise<string | null> 
     },
     body: JSON.stringify({ channel, text, mrkdwn: true }),
     signal: AbortSignal.timeout(8_000),
-  }).catch(() => null)
-  if (!res) return null
+  })
   const json = await res.json().catch(() => ({}))
-  return json.ok ? json.ts : null
+  if (!json.ok) throw new Error(`chat.postMessage failed: ${json.error || res.status}`)
+  return json.ts
 }
 
-async function openDmAndPost(slackUserId: string, text: string): Promise<string | null> {
+async function openDmAndPost(slackUserId: string, text: string): Promise<string> {
   const token = process.env.SLACK_BOT_TOKEN
-  if (!token || !slackUserId) return null
+  if (!token) throw new Error('SLACK_BOT_TOKEN not set')
+  if (!slackUserId) throw new Error('slackUserId required for openDmAndPost')
   const open = await fetch(`${SLACK_API}/conversations.open`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ users: slackUserId }),
-  }).catch(() => null)
-  if (!open) return null
+  })
   const oj = await open.json().catch(() => ({}))
-  if (!oj.ok) return null
+  if (!oj.ok) throw new Error(`conversations.open failed: ${oj.error || open.status}`)
   return postSlack(oj.channel.id, text)
 }
 
@@ -73,8 +74,8 @@ export const preMeetingScan = inngest.createFunction(
     id: 'pre-meeting-scan',
     name: 'Pre-meeting — Scan upcoming events',
     retries: 1,
+    triggers: [{ cron: '*/15 * * * *' }],
   },
-  { cron: '*/15 * * * *' },
   async ({ step, logger }) => {
     if (!ingestEnabled()) {
       return { skipped: true, reason: 'GOOGLE_CALENDAR_INGEST_ENABLED is false' }
@@ -93,11 +94,20 @@ export const preMeetingScan = inngest.createFunction(
     const sb = createAdminClient()
 
     // Pull active projects once for batch classification.
-    const { data: projectRows } = await sb
+    const workspaceId = process.env.KIT_DEFAULT_WORKSPACE_ID
+    let projectsQuery = sb
       .from('projects')
       .select('id, name, client, project_code, brief_summary, external_ids')
       .eq('status', 'active')
       .limit(50)
+    if (workspaceId) {
+      projectsQuery = projectsQuery.eq('workspace_id', workspaceId)
+    } else {
+      console.warn(
+        '[pre-meeting-scan] KIT_DEFAULT_WORKSPACE_ID is not set; classifier may see projects from all workspaces',
+      )
+    }
+    const { data: projectRows } = await projectsQuery
 
     const activeProjects = (projectRows || []).map((p: any) => ({
       id: p.id,
@@ -119,13 +129,38 @@ export const preMeetingScan = inngest.createFunction(
         .maybeSingle()
       if (existing && existing.status !== 'failed') continue
 
-      const cls = await step.run(`classify-${ev.event_id}`, () =>
-        classifyMeeting(ev, activeProjects).catch((err) => ({
+      let cls: { project_id: string | null; confidence: number; reasoning: string }
+      let classifierFailed = false
+      try {
+        cls = await step.run(`classify-${ev.event_id}`, () =>
+          classifyMeeting(ev, activeProjects),
+        )
+      } catch (err: any) {
+        classifierFailed = true
+        cls = {
           project_id: null,
           confidence: 0,
-          reasoning: `classifier error: ${err.message}`,
-        })),
-      )
+          reasoning: `classifier error: ${err?.message || err}`,
+        }
+      }
+
+      if (classifierFailed) {
+        await sb.from('meeting_briefings').upsert(
+          {
+            event_id: ev.event_id,
+            calendar_id: ev.calendar_id,
+            meeting_title: ev.summary,
+            meeting_start_time: ev.start_time,
+            attendees_json: ev.attendees,
+            confidence: 0,
+            status: 'failed',
+            error: cls.reasoning,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'event_id', ignoreDuplicates: false },
+        )
+        continue
+      }
 
       if (!cls.project_id || cls.confidence < matchThreshold()) {
         await sb.from('meeting_briefings').upsert(
@@ -195,35 +230,49 @@ export const preMeetingDispatch = inngest.createFunction(
     }
     const { event_id, project_id, event: calendarEvent } = event.data
 
-    const artifact = await step.run('compose', () =>
-      composeBriefing({ event: calendarEvent, projectId: project_id }),
-    )
+    try {
+      const artifact = await step.run('compose', () =>
+        composeBriefing({ event: calendarEvent, projectId: project_id }),
+      )
 
-    const channelTs = artifact.projectChannelId
-      ? await step.run('post-channel', () =>
-          postSlack(artifact.projectChannelId!, artifact.channelText),
-        )
-      : null
+      const channelTs = artifact.projectChannelId
+        ? await step.run('post-channel', () =>
+            postSlack(artifact.projectChannelId!, artifact.channelText),
+          )
+        : null
 
-    const dmTs = artifact.producerSlackUserId && artifact.producerDmText
-      ? await step.run('dm-producer', () =>
-          openDmAndPost(artifact.producerSlackUserId!, artifact.producerDmText!),
-        )
-      : null
+      const dmTs = artifact.producerSlackUserId && artifact.producerDmText
+        ? await step.run('dm-producer', () =>
+            openDmAndPost(artifact.producerSlackUserId!, artifact.producerDmText!),
+          )
+        : null
 
-    const sb = createAdminClient()
-    await sb
-      .from('meeting_briefings')
-      .update({
-        briefing_md: artifact.channelText,
-        slack_channel_id: artifact.projectChannelId,
-        slack_message_ts: channelTs,
-        producer_dm_ts: dmTs,
-        status: 'sent',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('event_id', event_id)
+      const sb = createAdminClient()
+      await sb
+        .from('meeting_briefings')
+        .update({
+          briefing_md: artifact.channelText,
+          slack_channel_id: artifact.projectChannelId,
+          slack_message_ts: channelTs,
+          producer_dm_ts: dmTs,
+          status: 'sent',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('event_id', event_id)
 
-    return { sent: true, channelTs, dmTs }
+      return { sent: true, channelTs, dmTs }
+    } catch (err: any) {
+      // Mark briefing as failed but rethrow so Inngest retries fire.
+      const sb = createAdminClient()
+      await sb
+        .from('meeting_briefings')
+        .update({
+          status: 'failed',
+          error: String(err?.message || err),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('event_id', event_id)
+      throw err
+    }
   },
 )

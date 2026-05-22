@@ -660,8 +660,8 @@ export const preMeetingScan = inngest.createFunction(
     id: 'pre-meeting-scan',
     name: 'Pre-meeting — Scan upcoming events',
     retries: 1,
+    triggers: [{ cron: '*/15 * * * *' }],
   },
-  { cron: '*/15 * * * *' },
   async ({ step, logger }) => {
     if (!ingestEnabled()) {
       return { skipped: true, reason: 'GOOGLE_CALENDAR_INGEST_ENABLED is false' }

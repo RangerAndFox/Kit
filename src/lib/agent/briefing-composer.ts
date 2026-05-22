@@ -55,9 +55,9 @@ export async function composeBriefing(ctx: BriefingContext): Promise<BriefingArt
   // Open actions
   const { data: actions } = await sb
     .from('kit_actions')
-    .select('title, description, status')
-    .eq('payload->>projectId', projectId)
-    .in('status', ['suggested', 'acknowledged'])
+    .select('title, body, status')
+    .eq('project_id', projectId)
+    .in('status', ['pending', 'approved'])
     .limit(5)
 
   // Last Plaud summary if any
@@ -69,14 +69,20 @@ export async function composeBriefing(ctx: BriefingContext): Promise<BriefingArt
     .limit(1)
     .maybeSingle()
 
-  // Producer DM target: best-effort lookup of a producer in staff for this workspace.
-  const { data: producer } = await sb
-    .from('staff')
-    .select('slack_user_id')
-    .eq('role', 'producer')
-    .eq('is_active', true)
-    .limit(1)
-    .maybeSingle()
+  // Producer DM is opt-in. Without a project→producer mapping, we'd otherwise
+  // spam the first active producer for every briefing. Flip BRIEFING_DM_PRODUCER=true
+  // once project_access / staff-by-project is wired up.
+  let producer: { slack_user_id: string } | null = null
+  if (process.env.BRIEFING_DM_PRODUCER === 'true') {
+    const res = await sb
+      .from('staff')
+      .select('slack_user_id')
+      .eq('role', 'producer')
+      .eq('is_active', true)
+      .limit(1)
+      .maybeSingle()
+    producer = res.data || null
+  }
 
   // Compose channel post
   const lines: string[] = []
