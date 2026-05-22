@@ -67,6 +67,25 @@ Requires Slack scope `canvases:write` (re-install the Slack app after adding it)
 
 Spec: `docs/superpowers/specs/2026-05-21-shot-list-canvas-design.md`.
 
+### Delivery pipeline (FFmpeg transcoding)
+
+Kit can transcode files from Dropbox to broadcast delivery specs (ProRes, loudness normalization, channel mapping, naming conventions). Architecture:
+
+- Drop a file into `/Delivery-Queue/` on Dropbox.
+- Kit posts to `DELIVERY_NOTIFY_CHANNEL_ID` Slack channel — pick a delivery profile.
+- One or more render workers (studio PCs running `kit-render-worker/`) claim and transcode the job.
+- Output lands in `/Delivery-Queue/.../delivery/` with the correct filename.
+
+Slash commands:
+- `/kit deliver <path>` — open the profile-selection modal for a specific Dropbox file
+- `/kit deliver status` — recent jobs + their progress
+- `/kit profiles` / `/kit profiles create` — manage delivery spec profiles
+- `/kit workers` / `/kit workers opt-out <hostname>` / `/kit workers opt-in <hostname>` — manage the render pool
+
+**Cron note:** Inngest's minimum cron granularity is 1 minute; the Dropbox watcher polls every 60s (not 30s as the spec optimistically targets). Practical detection latency is ~60-90s after upload completes.
+
+Render workers are installed separately — see `kit-render-worker/README.md`. Spec: `DELIVERY-PIPELINE-SPEC.md`.
+
 ## Deploy on Vercel
 
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
