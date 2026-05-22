@@ -26,6 +26,8 @@ import { messageHasFrameIoLink, handleFrameIoLink } from '../../../src/lib/frame
 import { handleAdhocHoursEntry, looksLikeHoursIntent } from '../checkins/adhoc'
 import { handleOnboardKeyword, isOnboardTrigger } from '../onboarding/keyword'
 import { getPendingOnboarding } from '../onboarding/state'
+import { isShotListTrigger } from '../shotlist/keyword'
+import { handleShotListMessage } from '../shotlist/handler'
 
 import { runOrchestrator } from '../llm/orchestrator'
 import { hasPendingClarification } from '../llm/memory'
@@ -315,7 +317,26 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
     if (handled) return
   }
 
-  // ── Path 3: Orchestrator ────────────────────────────────
+  // ── Fast path 4: Shot list ──────────────────────────────
+  if (isShotListTrigger(messageText)) {
+    try {
+      const handled = await handleShotListMessage({
+        app,
+        channelId,
+        userId,
+        text: messageText,
+      })
+      if (handled) {
+        await clearThinking(app, channelId, replyThreadTs || threadTs)
+        return
+      }
+    } catch (err: any) {
+      console.error('[Bolt] shot list handler failed:', err.message || err)
+      // fall through to orchestrator
+    }
+  }
+
+  // ── Path 5: Orchestrator ────────────────────────────────
   await setThinking(app, channelId, replyThreadTs || threadTs, 'thinking…')
 
   try {
