@@ -18,8 +18,8 @@ create table if not exists public.shot_lists (
   updated_at timestamptz default now()
 );
 
-create unique index if not exists shot_lists_channel_canvas_key
-  on public.shot_lists (slack_channel_id, slack_canvas_id);
+create unique index if not exists shot_lists_channel_key
+  on public.shot_lists (slack_channel_id);
 
 create index if not exists shot_lists_project_idx
   on public.shot_lists (project_id);

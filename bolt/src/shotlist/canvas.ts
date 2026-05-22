@@ -37,7 +37,7 @@ export async function createOrGetChannelCanvas(opts: {
     console.warn('[shotlist] conversations.info failed:', err.message)
   }
 
-  const created = await app.client.conversations.canvasesCreate({
+  const created = await app.client.conversations.canvases.create({
     channel_id: channelId,
     document_content: { type: 'markdown', markdown: initialMarkdown },
   } as any)

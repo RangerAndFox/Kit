@@ -54,7 +54,7 @@ export async function upsertShotList(row: {
   }
   const { data, error } = await sb
     .from('shot_lists')
-    .upsert(payload, { onConflict: 'slack_channel_id,slack_canvas_id' })
+    .upsert(payload, { onConflict: 'slack_channel_id' })
     .select('*')
     .maybeSingle()
   if (error) {

@@ -37,14 +37,18 @@ export async function handleShotListMessage(opts: {
   // Decide mode: if there's no existing list OR the message contains a fresh
   // script body, treat as parseScript. Otherwise parseMutation.
   const scriptCandidate = extractScriptBody(text)
-  const looksLikeMutation =
-    !!existing && /(\badd\b|\binsert\b|\bremove\b|\bdelete\b|\bedit\b|\bupdate\b|\bchange\b)/i.test(text)
+  // If we have an existing list, almost everything is a mutation. Only
+  // treat it as a fresh script if the user clearly hands us new script-like
+  // content (long body with line breaks, or explicit "from this:" prefix).
+  const looksLikeFreshScript =
+    /from\s+(?:this\s*)?:/i.test(text) ||
+    (scriptCandidate.length > 80 && scriptCandidate.includes('\n'))
 
   let shots
   try {
-    if (looksLikeMutation && existing) {
-      const mutation = await parseMutation(text, existing.shots_json || [])
-      shots = applyMutation(existing.shots_json || [], mutation)
+    if (existing && existing.shots_json && existing.shots_json.length > 0 && !looksLikeFreshScript) {
+      const mutation = await parseMutation(text, existing.shots_json)
+      shots = applyMutation(existing.shots_json, mutation)
     } else {
       shots = await parseScript(scriptCandidate.length > 30 ? scriptCandidate : text)
     }
@@ -108,8 +112,14 @@ function applyMutation(existing: any[], mutation: any): any[] {
   let out = [...existing]
   if (mutation.op === 'insert' && mutation.shot) {
     const after = mutation.after_shot_number ?? out.length
-    const idx = out.findIndex((s) => s.number === after)
-    const insertAt = idx >= 0 ? idx + 1 : out.length
+    let insertAt: number
+    if (after <= 0) {
+      // "insert at the start" — Haiku sometimes emits after_shot_number: 0.
+      insertAt = 0
+    } else {
+      const idx = out.findIndex((s) => s.number === after)
+      insertAt = idx >= 0 ? idx + 1 : out.length
+    }
     out.splice(insertAt, 0, mutation.shot)
   } else if (mutation.op === 'update' && mutation.shot && mutation.shot_number != null) {
     const idx = out.findIndex((s) => s.number === mutation.shot_number)
