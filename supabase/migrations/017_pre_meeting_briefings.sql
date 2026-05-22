@@ -1,4 +1,4 @@
--- 015_pre_meeting_briefings.sql
+-- 017_pre_meeting_briefings.sql
 -- Pre-meeting briefings: cron-scheduled meeting reminders with project context.
 -- Spec: docs/superpowers/specs/2026-05-21-pre-meeting-briefings-design.md
 

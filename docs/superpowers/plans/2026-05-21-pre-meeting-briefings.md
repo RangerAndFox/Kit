@@ -21,14 +21,14 @@
 
 ---
 
-## Task 1: Supabase migration `015_pre_meeting_briefings.sql`
+## Task 1: Supabase migration `017_pre_meeting_briefings.sql`
 
-**Files:** Create `supabase/migrations/015_pre_meeting_briefings.sql`.
+**Files:** Create `supabase/migrations/017_pre_meeting_briefings.sql`.
 
 Content:
 
 ```sql
--- 015_pre_meeting_briefings.sql
+-- 017_pre_meeting_briefings.sql
 -- Pre-meeting briefings: cron-scheduled meeting reminders with project context.
 -- Spec: docs/superpowers/specs/2026-05-21-pre-meeting-briefings-design.md
 
@@ -67,8 +67,8 @@ commit;
 Commit:
 
 ```bash
-git -C "C:/Users/studi/Kit" add supabase/migrations/015_pre_meeting_briefings.sql
-git -C "C:/Users/studi/Kit" commit -m "db: 015_pre_meeting_briefings — schema for briefing tracking"
+git -C "C:/Users/studi/Kit" add supabase/migrations/017_pre_meeting_briefings.sql
+git -C "C:/Users/studi/Kit" commit -m "db: 017_pre_meeting_briefings — schema for briefing tracking"
 ```
 
 ---
@@ -975,11 +975,11 @@ Expected: empty.
 - 7-8 commits on `feature/pre-meeting-briefings`.
 - `npx tsc --noEmit` passes.
 - `pre-meeting-briefings` branch pushed to origin, PR opened.
-- Migration `015_pre_meeting_briefings.sql` present in the diff (not yet applied).
+- Migration `017_pre_meeting_briefings.sql` present in the diff (not yet applied).
 
 ## Rollout
 
-1. Apply migration `015_pre_meeting_briefings.sql`.
+1. Apply migration `017_pre_meeting_briefings.sql`.
 2. Create Google Cloud service account, share relevant calendars.
 3. Set `GOOGLE_SERVICE_ACCOUNT_JSON`, `GOOGLE_CALENDAR_IDS` in Railway.
 4. Flip `GOOGLE_CALENDAR_INGEST_ENABLED=true`.

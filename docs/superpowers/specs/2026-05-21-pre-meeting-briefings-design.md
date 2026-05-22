@@ -100,7 +100,7 @@ plaud-briefing-dispatch fn (delayed step.sleep)
 
 ### Added
 
-- `supabase/migrations/015_pre_meeting_briefings.sql` — `meeting_briefings` table + indexes.
+- `supabase/migrations/017_pre_meeting_briefings.sql` — `meeting_briefings` table + indexes.
 - `src/lib/integrations/google-calendar.ts` — service-account auth + `fetchUpcomingEvents` (flag-gated).
 - `src/lib/agent/meeting-classifier.ts` — Claude Haiku classifier matching events to projects.
 - `src/lib/agent/briefing-composer.ts` — composes the markdown briefing from project + event + Plaud + Frame.io + Dropbox + kit_actions context.
