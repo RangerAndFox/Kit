@@ -1,0 +1,125 @@
+// @ts-nocheck
+/**
+ * Shot list handler — orchestrates parse → canvas create/update → confirm.
+ *
+ * Entry point: handleShotListMessage({ app, channelId, userId, text }).
+ * Returns true if the message was handled, false otherwise.
+ */
+
+import type { App } from '@slack/bolt'
+import { parseScript, parseMutation } from './parser'
+import { renderShotsToMarkdown } from './renderer'
+import { createOrGetChannelCanvas, updateCanvasMarkdown } from './canvas'
+import { findShotListByChannel, upsertShotList } from './storage'
+import { extractScriptBody } from './keyword'
+import { createAdminClient } from '../../../src/lib/supabase/admin'
+
+async function resolveProjectIdForChannel(channelId: string): Promise<string | null> {
+  const sb = createAdminClient()
+  const { data } = await sb
+    .from('projects')
+    .select('id, external_links')
+    .or(`external_links->>slack_id.eq.${channelId},external_links->>slack_channel_id.eq.${channelId}`)
+    .maybeSingle()
+  return data?.id ?? null
+}
+
+export async function handleShotListMessage(opts: {
+  app: App
+  channelId: string
+  userId: string
+  text: string
+  threadTs?: string
+}): Promise<boolean> {
+  const { app, channelId, userId, text } = opts
+  const existing = await findShotListByChannel(channelId)
+
+  // Decide mode: if there's no existing list OR the message contains a fresh
+  // script body, treat as parseScript. Otherwise parseMutation.
+  const scriptCandidate = extractScriptBody(text)
+  const looksLikeMutation =
+    !!existing && /(\badd\b|\binsert\b|\bremove\b|\bdelete\b|\bedit\b|\bupdate\b|\bchange\b)/i.test(text)
+
+  let shots
+  try {
+    if (looksLikeMutation && existing) {
+      const mutation = await parseMutation(text, existing.shots_json || [])
+      shots = applyMutation(existing.shots_json || [], mutation)
+    } else {
+      shots = await parseScript(scriptCandidate.length > 30 ? scriptCandidate : text)
+    }
+  } catch (err: any) {
+    await app.client.chat.postMessage({
+      channel: channelId,
+      text: `:warning: I couldn't parse that into shots: ${err.message || err}. Try again with a script or numbered shot list.`,
+    })
+    return true
+  }
+
+  if (!shots || shots.length === 0) {
+    await app.client.chat.postMessage({
+      channel: channelId,
+      text: ":thinking_face: I didn't see anything I could turn into shots. Paste a script or a numbered shot list and I'll structure it for you.",
+    })
+    return true
+  }
+
+  const projectId = await resolveProjectIdForChannel(channelId)
+  const thumbnails = existing?.thumbnail_permalinks || {}
+  const markdown = renderShotsToMarkdown(shots, thumbnails)
+
+  let canvas
+  try {
+    if (existing?.slack_canvas_id) {
+      await updateCanvasMarkdown({ app, canvasId: existing.slack_canvas_id, markdown })
+      canvas = { canvas_id: existing.slack_canvas_id, canvas_url: existing.canvas_url }
+    } else {
+      canvas = await createOrGetChannelCanvas({ app, channelId, initialMarkdown: markdown })
+    }
+  } catch (err: any) {
+    const detail = err?.data?.error || err?.message || String(err)
+    await app.client.chat.postMessage({
+      channel: channelId,
+      text: `:warning: I built the shot list but couldn't save it as a canvas: ${detail}. The Kit app may need the \`canvases:write\` scope — reinstall and try again.`,
+    })
+    return true
+  }
+
+  await upsertShotList({
+    project_id: projectId,
+    slack_channel_id: channelId,
+    slack_canvas_id: canvas.canvas_id,
+    canvas_url: canvas.canvas_url,
+    shots,
+    thumbnails,
+  })
+
+  await app.client.chat.postMessage({
+    channel: channelId,
+    text: `:clapper: Shot list ready — ${shots.length} shot${shots.length === 1 ? '' : 's'}. Open the channel Canvas tab to view. Drop image attachments in this thread to attach references to shots in order.`,
+  })
+  return true
+}
+
+function applyMutation(existing: any[], mutation: any): any[] {
+  if (mutation.op === 'replace_all' && Array.isArray(mutation.shots)) {
+    return renumber(mutation.shots)
+  }
+  let out = [...existing]
+  if (mutation.op === 'insert' && mutation.shot) {
+    const after = mutation.after_shot_number ?? out.length
+    const idx = out.findIndex((s) => s.number === after)
+    const insertAt = idx >= 0 ? idx + 1 : out.length
+    out.splice(insertAt, 0, mutation.shot)
+  } else if (mutation.op === 'update' && mutation.shot && mutation.shot_number != null) {
+    const idx = out.findIndex((s) => s.number === mutation.shot_number)
+    if (idx >= 0) out[idx] = { ...out[idx], ...mutation.shot, number: out[idx].number }
+  } else if (mutation.op === 'delete' && mutation.shot_number != null) {
+    out = out.filter((s) => s.number !== mutation.shot_number)
+  }
+  return renumber(out)
+}
+
+function renumber(arr: any[]): any[] {
+  return arr.map((s, i) => ({ ...s, number: i + 1 }))
+}
