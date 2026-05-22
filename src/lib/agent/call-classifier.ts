@@ -47,8 +47,8 @@ export async function determineStream(
     return 'founder';
   }
 
-  // Granola is a founder-focused transcription service
-  if (source === 'granola') {
+  // Plaud is our hardware meeting recorder; transcripts default to the founder stream.
+  if (source === 'plaud') {
     return 'founder';
   }
 

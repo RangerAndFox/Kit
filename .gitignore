@@ -50,3 +50,6 @@ next-env.d.ts
 
 # claude code session state (worktrees, local config)
 .claude/
+
+# Brainstorm session files from superpowers/brainstorming skill
+.superpowers/

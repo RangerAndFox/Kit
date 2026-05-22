@@ -21,7 +21,7 @@ interface WebhookRoute {
 }
 
 const routes: Record<string, WebhookRoute> = {
-  // Transcription services (Granola, Otter, etc.)
+  // Transcription services (Plaud, Otter, etc.)
   'transcript': {
     agentKey: AGENT_KEYS.CALL_PROCESSOR,
     buildPrompt: (payload) => {

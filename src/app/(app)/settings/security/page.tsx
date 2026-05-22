@@ -6,7 +6,7 @@ interface RoutingRule { id: string; type: string; pattern: string; stream: strin
 const mockRules: RoutingRule[] = [
   { id: '1', type: 'keyword', pattern: '[private]', stream: 'founder' },
   { id: '2', type: 'keyword', pattern: '[founder]', stream: 'founder' },
-  { id: '3', type: 'domain', pattern: 'granola.ai', stream: 'founder' },
+  { id: '3', type: 'domain', pattern: 'plaud.ai', stream: 'founder' },
 ]
 
 const mockAuditLog = [

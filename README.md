@@ -29,6 +29,20 @@ To learn more about Next.js, take a look at the following resources:
 
 You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
 
+## Integrations
+
+### Plaud — meeting transcription
+
+Plaud (https://plaud.ai) sends transcription events to `POST /api/webhooks/plaud`. Setup:
+
+1. Create a dev app in the Plaud developer console.
+2. Copy the webhook signing secret into `PLAUD_WEBHOOK_SECRET`.
+3. Copy the API token into `PLAUD_API_KEY`.
+4. Leave `PLAUD_INGEST_ENABLED=false` until you've verified a real recording produces a skeleton row in `call_transcripts`.
+5. Once verified, set `KIT_DEFAULT_WORKSPACE_ID` to a real Supabase `workspaces.id` value (this attributes Plaud-derived sessions to the right workspace; the function throws loudly if unset), then flip `PLAUD_INGEST_ENABLED=true` to enable transcript fetch + RAG ingest. Backfill any pending skeleton rows by re-firing their `transcription.completed` events from the Plaud console.
+
+Docs: https://docs.plaud.ai/
+
 ## Deploy on Vercel
 
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
