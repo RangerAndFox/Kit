@@ -19,6 +19,7 @@ import { dropboxAgent } from './dropbox'
 import { frameioAgent } from './frameio'
 import { slackAgent } from './slack'
 import { boordsAgent } from './boords'
+import { deliveryAgent } from './delivery'
 
 // ─── Registry ──────────────────────────────────────────────
 
@@ -28,6 +29,7 @@ const agents: AgentDefinition[] = [
   frameioAgent,
   slackAgent,
   boordsAgent,
+  deliveryAgent,
   // Add new agents here as they're built
 ]
 

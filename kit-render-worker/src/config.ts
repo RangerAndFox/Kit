@@ -1,0 +1,40 @@
+// @ts-nocheck
+import * as os from 'os'
+import * as dotenv from 'dotenv'
+
+dotenv.config()
+
+function need(key: string): string {
+  const v = process.env[key]
+  if (!v) throw new Error(`Missing required env var: ${key}`)
+  return v
+}
+
+function optional(key: string, def: string): string {
+  return process.env[key] || def
+}
+
+function num(key: string, def: number): number {
+  const v = process.env[key]
+  if (!v) return def
+  const n = Number(v)
+  if (!Number.isFinite(n)) throw new Error(`Env var ${key} is not numeric: ${v}`)
+  return n
+}
+
+export const config = {
+  supabaseUrl: need('SUPABASE_URL'),
+  supabaseServiceRoleKey: need('SUPABASE_SERVICE_ROLE_KEY'),
+  hostname: optional('WORKER_HOSTNAME', os.hostname()),
+  displayName: process.env.WORKER_DISPLAY_NAME || null,
+  role: (optional('WORKER_ROLE', 'fallback') as 'primary' | 'fallback'),
+  priority: num('WORKER_PRIORITY', 10),
+  dropboxSyncPath: optional('DROPBOX_SYNC_PATH', ''),
+  ffmpegPath: optional('FFMPEG_PATH', 'ffmpeg'),
+  cpuThreshold: num('CPU_THRESHOLD', 50),
+  minDiskFreeGb: num('MIN_DISK_FREE_GB', 10),
+  heartbeatIntervalMs: num('HEARTBEAT_INTERVAL_MS', 10000),
+  pollIntervalMs: num('POLL_INTERVAL_MS', 5000),
+  fallbackDelaySeconds: num('FALLBACK_DELAY_SECONDS', 30),
+  osVersion: `${os.platform()} ${os.release()}`,
+}

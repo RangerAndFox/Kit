@@ -279,6 +279,13 @@ Everything below was designed and built across two Cowork sessions (May 2026). T
 21. **Git push blocked** — local git authenticated as `stevepanicara`, repo owned by `steve-rangerandfox`. Needs PAT or collaborator access to push.
 22. **Embedded git worktree staged accidentally** — `.claude/worktrees/gracious-darwin-f9a5b7` needs `git rm --cached` and `.claude/worktrees/` added to `.gitignore`
 
+### Phase 6: Delivery Pipeline (Next Up)
+23. **Full spec written** — see `DELIVERY-PIPELINE-SPEC.md` in repo root for the complete implementation spec
+24. **What it is**: Distributed video transcoding system. Drop files in Dropbox → Kit prompts for delivery specs in Slack → FFmpeg render workers transcode to broadcast specs (ProRes, loudness normalization, channel mapping, naming conventions)
+25. **Key components**: Delivery agent in Kit, Supabase job queue (3 new tables), standalone render worker app (Node.js) installed on studio PCs, FFmpeg command builder
+26. **Architecture**: Primary render box claims jobs instantly, fallback workers (editor workstations) auto-claim after 30s timeout. Workers heartbeat to Supabase, stale workers get their jobs reassigned.
+27. **All machines are Windows PCs** — ProRes via FFmpeg `prores_ks` software encoder
+
 ### Known Issues & Gotchas
 - **Adobe IMS rotates refresh tokens** on each use. The auth module handles this in-memory, but if Railway restarts and the env var token has been rotated, you'll need to re-authorize. Consider persisting the latest refresh token to Supabase in a future iteration.
 - **Frame.io v4 API is relatively new** — response shapes may vary from what's documented. The code defensively checks `resp.data || resp` everywhere.
