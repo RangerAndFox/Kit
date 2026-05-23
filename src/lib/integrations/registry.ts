@@ -246,6 +246,7 @@ export const INTEGRATION_REGISTRY: IntegrationService[] = [
     icon: 'Calendar',
     status: 'available',
     requiresOAuth: true,
+    documentationUrl: 'https://developers.google.com/calendar/api',
   },
   {
     id: 'outlook_calendar',
