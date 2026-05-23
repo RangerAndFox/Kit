@@ -92,10 +92,10 @@ export async function handleShotListMessage(opts: {
   let canvas
   try {
     if (existing?.slack_canvas_id) {
-      await updateCanvasMarkdown({ app, canvasId: existing.slack_canvas_id, markdown })
+      await updateCanvasMarkdown({ app, canvasId: existing.slack_canvas_id, markdown, title })
       canvas = { canvas_id: existing.slack_canvas_id, canvas_url: existing.canvas_url }
     } else {
-      canvas = await createOrGetChannelCanvas({ app, channelId, initialMarkdown: markdown })
+      canvas = await createOrGetChannelCanvas({ app, channelId, initialMarkdown: markdown, title })
     }
   } catch (err: any) {
     const detail = err?.data?.error || err?.message || String(err)
