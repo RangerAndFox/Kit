@@ -14,14 +14,29 @@ import { findShotListByChannel, upsertShotList } from './storage'
 import { extractScriptBody } from './keyword'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 
-async function resolveProjectIdForChannel(channelId: string): Promise<string | null> {
+async function resolveProjectForChannel(
+  channelId: string,
+): Promise<{ id: string; name: string | null; project_code: string | null } | null> {
   const sb = createAdminClient()
   const { data } = await sb
     .from('projects')
-    .select('id, external_links')
+    .select('id, name, project_code, external_links')
     .or(`external_links->>slack_id.eq.${channelId},external_links->>slack_channel_id.eq.${channelId}`)
     .maybeSingle()
-  return data?.id ?? null
+  if (!data?.id) return null
+  return { id: data.id, name: data.name ?? null, project_code: data.project_code ?? null }
+}
+
+/**
+ * Build the canvas title from the resolved project, if any. Falls back to the
+ * generic "Shot List" when the channel isn't linked to a project (free-form
+ * channels still get a working canvas, just without the project prefix).
+ */
+function buildCanvasTitle(
+  project: { name: string | null; project_code: string | null } | null,
+): string {
+  const label = project?.name?.trim() || project?.project_code?.trim() || null
+  return label ? `${label}_Shot List` : 'Shot List'
 }
 
 export async function handleShotListMessage(opts: {
@@ -68,9 +83,11 @@ export async function handleShotListMessage(opts: {
     return true
   }
 
-  const projectId = await resolveProjectIdForChannel(channelId)
+  const project = await resolveProjectForChannel(channelId)
+  const projectId = project?.id ?? null
   const thumbnails = existing?.thumbnail_permalinks || {}
-  const markdown = renderShotsToMarkdown(shots, thumbnails)
+  const title = buildCanvasTitle(project)
+  const markdown = renderShotsToMarkdown(shots, thumbnails, title)
 
   let canvas
   try {
