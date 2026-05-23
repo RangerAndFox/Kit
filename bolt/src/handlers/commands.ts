@@ -18,6 +18,7 @@ import { dispatch } from '../../../src/lib/inngest/agents/registry'
 import { buildNewProjectCard } from './newproject-card'
 import { buildOnboardModal } from '../onboarding/modal'
 import { canOnboard } from '../onboarding/permissions'
+import { handleShotListMessage } from '../shotlist/handler'
 
 export function registerCommandHandlers(app: App) {
   // ─── /kit ─────────────────────────────────────────────────
@@ -113,6 +114,27 @@ export function registerCommandHandlers(app: App) {
           await respond({
             response_type: 'ephemeral',
             text: `Error looking up status: ${err.message}`,
+          })
+        }
+        break
+      }
+
+      // ── Shot List ───────────────────────────────────────────
+      case 'shotlist':
+      case 'shots': {
+        await ack()
+        try {
+          await handleShotListMessage({
+            app: { client } as any,
+            channelId: command.channel_id,
+            userId: command.user_id,
+            text: args || 'create a new empty shot list',
+          })
+        } catch (err: any) {
+          console.error('[Bolt] /kit shotlist failed:', err.data?.error || err.message)
+          await respond({
+            response_type: 'ephemeral',
+            text: `Shot list failed: ${err.data?.error || err.message}`,
           })
         }
         break

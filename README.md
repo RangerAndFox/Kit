@@ -55,6 +55,18 @@ Kit can DM/post a context briefing ~30 minutes before each meeting. Setup:
 
 Spec: `docs/superpowers/specs/2026-05-21-pre-meeting-briefings-design.md`.
 
+### Shot list canvas
+
+Kit can build a Boords-style shot list directly inside a Slack channel as a Canvas:
+
+- `@Kit shot list from this: <paste script>` — creates a channel canvas with structured shots.
+- `@Kit add a close-up shot between 2 and 3` — edits the existing canvas.
+- Drop image attachments in the same thread to attach reference thumbnails to shots in order.
+
+Requires Slack scope `canvases:write` (re-install the Slack app after adding it).
+
+Spec: `docs/superpowers/specs/2026-05-21-shot-list-canvas-design.md`.
+
 ## Deploy on Vercel
 
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
