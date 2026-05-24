@@ -75,9 +75,10 @@ Setup:
 1. Set `OPENAI_API_KEY` in Railway.
 2. Set `KIT_DEFAULT_WORKSPACE_ID` if not already set.
 3. Run the one-shot backfill to pull all Harvest projects into Supabase + embed them: `npx tsx scripts/backfill-projects-from-harvest.ts`
-4. From Slack, ask Kit anything: "who was PM on Rayfin?", "biggest project this year?", "what was the brief for the Nike sizzle?". The `ask_studio_knowledge` tool fires automatically.
+4. Run the contacts backfill to pull Harvest clients + contacts: `npx tsx scripts/backfill-clients-from-harvest.ts`
+5. From Slack, ask Kit anything: "who do we talk to at Microsoft?", "biggest project this year?", "what was the brief for the Nike sizzle?". The `ask_studio_knowledge` tool fires automatically.
 
-The agent exposes four actions: `search` (semantic RAG over embedded docs), `lookup_project` (structured by code/name/client), `recent_projects`, and `reembed_all` (heavy, after a backfill or schema change).
+The agent exposes eight actions: `search` (semantic RAG over embedded docs), `lookup_project` (structured by code/name/client), `recent_projects`, `reembed_all` (heavy, after a project backfill or schema change), `lookup_client` (client by name, exact then fuzzy), `find_contact` (find a person across all clients by name/email/title), `recent_clients` (ordered by lifetime revenue), and `reembed_clients` (heavy, after a contacts backfill).
 
 #### Notes capture
 
