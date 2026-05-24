@@ -78,7 +78,7 @@ Setup:
 4. Run the contacts backfill to pull Harvest clients + contacts: `npx tsx scripts/backfill-clients-from-harvest.ts`
 5. From Slack, ask Kit anything: "who do we talk to at Microsoft?", "biggest project this year?", "what was the brief for the Nike sizzle?". The `ask_studio_knowledge` tool fires automatically.
 
-The agent exposes eight actions: `search` (semantic RAG over embedded docs), `lookup_project` (structured by code/name/client), `recent_projects`, `reembed_all` (heavy, after a project backfill or schema change), `lookup_client` (client by name, exact then fuzzy), `find_contact` (find a person across all clients by name/email/title), `recent_clients` (ordered by lifetime revenue), and `reembed_clients` (heavy, after a contacts backfill).
+The agent exposes nine actions: `search` (semantic RAG over embedded docs), `lookup_project` (structured by code/name/client), `recent_projects`, `reembed_all` (heavy, after a project backfill or schema change), `lookup_client` (client by name, exact then fuzzy), `find_contact` (find a person across all clients by name/email/title), `recent_clients` (ordered by lifetime revenue), `reembed_clients` (heavy, after a contacts backfill), and `reembed_transcripts` (backfill any ingested call_transcripts not yet in the RAG store).
 
 #### Notes capture
 
@@ -90,6 +90,8 @@ Save a freeform note to a project from any Slack channel:
 - `/kit note Rayfin | client wants no logos` — slash-command variant (pipe-separated).
 
 Notes are embedded immediately. The next time you ask Kit anything about that project, the note shows up in the answer.
+
+Once Plaud is activated and transcripts flow into `call_transcripts`, they're auto-embedded for retrieval. Older transcripts can be backfilled with `ask_studio_knowledge reembed_transcripts` from any Slack channel.
 
 ### Delivery pipeline (FFmpeg transcoding)
 
