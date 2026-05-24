@@ -126,6 +126,13 @@ async function handle(action: string, payload: Record<string, unknown>): Promise
         const stats = await embedAllClients(workspaceId)
         return { agent: 'studio_knowledge', action, success: true, data: stats }
       }
+      case 'reembed_transcripts': {
+        const workspaceId = (payload.workspaceId as string) || process.env.KIT_DEFAULT_WORKSPACE_ID
+        if (!workspaceId) return { agent: 'studio_knowledge', action, success: false, error: 'KIT_DEFAULT_WORKSPACE_ID required' }
+        const { backfillTranscriptsIntoRag } = await import('../../studio-knowledge/transcript')
+        const stats = await backfillTranscriptsIntoRag(workspaceId)
+        return { agent: 'studio_knowledge', action, success: true, data: stats }
+      }
       default:
         return { agent: 'studio_knowledge', action, success: false, error: `unknown action: ${action}` }
     }
@@ -187,6 +194,12 @@ export const studioKnowledgeAgent: AgentDefinition = {
     {
       action: 'reembed_clients',
       description: 'Re-embed every client_profiles row into the RAG store. Heavy; run after a contacts backfill.',
+      inputDescription: 'workspaceId (optional; defaults to KIT_DEFAULT_WORKSPACE_ID)',
+      mutates: true,
+    },
+    {
+      action: 'reembed_transcripts',
+      description: 'Embed any ingested call_transcripts that don\'t have a corresponding project_documents row yet. Idempotent.',
       inputDescription: 'workspaceId (optional; defaults to KIT_DEFAULT_WORKSPACE_ID)',
       mutates: true,
     },

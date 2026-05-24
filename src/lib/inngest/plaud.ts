@@ -17,6 +17,7 @@ import { inngest } from './client'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { fetchPlaudFile, fetchPlaudTranscript } from '@/lib/integrations/plaud'
 import { routeWebhook } from '@/lib/managed-agents/webhook-router'
+import { embedTranscript } from '@/lib/studio-knowledge/transcript'
 
 const SLACK_API = 'https://slack.com/api'
 
@@ -147,6 +148,17 @@ export const plaudTranscriptionReady = inngest.createFunction(
       if (error) throw new Error(`Mark-ingested failed: ${error.message}`)
     })
 
+    await step.run('embed-into-rag', async () => {
+      try {
+        const row = await fetchTranscriptRow(sb, data.transcription_id)
+        await embedTranscript(row)
+      } catch (err: any) {
+        // Non-fatal — the call_transcripts row is still good; the RAG embed
+        // can be backfilled later via studio_knowledge.reembed_transcripts.
+        console.warn(`[plaud] RAG embed failed for ${data.transcription_id}: ${err.message}`)
+      }
+    })
+
     return { hydrated: true }
   },
 )
@@ -205,3 +217,17 @@ export const plaudTranscriptionFailed = inngest.createFunction(
     return { recorded: true }
   },
 )
+
+// ─── helpers ─────────────────────────────────────────────────
+
+async function fetchTranscriptRow(sb: any, externalRecordingId: string): Promise<any> {
+  const { data } = await sb
+    .from('call_transcripts')
+    .select('id, workspace_id, project_id, source, transcript, participants, start_time, duration_seconds, external_recording_id, external_file_id')
+    .eq('external_recording_id', externalRecordingId)
+    .maybeSingle()
+  if (!data) {
+    throw new Error(`fetchTranscriptRow: no row for external_recording_id=${externalRecordingId}`)
+  }
+  return data
+}
