@@ -5,6 +5,7 @@ import { provisionProject } from '@/lib/inngest/orchestrator'
 import { plaudTranscriptionReady, plaudTranscriptionFailed } from '@/lib/inngest/plaud'
 import { preMeetingScan, preMeetingDispatch } from '@/lib/inngest/pre-meeting'
 import { deliveryDropboxScan, deliveryJobNotifier, deliveryStaleSweep } from '@/lib/inngest/delivery-crons'
+import { studioKnowledgeAutoSummarize } from '@/lib/inngest/studio-knowledge-cron'
 
 /**
  * Inngest API route.
@@ -27,6 +28,7 @@ export const { GET, POST, PUT } = serve({
     deliveryDropboxScan,
     deliveryJobNotifier,
     deliveryStaleSweep,
+    studioKnowledgeAutoSummarize,
     // Add new functions here as agents are built
   ],
 })

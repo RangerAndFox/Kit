@@ -133,6 +133,18 @@ async function handle(action: string, payload: Record<string, unknown>): Promise
         const stats = await backfillTranscriptsIntoRag(workspaceId)
         return { agent: 'studio_knowledge', action, success: true, data: stats }
       }
+      case 'regenerate_summary': {
+        const projectId = (payload.projectId as string) || ''
+        const workspaceId = (payload.workspaceId as string) || process.env.KIT_DEFAULT_WORKSPACE_ID
+        if (!workspaceId) return { agent: 'studio_knowledge', action, success: false, error: 'KIT_DEFAULT_WORKSPACE_ID required' }
+        const { regenerateProjectSummary, regenerateAllProjectSummaries } = await import('../../studio-knowledge/auto-summarize')
+        if (projectId) {
+          const result = await regenerateProjectSummary(workspaceId, projectId)
+          return { agent: 'studio_knowledge', action, success: true, data: result }
+        }
+        const stats = await regenerateAllProjectSummaries(workspaceId)
+        return { agent: 'studio_knowledge', action, success: true, data: stats }
+      }
       default:
         return { agent: 'studio_knowledge', action, success: false, error: `unknown action: ${action}` }
     }
@@ -201,6 +213,12 @@ export const studioKnowledgeAgent: AgentDefinition = {
       action: 'reembed_transcripts',
       description: 'Embed any ingested call_transcripts that don\'t have a corresponding project_documents row yet. Idempotent.',
       inputDescription: 'workspaceId (optional; defaults to KIT_DEFAULT_WORKSPACE_ID)',
+      mutates: true,
+    },
+    {
+      action: 'regenerate_summary',
+      description: 'Regenerate the Claude-written 1-pager summary for one project (pass projectId) or every project in the workspace. Pulls latest notes/transcripts/actions, writes via Haiku, replaces the project_summary doc.',
+      inputDescription: 'projectId (uuid, optional — omit to regenerate ALL); workspaceId (optional)',
       mutates: true,
     },
   ],

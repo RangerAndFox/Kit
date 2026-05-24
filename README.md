@@ -78,7 +78,7 @@ Setup:
 4. Run the contacts backfill to pull Harvest clients + contacts: `npx tsx scripts/backfill-clients-from-harvest.ts`
 5. From Slack, ask Kit anything: "who do we talk to at Microsoft?", "biggest project this year?", "what was the brief for the Nike sizzle?". The `ask_studio_knowledge` tool fires automatically.
 
-The agent exposes nine actions: `search` (semantic RAG over embedded docs), `lookup_project` (structured by code/name/client), `recent_projects`, `reembed_all` (heavy, after a project backfill or schema change), `lookup_client` (client by name, exact then fuzzy), `find_contact` (find a person across all clients by name/email/title), `recent_clients` (ordered by lifetime revenue), `reembed_clients` (heavy, after a contacts backfill), and `reembed_transcripts` (backfill any ingested call_transcripts not yet in the RAG store).
+The agent exposes ten actions: `search` (semantic RAG over embedded docs), `lookup_project` (structured by code/name/client), `recent_projects`, `reembed_all` (heavy, after a project backfill or schema change), `lookup_client` (client by name, exact then fuzzy), `find_contact` (find a person across all clients by name/email/title), `recent_clients` (ordered by lifetime revenue), `reembed_clients` (heavy, after a contacts backfill), `reembed_transcripts` (backfill any ingested call_transcripts not yet in the RAG store), and `regenerate_summary` (Claude Haiku 1-pager for one project or all).
 
 #### Notes capture
 
@@ -92,6 +92,12 @@ Save a freeform note to a project from any Slack channel:
 Notes are embedded immediately. The next time you ask Kit anything about that project, the note shows up in the answer.
 
 Once Plaud is activated and transcripts flow into `call_transcripts`, they're auto-embedded for retrieval. Older transcripts can be backfilled with `ask_studio_knowledge reembed_transcripts` from any Slack channel.
+
+#### Nightly auto-summarization
+
+Once the foundation is populated (projects + notes + transcripts), Kit can nightly regenerate each project's 1-pager summary by feeding the recent notes/transcripts/actions to Claude Haiku and re-embedding the result. This keeps the project_summary doc current with narrative context, not just structural data.
+
+Enable with `STUDIO_KNOWLEDGE_AUTO_SUMMARIZE_ENABLED=true` in Railway. The cron runs at 9am UTC (5am ET). To trigger manually for one project: `ask_studio_knowledge regenerate_summary` with a `projectId`. To regenerate all: omit `projectId`.
 
 ### Delivery pipeline (FFmpeg transcoding)
 
