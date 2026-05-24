@@ -28,15 +28,28 @@ async function resolveProjectForChannel(
 }
 
 /**
- * Build the canvas title from the resolved project, if any. Falls back to the
- * generic "Shot List" when the channel isn't linked to a project (free-form
- * channels still get a working canvas, just without the project prefix).
+ * Build the canvas title from the resolved project, if any.
+ *
+ * Format: "<number>_<project name>_Shot List", where <number> is the leading
+ * numeric prefix of project_code (e.g. "2566-Nike" → "2566", "2699_Test_..."
+ * → "2699"). If only one of (number, name) is present, we use just that.
+ * If the channel isn't linked to a project, falls back to "Shot List".
+ *
+ * Examples:
+ *   { name: "Sizzle", project_code: "2566-Nike" }      → "2566_Sizzle_Shot List"
+ *   { name: "Sizzle", project_code: null }             → "Sizzle_Shot List"
+ *   { name: null,     project_code: "2566-Nike" }      → "2566_Shot List"
+ *   null                                               → "Shot List"
  */
 function buildCanvasTitle(
   project: { name: string | null; project_code: string | null } | null,
 ): string {
-  const label = project?.name?.trim() || project?.project_code?.trim() || null
-  return label ? `${label}_Shot List` : 'Shot List'
+  if (!project) return 'Shot List'
+  const numMatch = project.project_code?.match(/^\d+/)
+  const number = numMatch ? numMatch[0] : null
+  const name = project.name?.trim() || null
+  const parts = [number, name].filter(Boolean)
+  return parts.length > 0 ? `${parts.join('_')}_Shot List` : 'Shot List'
 }
 
 export async function handleShotListMessage(opts: {
