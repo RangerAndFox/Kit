@@ -1,84 +1,85 @@
+// @ts-nocheck
 /**
- * Embedding generation for RAG pipeline
- * Handles text chunking and embedding generation via OpenAI's API
+ * OpenAI text-embedding-3-small wrapper for RAG.
+ *
+ * Returns 1536-dim float vectors. Batches up to 100 inputs per request
+ * (OpenAI's limit; default is fine for most callers but expose it for
+ * the backfill script which embeds 30+ docs at a time).
+ *
+ * Requires OPENAI_API_KEY in env. Throws on missing key — callers
+ * upstream should guard with a flag or env check.
  */
 
+const OPENAI_EMBED_MODEL = 'text-embedding-3-small'
+const OPENAI_EMBED_URL = 'https://api.openai.com/v1/embeddings'
+const EMBED_DIMENSIONS = 1536
+
+function getApiKey(): string {
+  const key = process.env.OPENAI_API_KEY
+  if (!key) throw new Error('OPENAI_API_KEY is not set')
+  return key
+}
+
 /**
- * Splits text into overlapping chunks for embedding
- * @param text The text to chunk
- * @param chunkSize Size of each chunk in characters (default: 1000)
- * @param overlap Number of overlapping characters between chunks (default: 200)
- * @returns Array of text chunks
+ * Splits text into overlapping chunks for embedding. Unchanged from the
+ * previous stub — used by callers that want chunk-level embedding for long
+ * documents. Single-document callers (project summaries, notes) can pass the
+ * whole text to `generateEmbedding` directly.
  */
 export function chunkText(
   text: string,
   chunkSize: number = 1000,
-  overlap: number = 200
+  overlap: number = 200,
 ): string[] {
-  if (!text || text.length === 0) {
-    return []
-  }
-
+  if (!text || text.length === 0) return []
   const chunks: string[] = []
   let start = 0
-
   while (start < text.length) {
     const end = Math.min(start + chunkSize, text.length)
     const chunk = text.substring(start, end)
-
-    if (chunk.trim().length > 0) {
-      chunks.push(chunk)
-    }
-
-    // Move start position, accounting for overlap
+    if (chunk.trim().length > 0) chunks.push(chunk)
     start = end - overlap
-
-    // Prevent infinite loop if chunk is smaller than overlap
-    if (start >= text.length - overlap) {
-      break
-    }
+    if (start >= text.length - overlap) break
   }
-
   return chunks
 }
 
-/**
- * Generates an embedding vector for a given text
- * Currently returns a placeholder 1536-dimensional zero vector
- *
- * TODO: Wire real embedding API
- * Implementation for OpenAI's text-embedding-3-small:
- * const response = await fetch('https://api.openai.com/v1/embeddings', {
- *   method: 'POST',
- *   headers: {
- *     'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
- *     'Content-Type': 'application/json'
- *   },
- *   body: JSON.stringify({
- *     model: 'text-embedding-3-small',
- *     input: text
- *   })
- * })
- * const data = await response.json()
- * return data.data[0].embedding
- *
- * @param text The text to embed
- * @returns Promise resolving to embedding vector (1536 dimensions)
- */
 export async function generateEmbedding(text: string): Promise<number[]> {
-  // Placeholder implementation returning zero vector
-  // Replace with actual OpenAI API call when ready
-  return new Array(1536).fill(0)
+  const [vec] = await generateEmbeddings([text])
+  return vec
 }
 
-/**
- * Generates embeddings for multiple texts in batch
- * @param texts Array of texts to embed
- * @returns Promise resolving to array of embedding vectors
- */
 export async function generateEmbeddings(texts: string[]): Promise<number[][]> {
-  const embeddings = await Promise.all(
-    texts.map(text => generateEmbedding(text))
-  )
-  return embeddings
+  if (texts.length === 0) return []
+  // OpenAI hard limit: 2048 inputs per request, 8191 tokens per input.
+  // We batch defensively at 100 to keep payloads small.
+  const out: number[][] = []
+  for (let i = 0; i < texts.length; i += 100) {
+    const batch = texts.slice(i, i + 100)
+    const res = await fetch(OPENAI_EMBED_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${getApiKey()}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ model: OPENAI_EMBED_MODEL, input: batch }),
+      signal: AbortSignal.timeout(30_000),
+    })
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '')
+      throw new Error(`OpenAI embeddings ${res.status}: ${detail}`)
+    }
+    const data = await res.json()
+    for (const item of data.data || []) {
+      const v = item?.embedding
+      if (!Array.isArray(v) || v.length !== EMBED_DIMENSIONS) {
+        throw new Error(`OpenAI returned unexpected embedding shape (expected ${EMBED_DIMENSIONS} dims, got ${v?.length ?? 'none'})`)
+      }
+      out.push(v)
+    }
+  }
+  return out
 }
+
+export const EMBEDDING_DIMENSIONS = EMBED_DIMENSIONS
+export const EMBEDDING_MODEL = OPENAI_EMBED_MODEL

@@ -67,6 +67,18 @@ Requires Slack scope `canvases:write` (re-install the Slack app after adding it)
 
 Spec: `docs/superpowers/specs/2026-05-21-shot-list-canvas-design.md`.
 
+### Studio knowledge (project history RAG)
+
+Kit can answer questions about the studio's full project history, contacts, budgets, and freeform notes. Backed by OpenAI text-embedding-3-small + pgvector + the `match_documents` Supabase RPC.
+
+Setup:
+1. Set `OPENAI_API_KEY` in Railway.
+2. Set `KIT_DEFAULT_WORKSPACE_ID` if not already set.
+3. Run the one-shot backfill to pull all Harvest projects into Supabase + embed them: `npx tsx scripts/backfill-projects-from-harvest.ts`
+4. From Slack, ask Kit anything: "who was PM on Rayfin?", "biggest project this year?", "what was the brief for the Nike sizzle?". The `ask_studio_knowledge` tool fires automatically.
+
+The agent exposes four actions: `search` (semantic RAG over embedded docs), `lookup_project` (structured by code/name/client), `recent_projects`, and `reembed_all` (heavy, after a backfill or schema change).
+
 ### Delivery pipeline (FFmpeg transcoding)
 
 Kit can transcode files from Dropbox to broadcast delivery specs (ProRes, loudness normalization, channel mapping, naming conventions). Architecture:

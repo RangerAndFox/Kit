@@ -20,6 +20,7 @@ import { frameioAgent } from './frameio'
 import { slackAgent } from './slack'
 import { boordsAgent } from './boords'
 import { deliveryAgent } from './delivery'
+import { studioKnowledgeAgent } from './studio-knowledge'
 
 // ─── Registry ──────────────────────────────────────────────
 
@@ -30,6 +31,7 @@ const agents: AgentDefinition[] = [
   slackAgent,
   boordsAgent,
   deliveryAgent,
+  studioKnowledgeAgent,
   // Add new agents here as they're built
 ]
 
