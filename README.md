@@ -79,6 +79,17 @@ Setup:
 
 The agent exposes four actions: `search` (semantic RAG over embedded docs), `lookup_project` (structured by code/name/client), `recent_projects`, and `reembed_all` (heavy, after a backfill or schema change).
 
+#### Notes capture
+
+Save a freeform note to a project from any Slack channel:
+
+- `@Kit note for Rayfin: client wants no logos in the lower thirds` — explicit project.
+- `@Kit note: VFX cleanup is going to push delivery by 2 days` — implicit project (uses the channel's linked Kit project).
+- `@Kit remember that the client signs off on Thursdays for Acme` — natural phrasing.
+- `/kit note Rayfin | client wants no logos` — slash-command variant (pipe-separated).
+
+Notes are embedded immediately. The next time you ask Kit anything about that project, the note shows up in the answer.
+
 ### Delivery pipeline (FFmpeg transcoding)
 
 Kit can transcode files from Dropbox to broadcast delivery specs (ProRes, loudness normalization, channel mapping, naming conventions). Architecture:

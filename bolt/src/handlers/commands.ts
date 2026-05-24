@@ -19,6 +19,7 @@ import { buildNewProjectCard } from './newproject-card'
 import { buildOnboardModal } from '../onboarding/modal'
 import { canOnboard } from '../onboarding/permissions'
 import { handleShotListMessage } from '../shotlist/handler'
+import { handleNoteMessage } from '../notes/handler'
 import { buildSelectProfileModal } from '../delivery/select-profile-modal'
 import { buildCreateProfileModal } from '../delivery/create-profile-modal'
 import { renderJobsStatusBlocks, renderWorkersStatusBlocks } from '../delivery/status'
@@ -225,6 +226,40 @@ export function registerCommandHandlers(app: App) {
         break
       }
 
+      // ── Notes ───────────────────────────────────────────────
+      case 'note': {
+        await ack()
+        // Treat the entire `args` string as the note body, optionally with
+        // "<project> | <body>" split. Pipe-separated is unambiguous; if no
+        // pipe is present, treat the channel as the implicit project.
+        let text = args
+        if (args && args.includes('|')) {
+          const [projectHint, body] = args.split('|').map((s) => s.trim())
+          if (projectHint && body) {
+            // Reconstruct as the "note for X: Y" form so the same parser handles it
+            text = `note for ${projectHint}: ${body}`
+          }
+        } else if (args && !/^note(\s*:|\s+for\b)/i.test(args)) {
+          // Bare body — prefix "note:" so the parser picks it up
+          text = `note: ${args}`
+        }
+        try {
+          await handleNoteMessage({
+            app: { client } as any,
+            channelId: command.channel_id,
+            userId: command.user_id,
+            text,
+          })
+        } catch (err: any) {
+          console.error('[Bolt] /kit note failed:', err.data?.error || err.message)
+          await respond({
+            response_type: 'ephemeral',
+            text: `Note failed: ${err.data?.error || err.message}`,
+          })
+        }
+        break
+      }
+
       // ── Help ────────────────────────────────────────────────
       case 'help':
       default: {
@@ -237,6 +272,7 @@ export function registerCommandHandlers(app: App) {
             '`/kit onboard` — Onboard a freelancer to a project (Slack/Dropbox/Frame.io/Harvest)\n' +
             '`/kit status <name>` — Quick project lookup\n' +
             '`/kit shotlist <script>` — Build a shot list canvas in this channel\n' +
+            '`/kit note [project | body]` — Save a freeform note to a project (or current channel\'s project)\n' +
             '`/storyboard` — Turn a script into a Boords storyboard\n' +
             '`/kit deliver [path]` — Submit a transcode job (or run `/kit deliver status` for queue)\n' +
             '`/kit profiles` — List delivery profiles · `/kit profiles create` to add one\n' +

@@ -29,6 +29,8 @@ import { getPendingOnboarding } from '../onboarding/state'
 import { isShotListTrigger } from '../shotlist/keyword'
 import { handleShotListMessage } from '../shotlist/handler'
 import { handleShotListThumbnailUpload } from '../shotlist/thumbnails'
+import { isNoteTrigger } from '../notes/keyword'
+import { handleNoteMessage } from '../notes/handler'
 
 import { runOrchestrator } from '../llm/orchestrator'
 import { hasPendingClarification } from '../llm/memory'
@@ -358,7 +360,26 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
     }
   }
 
-  // ── Path 5: Orchestrator ────────────────────────────────
+  // ── Fast path 5: Notes capture ───────────────────────────
+  if (isNoteTrigger(messageText)) {
+    try {
+      const handled = await handleNoteMessage({
+        app,
+        channelId,
+        userId,
+        text: messageText,
+      })
+      if (handled) {
+        await clearThinking(app, channelId, replyThreadTs || threadTs)
+        return
+      }
+    } catch (err: any) {
+      console.error('[Bolt] note handler failed:', err.message || err)
+      // fall through to orchestrator
+    }
+  }
+
+  // ── Path 6: Orchestrator ────────────────────────────────
   await setThinking(app, channelId, replyThreadTs || threadTs, 'thinking…')
 
   try {
