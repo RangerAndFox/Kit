@@ -65,6 +65,67 @@ async function handle(action: string, payload: Record<string, unknown>): Promise
         const stats = await embedAllProjects(workspaceId)
         return { agent: 'studio_knowledge', action, success: true, data: stats }
       }
+      case 'lookup_client': {
+        const query = String(payload.query || payload.name || '').trim()
+        if (!query) return { agent: 'studio_knowledge', action, success: false, error: 'query/name required' }
+        const sb = createAdminClient()
+        // Exact match on client_name first, then ilike.
+        const { data: exact } = await sb
+          .from('client_profiles')
+          .select('*')
+          .eq('client_name', query)
+          .maybeSingle()
+        if (exact) return { agent: 'studio_knowledge', action, success: true, data: { matches: [exact] } }
+
+        const { data: fuzzy } = await sb
+          .from('client_profiles')
+          .select('*')
+          .ilike('client_name', `%${query}%`)
+          .limit(10)
+        return { agent: 'studio_knowledge', action, success: true, data: { matches: fuzzy || [] } }
+      }
+      case 'find_contact': {
+        const query = String(payload.query || payload.name || payload.email || '').trim()
+        if (!query) return { agent: 'studio_knowledge', action, success: false, error: 'query/name/email required' }
+        const sb = createAdminClient()
+        // Pull all clients with contacts, filter in JS — primary_contacts is jsonb
+        // and PostgREST jsonb querying is awkward for "any contact matches".
+        const { data: clients } = await sb
+          .from('client_profiles')
+          .select('id, client_name, primary_contacts')
+          .not('primary_contacts', 'is', null)
+        const needle = query.toLowerCase()
+        const hits: any[] = []
+        for (const c of clients || []) {
+          for (const ct of (c.primary_contacts as any[]) || []) {
+            const name = `${ct.first_name || ''} ${ct.last_name || ''}`.toLowerCase()
+            const email = String(ct.email || '').toLowerCase()
+            const title = String(ct.title || '').toLowerCase()
+            if (name.includes(needle) || email.includes(needle) || title.includes(needle)) {
+              hits.push({ client_id: c.id, client_name: c.client_name, contact: ct })
+            }
+          }
+          if (hits.length >= 25) break // soft cap
+        }
+        return { agent: 'studio_knowledge', action, success: true, data: { matches: hits } }
+      }
+      case 'recent_clients': {
+        const limit = Number(payload.limit) || 15
+        const sb = createAdminClient()
+        const { data } = await sb
+          .from('client_profiles')
+          .select('id, client_name, project_count, total_lifetime_revenue, health_score, payment_reliability')
+          .order('total_lifetime_revenue', { ascending: false, nullsFirst: false })
+          .limit(limit)
+        return { agent: 'studio_knowledge', action, success: true, data: data || [] }
+      }
+      case 'reembed_clients': {
+        const workspaceId = (payload.workspaceId as string) || process.env.KIT_DEFAULT_WORKSPACE_ID
+        if (!workspaceId) return { agent: 'studio_knowledge', action, success: false, error: 'KIT_DEFAULT_WORKSPACE_ID required' }
+        const { embedAllClients } = await import('../../studio-knowledge/client-profile')
+        const stats = await embedAllClients(workspaceId)
+        return { agent: 'studio_knowledge', action, success: true, data: stats }
+      }
       default:
         return { agent: 'studio_knowledge', action, success: false, error: `unknown action: ${action}` }
     }
@@ -102,6 +163,30 @@ export const studioKnowledgeAgent: AgentDefinition = {
     {
       action: 'reembed_all',
       description: 'Re-embed every project in the workspace into project_documents. Heavy operation; run after backfill or schema changes.',
+      inputDescription: 'workspaceId (optional; defaults to KIT_DEFAULT_WORKSPACE_ID)',
+      mutates: true,
+    },
+    {
+      action: 'lookup_client',
+      description: 'Structured lookup of a client by name (exact match → ilike fuzzy). Returns matching client_profiles rows with full contacts + history.',
+      inputDescription: 'query OR name (string)',
+      mutates: false,
+    },
+    {
+      action: 'find_contact',
+      description: 'Find a person across all clients by name, email, or title. Returns matches with their client and full contact card.',
+      inputDescription: 'query OR name OR email (string)',
+      mutates: false,
+    },
+    {
+      action: 'recent_clients',
+      description: 'List clients ordered by total lifetime revenue (highest first). Default 15.',
+      inputDescription: 'limit (number, optional)',
+      mutates: false,
+    },
+    {
+      action: 'reembed_clients',
+      description: 'Re-embed every client_profiles row into the RAG store. Heavy; run after a contacts backfill.',
       inputDescription: 'workspaceId (optional; defaults to KIT_DEFAULT_WORKSPACE_ID)',
       mutates: true,
     },
