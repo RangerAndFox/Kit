@@ -1,208 +1,137 @@
 // @ts-nocheck
 /**
- * Document ingestion for RAG pipeline
- * Handles chunking, embedding, and storage of documents in Supabase
+ * RAG document ingestion — writes a single project_documents row per
+ * document with an inline embedding. The live schema does NOT have a
+ * separate document_chunks table; embeddings are per-document.
+ *
+ * For very long documents (transcripts), chunk first and ingest each
+ * chunk as its own row with the same project_id + doc_type — that path
+ * lives in `ingestLongDocument` below.
  */
 
 import { createAdminClient } from '@/lib/supabase/admin'
-import { chunkText, generateEmbeddings } from './embeddings'
-import type { DocumentVisibilityTier } from '@/types/database'
+import { generateEmbedding, generateEmbeddings, chunkText } from './embeddings'
 
-/**
- * Ingests a document into the RAG system
- * Chunks text, generates embeddings, and stores in project_documents table
- *
- * @param workspaceId ID of the workspace
- * @param projectId ID of the project
- * @param title Document title
- * @param content Document content text
- * @param docType Document type/category
- * @param visibilityTier Visibility level: 'team' or 'founder'
- * @returns Promise resolving to document ID and chunk count
- */
-export async function ingestDocument(
-  workspaceId: string,
-  projectId: string,
-  title: string,
-  content: string,
-  docType: string,
-  visibilityTier: DocumentVisibilityTier = 'team'
-): Promise<{ documentId: string; chunkCount: number }> {
-  const supabase = createAdminClient()
+export interface IngestOptions {
+  workspaceId: string
+  projectId?: string | null
+  docType: string
+  title: string
+  content: string
+  sourceUrl?: string | null
+  visibilityTier?: 'team' | 'producer' | 'freelancer' | 'founder'
+  metadata?: Record<string, unknown>
+}
 
-  // Chunk the document
-  const chunks = chunkText(content)
+export interface IngestResult {
+  documentId: string
+}
 
-  if (chunks.length === 0) {
-    throw new Error('Document produced no valid chunks')
+export async function ingestDocument(opts: IngestOptions): Promise<IngestResult> {
+  const sb = createAdminClient()
+  if (!opts.content || opts.content.trim().length === 0) {
+    throw new Error('ingestDocument: content is empty')
   }
+  const embedding = await generateEmbedding(opts.content)
 
-  // Generate embeddings for all chunks
-  const embeddings = await generateEmbeddings(chunks)
-
-  // Insert document record
-  const { data: docData, error: docError } = await supabase
-    .from('project_documents' as any)
+  const { data, error } = await sb
+    .from('project_documents')
     .insert({
-      workspace_id: workspaceId,
-      project_id: projectId,
-      name: title,
-      category: docType,
-      visibility_tier: visibilityTier,
-      file_url: '', // No actual file stored, content is embedded
-      file_type: 'text/plain',
-      file_size: content.length,
-      uploaded_by_id: 'system', // System ingestion
+      workspace_id: opts.workspaceId,
+      project_id: opts.projectId ?? null,
+      doc_type: opts.docType,
+      title: opts.title,
+      content: opts.content,
+      source_url: opts.sourceUrl ?? null,
+      embedding,
+      metadata: opts.metadata ?? null,
+      visibility_tier: opts.visibilityTier ?? 'team',
+      indexed_at: new Date().toISOString(),
     })
     .select('id')
     .single()
 
-  if (docError) {
-    throw new Error(`Failed to insert document: ${docError.message}`)
-  }
-
-  // Insert document chunks with embeddings
-  const chunkRecords = chunks.map((chunk, index) => ({
-    document_id: docData.id,
-    workspace_id: workspaceId,
-    project_id: projectId,
-    chunk_number: index,
-    content: chunk,
-    embedding: embeddings[index],
-  }))
-
-  const { error: chunkError } = await supabase
-    .from('document_chunks' as any)
-    .insert(chunkRecords)
-
-  if (chunkError) {
-    throw new Error(`Failed to insert document chunks: ${chunkError.message}`)
-  }
-
-  return {
-    documentId: docData.id,
-    chunkCount: chunks.length,
-  }
-}
-
-interface TranscriptMetadata {
-  call_date: Date
-  speaker?: string
-  duration_minutes?: number
+  if (error) throw new Error(`ingestDocument insert failed: ${error.message}`)
+  return { documentId: data!.id }
 }
 
 /**
- * Ingests a transcript with call metadata
- * Uses larger overlap for conversation context
- * Routes to founder stream for sensitive content
- *
- * @param workspaceId ID of the workspace
- * @param projectId ID of the project
- * @param title Transcript title
- * @param transcript Raw transcript text
- * @param stream Visibility stream: 'team' or 'founder'
- * @param metadata Optional transcript metadata (call date, speaker, duration)
- * @returns Promise resolving to document ID and chunk count
+ * Upsert variant — replaces an existing row when (workspace_id, doc_type, title)
+ * collides. Used by backfill paths that re-run periodically and shouldn't
+ * accumulate dupes. Caller-provided uniqueness; the table itself has no
+ * unique constraint on those columns (yet).
  */
-export async function ingestTranscript(
-  workspaceId: string,
-  projectId: string,
-  title: string,
-  transcript: string,
-  stream: DocumentVisibilityTier,
-  metadata?: TranscriptMetadata
-): Promise<{ documentId: string; chunkCount: number }> {
-  // Use larger overlap for conversations to preserve context
-  const chunks = chunkText(transcript, 1200, 400)
-
-  if (chunks.length === 0) {
-    throw new Error('Transcript produced no valid chunks')
+export async function upsertDocument(opts: IngestOptions): Promise<IngestResult> {
+  const sb = createAdminClient()
+  if (!opts.content || opts.content.trim().length === 0) {
+    throw new Error('upsertDocument: content is empty')
   }
 
-  const supabase = createAdminClient()
-
-  // Generate embeddings
-  const embeddings = await generateEmbeddings(chunks)
-
-  // Prepare description with metadata
-  const description = metadata
-    ? `Call: ${metadata.call_date.toISOString().split('T')[0]}${
-        metadata.speaker ? ` with ${metadata.speaker}` : ''
-      }${metadata.duration_minutes ? ` (${metadata.duration_minutes}min)` : ''}`
-    : undefined
-
-  // Insert document record
-  const { data: docData, error: docError } = await supabase
-    .from('project_documents' as any)
-    .insert({
-      workspace_id: workspaceId,
-      project_id: projectId,
-      name: title,
-      description,
-      category: 'archive', // Transcripts go to archive category
-      visibility_tier: stream,
-      file_url: '',
-      file_type: 'text/plain',
-      file_size: transcript.length,
-      uploaded_by_id: 'system',
-    })
+  // Find existing match
+  const { data: existing } = await sb
+    .from('project_documents')
     .select('id')
-    .single()
+    .eq('workspace_id', opts.workspaceId)
+    .eq('doc_type', opts.docType)
+    .eq('title', opts.title)
+    .maybeSingle()
 
-  if (docError) {
-    throw new Error(`Failed to insert transcript document: ${docError.message}`)
+  const embedding = await generateEmbedding(opts.content)
+
+  if (existing?.id) {
+    const { error } = await sb
+      .from('project_documents')
+      .update({
+        project_id: opts.projectId ?? null,
+        content: opts.content,
+        source_url: opts.sourceUrl ?? null,
+        embedding,
+        metadata: opts.metadata ?? null,
+        visibility_tier: opts.visibilityTier ?? 'team',
+        indexed_at: new Date().toISOString(),
+      })
+      .eq('id', existing.id)
+    if (error) throw new Error(`upsertDocument update failed: ${error.message}`)
+    return { documentId: existing.id }
   }
 
-  // Insert document chunks with embeddings
-  const chunkRecords = chunks.map((chunk, index) => ({
-    document_id: docData.id,
-    workspace_id: workspaceId,
-    project_id: projectId,
-    chunk_number: index,
-    content: chunk,
-    embedding: embeddings[index],
-  }))
-
-  const { error: chunkError } = await supabase
-    .from('document_chunks' as any)
-    .insert(chunkRecords)
-
-  if (chunkError) {
-    throw new Error(`Failed to insert transcript chunks: ${chunkError.message}`)
-  }
-
-  return {
-    documentId: docData.id,
-    chunkCount: chunks.length,
-  }
+  return ingestDocument(opts)
 }
 
 /**
- * Deletes a document and all its associated chunks from the RAG system
- *
- * @param documentId ID of the document to delete
- * @returns Promise that resolves when deletion is complete
+ * For long documents (transcripts, briefs > ~2000 chars), chunk and ingest
+ * each chunk as its own project_documents row. Chunks share project_id and
+ * doc_type; title is suffixed with " (chunk N/M)".
  */
+export async function ingestLongDocument(opts: IngestOptions): Promise<IngestResult[]> {
+  const chunks = chunkText(opts.content, 1500, 300)
+  if (chunks.length <= 1) {
+    return [await ingestDocument(opts)]
+  }
+  const embeddings = await generateEmbeddings(chunks)
+  const sb = createAdminClient()
+  const rows = chunks.map((c, i) => ({
+    workspace_id: opts.workspaceId,
+    project_id: opts.projectId ?? null,
+    doc_type: opts.docType,
+    title: `${opts.title} (chunk ${i + 1}/${chunks.length})`,
+    content: c,
+    source_url: opts.sourceUrl ?? null,
+    embedding: embeddings[i],
+    metadata: { ...(opts.metadata ?? {}), chunk_index: i, chunk_total: chunks.length },
+    visibility_tier: opts.visibilityTier ?? 'team',
+    indexed_at: new Date().toISOString(),
+  }))
+  const { data, error } = await sb
+    .from('project_documents')
+    .insert(rows)
+    .select('id')
+  if (error) throw new Error(`ingestLongDocument insert failed: ${error.message}`)
+  return (data || []).map((r) => ({ documentId: r.id }))
+}
+
 export async function deleteDocument(documentId: string): Promise<void> {
-  const supabase = createAdminClient()
-
-  // Delete chunks first (foreign key constraint)
-  const { error: chunkError } = await supabase
-    .from('document_chunks' as any)
-    .delete()
-    .eq('document_id', documentId)
-
-  if (chunkError) {
-    throw new Error(`Failed to delete document chunks: ${chunkError.message}`)
-  }
-
-  // Delete document record
-  const { error: docError } = await supabase
-    .from('project_documents' as any)
-    .delete()
-    .eq('id', documentId)
-
-  if (docError) {
-    throw new Error(`Failed to delete document: ${docError.message}`)
-  }
+  const sb = createAdminClient()
+  const { error } = await sb.from('project_documents').delete().eq('id', documentId)
+  if (error) throw new Error(`deleteDocument failed: ${error.message}`)
 }
