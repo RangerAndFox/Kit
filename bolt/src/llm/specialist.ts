@@ -21,6 +21,7 @@ import { DROPBOX_SYSTEM_PROMPT } from './prompts/dropbox-system'
 import { FRAMEIO_SYSTEM_PROMPT } from './prompts/frameio-system'
 import { SLACK_SYSTEM_PROMPT } from './prompts/slack-system'
 import { BOORDS_SYSTEM_PROMPT } from './prompts/boords-system'
+import { STUDIO_KNOWLEDGE_SYSTEM_PROMPT } from './prompts/studio-knowledge-system'
 
 const SYSTEM_PROMPTS: Record<string, string> = {
   harvest: HARVEST_SYSTEM_PROMPT,
@@ -28,6 +29,7 @@ const SYSTEM_PROMPTS: Record<string, string> = {
   frameio: FRAMEIO_SYSTEM_PROMPT,
   slack: SLACK_SYSTEM_PROMPT,
   boords: BOORDS_SYSTEM_PROMPT,
+  studio_knowledge: STUDIO_KNOWLEDGE_SYSTEM_PROMPT,
 }
 
 const MAX_TURNS = 4 // safety cap on tool_use loop
