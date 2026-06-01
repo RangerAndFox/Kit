@@ -226,6 +226,114 @@ export function registerCommandHandlers(app: App) {
         break
       }
 
+      // ── Accessibility (captions + DV) ───────────────────────
+      case 'access':
+      case 'accessibility': {
+        await ack()
+        const sub = (args || '').trim().toLowerCase()
+        const { createAdminClient } = await import('../../../src/lib/supabase/admin')
+        const sb = createAdminClient()
+        if (sub === '' || sub === 'status') {
+          const { data: rows } = await sb
+            .from('accessibility_jobs')
+            .select('id, status, source_video_path, progress_percent, progress_message, output_folder_path, error_message, created_at')
+            .order('created_at', { ascending: false })
+            .limit(10)
+          if (!rows || rows.length === 0) {
+            await respond({
+              response_type: 'ephemeral',
+              text: 'No accessibility jobs yet. Drop a video in `/Accessibility-Queue/` on Dropbox to start one.',
+            })
+            break
+          }
+          const lines = rows.map((j: any) => {
+            const file = (j.source_video_path || '').split('/').pop() || j.source_video_path
+            if (j.status === 'complete') {
+              return `:white_check_mark: \`${file}\` → \`${j.output_folder_path}\``
+            }
+            if (j.status === 'failed') {
+              return `:x: \`${file}\` — ${j.error_message || 'failed'}`
+            }
+            return `:hourglass_flowing_sand: \`${file}\` — ${j.status} (${j.progress_percent ?? 0}% — ${j.progress_message || ''})`
+          })
+          await respond({
+            response_type: 'ephemeral',
+            text: `*Accessibility jobs (last ${rows.length})*\n${lines.join('\n')}`,
+          })
+        } else {
+          await respond({
+            response_type: 'ephemeral',
+            text: 'Usage: `/kit access status` — list recent accessibility jobs.',
+          })
+        }
+        break
+      }
+
+      // ── Brain ───────────────────────────────────────────────
+      case 'brain': {
+        await ack()
+        const sub = (args || '').trim()
+        const workspaceId = process.env.KIT_DEFAULT_WORKSPACE_ID
+        if (!workspaceId) {
+          await respond({
+            response_type: 'ephemeral',
+            text: ':warning: `KIT_DEFAULT_WORKSPACE_ID` is not set — set it in Railway before running `/kit brain`.',
+          })
+          break
+        }
+
+        // `/kit brain why <claim>` — provenance lookup stub (Phase 1)
+        if (sub.toLowerCase().startsWith('why')) {
+          const claim = sub.replace(/^why\s*/i, '').trim()
+          const result = await dispatch('brain', 'why', { claim, channelId: command.channel_id, workspaceId })
+          await respond({
+            response_type: 'ephemeral',
+            text: result.success && result.data?.message
+              ? `_${result.data.message}_`
+              : result.error || 'No sources found.',
+          })
+          break
+        }
+
+        try {
+          const { seedBrainForChannel } = await import('../../../src/lib/brain/seed')
+          const { createOrUpdateBrainCanvas } = await import('../../../src/lib/brain/canvas')
+          const { setCanvasHandle } = await import('../../../src/lib/brain/store')
+
+          const { loaded, created } = await seedBrainForChannel({
+            workspaceId,
+            slackChannelId: command.channel_id,
+            author: command.user_id,
+          })
+
+          const handle = await createOrUpdateBrainCanvas({
+            app: { client } as any,
+            channelId: command.channel_id,
+            brain: loaded.brain,
+            existingCanvasId: loaded.row.canvas_id,
+          })
+
+          if (handle.canvas_id !== loaded.row.canvas_id || handle.canvas_url !== loaded.row.canvas_url) {
+            await setCanvasHandle(loaded.row.id, handle.canvas_id, handle.canvas_url)
+          }
+
+          const link = handle.canvas_url ? `<${handle.canvas_url}|open canvas>` : 'open this channel\'s Canvas tab'
+          await respond({
+            response_type: 'ephemeral',
+            text: created
+              ? `:brain: Brain seeded for this channel — ${link}. Every bullet carries a source tag.`
+              : `:brain: Brain refreshed — ${link}. Current revision: ${loaded.row.revision}.`,
+          })
+        } catch (err: any) {
+          console.error('[Bolt] /kit brain failed:', err.data?.error || err.message)
+          await respond({
+            response_type: 'ephemeral',
+            text: `Brain failed: ${err.data?.error || err.message}`,
+          })
+        }
+        break
+      }
+
       // ── Notes ───────────────────────────────────────────────
       case 'note': {
         await ack()
@@ -277,6 +385,9 @@ export function registerCommandHandlers(app: App) {
             '`/kit deliver [path]` — Submit a transcode job (or run `/kit deliver status` for queue)\n' +
             '`/kit profiles` — List delivery profiles · `/kit profiles create` to add one\n' +
             '`/kit workers` — Show render worker fleet · `opt-out <host>` / `opt-in <host>`\n' +
+            '`/kit access status` — Status of accessibility jobs (captions + DV)\n' +
+            '`/kit brain` — Open or refresh this channel\'s living project brain (Slack Canvas)\n' +
+            '`/kit brain why <claim>` — Show the sources behind a fact in the brain\n' +
             '`/kit help` — Show this message\n\n' +
             'You can also DM me and type *new project* or *new storyboard* to get the same cards. Or @mention me to ask about projects, budgets, files, reviews, or to log time.',
         })
