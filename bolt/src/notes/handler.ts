@@ -141,6 +141,7 @@ export async function handleNoteMessage(opts: {
     // into RAG; this additional path lets the brain propose structured patches
     // (decisions, watchlist items, glossary entries) from the note body.
     handleBrainIngestNote({
+      app,
       channelId,
       userId,
       noteText: intent.body,
