@@ -67,6 +67,10 @@ export async function updateCanvasMarkdown(opts: {
   // (the tab name in Slack), and a `replace` to swap the markdown content.
   // The rename op uses `title_content` (not `document_content`) per Slack docs:
   // https://docs.slack.dev/reference/methods/canvases.edit
+  //
+  // `changes` must be JSON-stringified per Slack's API ref — the SDK does
+  // not reliably auto-encode it on Bolt 4.7. Calling via apiCall() also
+  // sidesteps the canvases.* namespace if the SDK version lacks it.
   const changes: any[] = []
   if (title) {
     changes.push({
@@ -79,8 +83,11 @@ export async function updateCanvasMarkdown(opts: {
     document_content: { type: 'markdown', markdown },
   })
 
-  await (app.client as any).canvases.edit({
+  const res: any = await (app.client as any).apiCall('canvases.edit', {
     canvas_id: canvasId,
-    changes,
+    changes: JSON.stringify(changes),
   })
+  if (res && res.ok === false) {
+    throw new Error(`canvases.edit failed: ${res.error || 'unknown'} (canvas_id=${canvasId})`)
+  }
 }
