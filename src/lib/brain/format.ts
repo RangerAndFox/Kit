@@ -268,6 +268,12 @@ export interface BrainPatch {
 /**
  * Apply a patch in-place. Returns a short human-readable diff line. Used by
  * the Brain Writer (Phase 2) and the seed path (Phase 1).
+ *
+ * Whenever a real (non-system) bullet lands in a section, any "No X yet"
+ * placeholder bullets (provenance.src === 'system') in that same section
+ * are removed. Phase-1 seeds populate every section with a placeholder so
+ * Haiku can patch against a stable anchor; once content arrives the
+ * placeholder is no longer informative and just adds noise.
  */
 export function applyPatch(brain: Brain, patch: BrainPatch): string {
   const section = ensureSection(brain, patch.section)
@@ -276,12 +282,15 @@ export function applyPatch(brain: Brain, patch: BrainPatch): string {
     provenance: patch.provenance,
     checked: patch.checked === undefined ? null : patch.checked,
   }
+  const isSystemPatch = patch.provenance?.src === 'system'
+
   if (patch.operation === 'replace') {
     section.bullets = [bullet]
     return `replace § ${patch.section}: ${patch.text}`
   }
   if (patch.operation === 'add') {
     section.bullets.push(bullet)
+    if (!isSystemPatch) stripSystemPlaceholders(section)
     return `add § ${patch.section}: ${patch.text}`
   }
   if (patch.operation === 'update' || patch.operation === 'supersede') {
@@ -291,19 +300,47 @@ export function applyPatch(brain: Brain, patch: BrainPatch): string {
     if (idx >= 0) {
       if (patch.operation === 'update') {
         section.bullets[idx] = bullet
+        if (!isSystemPatch) stripSystemPlaceholders(section)
         return `update § ${patch.section}: ${patch.text}`
       }
       // supersede: keep the old bullet, struck-through, append the new one
       const old = section.bullets[idx]
       section.bullets[idx] = { ...old, text: `~~${old.text}~~` }
       section.bullets.push(bullet)
+      if (!isSystemPatch) stripSystemPlaceholders(section)
       return `supersede § ${patch.section}: ${patch.text}`
     }
     // No match — fall through to add.
     section.bullets.push(bullet)
+    if (!isSystemPatch) stripSystemPlaceholders(section)
     return `add § ${patch.section}: ${patch.text}`
   }
   return ''
+}
+
+function stripSystemPlaceholders(section: BrainSection): void {
+  if (section.bullets.length <= 1) return
+  // Only strip if at least one real (non-system) bullet remains.
+  const hasReal = section.bullets.some((b) => b.provenance?.src !== 'system')
+  if (!hasReal) return
+  section.bullets = section.bullets.filter((b) => b.provenance?.src !== 'system')
+}
+
+/**
+ * Public helper: remove every "No X yet" placeholder from every section
+ * that already has at least one real bullet. Used by the backfill script
+ * that cleans Phase-1 brains created before the auto-strip logic landed.
+ */
+export function pruneSystemPlaceholders(brain: Brain): { removed: number } {
+  let removed = 0
+  for (const section of brain.sections) {
+    const hasReal = section.bullets.some((b) => b.provenance?.src !== 'system')
+    if (!hasReal) continue
+    const before = section.bullets.length
+    section.bullets = section.bullets.filter((b) => b.provenance?.src !== 'system')
+    removed += before - section.bullets.length
+  }
+  return { removed }
 }
 
 /**

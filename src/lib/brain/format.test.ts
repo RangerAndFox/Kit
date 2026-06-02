@@ -15,6 +15,7 @@ import {
   buildBrainId,
   ensureSection,
   findSection,
+  pruneSystemPlaceholders,
 } from './format'
 
 const CANONICAL = `---
@@ -162,5 +163,70 @@ describe('ensureSection', () => {
     const s = ensureSection(b, 'OPEN DECISIONS')
     assert.equal(s.heading, 'Open decisions')
     assert.equal(b.sections.length, 3)
+  })
+})
+
+describe('placeholder stripping', () => {
+  const SEEDED = `---
+brain_id: test
+scope: project
+revision: 1
+---
+
+## Recent decisions (log)
+- No decisions logged yet. <!-- src: system -->
+
+## Watchlist (deadlines & risks)
+- No watchlist items yet. <!-- src: system -->
+- Delivery: 2026-06-22. <!-- src: sow:TEST -->
+`
+
+  it('add removes the system placeholder when a real bullet lands', () => {
+    const b = parseBrain(SEEDED)
+    applyPatch(b, {
+      section: 'Recent decisions (log)',
+      operation: 'add',
+      text: 'Locked the hero shot.',
+      provenance: { src: 'thread:C0/p1' },
+    })
+    const decisions = findSection(b, 'Recent decisions (log)')!
+    assert.equal(decisions.bullets.length, 1)
+    assert.equal(decisions.bullets[0].text, 'Locked the hero shot.')
+  })
+
+  it('preserves the placeholder if the new patch is itself a system bullet', () => {
+    const b = parseBrain(SEEDED)
+    applyPatch(b, {
+      section: 'Recent decisions (log)',
+      operation: 'add',
+      text: 'Auto-imported placeholder.',
+      provenance: { src: 'system' },
+    })
+    const decisions = findSection(b, 'Recent decisions (log)')!
+    assert.equal(decisions.bullets.length, 2)
+  })
+
+  it('does not strip if the section already has only real bullets', () => {
+    const b = parseBrain(SEEDED)
+    // Watchlist already has 1 real bullet + 1 placeholder. Adding another
+    // real bullet should strip the placeholder.
+    applyPatch(b, {
+      section: 'Watchlist (deadlines & risks)',
+      operation: 'add',
+      text: '⚠️ VO re-record by Friday.',
+      provenance: { src: 'meeting:2026-05-28' },
+    })
+    const watch = findSection(b, 'Watchlist (deadlines & risks)')!
+    assert.equal(watch.bullets.length, 2)
+    assert.ok(!watch.bullets.some((b) => b.provenance?.src === 'system'))
+  })
+
+  it('pruneSystemPlaceholders cleans every applicable section', () => {
+    const b = parseBrain(SEEDED)
+    const { removed } = pruneSystemPlaceholders(b)
+    assert.equal(removed, 1) // only Watchlist had a real bullet beside the placeholder
+    assert.ok(!findSection(b, 'Watchlist (deadlines & risks)')!.bullets.some((x) => x.provenance?.src === 'system'))
+    // The placeholder-only section stays as-is (its placeholder is the only entry — strip would empty the section)
+    assert.equal(findSection(b, 'Recent decisions (log)')!.bullets.length, 1)
   })
 })
