@@ -24,6 +24,7 @@ import {
   classifySignal,
   type BrainSignal,
 } from '../../../src/lib/brain/writer'
+import { checkMessageForMistakes, recordKitAction } from '../../../src/lib/brain/flagger'
 
 // In-memory dedup so the same (channel, ts) doesn't process twice within
 // a short window (Slack will sometimes re-deliver events). Bounded by a
@@ -86,37 +87,101 @@ export async function handleBrainIngestMessage(args: IngestMessageArgs): Promise
   }
   if (!loaded) return  // no brain for this channel — Phase 1 channels only get brains on /kit brain
 
-  let result
-  try {
-    result = await proposePatches({ brain: loaded.brain, signal })
-  } catch (err: any) {
-    console.error('[brain.ingest] proposePatches failed:', err.message)
-    return
-  }
-  if (!result.changes_understanding || result.patches.length === 0) return
+  // Run writer + mistake-catch in parallel against the SAME pre-patch
+  // brain state. They're independent: writer proposes new patches;
+  // mistake-catch only flags contradictions with existing canonical
+  // facts. Phase 4 §3.2.
+  const [writerResult, mistakeResult] = await Promise.allSettled([
+    proposePatches({ brain: loaded.brain, signal }),
+    checkMessageForMistakes({ brain: loaded.brain, messageText: args.messageText }),
+  ])
 
-  const filtered = filterForAutoApply({ result, signal })
-  if (filtered.skipped_low_conf.length > 0) {
-    console.log(
-      `[brain.ingest] ${loaded.row.id}: skipped ${filtered.skipped_low_conf.length} low-confidence patches`,
-      filtered.skipped_low_conf.map((p) => `${p.section}: ${p.text.slice(0, 60)} (${p.confidence})`),
-    )
+  // ── Apply writer patches ─────────────────────────────────
+  let patchesApplied = false
+  if (writerResult.status === 'fulfilled') {
+    const result = writerResult.value
+    if (result.changes_understanding && result.patches.length > 0) {
+      const filtered = filterForAutoApply({ result, signal })
+      if (filtered.skipped_low_conf.length > 0) {
+        console.log(
+          `[brain.ingest] ${loaded.row.id}: skipped ${filtered.skipped_low_conf.length} low-confidence patches`,
+          filtered.skipped_low_conf.map((p) => `${p.section}: ${p.text.slice(0, 60)} (${p.confidence})`),
+        )
+      }
+      if (filtered.applied.length > 0) {
+        try {
+          await applyPatches({
+            brainId: loaded.row.id,
+            patches: filtered.applied,
+            author: args.userId,
+          })
+          console.log(
+            `[brain.ingest] ${loaded.row.id}: applied ${filtered.applied.length} patch(es) from ${args.userId}`,
+          )
+          patchesApplied = true
+        } catch (err: any) {
+          console.error('[brain.ingest] applyPatches failed:', err.message)
+        }
+      }
+    }
+  } else {
+    console.error('[brain.ingest] proposePatches failed:', writerResult.reason?.message || writerResult.reason)
   }
-  if (filtered.applied.length === 0) return
 
-  try {
-    await applyPatches({
-      brainId: loaded.row.id,
-      patches: filtered.applied,
-      author: args.userId,
-    })
-    console.log(
-      `[brain.ingest] ${loaded.row.id}: applied ${filtered.applied.length} patch(es) from ${args.userId}`,
-    )
+  // ── Post any high-confidence mistake catches in-thread ──
+  if (mistakeResult.status === 'fulfilled') {
+    const mistakes = mistakeResult.value.catches.filter((c) => c.confidence >= 0.85)
+    for (const m of mistakes) {
+      const sourceTag = m.provenance?.src ? `\n_Source: \`${m.provenance.src}\` (${m.evidence_section})_` : ''
+      try {
+        await args.app.client.chat.postMessage({
+          channel: args.channelId,
+          thread_ts: args.threadTs || args.messageTs,
+          text: `:eyes: ${m.suggestion}${sourceTag}`,
+        })
+        console.log(
+          `[brain.ingest] ${loaded.row.id}: posted mistake-catch (conf ${m.confidence.toFixed(2)}): ${m.incorrect} vs ${m.canonical}`,
+        )
+      } catch (err: any) {
+        console.error('[brain.ingest] mistake-catch post failed:', err?.data?.error || err?.message)
+      }
+      await recordKitAction({
+        workspaceId,
+        projectId: loaded.row.project_id,
+        type: 'brain_mistake_catch',
+        title: `Mistake catch: ${shortText(m.incorrect, 60)} → ${shortText(m.canonical, 60)}`,
+        description: m.suggestion,
+        payload: {
+          brain_id: loaded.row.id,
+          channel_id: args.channelId,
+          message_ts: args.messageTs,
+          canonical: m.canonical,
+          incorrect: m.incorrect,
+          evidence_section: m.evidence_section,
+        },
+        confidence: m.confidence,
+        dedupKey: `${loaded.row.id}:${args.messageTs}:${simpleStableHash(m.canonical)}`,
+      })
+    }
+  } else {
+    console.error('[brain.ingest] mistake-catch failed:', mistakeResult.reason?.message || mistakeResult.reason)
+  }
+
+  // ── Refresh canvas if we touched the brain ──────────────
+  if (patchesApplied) {
     await refreshCanvasAfterPatch(args.app, loaded.row.id, args.channelId)
-  } catch (err: any) {
-    console.error('[brain.ingest] applyPatches failed:', err.message)
   }
+}
+
+function shortText(text: string, max: number): string {
+  if (text.length <= max) return text
+  return text.slice(0, max - 1).trimEnd() + '…'
+}
+
+function simpleStableHash(s: string): string {
+  let h = 0
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0
+  return Math.abs(h).toString(36)
 }
 
 export interface IngestNoteArgs {
