@@ -21,12 +21,14 @@ import {
 } from './handlers/messages'
 import { registerCommandHandlers } from './handlers/commands'
 import { registerInteractionHandlers } from './handlers/interactions'
+import { registerBrainApprovalHandlers } from './brain/approvals'
 import {
   verifyDropboxSignature,
   processDropboxNotification,
 } from './watchers/dropbox'
 import cron from 'node-cron'
 import { sendAllDailyCheckins, nudgePendingCheckins } from './checkins/daily-hours'
+import { dispatchAllPendingApprovals } from './brain/approvals'
 
 // ─── Boot ──────────────────────────────────────────────────
 
@@ -119,6 +121,7 @@ app.assistant(assistant)
 registerMessageHandlers(app)
 registerCommandHandlers(app)
 registerInteractionHandlers(app)
+registerBrainApprovalHandlers(app)
 
 // ─── Resilience + Diagnostics ──────────────────────────────
 
@@ -224,6 +227,26 @@ cron.schedule(
     )
   },
   { timezone: CHECKIN_TZ },
+)
+
+// ─── Cron: brain scavenger DM dispatch ─────────────────────
+// The Inngest cron (brainScavengerScan) populates the pending queue
+// daily at 7am UTC. This cron runs a few minutes later (in the box's
+// local time) to DM each affected brain's channel creator with the
+// approve/reject buttons. Gated on KIT_BRAIN_SCAVENGER_ENABLED so
+// it stays off until the operator activates the scavenger.
+
+cron.schedule(
+  '15 7 * * *',
+  () => {
+    if (process.env.KIT_BRAIN_SCAVENGER_ENABLED !== 'true') return
+    const workspaceId = process.env.KIT_DEFAULT_WORKSPACE_ID
+    if (!workspaceId) return
+    dispatchAllPendingApprovals({ app, workspaceId })
+      .then((res) => console.log('[cron] brain-scavenger-dispatch:', res))
+      .catch((err) => console.error('[cron] brain-scavenger-dispatch failed:', err))
+  },
+  { timezone: 'UTC' },
 )
 
 // ─── Start ─────────────────────────────────────────────────

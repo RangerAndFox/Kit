@@ -14,6 +14,8 @@
 
 import { inngest } from './client'
 import { sweepDeadlines } from '../brain/flagger'
+import { runScavengerForWorkspace } from '../brain/scavenger'
+import { consolidateAllBrains } from '../brain/consolidate'
 
 function postFromInngest(token: string) {
   return async ({ channelId, text }: { channelId: string; text: string }) => {
@@ -35,6 +37,67 @@ function postFromInngest(token: string) {
     }
   }
 }
+
+/**
+ * Phase 5 scavenger candidate-finder. Runs daily at 7am UTC (3am ET).
+ * Walks every brain, builds candidates, queues them as pending
+ * brain_scavenger_candidates rows. Does NOT DM — the DM dispatch
+ * runs on the Bolt side (it needs the App handle) and picks up
+ * whatever pending rows are sitting in the queue.
+ *
+ * Gated on KIT_BRAIN_SCAVENGER_ENABLED so the operator can keep it
+ * off until they're ready for cross-channel context donation.
+ */
+export const brainScavengerScan = inngest.createFunction(
+  {
+    id: 'brain-scavenger-scan',
+    name: 'Brain — daily scavenger candidate scan',
+    retries: 1,
+    triggers: [{ cron: '0 7 * * *' }], // 7am UTC
+  },
+  async ({ step, logger }) => {
+    if (process.env.KIT_BRAIN_SCAVENGER_ENABLED !== 'true') {
+      return { skipped: 'KIT_BRAIN_SCAVENGER_ENABLED is false' }
+    }
+    const workspaceId = process.env.KIT_DEFAULT_WORKSPACE_ID
+    if (!workspaceId) return { skipped: 'missing KIT_DEFAULT_WORKSPACE_ID' }
+    const result = await step.run('scavenger-scan', () => runScavengerForWorkspace({ workspaceId }))
+    logger?.info?.('[brain-scavenger-scan] result', result)
+    return result
+  },
+)
+
+/**
+ * Phase 6 consolidator. Runs nightly at 10am UTC (6am ET — after a full
+ * day's activity has flowed in but before the team is back online).
+ * Ages out stale watchlist items, compresses the decisions log, runs a
+ * Haiku dedupe pass on bullet-heavy sections.
+ *
+ * Gated on KIT_BRAIN_CONSOLIDATOR_ENABLED so it stays off until the
+ * operator confirms the brain has accumulated enough material for
+ * consolidation to be useful (typically a few weeks of real traffic).
+ */
+export const brainConsolidate = inngest.createFunction(
+  {
+    id: 'brain-consolidate',
+    name: 'Brain — nightly consolidator',
+    retries: 0,
+    triggers: [{ cron: '0 10 * * *' }], // 10am UTC
+  },
+  async ({ step, logger }) => {
+    if (process.env.KIT_BRAIN_CONSOLIDATOR_ENABLED !== 'true') {
+      return { skipped: 'KIT_BRAIN_CONSOLIDATOR_ENABLED is false' }
+    }
+    const workspaceId = process.env.KIT_DEFAULT_WORKSPACE_ID
+    if (!workspaceId) return { skipped: 'missing KIT_DEFAULT_WORKSPACE_ID' }
+    const result = await step.run('consolidate', () => consolidateAllBrains(workspaceId))
+    logger?.info?.('[brain-consolidate] result', {
+      ran: result.ran,
+      touched: result.touched,
+    })
+    return { ran: result.ran, touched: result.touched }
+  },
+)
 
 export const brainDeadlineSweep = inngest.createFunction(
   {
