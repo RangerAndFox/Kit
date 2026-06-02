@@ -6,7 +6,7 @@ import { plaudTranscriptionReady, plaudTranscriptionFailed } from '@/lib/inngest
 import { preMeetingScan, preMeetingDispatch } from '@/lib/inngest/pre-meeting'
 import { deliveryDropboxScan, deliveryJobNotifier, deliveryStaleSweep } from '@/lib/inngest/delivery-crons'
 import { studioKnowledgeAutoSummarize } from '@/lib/inngest/studio-knowledge-cron'
-import { brainDeadlineSweep } from '@/lib/inngest/brain-crons'
+import { brainDeadlineSweep, brainScavengerScan, brainConsolidate } from '@/lib/inngest/brain-crons'
 
 /**
  * Inngest API route.
@@ -31,6 +31,8 @@ export const { GET, POST, PUT } = serve({
     deliveryStaleSweep,
     studioKnowledgeAutoSummarize,
     brainDeadlineSweep,
+    brainScavengerScan,
+    brainConsolidate,
     // Add new functions here as agents are built
   ],
 })
