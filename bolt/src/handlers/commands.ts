@@ -282,14 +282,21 @@ export function registerCommandHandlers(app: App) {
           break
         }
 
-        // `/kit brain why <claim>` — provenance lookup stub (Phase 1)
+        // `/kit brain why <claim>` — provenance lookup
         if (sub.toLowerCase().startsWith('why')) {
           const claim = sub.replace(/^why\s*/i, '').trim()
+          if (!claim) {
+            await respond({
+              response_type: 'ephemeral',
+              text: 'Usage: `/kit brain why <claim>` — looks up the sources behind a fact in this channel\'s brain.',
+            })
+            break
+          }
           const result = await dispatch('brain', 'why', { claim, channelId: command.channel_id, workspaceId })
           await respond({
             response_type: 'ephemeral',
             text: result.success && result.data?.message
-              ? `_${result.data.message}_`
+              ? result.data.message
               : result.error || 'No sources found.',
           })
           break

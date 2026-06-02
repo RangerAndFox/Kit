@@ -646,6 +646,45 @@ export function registerInteractionHandlers(app: App) {
         })
       }
 
+      // ── Auto-seed the project brain ───────────────────────
+      // Build the channel's living brain + post its Canvas mirror so the
+      // team has the operating context immediately on day one. Best-effort:
+      // we never fail provisioning over a brain seed.
+      const brainSlackChannel = serviceResults.slack?.id
+      if (brainSlackChannel && workspaceId) {
+        try {
+          const { seedBrainForChannel } = await import('../../../src/lib/brain/seed')
+          const { createOrUpdateBrainCanvas } = await import('../../../src/lib/brain/canvas')
+          const { setCanvasHandle } = await import('../../../src/lib/brain/store')
+
+          const { loaded, created } = await seedBrainForChannel({
+            workspaceId,
+            slackChannelId: brainSlackChannel,
+            author: userId || 'system',
+          })
+
+          const handle = await createOrUpdateBrainCanvas({
+            app: { client } as any,
+            channelId: brainSlackChannel,
+            brain: loaded.brain,
+            existingCanvasId: loaded.row.canvas_id,
+          })
+          if (handle.canvas_id !== loaded.row.canvas_id || handle.canvas_url !== loaded.row.canvas_url) {
+            await setCanvasHandle(loaded.row.id, handle.canvas_id, handle.canvas_url)
+          }
+
+          await client.chat.postMessage({
+            channel: brainSlackChannel,
+            text: created
+              ? `:brain: I seeded this channel's brain with what I know so far — open the Canvas tab. Every fact I learn from our conversation here will go in automatically. \`/kit brain why <claim>\` shows sources.`
+              : `:brain: Brain refreshed (revision ${loaded.row.revision}).`,
+          })
+        } catch (err: any) {
+          console.error('[Bolt] brain auto-seed failed:', err.data?.error || err.message || err)
+          // Non-fatal — provisioning already succeeded.
+        }
+      }
+
       // ── Final summary ─────────────────────────────────────
       const succeeded = Object.values(serviceResults).filter((r: any) => r.success).length
       const failed = services.length - succeeded
