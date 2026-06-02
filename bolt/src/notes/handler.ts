@@ -13,6 +13,7 @@ import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { ingestDocument } from '../../../src/lib/rag/ingest'
 import { parseNoteIntent } from './keyword'
+import { handleBrainIngestNote } from '../brain/handler'
 
 interface ResolvedProject {
   id: string
@@ -135,6 +136,19 @@ export async function handleNoteMessage(opts: {
         `:writing_hand: Note saved to *${project.name || project.project_code || project.id.slice(0, 8)}*. ` +
         `It's now searchable — ask me anything about ${project.project_code || project.name || 'this project'} and I'll pull it in.`,
     })
+
+    // Fire-and-forget brain ingest. The note has already been saved + embedded
+    // into RAG; this additional path lets the brain propose structured patches
+    // (decisions, watchlist items, glossary entries) from the note body.
+    handleBrainIngestNote({
+      channelId,
+      userId,
+      noteText: intent.body,
+      noteTitle: title,
+      projectId: project.id,
+      workspaceId: project.workspace_id,
+    }).catch((err) => console.error('[notes] brain ingest failed:', err.message || err))
+
     return true
   } catch (err: any) {
     const detail = err?.data?.error || err?.message || String(err)

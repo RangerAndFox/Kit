@@ -31,6 +31,7 @@ import { handleShotListMessage } from '../shotlist/handler'
 import { handleShotListThumbnailUpload } from '../shotlist/thumbnails'
 import { isNoteTrigger } from '../notes/keyword'
 import { handleNoteMessage } from '../notes/handler'
+import { handleBrainIngestMessage } from '../brain/handler'
 
 import { runOrchestrator } from '../llm/orchestrator'
 import { hasPendingClarification } from '../llm/memory'
@@ -128,6 +129,23 @@ export function registerMessageHandlers(app: App) {
     const userId = msgEvent.user
     const channelId = msgEvent.channel
     const teamId = msgEvent.team || ''
+
+    // ── Brain ingest (channel messages only) ──────────────
+    // Fire-and-forget: every non-bot, non-subtype channel message goes
+    // through the brain writer if this channel has a brain. The writer
+    // applies a cheap classifier first so most chatter never reaches
+    // Claude. We deliberately run this BEFORE the early-return below
+    // so non-@mention messages still feed the brain.
+    if (!isDM && (msgEvent.text || '').trim().length > 0) {
+      handleBrainIngestMessage({
+        app,
+        channelId,
+        userId,
+        messageText: msgEvent.text || '',
+        messageTs: msgEvent.ts,
+        threadTs: msgEvent.thread_ts,
+      }).catch((err) => console.error('[Bolt] brain ingest failed:', err.message || err))
+    }
 
     // ── Storyboard keyword shortcut (DM only) ─────────────
     // Strict match: the message must be a clear "make me a storyboard"
