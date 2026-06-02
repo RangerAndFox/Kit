@@ -16,7 +16,8 @@
  */
 
 import type { App } from '@slack/bolt'
-import { getBrainByChannel, applyPatches } from '../../../src/lib/brain/store'
+import { getBrainByChannel, applyPatches, getBrainById, setCanvasHandle } from '../../../src/lib/brain/store'
+import { createOrUpdateBrainCanvas } from '../../../src/lib/brain/canvas'
 import {
   proposePatches,
   filterForAutoApply,
@@ -112,12 +113,14 @@ export async function handleBrainIngestMessage(args: IngestMessageArgs): Promise
     console.log(
       `[brain.ingest] ${loaded.row.id}: applied ${filtered.applied.length} patch(es) from ${args.userId}`,
     )
+    await refreshCanvasAfterPatch(args.app, loaded.row.id, args.channelId)
   } catch (err: any) {
     console.error('[brain.ingest] applyPatches failed:', err.message)
   }
 }
 
 export interface IngestNoteArgs {
+  app: App
   channelId: string
   userId: string
   noteText: string
@@ -173,8 +176,33 @@ export async function handleBrainIngestNote(args: IngestNoteArgs): Promise<void>
       author: args.userId,
     })
     console.log(`[brain.ingest.note] ${loaded.row.id}: applied ${filtered.applied.length} patch(es)`)
+    await refreshCanvasAfterPatch(args.app, loaded.row.id, args.channelId)
   } catch (err: any) {
     console.error('[brain.ingest.note] applyPatches failed:', err.message)
+  }
+}
+
+/**
+ * Re-render the brain's Slack Canvas after a patch lands. Without this,
+ * the markdown updates in Supabase but the canvas tab the team is looking
+ * at stays frozen at the seeded version. Best-effort: a canvas API
+ * failure must never bubble up — the patch itself already succeeded.
+ */
+async function refreshCanvasAfterPatch(app: App, brainId: string, channelId: string): Promise<void> {
+  try {
+    const fresh = await getBrainById(brainId)
+    if (!fresh) return
+    const handle = await createOrUpdateBrainCanvas({
+      app,
+      channelId,
+      brain: fresh.brain,
+      existingCanvasId: fresh.row.canvas_id,
+    })
+    if (handle.canvas_id !== fresh.row.canvas_id || handle.canvas_url !== fresh.row.canvas_url) {
+      await setCanvasHandle(brainId, handle.canvas_id, handle.canvas_url)
+    }
+  } catch (err: any) {
+    console.error('[brain.ingest] canvas refresh failed:', err?.data?.error || err?.message || err)
   }
 }
 
