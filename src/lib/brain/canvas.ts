@@ -90,11 +90,22 @@ async function updateCanvas(opts: {
   const { app, canvasId, markdown, title } = opts
   // Two edits: rename (title_content) + replace (document_content). Slack's
   // canvas tab title is independent of the document H1.
-  await (app.client as any).canvases.edit({
+  //
+  // Slack's canvases.edit expects `changes` as a JSON-encoded STRING per the
+  // API reference. Most @slack/web-api methods auto-stringify complex
+  // params, but canvases.edit doesn't reliably — passing a native array
+  // resulted in silent no-ops on Bolt 4.7. Stringifying explicitly +
+  // calling via apiCall() (rather than client.canvases.edit) bypasses both
+  // the serialization gotcha and any method-namespace gap in the SDK.
+  const changes = [
+    { operation: 'rename', title_content: { type: 'markdown', markdown: title } },
+    { operation: 'replace', document_content: { type: 'markdown', markdown } },
+  ]
+  const res: any = await (app.client as any).apiCall('canvases.edit', {
     canvas_id: canvasId,
-    changes: [
-      { operation: 'rename', title_content: { type: 'markdown', markdown: title } },
-      { operation: 'replace', document_content: { type: 'markdown', markdown } },
-    ],
+    changes: JSON.stringify(changes),
   })
+  if (res && res.ok === false) {
+    throw new Error(`canvases.edit failed: ${res.error || 'unknown'} (canvas_id=${canvasId})`)
+  }
 }
