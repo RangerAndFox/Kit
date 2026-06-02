@@ -21,6 +21,7 @@ import { slackAgent } from './slack'
 import { boordsAgent } from './boords'
 import { deliveryAgent } from './delivery'
 import { studioKnowledgeAgent } from './studio-knowledge'
+import { brainAgent } from './brain'
 
 // ─── Registry ──────────────────────────────────────────────
 
@@ -32,6 +33,7 @@ const agents: AgentDefinition[] = [
   boordsAgent,
   deliveryAgent,
   studioKnowledgeAgent,
+  brainAgent,
   // Add new agents here as they're built
 ]
 
