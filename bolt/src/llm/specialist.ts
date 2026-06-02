@@ -34,10 +34,16 @@ const SYSTEM_PROMPTS: Record<string, string> = {
 
 const MAX_TURNS = 4 // safety cap on tool_use loop
 
+export interface SpecialistContext {
+  /** Slack channel the orchestrator was invoked in — enables brain-first retrieval. */
+  channelId?: string | null
+}
+
 export async function runSpecialist(
   agentId: string,
   query: string,
   user: UserContext | null,
+  context: SpecialistContext = {},
 ): Promise<string> {
   const systemPrompt = SYSTEM_PROMPTS[agentId]
   if (!systemPrompt) {
@@ -76,11 +82,13 @@ export async function runSpecialist(
       const llmPayload = (toolUseBlock.input?.payload || {}) as Record<string, unknown>
 
       // Inject identity context the LLM can't see. Agents that care
-      // (e.g., slack:provision auto-invite) read these.
+      // (e.g., slack:provision auto-invite, studio_knowledge brain-first
+      // retrieval) read these.
       const payload: Record<string, unknown> = {
         ...llmPayload,
         slackUserId: llmPayload.slackUserId ?? user?.slackUserId,
         teamMemberId: llmPayload.teamMemberId ?? user?.teamMemberId,
+        channelId: llmPayload.channelId ?? context.channelId ?? undefined,
       }
 
       let result: { success: boolean; data?: any; error?: string; message?: string }

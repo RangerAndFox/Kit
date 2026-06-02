@@ -8,6 +8,7 @@
 import type { AgentDefinition, AgentResult } from './types'
 import { searchDocuments, buildContext } from '../../rag/query'
 import { createAdminClient } from '../../supabase/admin'
+import { brainFirstRetrieve, buildSourcedContext } from '../../brain/retrieve'
 
 async function handle(action: string, payload: Record<string, unknown>): Promise<AgentResult> {
   try {
@@ -17,7 +18,29 @@ async function handle(action: string, payload: Record<string, unknown>): Promise
         if (!query) return { agent: 'studio_knowledge', action, success: false, error: 'query is empty' }
         const workspaceId = (payload.workspaceId as string) || process.env.KIT_DEFAULT_WORKSPACE_ID || null
         const projectId = (payload.projectId as string) || null
+        const channelId = (payload.channelId as string) || null
         const limit = Number(payload.limit) || 10
+
+        // Brain-first when a channelId is available — the brain's own
+        // sections rank ahead of generic project_documents, and the
+        // result carries a Sources: line + structured provenance refs.
+        if (channelId && workspaceId) {
+          const first = await brainFirstRetrieve({ query, channelId, workspaceId, limit })
+          const sourced = buildSourcedContext(first)
+          return {
+            agent: 'studio_knowledge',
+            action,
+            success: true,
+            data: {
+              results: first.results,
+              context: sourced.context,
+              sources_line: sourced.sourcesLine,
+              provenances: sourced.provenances,
+              brain_id: first.brainId,
+            },
+          }
+        }
+
         const results = await searchDocuments(query, { workspaceId, projectId, limit })
         const context = buildContext(results)
         return {

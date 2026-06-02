@@ -57,19 +57,45 @@ async function handle(action: string, payload: Record<string, unknown>): Promise
       }
 
       case 'why': {
-        // Phase 1 stub. Phase 2 will look up the provenance for a matching
-        // brain bullet (semantic match → return the bullet's <!-- src: ... -->
-        // tag). For now, surface the capability so /kit brain why <claim>
-        // can route here and get a useful "not yet" message.
         const claim = String(payload.claim || payload.query || '').trim()
+        const channelId = (payload.channelId as string) || (payload.slackChannelId as string) || ''
+        const workspaceId = (payload.workspaceId as string) || process.env.KIT_DEFAULT_WORKSPACE_ID || ''
+        if (!claim) {
+          return { agent: 'brain', action, success: false, error: 'claim (string) required' }
+        }
+        if (!channelId || !workspaceId) {
+          return { agent: 'brain', action, success: false, error: 'channelId + workspaceId required' }
+        }
+        const { brainFirstRetrieve, formatSourcesLine } = await import('../../brain/retrieve')
+        const first = await brainFirstRetrieve({
+          query: claim,
+          channelId,
+          workspaceId,
+          limit: 5,
+        })
+        if (first.provenances.length === 0) {
+          return {
+            agent: 'brain',
+            action,
+            success: true,
+            data: {
+              claim,
+              sources: [],
+              message: `I couldn't trace "${claim}" to a specific source in this channel's brain. Either the brain doesn't know it yet, or it was added by hand without a provenance tag.`,
+            },
+          }
+        }
         return {
           agent: 'brain',
           action,
           success: true,
           data: {
             claim,
-            sources: [],
-            message: 'Sourced answers ship in Phase 3. For now, open the channel canvas — every bullet carries an inline <!-- src: ... --> tag.',
+            sources: first.provenances,
+            sources_line: formatSourcesLine(first.provenances),
+            message: `Closest matches:\n${first.provenances
+              .map((p) => `• \`${p.src}\` — ${p.section || '?'} — "${(p.text || '').slice(0, 80)}"`)
+              .join('\n')}`,
           },
         }
       }

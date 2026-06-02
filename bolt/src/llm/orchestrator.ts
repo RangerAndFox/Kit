@@ -80,7 +80,7 @@ export async function runOrchestrator(
       for (const block of toolUseBlocks) {
         const agentId = block.name.replace(/^ask_/, '')
         const query = block.input?.query || ''
-        const summary = await runSpecialist(agentId, query, req.user)
+        const summary = await runSpecialist(agentId, query, req.user, { channelId: req.channel })
         toolResults.push({
           type: 'tool_result',
           tool_use_id: block.id,
