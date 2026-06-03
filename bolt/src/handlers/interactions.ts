@@ -647,9 +647,12 @@ export function registerInteractionHandlers(app: App) {
       }
 
       // ── Auto-seed the project brain ───────────────────────
-      // Build the channel's living brain + post its Canvas mirror so the
-      // team has the operating context immediately on day one. Best-effort:
-      // we never fail provisioning over a brain seed.
+      // New brains default to visibility='producers_only' so we DON'T
+      // create a channel canvas (the channel may contain artists, and
+      // briefs/budgets/contacts in the brain are producer-tier material
+      // until the producer explicitly promotes the brain via
+      // /kit brain visibility team. Best-effort: we never fail
+      // provisioning over a brain seed.
       const brainSlackChannel = serviceResults.slack?.id
       if (brainSlackChannel && workspaceId) {
         try {
@@ -663,22 +666,44 @@ export function registerInteractionHandlers(app: App) {
             author: userId || 'system',
           })
 
-          const handle = await createOrUpdateBrainCanvas({
-            app: { client } as any,
-            channelId: brainSlackChannel,
-            brain: loaded.brain,
-            existingCanvasId: loaded.row.canvas_id,
-          })
-          if (handle.canvas_id !== loaded.row.canvas_id || handle.canvas_url !== loaded.row.canvas_url) {
-            await setCanvasHandle(loaded.row.id, handle.canvas_id, handle.canvas_url)
+          if (loaded.row.visibility === 'team') {
+            const handle = await createOrUpdateBrainCanvas({
+              app: { client } as any,
+              channelId: brainSlackChannel,
+              brain: loaded.brain,
+              existingCanvasId: loaded.row.canvas_id,
+            })
+            if (handle.canvas_id !== loaded.row.canvas_id || handle.canvas_url !== loaded.row.canvas_url) {
+              await setCanvasHandle(loaded.row.id, handle.canvas_id, handle.canvas_url)
+            }
+            await client.chat.postMessage({
+              channel: brainSlackChannel,
+              text: created
+                ? `:brain: I seeded this channel's brain with what I know so far — open the Canvas tab. Every fact I learn here goes in automatically. \`/kit brain why <claim>\` shows sources.`
+                : `:brain: Brain refreshed (revision ${loaded.row.revision}).`,
+            })
+          } else {
+            // producers_only — no channel canvas. DM the project creator
+            // (who is presumably the producer) with a quick how-to so
+            // they know the brain exists. Nothing posts in the channel.
+            try {
+              const dm: any = await client.conversations.open({ users: userId })
+              const dmChannel = dm?.channel?.id
+              if (dmChannel) {
+                await client.chat.postMessage({
+                  channel: dmChannel,
+                  text:
+                    `:brain: I seeded the project brain for <#${brainSlackChannel}> with what I know so far. ` +
+                    `It's *producers-only* by default — no canvas in the channel, so artists don't see it.\n\n` +
+                    `• \`/kit brain\` (from the project channel) — read the current brain (ephemeral to you)\n` +
+                    `• \`/kit brain why <claim>\` — show the source behind a fact\n` +
+                    `• \`/kit brain visibility team\` — flip to channel-visible Canvas if you want the team to see it`,
+                })
+              }
+            } catch (err: any) {
+              console.error('[Bolt] brain auto-seed DM failed:', err?.data?.error || err?.message)
+            }
           }
-
-          await client.chat.postMessage({
-            channel: brainSlackChannel,
-            text: created
-              ? `:brain: I seeded this channel's brain with what I know so far — open the Canvas tab. Every fact I learn from our conversation here will go in automatically. \`/kit brain why <claim>\` shows sources.`
-              : `:brain: Brain refreshed (revision ${loaded.row.revision}).`,
-          })
         } catch (err: any) {
           console.error('[Bolt] brain auto-seed failed:', err.data?.error || err.message || err)
           // Non-fatal — provisioning already succeeded.

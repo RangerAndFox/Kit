@@ -32,6 +32,7 @@ export interface BrainRow {
   canvas_id: string | null
   canvas_url: string | null
   autonomy: 'autonomous' | 'gated' | 'ask_first'
+  visibility: 'team' | 'producers_only'
   created_at?: string
   updated_at?: string
 }
@@ -74,6 +75,7 @@ export interface CreateBrainInput {
   projectId?: string | null
   slackChannel?: string | null
   autonomy?: 'autonomous' | 'gated' | 'ask_first'
+  visibility?: 'team' | 'producers_only'
   brain: Brain
   author?: string
 }
@@ -107,6 +109,9 @@ export async function createBrain(input: CreateBrainInput): Promise<LoadedBrain>
       revision: 1,
       markdown,
       autonomy: input.autonomy ?? 'autonomous',
+      // Secure-by-default. Producers can promote a brain to 'team'
+      // (channel-canvas) via /kit brain visibility team — see commands.ts.
+      visibility: input.visibility ?? 'producers_only',
     })
     .select('*')
     .single()

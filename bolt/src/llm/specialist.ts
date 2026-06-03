@@ -14,7 +14,7 @@
 import { anthropic, SPECIALIST_MODEL } from './client'
 import { buildSpecialistTools } from './tools'
 import { dispatch } from '../../../src/lib/inngest/agents/registry'
-import { enforceAccess, type UserContext } from '../../../src/lib/inngest/access-control'
+import { enforceAccess, failsafeArtistContext, type UserContext } from '../../../src/lib/inngest/access-control'
 
 import { HARVEST_SYSTEM_PROMPT } from './prompts/harvest-system'
 import { DROPBOX_SYSTEM_PROMPT } from './prompts/dropbox-system'
@@ -93,12 +93,18 @@ export async function runSpecialist(
 
       let result: { success: boolean; data?: any; error?: string; message?: string }
       try {
-        if (user) {
-          const dispatchResult = await dispatch(agentId, action, payload)
-          result = await enforceAccess(user, agentId, action, payload, dispatchResult)
-        } else {
-          result = await dispatch(agentId, action, payload)
-        }
+        // Failsafe: if we couldn't resolve a UserContext, treat the request
+        // as if it came from an artist. Never bypass enforcement — the
+        // previous behavior of dispatching unwrapped when user=null would
+        // hand every gated action to whoever Slack identified, which is
+        // not the security posture we want.
+        const effectiveUser =
+          user ?? failsafeArtistContext(
+            (payload.workspaceId as string) || process.env.KIT_DEFAULT_WORKSPACE_ID || '',
+            (payload.slackUserId as string) || 'unknown',
+          )
+        const dispatchResult = await dispatch(agentId, action, payload)
+        result = await enforceAccess(effectiveUser, agentId, action, payload, dispatchResult)
       } catch (err: any) {
         result = { success: false, error: err?.message || String(err) }
       }
