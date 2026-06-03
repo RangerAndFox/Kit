@@ -306,8 +306,21 @@ def main():
         "Brain canvas",
         "Open the Brain tab in any project channel to see the current state. Updates in "
         "place — there is one canvas per brain, edited as patches land. Provenance tags "
-        "are stripped for readability but stored in the markdown.",
-        trigger="/kit brain · auto-seeded on /kit newproject completion.",
+        "are stripped for readability but stored in the markdown. NEW brains default to "
+        "producers_only (no canvas) for privacy; producers flip to team-visible with "
+        "/kit brain visibility team.",
+        trigger="/kit brain (producer/admin) · auto-seeded on /kit newproject completion (producers_only by default).",
+    )
+
+    feature(
+        doc,
+        "Brain visibility toggle",
+        "Per-brain privacy flag. 'producers_only' (default) means no channel canvas — "
+        "the brain is accessible only via /kit brain ephemeral text to producer+ users. "
+        "'team' means a Slack Canvas tab is created and refreshed in the project channel, "
+        "visible to anyone in the channel.",
+        trigger="/kit brain visibility team | /kit brain visibility producers_only",
+        requires="Producer or admin tier.",
     )
 
     feature(
@@ -390,8 +403,31 @@ def main():
     add_h3(doc, "Access control (three-tier)")
     add_para(
         doc,
-        "admin / producer / artist. Gateway + field-level filtering. Every dispatch "
-        "passes through enforceAccess before results return.",
+        "admin / producer / artist. Gateway rules block whole agent actions; field-level "
+        "filtering strips sensitive fields from anything that slips through. Every "
+        "specialist dispatch passes through enforceAccess. Unknown users fail-closed to "
+        "artist tier (never bypass).",
+    )
+    add_para(doc, "Tier matrix (high level):", bold=True)
+    add_bullet(doc, "admin — sees everything (founder/owner)")
+    add_bullet(
+        doc,
+        "producer — sees budgets/clients/dates/brief/contacts (per-project financial flag "
+        "for raw budget queries); no margins/rates",
+    )
+    add_bullet(
+        doc,
+        "artist — name + project_code + harvest_project_id + status only. No Brain, no "
+        "Studio Knowledge, no client/contact/budget/date data. Can log own time, see "
+        "project tasks.",
+    )
+
+    add_h3(doc, "Role assignment")
+    add_para(
+        doc,
+        "Admins assign roles via /kit role @user producer|artist|admin|freelancer. "
+        "Stored in team_members.role; takes effect immediately. Omit the role to "
+        "query someone's current setting.",
     )
 
     add_h3(doc, "Autonomy gates (always-on hard rules)")
@@ -427,8 +463,10 @@ def main():
         ("/kit profiles · /kit profiles create", "List or create delivery profiles"),
         ("/kit workers · /kit workers opt-out <host>", "Render worker fleet management"),
         ("/kit access status", "Recent accessibility jobs"),
-        ("/kit brain", "Open or refresh the current channel's Brain canvas"),
+        ("/kit brain", "Open or refresh the current channel's Brain (producer/admin only)"),
         ("/kit brain why <claim>", "Show the sources behind a fact in the Brain"),
+        ("/kit brain visibility team|producers_only", "Producer toggle for channel-canvas vs ephemeral-text mode"),
+        ("/kit role @user producer|artist|admin|freelancer", "Admin only: assign a role. Omit the role to query."),
         ("/storyboard", "Storyboard intake (script paste or file drop)"),
         ("/kit help", "List all commands"),
     ]
