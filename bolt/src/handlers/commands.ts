@@ -282,6 +282,17 @@ export function registerCommandHandlers(app: App) {
           break
         }
 
+        // Tier gate — every brain action is producer+ per locked v1 policy.
+        const { resolveUserContext, failsafeArtistContext } = await import('../../../src/lib/inngest/access-control')
+        const user = (await resolveUserContext(workspaceId, command.user_id)) ?? failsafeArtistContext(workspaceId, command.user_id)
+        if (user.tier === 'artist') {
+          await respond({
+            response_type: 'ephemeral',
+            text: ":lock: The project Brain is restricted to producers and admins. If you should have access, ask an admin to set your role via `/kit role @you producer`.",
+          })
+          break
+        }
+
         // `/kit brain why <claim>` — provenance lookup
         if (sub.toLowerCase().startsWith('why')) {
           const claim = sub.replace(/^why\s*/i, '').trim()
@@ -302,16 +313,55 @@ export function registerCommandHandlers(app: App) {
           break
         }
 
+        // `/kit brain visibility team|producers_only` — flip the per-brain policy
+        if (sub.toLowerCase().startsWith('visibility')) {
+          const target = sub.replace(/^visibility\s*/i, '').trim().toLowerCase()
+          if (target !== 'team' && target !== 'producers_only') {
+            await respond({
+              response_type: 'ephemeral',
+              text: 'Usage: `/kit brain visibility team` (channel canvas, visible to everyone in the channel) or `/kit brain visibility producers_only` (no canvas; producer/admin only).',
+            })
+            break
+          }
+          const { getBrainByChannel } = await import('../../../src/lib/brain/store')
+          const { createAdminClient } = await import('../../../src/lib/supabase/admin')
+          const loaded = await getBrainByChannel(workspaceId, command.channel_id)
+          if (!loaded) {
+            await respond({ response_type: 'ephemeral', text: 'No brain exists for this channel yet. Run `/kit brain` first.' })
+            break
+          }
+          const sb = createAdminClient()
+          await sb.from('brains').update({ visibility: target, updated_at: new Date().toISOString() }).eq('id', loaded.row.id)
+          await respond({
+            response_type: 'ephemeral',
+            text: `:brain: Brain visibility set to *${target}*.${target === 'producers_only' ? ' The channel canvas tab is no longer maintained — refreshes go to producers via `/kit brain` text output.' : ' Channel canvas will refresh next time the brain updates.'}`,
+          })
+          break
+        }
+
         try {
           const { seedBrainForChannel } = await import('../../../src/lib/brain/seed')
           const { createOrUpdateBrainCanvas } = await import('../../../src/lib/brain/canvas')
           const { setCanvasHandle } = await import('../../../src/lib/brain/store')
+          const { stripProvenance, serializeBrain } = await import('../../../src/lib/brain/format')
 
           const { loaded, created } = await seedBrainForChannel({
             workspaceId,
             slackChannelId: command.channel_id,
             author: command.user_id,
           })
+
+          // producers_only: no canvas, return a text dump only the
+          // requester sees (ephemeral). Channel artists never see this.
+          if (loaded.row.visibility === 'producers_only') {
+            const body = stripProvenance(serializeBrain(loaded.brain))
+            const trimmed = body.length > 3500 ? body.slice(0, 3500) + '\n\n…(truncated)' : body
+            await respond({
+              response_type: 'ephemeral',
+              text: `:lock: *Brain (producers_only)* — revision ${loaded.row.revision}\n\n\`\`\`\n${trimmed}\n\`\`\`\n\n_Flip to channel-visible with_ \`/kit brain visibility team\`.`,
+            })
+            break
+          }
 
           const handle = await createOrUpdateBrainCanvas({
             app: { client } as any,
@@ -338,6 +388,94 @@ export function registerCommandHandlers(app: App) {
             text: `Brain failed: ${err.data?.error || err.message}`,
           })
         }
+        break
+      }
+
+      // ── Role (admin-only) ───────────────────────────────────
+      case 'role': {
+        await ack()
+        const workspaceId = process.env.KIT_DEFAULT_WORKSPACE_ID
+        if (!workspaceId) {
+          await respond({ response_type: 'ephemeral', text: ':warning: `KIT_DEFAULT_WORKSPACE_ID` is not set.' })
+          break
+        }
+        const { resolveUserContext, failsafeArtistContext } = await import('../../../src/lib/inngest/access-control')
+        const caller = (await resolveUserContext(workspaceId, command.user_id)) ?? failsafeArtistContext(workspaceId, command.user_id)
+        if (caller.tier !== 'admin') {
+          await respond({ response_type: 'ephemeral', text: ':lock: Only admins can change roles.' })
+          break
+        }
+
+        // Parse: `<@U07...|name> producer` or `<@U07...> producer`
+        const match = (args || '').match(/<@([UW][A-Z0-9]+)(?:\|[^>]+)?>\s*(\w+)?/i)
+        if (!match) {
+          await respond({
+            response_type: 'ephemeral',
+            text: 'Usage: `/kit role @user producer|artist|admin|freelancer`. Omit the role to see their current one.',
+          })
+          break
+        }
+        const targetSlackId = match[1]
+        const targetRoleRaw = (match[2] || '').toLowerCase()
+        const VALID_ROLES = ['founder', 'producer', 'artist', 'freelancer']
+        // 'admin' is an alias for 'founder' (the role string that maps to admin tier).
+        const targetRole = targetRoleRaw === 'admin' ? 'founder' : targetRoleRaw
+
+        const { createAdminClient } = await import('../../../src/lib/supabase/admin')
+        const sb = createAdminClient()
+
+        if (!targetRole) {
+          const { data } = await sb
+            .from('team_members')
+            .select('display_name, name, email, role')
+            .eq('workspace_id', workspaceId)
+            .eq('slack_user_id', targetSlackId)
+            .maybeSingle()
+          if (!data) {
+            await respond({ response_type: 'ephemeral', text: `<@${targetSlackId}> isn't in the staff directory yet. Use \`/kit role @user <role>\` to add them.` })
+          } else {
+            await respond({ response_type: 'ephemeral', text: `<@${targetSlackId}> — current role: *${data.role}* (${data.display_name || data.name || data.email || '?'}).` })
+          }
+          break
+        }
+
+        if (!VALID_ROLES.includes(targetRole)) {
+          await respond({
+            response_type: 'ephemeral',
+            text: `\`${targetRoleRaw}\` isn't a valid role. Use one of: \`producer\`, \`artist\`, \`admin\`, \`freelancer\`.`,
+          })
+          break
+        }
+
+        const { data: existing } = await sb
+          .from('team_members')
+          .select('id')
+          .eq('workspace_id', workspaceId)
+          .eq('slack_user_id', targetSlackId)
+          .maybeSingle()
+
+        if (existing?.id) {
+          const { error } = await sb.from('team_members').update({ role: targetRole }).eq('id', existing.id)
+          if (error) {
+            await respond({ response_type: 'ephemeral', text: `Update failed: ${error.message}` })
+            break
+          }
+        } else {
+          const { error } = await sb.from('team_members').insert({
+            workspace_id: workspaceId,
+            slack_user_id: targetSlackId,
+            role: targetRole,
+            name: `slack:${targetSlackId}`,
+          })
+          if (error) {
+            await respond({ response_type: 'ephemeral', text: `Insert failed: ${error.message}` })
+            break
+          }
+        }
+        await respond({
+          response_type: 'ephemeral',
+          text: `:white_check_mark: <@${targetSlackId}> set to *${targetRole}*.`,
+        })
         break
       }
 
@@ -393,8 +531,10 @@ export function registerCommandHandlers(app: App) {
             '`/kit profiles` — List delivery profiles · `/kit profiles create` to add one\n' +
             '`/kit workers` — Show render worker fleet · `opt-out <host>` / `opt-in <host>`\n' +
             '`/kit access status` — Status of accessibility jobs (captions + DV)\n' +
-            '`/kit brain` — Open or refresh this channel\'s living project brain (Slack Canvas)\n' +
+            '`/kit brain` — Open or refresh this channel\'s living project brain (producer/admin only)\n' +
             '`/kit brain why <claim>` — Show the sources behind a fact in the brain\n' +
+            '`/kit brain visibility team|producers_only` — Producer toggle for whether the channel canvas is created\n' +
+            '`/kit role @user producer|artist|admin|freelancer` — Admin only: assign a role\n' +
             '`/kit help` — Show this message\n\n' +
             'You can also DM me and type *new project* or *new storyboard* to get the same cards. Or @mention me to ask about projects, budgets, files, reviews, or to log time.',
         })

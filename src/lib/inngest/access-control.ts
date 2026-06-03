@@ -146,37 +146,57 @@ const TIER_RANK: Record<AccessTier, number> = {
 /**
  * Agent:action pairs that require elevated access.
  * Anything not listed here is open to all tiers.
+ *
+ * Security model: gating happens here BEFORE the agent runs. Field-level
+ * scrub (filterResultData) is the defense-in-depth that strips sensitive
+ * fields from anything that slips through.
  */
 const GATEWAY_RULES: Record<string, GatewayRule> = {
   // ── Harvest ──────────────────────────────
+  // log_time, find_projects, get_project_tasks → open to all (artists need
+  // to log their own time + pick a project). Field-level filter strips
+  // budget / client / dates / brief from project results before they reach
+  // an artist's reply (see PRODUCER_FIELDS).
   'harvest:get_budget':         { minTier: 'producer', requiresFinancialAccess: true },
+  'harvest:get_time_entries':   { minTier: 'producer' },
+  'harvest:get_summary':        { minTier: 'producer' },
   'harvest:provision':          { minTier: 'producer' },
   'harvest:get_team':           { minTier: 'producer' },
-  // harvest:log_time → open to all (artists log their own time)
-  // harvest:find_projects → open to all
-  // harvest:get_project_tasks → open to all
+  'harvest:get_contacts':       { minTier: 'producer' },
 
   // ── Dropbox ──────────────────────────────
   'dropbox:provision':          { minTier: 'producer' },
-  // dropbox:search → open to all
-  // dropbox:list_folder → open to all
-  // dropbox:get_share_link → open to all
-  // dropbox:find_project_folder → open to all
 
   // ── Frame.io ─────────────────────────────
   'frameio:provision':          { minTier: 'producer' },
-  // frameio:get_comments → open to all
-  // frameio:get_project → open to all
-  // frameio:list_assets → open to all
-  // frameio:get_review_status → open to all
 
   // ── Slack ────────────────────────────────
   'slack:provision':            { minTier: 'producer' },
-  // slack:send_message → open to all
-  // slack:find_channel → open to all
-  // slack:find_user → open to all
-  // slack:set_topic → open to all (Slack has its own permissions)
-  // slack:get_history → open to all
+
+  // ── Brain (entire surface — producer+) ──
+  // Brains may contain client identifiers, budgets, contact info,
+  // unresolved decisions, sensitive notes. Per locked v1 policy,
+  // artists can't reach any brain action.
+  'brain:get':                  { minTier: 'producer' },
+  'brain:seed':                 { minTier: 'producer' },
+  'brain:why':                  { minTier: 'producer' },
+  'brain:refresh_canvas':       { minTier: 'producer' },
+
+  // ── Studio Knowledge (entire surface — producer+) ──
+  // RAG over project_summary / notes / transcripts / brain sections.
+  // Anything in there can reference budgets, contacts, briefs, SOWs.
+  // Artists can still pick projects to log time against via Harvest;
+  // they just can't query the wider studio knowledge base.
+  'studio_knowledge:search':            { minTier: 'producer' },
+  'studio_knowledge:lookup_project':    { minTier: 'producer' },
+  'studio_knowledge:lookup_client':     { minTier: 'producer' },
+  'studio_knowledge:find_contact':      { minTier: 'producer' },
+  'studio_knowledge:recent_projects':   { minTier: 'producer' },
+  'studio_knowledge:recent_clients':    { minTier: 'producer' },
+  'studio_knowledge:regenerate_summary':{ minTier: 'producer' },
+  'studio_knowledge:reembed_all':       { minTier: 'admin' },
+  'studio_knowledge:reembed_clients':   { minTier: 'admin' },
+  'studio_knowledge:reembed_transcripts':{ minTier: 'admin' },
 }
 
 /**
@@ -234,17 +254,41 @@ const ADMIN_ONLY_FIELDS = new Set([
   'internal_notes',
 ])
 
-/** Fields that require at least producer tier */
+/**
+ * Fields that require at least producer tier.
+ *
+ * For artists this is the "name-only" cut: anything they shouldn't see
+ * on a project record gets stripped. The whitelist (what survives) is
+ * effectively: id, name, project_code, harvest_project_id, status —
+ * enough to pick the right project for time entry, nothing more.
+ */
 const PRODUCER_FIELDS = new Set([
+  // Financial
   'budget_total',
   'budget_spent',
   'budget_remaining',
+  'budget',
   'revenue',
   'costs',
   'burn_rate',
+  'invoice_total',
+  // Client identity
+  'client',
+  'client_name',
   'client_email',
   'client_phone',
-  'invoice_total',
+  'primary_contacts',
+  // Dates / schedule (early conversations & deadlines reveal client context)
+  'start_date',
+  'end_date',
+  'target_delivery',
+  // Scope / context
+  'brief_summary',
+  'external_links',
+  'notes',
+  // Frame.io / Dropbox folder identifiers can leak client folder structure
+  'frameio_url',
+  'dropbox_url',
 ])
 
 /**
@@ -298,6 +342,25 @@ export function filterResultData(
 }
 
 // ─── Convenience ────────────────────────────────────────────
+
+/**
+ * Failsafe context for the rare case where a Slack user can't be resolved
+ * to a team_members row AND isn't a hardcoded admin. Default to artist
+ * tier so unknown users get the minimum permissions, never the maximum.
+ *
+ * Callers that detect a null context should pass this instead of bypassing
+ * enforcement entirely.
+ */
+export function failsafeArtistContext(workspaceId: string, slackUserId: string): UserContext {
+  return {
+    teamMemberId: `unknown:${slackUserId}`,
+    workspaceId,
+    tier: 'artist',
+    name: 'unknown user',
+    slackUserId,
+    projectFinancials: new Set(),
+  }
+}
 
 /**
  * Full access check + field filtering in one call.

@@ -200,6 +200,13 @@ export function collectCanonicalFacts(brain: Brain): Array<{ text: string; secti
     } else if (heading === 'operating context') {
       for (const b of s.bullets) {
         if (b.provenance?.src === 'system') continue
+        // Hard-skip anything that looks financial — mistake-catch posts
+        // its corrections in-channel where artists may be watching, and
+        // we never want a "you wrote $40k, the budget is $50k" reply
+        // to leak the budget to the whole channel.
+        if (/\$|\bbudget\b|\brevenue\b|\bcost\b|\bmargin\b|\brate\b|\binvoice\b/i.test(b.text)) {
+          continue
+        }
         // Only the "spec-like" bullets — dates, codes, formats.
         if (
           /\b\d{4}-\d{2}-\d{2}\b/.test(b.text) ||
