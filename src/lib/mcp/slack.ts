@@ -7,7 +7,6 @@
 
 import TurndownService from 'turndown'
 import { gfm } from 'turndown-plugin-gfm'
-import * as nodeEmoji from 'node-emoji'
 
 const SLACK_API = 'https://slack.com/api'
 
@@ -23,67 +22,40 @@ const turndown = new TurndownService({
 })
 turndown.use(gfm)
 
-// Slack canvas markdown is stricter than CommonMark/GFM. Things that
-// turndown emits by default but trip canvases.create with
-// canvas_creation_failed include:
-//   - escaped brackets: \[Foo\] (turndown does this to protect link
-//     syntax). Slack treats the backslash as literal.
-//   - workspace-custom emoji shortcodes like :microsoft-word:, :figma:.
-//     Standard Unicode-mapped shortcodes (:smile:) are fine; custom ones
-//     are not resolved.
-//   - heading markers (####) appearing inside table cells.
-// Slack emoji shortcodes that node-emoji@^2 doesn't recognize (its
-// emojilib-based dataset uses different primary names for these). Applied
-// before nodeEmoji.emojify so the leftover-shortcode stripper doesn't eat
-// them. Extend this map as we hit more.
-const SLACK_EMOJI_OVERRIDES: Record<string, string> = {
-  telephone_receiver: '📞',
-  speech_balloon: '💬',
-  envelope: '✉️',
-  email: '✉️',
-  e_mail: '📧',
-  memo: '📝',
-  clapper: '🎬',
-  movie_camera: '🎥',
-  film_projector: '📽️',
-  film_strip: '🎞️',
-  page_facing_up: '📄',
-  bookmark_tabs: '📑',
-  open_file_folder: '📂',
-  file_folder: '📁',
-  pencil2: '✏️',
-}
-
-function sanitizeCanvasMarkdown(md: string): string {
+// Slack canvas markdown is stricter than CommonMark/GFM. Turndown emits a
+// few things that either trip canvases.create or — more commonly — render
+// differently from the source template, which is what we're correcting for:
+//   - escaped brackets: \[Foo\] (turndown protects link syntax). Slack
+//     treats the backslash as literal.
+//   - escaped underscores: telephone\_receiver. Breaks emoji shortcodes and
+//     shows a literal backslash.
+//   - escaped pipes: "## Email \| 05.01" — turndown's GFM plugin escapes
+//     every pipe to protect table syntax, but a pipe in a HEADING or
+//     paragraph should stay literal.
+//
+// Emoji shortcodes (:email:, :figma:, :microsoft-word:) are LEFT INTACT —
+// Slack canvases render them natively, so keeping the shortcode reproduces
+// the template's exact icon. We used to convert known ones to Unicode
+// glyphs, but that swapped the icon style and made clones look different
+// from the template. The only real cause of literal-text rendering was the
+// escaped underscore, which we now unescape below.
+export function sanitizeCanvasMarkdown(md: string): string {
   let s = md
   // Unescape brackets — Slack canvas treats \[ as a literal backslash
   // followed by a bracket, not as an escaped bracket.
   s = s.replace(/\\\[/g, '[').replace(/\\\]/g, ']')
-  // Unescape underscores. Turndown escapes them so plain text like
-  // "telephone_receiver" doesn't get italicized as "telephone<em>receiver</em>".
-  // But for emoji shortcodes (:telephone_receiver:) the escape is what makes
-  // the emojify regex below fail to match — so the shortcode passes through
-  // and renders as literal text in the canvas. Canvas treats `_` as italic
-  // start/end only when paired, so a bare underscore in shortcodes is safe.
+  // Unescape underscores so "telephone_receiver" and :telephone_receiver:
+  // come through clean.
   s = s.replace(/\\_/g, '_')
-  // First pass: apply our overrides for Slack shortcodes node-emoji misses
-  // and which DON'T exist as workspace-custom emoji (so we want them as
-  // Unicode, not literal text).
-  s = s.replace(/:([a-z0-9_+-]+):/gi, (m, name) => {
-    const key = String(name).toLowerCase()
-    return SLACK_EMOJI_OVERRIDES[key] ?? m
-  })
-  // Second pass: emojify everything else node-emoji does know.
-  s = nodeEmoji.emojify(s)
-  // Leave remaining :shortcode: patterns in place — these are workspace-
-  // custom emojis (:microsoft-word:, :figma:, etc.). Slack canvases resolve
-  // them at render time the same way regular messages do. Previously we
-  // stripped these defensively after a canvas_creation_failed incident,
-  // but that turned out to be caused by other things (escaped underscores,
-  // unknown shortcodes for which we now have overrides). If a workspace
-  // emoji ever breaks canvas creation, the per-canvas try/catch will log
-  // the failing markdown so we can target the specific shortcode.
-  // Collapse any double whitespace left where emoji used to sit.
+  // Unescape pipes — but only on lines that aren't GFM table rows, since a
+  // table cell legitimately needs an escaped pipe. Headings / paragraphs
+  // (e.g. "## :email: Email note from client | 05.01") must keep the literal.
+  s = s
+    .split('\n')
+    .map((line) => (line.trimStart().startsWith('|') ? line : line.replace(/\\\|/g, '|')))
+    .join('\n')
+  // Tidy trailing whitespace; collapse runs of spaces (no effect on the
+  // already-unaligned canvas tables).
   s = s.replace(/[ \t]+\n/g, '\n').replace(/  +/g, ' ')
   return s
 }
