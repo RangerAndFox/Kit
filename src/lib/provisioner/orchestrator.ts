@@ -9,8 +9,6 @@ import type {
 import { provisionDropbox } from './services/dropbox'
 import { provisionFrameIo } from './services/frameio'
 import { provisionCanva } from './services/canva'
-import { provisionOneDrive } from './services/onedrive'
-import { provisionClockify } from './services/clockify'
 import { provisionFigma } from './services/figma'
 import { provisionSlackChannel } from './services/slack-channel'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -33,7 +31,7 @@ function extractResult(
 /**
  * Orchestrates full project provisioning.
  *
- * Phase 1 (parallel): Dropbox, Frame.io, Canva, OneDrive, Clockify, FigJam
+ * Phase 1 (parallel): Dropbox, Frame.io, Canva, FigJam
  * Phase 2 (sequential): Create Kit project in Supabase
  * Phase 3 (sequential): Create Slack channel
  * Phase 4 (sequential): Update project with all collected URLs
@@ -56,9 +54,9 @@ export async function runOrchestrator(
 
   // ─── PHASE 1: Parallel provisioning ─────────────────────────
 
-  const active = ['Dropbox', 'Frame.io', 'Canva', 'OneDrive', 'Clockify', 'FigJam']
+  const active = ['Dropbox', 'Frame.io', 'Canva', 'FigJam']
     .filter((_, i) => {
-      const keys: ServiceKey[] = ['dropbox', 'frameio', 'canva', 'onedrive', 'clockify', 'figma']
+      const keys: ServiceKey[] = ['dropbox', 'frameio', 'canva', 'figma']
       return sel.has(keys[i])
     })
     .join(', ')
@@ -68,20 +66,16 @@ export async function runOrchestrator(
     `Provisioning infrastructure for *${projectName}*...\n${active || 'No phase 1 services selected.'}`
   )
 
-  const [dr, fr, ca, od, cl, fi] = await Promise.allSettled([
+  const [dr, fr, ca, fi] = await Promise.allSettled([
     maybeRun('dropbox', () => provisionDropbox(form, dryRun), 'Dropbox'),
     maybeRun('frameio', () => provisionFrameIo(form, dryRun), 'FrameIo'),
     maybeRun('canva', () => provisionCanva(form, dryRun), 'Canva'),
-    maybeRun('onedrive', () => provisionOneDrive(form, dryRun), 'OneDrive'),
-    maybeRun('clockify', () => provisionClockify(form, dryRun), 'Clockify'),
     maybeRun('figma', () => provisionFigma(form, dryRun), 'FigJam'),
   ])
 
   results.dropbox = extractResult(dr, 'Dropbox')
   results.frameio = extractResult(fr, 'FrameIo')
   results.canva = extractResult(ca, 'Canva')
-  results.onedrive = extractResult(od, 'OneDrive')
-  results.clockify = extractResult(cl, 'Clockify')
   results.figma = extractResult(fi, 'FigJam')
 
   await onProgress?.('phase1_complete', buildPhase1Summary(results, sel))
@@ -130,8 +124,6 @@ export async function runOrchestrator(
     if (results.dropbox?.url) links.dropbox = results.dropbox.url
     if (results.frameio?.url) links.frameio = results.frameio.url
     if (results.canva?.url) links.canva = results.canva.url
-    if (results.onedrive?.url) links.onedrive = results.onedrive.url
-    if (results.clockify?.url) links.clockify = results.clockify.url
     if (results.figma?.url) links.figjam = results.figma.url
     if (results.slack?.url) links.slack = results.slack.url
 
@@ -154,8 +146,6 @@ function buildPhase1Summary(results: ProvisioningResults, sel: Set<ServiceKey>):
     { label: 'Dropbox', key: 'dropbox', r: results.dropbox },
     { label: 'Frame.io', key: 'frameio', r: results.frameio },
     { label: 'Canva', key: 'canva', r: results.canva },
-    { label: 'OneDrive', key: 'onedrive', r: results.onedrive },
-    { label: 'Clockify', key: 'clockify', r: results.clockify },
     { label: 'FigJam', key: 'figma', r: results.figma },
   ]
 
