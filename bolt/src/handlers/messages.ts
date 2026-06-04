@@ -448,8 +448,16 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
 
 /**
  * Look up the project that owns this Slack channel, if any.
- * Projects store their provisioned slack channel id in
- * `service_links.slack_id` after `/kit newproject`.
+ *
+ * The provisioner writes the channel id into `external_links.slack_id`
+ * (see interactions.ts → projects.update({ external_links })). Older or
+ * manually-linked rows may instead use `external_links.slack_channel_id`
+ * or the top-level `slack_channel_id` column, so we match any of the
+ * three — same resolution order the notes + brain paths use.
+ *
+ * (Previously this queried a `service_links` column that doesn't exist,
+ * so it always threw → returned null → the "this is project X" context
+ * line never reached the orchestrator and "this project" was ungrounded.)
  */
 async function resolveProjectFromChannel(
   workspaceId: string,
@@ -460,9 +468,11 @@ async function resolveProjectFromChannel(
     const supabase = createAdminClient()
     const { data } = await supabase
       .from('projects')
-      .select('name, client, project_code, service_links')
+      .select('name, client, project_code')
       .eq('workspace_id', workspaceId)
-      .filter('service_links->>slack_id', 'eq', channelId)
+      .or(
+        `external_links->>slack_id.eq.${channelId},external_links->>slack_channel_id.eq.${channelId},slack_channel_id.eq.${channelId}`,
+      )
       .limit(1)
       .maybeSingle()
 
@@ -474,7 +484,8 @@ async function resolveProjectFromChannel(
       }
     }
     return null
-  } catch {
+  } catch (err: any) {
+    console.warn('[Bolt] resolveProjectFromChannel failed:', err?.message)
     return null
   }
 }
