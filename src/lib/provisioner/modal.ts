@@ -82,8 +82,15 @@ export function buildNewProjectModal(
       {
         type: 'input',
         block_id: 'project_manager',
-        label: { type: 'plain_text', text: 'Project Manager' },
-        element: { type: 'users_select', action_id: 'val', placeholder: { type: 'plain_text', text: 'Select PM' } },
+        label: { type: 'plain_text', text: 'Producer' },
+        element: { type: 'users_select', action_id: 'val', placeholder: { type: 'plain_text', text: 'Select producer' } },
+      },
+      {
+        type: 'input',
+        block_id: 'creative_director',
+        optional: true,
+        label: { type: 'plain_text', text: 'Creative Director' },
+        element: { type: 'users_select', action_id: 'val', placeholder: { type: 'plain_text', text: 'Select CD' } },
       },
       {
         type: 'input',

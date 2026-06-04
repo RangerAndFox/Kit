@@ -179,6 +179,85 @@ function canvasHtmlToMarkdown(html: string): string {
   return sanitizeCanvasMarkdown(raw).trim()
 }
 
+/**
+ * Fill the template canvas's project-metadata table with known values.
+ *
+ * The R&F template's top table has label rows with an empty value cell:
+ *   |### **Client**||
+ *   |### **Producer**||
+ *   |### **CD**||
+ *   |### **Delivery**||
+ *   |### **Project Type**||
+ * (after HTML→markdown conversion these become GFM rows like
+ *  `| ### **Client** |  |`).
+ *
+ * We normalize each row's first (label) cell — stripping #, *, emoji,
+ * date/image tokens, whitespace — and match it against the known fields.
+ * The value drops into the empty trailing cell. Rules that keep this safe:
+ *   - Only EMPTY value cells are filled (never overwrite manual edits).
+ *   - Each field fills at most ONCE (the metadata table is at the top, so
+ *     it wins over later rows like the "Delivery" milestone or
+ *     "Client Figma" / "Delivery Files" which normalize differently anyway).
+ *   - If the converter produced something we don't recognize, every row
+ *     just passes through untouched — the canvas is created exactly as
+ *     before, so this can only add information, never break the copy.
+ */
+export function fillCanvasTemplate(
+  markdown: string,
+  fields: {
+    client?: string
+    projectType?: string
+    producer?: string
+    cd?: string
+    delivery?: string
+    headerTitle?: string
+  },
+): string {
+  const norm = (s: string) =>
+    s
+      .replace(/!\[\]\([^)]*\)/g, '') // strip ![](slack_date:…) / image tokens
+      .replace(/[#*`>_~:|]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase()
+
+  const wanted: Array<{ key: string; value: string; done: boolean }> = []
+  const add = (label: string, value?: string) => {
+    if (value && value.trim()) wanted.push({ key: norm(label), value: value.trim(), done: false })
+  }
+  add('Client', fields.client)
+  add('Project Type', fields.projectType)
+  add('Producer', fields.producer)
+  add('CD', fields.cd)
+  add('Delivery', fields.delivery)
+
+  const filled = markdown
+    .split('\n')
+    .map((line) => {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('|') || !trimmed.endsWith('|')) return line
+      const cells = trimmed.slice(1, -1).split('|')
+      if (cells.length < 2) return line
+      const labelKey = norm(cells[0])
+      if (!labelKey) return line
+      const w = wanted.find((x) => !x.done && x.key === labelKey)
+      if (!w) return line
+      const lastIdx = cells.length - 1
+      if (cells[lastIdx].trim() !== '') return line // already has a value
+      cells[lastIdx] = ` ${w.value} `
+      w.done = true
+      const indent = line.slice(0, line.indexOf('|'))
+      return `${indent}|${cells.join('|')}|`
+    })
+    .join('\n')
+
+  // Replace the placeholder H1 ("# 🎬 2xxx Client Project") with the real spine.
+  if (fields.headerTitle && fields.headerTitle.trim()) {
+    return filled.replace(/2x{2,}\s+client\s+project/i, fields.headerTitle.trim())
+  }
+  return filled
+}
+
 function headers() {
   return {
     Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
@@ -463,6 +542,11 @@ export async function duplicateTemplateCanvases(opts: {
   projectName: string
   projectNumber?: string
   client?: string
+  /** Known project metadata — filled into the template's top metadata table. */
+  projectType?: string
+  producerSlackId?: string
+  cdSlackId?: string
+  delivery?: string
 }): Promise<DuplicateCanvasesResult> {
   const out: DuplicateCanvasesResult = { channelCanvasId: null, standaloneCanvasIds: [] }
   if (!process.env.SLACK_BOT_TOKEN) {
@@ -542,6 +626,20 @@ export async function duplicateTemplateCanvases(opts: {
         console.error(`[Slack canvas] ${fileId}: fetch/convert threw: ${err.message}`)
         continue
       }
+
+      // Auto-fill the template's project-metadata table with everything we
+      // know at provisioning time (Client, Project Type, Producer, CD,
+      // Delivery) + the placeholder H1. Non-destructive: only empty cells
+      // get filled, and only the first match per field. Producers still
+      // fill the rest (contacts, VO, music, specs) by hand.
+      markdown = fillCanvasTemplate(markdown, {
+        client: opts.client,
+        projectType: opts.projectType,
+        producer: opts.producerSlackId ? `<@${opts.producerSlackId}>` : undefined,
+        cd: opts.cdSlackId ? `<@${opts.cdSlackId}>` : undefined,
+        delivery: opts.delivery,
+        headerTitle: spine,
+      })
 
       // 3. Create the new canvas, tabbed directly to the channel.
       //    Per Slack's canvases.create reference, `channel_id` is the
