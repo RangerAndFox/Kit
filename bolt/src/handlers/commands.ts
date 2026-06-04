@@ -25,6 +25,28 @@ import { buildCreateProfileModal } from '../delivery/create-profile-modal'
 import { renderJobsStatusBlocks, renderWorkersStatusBlocks } from '../delivery/status'
 import { setWorkerOptOut, setWorkerOptIn, listProfiles } from '../../../src/lib/delivery/storage'
 
+/**
+ * Resolve the Slack user's Kit access context for a slash command.
+ *
+ * CRITICAL: we look up the user's email FIRST and pass it to
+ * resolveUserContext. Without the email, the hardcoded-admin override
+ * (the founders, e.g. steve@rangerandfox.tv) can't fire — and since
+ * team_members may be empty, the founder would otherwise resolve to the
+ * artist failsafe and get locked out of their own studio's Brain. The
+ * @-mention path already does this; slash commands must too.
+ */
+async function resolveCommandUser(client: any, workspaceId: string, slackUserId: string) {
+  const { resolveUserContext, failsafeArtistContext } = await import('../../../src/lib/inngest/access-control')
+  let email: string | undefined
+  try {
+    const info = await client.users.info({ user: slackUserId })
+    email = info.user?.profile?.email || undefined
+  } catch (err: any) {
+    console.warn('[Bolt] resolveCommandUser users.info failed:', err?.data?.error || err?.message)
+  }
+  return (await resolveUserContext(workspaceId, slackUserId, email)) ?? failsafeArtistContext(workspaceId, slackUserId)
+}
+
 export function registerCommandHandlers(app: App) {
   // ─── /kit ─────────────────────────────────────────────────
   app.command('/kit', async ({ command, ack, client, respond }) => {
@@ -282,9 +304,10 @@ export function registerCommandHandlers(app: App) {
           break
         }
 
-        // Tier gate — every brain action is producer+ per locked v1 policy.
-        const { resolveUserContext, failsafeArtistContext } = await import('../../../src/lib/inngest/access-control')
-        const user = (await resolveUserContext(workspaceId, command.user_id)) ?? failsafeArtistContext(workspaceId, command.user_id)
+        // Tier gate — Brain is visible to producers AND owners/admins.
+        // (Artists are blocked.) Email is resolved inside the helper so the
+        // founder override works even when team_members is empty.
+        const user = await resolveCommandUser(client, workspaceId, command.user_id)
         if (user.tier === 'artist') {
           await respond({
             response_type: 'ephemeral',
@@ -399,8 +422,7 @@ export function registerCommandHandlers(app: App) {
           await respond({ response_type: 'ephemeral', text: ':warning: `KIT_DEFAULT_WORKSPACE_ID` is not set.' })
           break
         }
-        const { resolveUserContext, failsafeArtistContext } = await import('../../../src/lib/inngest/access-control')
-        const caller = (await resolveUserContext(workspaceId, command.user_id)) ?? failsafeArtistContext(workspaceId, command.user_id)
+        const caller = await resolveCommandUser(client, workspaceId, command.user_id)
         if (caller.tier !== 'admin') {
           await respond({ response_type: 'ephemeral', text: ':lock: Only admins can change roles.' })
           break
