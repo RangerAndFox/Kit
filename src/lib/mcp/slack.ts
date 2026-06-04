@@ -182,17 +182,17 @@ function canvasHtmlToMarkdown(html: string): string {
 /**
  * Fill the template canvas's project-metadata table with known values.
  *
- * The R&F template's top table has label rows with an empty value cell:
- *   |### **Client**||
+ * The R&F template has label rows with an empty value cell:
+ *   |### **Client**||       (top metadata table)
  *   |### **Producer**||
- *   |### **CD**||
- *   |### **Delivery**||
- *   |### **Project Type**||
+ *   |### Dropbox||          (Assets Folders table)
+ *   |### [Frame.io](…)||
  * (after HTML→markdown conversion these become GFM rows like
  *  `| ### **Client** |  |`).
  *
- * We normalize each row's first (label) cell — stripping #, *, emoji,
- * date/image tokens, whitespace — and match it against the known fields.
+ * We normalize each row's first (label) cell — collapsing markdown links
+ * to their text, stripping #, *, emoji, dots, date/image tokens,
+ * whitespace — and match it against the known fields.
  * The value drops into the empty trailing cell. Rules that keep this safe:
  *   - Only EMPTY value cells are filled (never overwrite manual edits).
  *   - Each field fills at most ONCE (the metadata table is at the top, so
@@ -210,13 +210,16 @@ export function fillCanvasTemplate(
     producer?: string
     cd?: string
     delivery?: string
+    dropbox?: string
+    frameio?: string
     headerTitle?: string
   },
 ): string {
   const norm = (s: string) =>
     s
       .replace(/!\[\]\([^)]*\)/g, '') // strip ![](slack_date:…) / image tokens
-      .replace(/[#*`>_~:|]/g, '')
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1') // [Frame.io](url) -> Frame.io
+      .replace(/[#*`>_~:|.]/g, '') // incl. dots so "Frame.io" -> "frameio"
       .replace(/\s+/g, ' ')
       .trim()
       .toLowerCase()
@@ -230,6 +233,8 @@ export function fillCanvasTemplate(
   add('Producer', fields.producer)
   add('CD', fields.cd)
   add('Delivery', fields.delivery)
+  add('Dropbox', fields.dropbox)
+  add('Frame.io', fields.frameio)
 
   const filled = markdown
     .split('\n')
@@ -547,6 +552,9 @@ export async function duplicateTemplateCanvases(opts: {
   producerSlackId?: string
   cdSlackId?: string
   delivery?: string
+  /** Asset-folder links Kit just created — filled into the Assets Folders table. */
+  dropboxUrl?: string
+  frameioUrl?: string
 }): Promise<DuplicateCanvasesResult> {
   const out: DuplicateCanvasesResult = { channelCanvasId: null, standaloneCanvasIds: [] }
   if (!process.env.SLACK_BOT_TOKEN) {
@@ -638,6 +646,8 @@ export async function duplicateTemplateCanvases(opts: {
         producer: opts.producerSlackId ? `<@${opts.producerSlackId}>` : undefined,
         cd: opts.cdSlackId ? `<@${opts.cdSlackId}>` : undefined,
         delivery: opts.delivery,
+        dropbox: opts.dropboxUrl,
+        frameio: opts.frameioUrl,
         headerTitle: spine,
       })
 

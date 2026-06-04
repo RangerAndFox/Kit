@@ -587,40 +587,53 @@ export function registerInteractionHandlers(app: App) {
 
       console.log(`[Bolt] Provisioning ${form.projectName} across ${services.length} services`)
 
-      const results = await Promise.allSettled(
-        services.map(async (service) => {
-          try {
-            const result = await dispatch(service as string, 'provision', provisionPayload)
+      // Run one service's provision + post its progress line. Returns a
+      // { service, ...result } shape (never throws).
+      const runService = async (service: string, payload: Record<string, unknown>) => {
+        try {
+          const result = await dispatch(service, 'provision', payload)
+          const status = result.success ? '✅' : '⚠️'
+          await client.chat.postMessage(postOpts({
+            text: `${status} *${service}*: ${result.message || (result.success ? 'Done' : result.error || 'Failed')}`,
+          }))
+          return { service, ...result }
+        } catch (err: any) {
+          await client.chat.postMessage(postOpts({ text: `❌ *${service}*: ${err.message}` }))
+          return { service, agent: service, action: 'provision', success: false, error: err.message }
+        }
+      }
 
-            // Progress update
-            const status = result.success ? '✅' : '⚠️'
-            await client.chat.postMessage(postOpts({
-              text: `${status} *${service}*: ${result.message || (result.success ? 'Done' : result.error || 'Failed')}`,
-            }))
-
-            return { service, ...result }
-          } catch (err: any) {
-            await client.chat.postMessage(postOpts({
-              text: `❌ *${service}*: ${err.message}`,
-            }))
-            return {
-              service,
-              agent: service,
-              action: 'provision',
-              success: false,
-              error: err.message,
-            }
-          }
-        })
-      )
-
-      // ── Collect results ───────────────────────────────────
       const serviceResults: Record<string, any> = {}
-      for (const settled of results) {
+
+      // Two-phase so the Slack canvas can be seeded with the Dropbox +
+      // Frame.io links Kit just created. Phase 1: everything that produces
+      // a link, in parallel. Phase 2: Slack (channel + canvas), with those
+      // links passed through to the canvas fill. If Slack isn't selected,
+      // phase 1 covers everything.
+      const slackSelected = services.includes('slack' as ServiceKey)
+      const phase1Services = services.filter((s) => s !== 'slack')
+
+      const phase1 = await Promise.allSettled(
+        phase1Services.map((service) => runService(service as string, provisionPayload)),
+      )
+      for (const settled of phase1) {
         const result = settled.status === 'fulfilled'
           ? settled.value
           : { service: 'unknown', success: false, error: settled.reason?.message }
         serviceResults[result.service] = result
+      }
+
+      if (slackSelected) {
+        // Pass the freshly-created Dropbox + Frame.io URLs so the canvas's
+        // "Assets Folders" rows get filled in. These are canvas-only fields
+        // (kept separate from collectedLinks so we don't re-introduce the
+        // in-channel links message).
+        const slackResult = await runService('slack', {
+          ...provisionPayload,
+          dropboxUrl: serviceResults.dropbox?.url,
+          frameioUrl: serviceResults.frameio?.url,
+        })
+        serviceResults[slackResult.service] = slackResult
       }
 
       // ── Update project status ─────────────────────────────

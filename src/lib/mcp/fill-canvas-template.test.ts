@@ -25,6 +25,12 @@ const TEMPLATE = `# 🎬 2xxx Client Project
 | ### **Client Figma** |  |
 | ### Internal Figma |  |
 
+## Assets Folders
+
+| ### Dropbox |  |
+| ### [Frame.io](http://Frame.io) |  |
+| ### OneDrive |  |
+
 ## Milestones
 
 | Milestone | Date | Link |
@@ -39,6 +45,8 @@ describe('fillCanvasTemplate', () => {
     producer: '<@U123>',
     cd: '<@U456>',
     delivery: '2026-07-04',
+    dropbox: 'https://dropbox.com/x',
+    frameio: 'https://frame.io/y',
     headerTitle: '3000_Nike_Pizza Sizzle',
   })
 
@@ -61,6 +69,16 @@ describe('fillCanvasTemplate', () => {
   it('replaces the placeholder H1', () => {
     assert.match(out, /# 🎬 3000_Nike_Pizza Sizzle/)
     assert.doesNotMatch(out, /2xxx Client Project/)
+  })
+
+  it('fills the Dropbox asset row', () => {
+    assert.match(out, /\|\s*### Dropbox\s*\|\s*https:\/\/dropbox\.com\/x\s*\|/)
+  })
+  it('fills the Frame.io asset row (markdown-link label)', () => {
+    assert.match(out, /\|\s*### \[Frame\.io\]\(http:\/\/Frame\.io\)\s*\|\s*https:\/\/frame\.io\/y\s*\|/)
+  })
+  it('leaves the OneDrive row empty (no value supplied)', () => {
+    assert.match(out, /\|\s*### OneDrive\s*\|\s*\|/)
   })
 
   it('does NOT fill Client Figma', () => {
