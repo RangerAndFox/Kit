@@ -17,7 +17,6 @@ import {
   dispatch,
   getAvailableAgents,
 } from '../../../src/lib/inngest/agents/registry'
-import { buildSummaryBlocks } from '../../../src/lib/provisioner/slack-summary'
 import type { ServiceKey } from '../../../src/lib/provisioner/types'
 import { buildNewProjectModal } from '../../../src/lib/provisioner/modal'
 import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
@@ -635,16 +634,10 @@ export function registerInteractionHandlers(app: App) {
         })
         .eq('id', project.id)
 
-      // ── Post summary to the project channel ───────────────
-      const targetChannel = serviceResults.slack?.id || channelId
-      if (targetChannel) {
-        const summaryBlocks = buildSummaryBlocks(serviceResults, form.projectName)
-        await client.chat.postMessage({
-          channel: targetChannel,
-          text: `${form.projectName} — Project Provisioned`,
-          blocks: summaryBlocks as any,
-        })
-      }
+      // (No provisioning-summary card is posted to the project channel —
+      // the per-service breakdown was noisy + sometimes listed stale
+      // services. The requester still gets the final ✅ summary as a DM /
+      // status message below.)
 
       // ── Auto-seed the project brain ───────────────────────
       // New brains default to visibility='producers_only' so we DON'T
