@@ -65,13 +65,11 @@ export type ServiceKey =
   | 'dropbox'
   | 'frameio'
   | 'canva'
-  | 'onedrive'
-  | 'clockify'
   | 'figma'
   | 'slack'
 
 export const ALL_SERVICE_KEYS: ServiceKey[] = [
-  'harvest', 'dropbox', 'frameio', 'canva', 'onedrive', 'clockify', 'figma', 'slack',
+  'harvest', 'dropbox', 'frameio', 'canva', 'figma', 'slack',
 ]
 
 // ─── Provision Event Data ──────────────────────────────────

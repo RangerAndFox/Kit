@@ -4,13 +4,11 @@ export type ServiceKey =
   | 'dropbox'
   | 'frameio'
   | 'canva'
-  | 'onedrive'
-  | 'clockify'
   | 'figma'
   | 'slack'
 
 export const ALL_SERVICES: ServiceKey[] = [
-  'dropbox', 'frameio', 'canva', 'onedrive', 'clockify', 'figma', 'slack',
+  'dropbox', 'frameio', 'canva', 'figma', 'slack',
 ]
 
 export interface ProjectIntakeForm {
@@ -51,8 +49,6 @@ export type ServiceName =
   | 'Dropbox'
   | 'FrameIo'
   | 'Canva'
-  | 'OneDrive'
-  | 'Clockify'
   | 'FigJam'
   | 'Slack Channel'
 
@@ -60,8 +56,6 @@ export interface ProvisioningResults {
   dropbox?: ServiceResult
   frameio?: ServiceResult
   canva?: ServiceResult
-  onedrive?: ServiceResult
-  clockify?: ServiceResult
   figma?: ServiceResult
   slack?: ServiceResult
   /** Kit project record created in Phase 2 */

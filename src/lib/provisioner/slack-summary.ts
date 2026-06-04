@@ -8,8 +8,6 @@ export function buildSummaryBlocks(results: ProvisioningResults, projectName: st
     { label: 'Dropbox', key: 'dropbox', r: results.dropbox },
     { label: 'Frame.io', key: 'frameio', r: results.frameio },
     { label: 'Canva', key: 'canva', r: results.canva },
-    { label: 'OneDrive', key: 'onedrive', r: results.onedrive },
-    { label: 'Clockify', key: 'clockify', r: results.clockify },
     { label: 'FigJam', key: 'figma', r: results.figma },
     { label: 'Slack Channel', key: 'slack', r: results.slack },
   ]
