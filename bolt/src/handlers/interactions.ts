@@ -495,6 +495,7 @@ export function registerInteractionHandlers(app: App) {
       clientName: values.client_name?.val?.value || '',
       projectType: values.project_type?.val?.selected_option?.value || 'Other',
       projectManager: values.project_manager?.val?.selected_user || userId,
+      creativeDirector: values.creative_director?.val?.selected_user || undefined,
       teamMembers: values.team_members?.val?.selected_users || [],
       startDate: values.start_date?.val?.selected_date || undefined,
       deadline: values.deadline?.val?.selected_date || undefined,
@@ -546,7 +547,10 @@ export function registerInteractionHandlers(app: App) {
           brief_summary: form.description || null,
           budget_total: form.budgetTotal ?? null,
           project_manager_slack_id: form.projectManager || null,
-          external_ids: { dropbox_safe_name: dropboxSafeName },
+          external_ids: {
+            dropbox_safe_name: dropboxSafeName,
+            ...(form.creativeDirector ? { creative_director_slack_id: form.creativeDirector } : {}),
+          },
         })
         .select()
         .single()
@@ -570,6 +574,7 @@ export function registerInteractionHandlers(app: App) {
         // Identity + invitees so Slack channel auto-invites the requester + PM + team.
         slackUserId: userId,
         projectManager: form.projectManager,
+        creativeDirector: form.creativeDirector,
         teamMembers: form.teamMembers,
         startDate: form.startDate,
         deadline: form.deadline,

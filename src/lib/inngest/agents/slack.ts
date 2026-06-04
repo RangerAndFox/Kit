@@ -98,6 +98,10 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
         projectName,
         projectNumber: (payload.projectNumber as string) || undefined,
         client,
+        projectType: (payload.projectType as string) || undefined,
+        producerSlackId: (payload.projectManager as string) || undefined,
+        cdSlackId: (payload.creativeDirector as string) || undefined,
+        delivery: (payload.targetDelivery as string) || undefined,
       })
     } catch (e: any) {
       console.warn('[SlackAgent] Template canvas copy failed (non-fatal):', e.message)
