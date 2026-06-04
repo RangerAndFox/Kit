@@ -58,6 +58,7 @@ const ROLE_TO_TIER: Record<string, AccessTier> = {
  */
 const HARDCODED_ADMIN_EMAILS = new Set<string>([
   'steve@rangerandfox.tv',
+  'jared@rangerandfox.tv',
 ])
 
 function isHardcodedAdmin(email: string | undefined | null): boolean {
