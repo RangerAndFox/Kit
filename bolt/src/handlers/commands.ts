@@ -463,7 +463,14 @@ export function registerCommandHandlers(app: App) {
         }
 
         try {
-          await setTeamMemberRole(workspaceId, targetSlackId, targetRole)
+          let email: string | undefined
+          let name: string | undefined
+          try {
+            const tinfo = await client.users.info({ user: targetSlackId })
+            email = tinfo.user?.profile?.email || undefined
+            name = tinfo.user?.profile?.real_name || tinfo.user?.real_name || tinfo.user?.name || undefined
+          } catch { /* fall back to synthetic email inside setTeamMemberRole */ }
+          await setTeamMemberRole(workspaceId, targetSlackId, targetRole, { email, name })
           await respond({
             response_type: 'ephemeral',
             text: `:white_check_mark: <@${targetSlackId}> set to *${tierLabelForRole(targetRole)}*.`,
