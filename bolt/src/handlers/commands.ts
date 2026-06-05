@@ -433,35 +433,28 @@ export function registerCommandHandlers(app: App) {
         if (!match) {
           await respond({
             response_type: 'ephemeral',
-            text: 'Usage: `/kit role @user producer|artist|admin|freelancer`. Omit the role to see their current one.',
+            text: 'Usage: `/kit role @user producer|artist|admin|freelancer`. Omit the role to see their current one. (You can also just tell me in chat: "make @user a producer".)',
           })
           break
         }
         const targetSlackId = match[1]
-        const targetRoleRaw = (match[2] || '').toLowerCase()
-        const VALID_ROLES = ['founder', 'producer', 'artist', 'freelancer']
-        // 'admin' is an alias for 'founder' (the role string that maps to admin tier).
-        const targetRole = targetRoleRaw === 'admin' ? 'founder' : targetRoleRaw
+        const targetRoleRaw = (match[2] || '').trim()
 
-        const { createAdminClient } = await import('../../../src/lib/supabase/admin')
-        const sb = createAdminClient()
+        const { setTeamMemberRole, getTeamMemberRole, normalizeRoleInput, tierLabelForRole } =
+          await import('../../../src/lib/inngest/access-control')
 
-        if (!targetRole) {
-          const { data } = await sb
-            .from('team_members')
-            .select('display_name, name, email, role')
-            .eq('workspace_id', workspaceId)
-            .eq('slack_user_id', targetSlackId)
-            .maybeSingle()
-          if (!data) {
-            await respond({ response_type: 'ephemeral', text: `<@${targetSlackId}> isn't in the staff directory yet. Use \`/kit role @user <role>\` to add them.` })
+        if (!targetRoleRaw) {
+          const current = await getTeamMemberRole(workspaceId, targetSlackId)
+          if (!current) {
+            await respond({ response_type: 'ephemeral', text: `<@${targetSlackId}> isn't in the staff directory yet (defaults to artist). \`/kit role @user <role>\` to set one.` })
           } else {
-            await respond({ response_type: 'ephemeral', text: `<@${targetSlackId}> — current role: *${data.role}* (${data.display_name || data.name || data.email || '?'}).` })
+            await respond({ response_type: 'ephemeral', text: `<@${targetSlackId}> — current role: *${tierLabelForRole(current.role)}*${current.name ? ` (${current.name})` : ''}.` })
           }
           break
         }
 
-        if (!VALID_ROLES.includes(targetRole)) {
+        const targetRole = normalizeRoleInput(targetRoleRaw)
+        if (!targetRole) {
           await respond({
             response_type: 'ephemeral',
             text: `\`${targetRoleRaw}\` isn't a valid role. Use one of: \`producer\`, \`artist\`, \`admin\`, \`freelancer\`.`,
@@ -469,35 +462,15 @@ export function registerCommandHandlers(app: App) {
           break
         }
 
-        const { data: existing } = await sb
-          .from('team_members')
-          .select('id')
-          .eq('workspace_id', workspaceId)
-          .eq('slack_user_id', targetSlackId)
-          .maybeSingle()
-
-        if (existing?.id) {
-          const { error } = await sb.from('team_members').update({ role: targetRole }).eq('id', existing.id)
-          if (error) {
-            await respond({ response_type: 'ephemeral', text: `Update failed: ${error.message}` })
-            break
-          }
-        } else {
-          const { error } = await sb.from('team_members').insert({
-            workspace_id: workspaceId,
-            slack_user_id: targetSlackId,
-            role: targetRole,
-            name: `slack:${targetSlackId}`,
+        try {
+          await setTeamMemberRole(workspaceId, targetSlackId, targetRole)
+          await respond({
+            response_type: 'ephemeral',
+            text: `:white_check_mark: <@${targetSlackId}> set to *${tierLabelForRole(targetRole)}*.`,
           })
-          if (error) {
-            await respond({ response_type: 'ephemeral', text: `Insert failed: ${error.message}` })
-            break
-          }
+        } catch (err: any) {
+          await respond({ response_type: 'ephemeral', text: `Couldn't set that role: ${err?.message || 'unknown error'}` })
         }
-        await respond({
-          response_type: 'ephemeral',
-          text: `:white_check_mark: <@${targetSlackId}> set to *${targetRole}*.`,
-        })
         break
       }
 

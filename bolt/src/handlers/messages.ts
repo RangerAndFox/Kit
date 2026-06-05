@@ -32,6 +32,7 @@ import { handleShotListThumbnailUpload } from '../shotlist/thumbnails'
 import { isNoteTrigger } from '../notes/keyword'
 import { handleNoteMessage } from '../notes/handler'
 import { handleBrainIngestMessage } from '../brain/handler'
+import { handleRoleMessage } from '../roles/handler'
 
 import { runOrchestrator } from '../llm/orchestrator'
 import { hasPendingClarification } from '../llm/memory'
@@ -357,6 +358,26 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
       text: messageText,
     })
     if (handled) return
+  }
+
+  // ── Fast path 3.5: Role management ──────────────────────
+  // Admin says "make @X a producer" / "@X role" in chat. Slash commands
+  // aren't available in the Assistant/DM pane, so we handle it here.
+  // Non-admins / non-matches fall through (handler returns false).
+  try {
+    const handledRole = await handleRoleMessage({
+      app,
+      channelId,
+      userId,
+      text: messageText,
+      threadTs: assistantThreadTs,
+    })
+    if (handledRole) {
+      await clearThinking(app, channelId, replyThreadTs || threadTs)
+      return
+    }
+  } catch (err: any) {
+    console.error('[Bolt] role handler failed:', err.message || err)
   }
 
   // ── Fast path 4: Shot list ──────────────────────────────
