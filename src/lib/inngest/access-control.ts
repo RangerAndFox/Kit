@@ -363,6 +363,77 @@ export function failsafeArtistContext(workspaceId: string, slackUserId: string):
   }
 }
 
+// ─── Role management (shared by /kit role + conversational path) ─────────
+
+/** The team_members.role strings an admin can assign. */
+export const ASSIGNABLE_ROLES = ['founder', 'producer', 'artist', 'freelancer'] as const
+
+/**
+ * Map a user-typed role word to a canonical team_members.role value.
+ * "admin"/"owner" are aliases for the founder role (which maps to the
+ * admin tier). Returns null for anything unrecognized.
+ */
+export function normalizeRoleInput(raw: string): string | null {
+  const r = (raw || '').trim().toLowerCase()
+  if (r === 'admin' || r === 'owner') return 'founder'
+  if ((ASSIGNABLE_ROLES as readonly string[]).includes(r)) return r
+  return null
+}
+
+/** Friendly label for a stored role string. */
+export function tierLabelForRole(role: string): string {
+  if (role === 'founder') return 'admin/owner'
+  return role
+}
+
+/**
+ * Upsert a team member's role by Slack user id. Creates a minimal
+ * team_members row if none exists yet. Returns { created }.
+ */
+export async function setTeamMemberRole(
+  workspaceId: string,
+  slackUserId: string,
+  role: string,
+): Promise<{ created: boolean }> {
+  const db = createAdminClient()
+  const { data: existing } = await db
+    .from('team_members')
+    .select('id')
+    .eq('workspace_id', workspaceId)
+    .eq('slack_user_id', slackUserId)
+    .maybeSingle()
+
+  if (existing?.id) {
+    const { error } = await db.from('team_members').update({ role }).eq('id', existing.id)
+    if (error) throw new Error(`setTeamMemberRole update: ${error.message}`)
+    return { created: false }
+  }
+
+  const { error } = await db.from('team_members').insert({
+    workspace_id: workspaceId,
+    slack_user_id: slackUserId,
+    role,
+    name: `slack:${slackUserId}`,
+  })
+  if (error) throw new Error(`setTeamMemberRole insert: ${error.message}`)
+  return { created: true }
+}
+
+export async function getTeamMemberRole(
+  workspaceId: string,
+  slackUserId: string,
+): Promise<{ role: string; name: string | null } | null> {
+  const db = createAdminClient()
+  const { data } = await db
+    .from('team_members')
+    .select('role, name, email')
+    .eq('workspace_id', workspaceId)
+    .eq('slack_user_id', slackUserId)
+    .maybeSingle()
+  if (!data) return null
+  return { role: data.role, name: data.name || data.email || null }
+}
+
 /**
  * Full access check + field filtering in one call.
  * Used by the kit_ask_agent MCP tool.
