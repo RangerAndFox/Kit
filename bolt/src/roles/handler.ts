@@ -20,12 +20,18 @@ import {
   tierLabelForRole,
 } from '../../../src/lib/inngest/access-control'
 
-async function callerEmail(app: App, slackUserId: string): Promise<string | undefined> {
+async function lookupSlackProfile(
+  app: App,
+  slackUserId: string,
+): Promise<{ email?: string; name?: string }> {
   try {
     const info = await app.client.users.info({ user: slackUserId })
-    return info.user?.profile?.email || undefined
+    return {
+      email: info.user?.profile?.email || undefined,
+      name: info.user?.profile?.real_name || info.user?.real_name || info.user?.name || undefined,
+    }
   } catch {
-    return undefined
+    return {}
   }
 }
 
@@ -44,9 +50,8 @@ export async function handleRoleMessage(opts: {
 
   // Resolve the caller WITH email so the founder override applies even when
   // team_members is empty.
-  const email = await callerEmail(opts.app, opts.userId)
   const caller =
-    (await resolveUserContext(workspaceId, opts.userId, email)) ??
+    (await resolveUserContext(workspaceId, opts.userId, (await lookupSlackProfile(opts.app, opts.userId)).email)) ??
     failsafeArtistContext(workspaceId, opts.userId)
 
   // Only admins manage roles. Non-admins: don't hijack the message — let the
@@ -83,7 +88,8 @@ export async function handleRoleMessage(opts: {
   }
 
   try {
-    await setTeamMemberRole(workspaceId, intent.targetSlackId, role)
+    const profile = await lookupSlackProfile(opts.app, intent.targetSlackId)
+    await setTeamMemberRole(workspaceId, intent.targetSlackId, role, { email: profile.email, name: profile.name })
     await post(`:white_check_mark: Set <@${intent.targetSlackId}> to *${tierLabelForRole(role)}* in Kit.`)
   } catch (err: any) {
     await post(`Couldn't set that role: ${err?.message || 'unknown error'}`)

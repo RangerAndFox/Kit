@@ -389,22 +389,34 @@ export function tierLabelForRole(role: string): string {
 /**
  * Upsert a team member's role by Slack user id. Creates a minimal
  * team_members row if none exists yet. Returns { created }.
+ *
+ * `email` is required by the table (NOT NULL). Callers should pass the
+ * target's real Slack email when they can; if it's unavailable we fall
+ * back to a unique synthetic address derived from the Slack id so the
+ * insert still satisfies the constraint and stays unique per user. On
+ * update we only touch role (+ a real email/name if newly supplied),
+ * never clobbering existing values with the synthetic fallback.
  */
 export async function setTeamMemberRole(
   workspaceId: string,
   slackUserId: string,
   role: string,
+  opts: { email?: string | null; name?: string | null } = {},
 ): Promise<{ created: boolean }> {
   const db = createAdminClient()
   const { data: existing } = await db
     .from('team_members')
-    .select('id')
+    .select('id, email, name')
     .eq('workspace_id', workspaceId)
     .eq('slack_user_id', slackUserId)
     .maybeSingle()
 
   if (existing?.id) {
-    const { error } = await db.from('team_members').update({ role }).eq('id', existing.id)
+    const patch: Record<string, unknown> = { role }
+    // Backfill a real email/name if the row is missing them and we have them.
+    if (opts.email && (!existing.email || existing.email.endsWith('@slack.local'))) patch.email = opts.email
+    if (opts.name && (!existing.name || existing.name.startsWith('slack:'))) patch.name = opts.name
+    const { error } = await db.from('team_members').update(patch).eq('id', existing.id)
     if (error) throw new Error(`setTeamMemberRole update: ${error.message}`)
     return { created: false }
   }
@@ -413,7 +425,8 @@ export async function setTeamMemberRole(
     workspace_id: workspaceId,
     slack_user_id: slackUserId,
     role,
-    name: `slack:${slackUserId}`,
+    email: opts.email || `${slackUserId.toLowerCase()}@slack.local`,
+    name: opts.name || `slack:${slackUserId}`,
   })
   if (error) throw new Error(`setTeamMemberRole insert: ${error.message}`)
   return { created: true }
