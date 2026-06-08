@@ -79,9 +79,14 @@ export async function resolveUserContext(
 ): Promise<UserContext | null> {
   const db = createAdminClient()
 
+  // NOTE: team_members has no `display_name` column. Selecting it makes
+  // PostgREST error the whole query, which silently nulls `member` and
+  // drops EVERY non-hardcoded user to the unknown/artist path — the bug
+  // that made real producers/artists invisible to Kit. Select real columns
+  // only.
   const { data: member, error } = await db
     .from('team_members')
-    .select('id, role, display_name, name, email')
+    .select('id, role, name, email')
     .eq('workspace_id', workspaceId)
     .eq('slack_user_id', slackUserId)
     .maybeSingle()
@@ -106,7 +111,7 @@ export async function resolveUserContext(
       teamMemberId: member.id,
       workspaceId,
       tier,
-      name: member.display_name || member.name || member.email,
+      name: member.name || member.email,
       slackUserId,
       projectFinancials,
     }
