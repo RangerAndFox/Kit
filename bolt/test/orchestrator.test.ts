@@ -87,6 +87,7 @@ describe('runOrchestrator', () => {
       'harvest',
       'budget on Acme Spot',
       fakeUser,
+      { channelId: 'C1' },
     )
   })
 

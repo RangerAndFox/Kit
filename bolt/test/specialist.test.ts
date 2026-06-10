@@ -73,7 +73,15 @@ describe('runSpecialist', () => {
     const result = await runSpecialist('harvest', 'budget on Acme', fakeUser)
 
     expect(result).toBe('Acme: $10k of $20k spent.')
-    expect(dispatchMock).toHaveBeenCalledWith('harvest', 'get_budget', { project: 'Acme' })
+    // The specialist injects caller identity into every payload — the LLM
+    // never supplies it. Assert the enrichment so a regression here (which
+    // would break access control downstream) fails loudly.
+    expect(dispatchMock).toHaveBeenCalledWith('harvest', 'get_budget', {
+      project: 'Acme',
+      slackUserId: 'U1',
+      teamMemberId: 'tm1',
+      channelId: undefined,
+    })
     expect(createMock).toHaveBeenCalledTimes(2)
   })
 

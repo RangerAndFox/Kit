@@ -1,11 +1,19 @@
 import { describe, it, expect } from 'vitest'
 import { buildOrchestratorTools, buildSpecialistTools } from '../src/llm/tools'
+import { getAllAgents } from '../../src/lib/inngest/agents/registry'
 
 describe('buildOrchestratorTools', () => {
   it('returns one tool per registered agent', () => {
     const tools = buildOrchestratorTools()
     const names = tools.map((t) => t.name).sort()
-    expect(names).toEqual(['ask_dropbox', 'ask_frameio', 'ask_harvest', 'ask_slack'])
+    // Derive from the registry so this doesn't go stale every time an
+    // agent is added — what's under test is the ask_<id> mapping.
+    const expected = getAllAgents().map((a) => `ask_${a.id}`).sort()
+    expect(names).toEqual(expected)
+    // Floor: the core four must be registered, so an empty registry can't pass.
+    expect(names).toEqual(
+      expect.arrayContaining(['ask_dropbox', 'ask_frameio', 'ask_harvest', 'ask_slack']),
+    )
   })
 
   it('each tool takes a natural-language query string', () => {
