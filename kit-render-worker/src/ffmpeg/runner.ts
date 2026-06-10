@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Spawn FFmpeg as a child process. Stream stderr through the progress parser
  * and call `onProgress` periodically (debounced to every 2 seconds).

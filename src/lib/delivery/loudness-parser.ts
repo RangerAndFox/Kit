@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Parse FFmpeg's loudnorm pass-1 JSON output into a LoudnessMeasurement.
  *
@@ -39,7 +38,7 @@ export function parseLoudnessJson(stderrOutput: string): LoudnessMeasurement {
   try {
     parsed = JSON.parse(match[0])
   } catch (err) {
-    throw new Error(`Failed to parse loudnorm JSON: ${err.message}`)
+    throw new Error(`Failed to parse loudnorm JSON: ${err instanceof Error ? err.message : String(err)}`)
   }
   const required = ['input_i', 'input_tp', 'input_lra', 'input_thresh', 'target_offset'] as const
   for (const key of required) {

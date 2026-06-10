@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * RAG document ingestion — writes a single project_documents row per
  * document with an inline embedding. The live schema does NOT have a
@@ -10,7 +9,8 @@
  */
 
 import { createAdminClient } from '@/lib/supabase/admin'
-import { generateEmbedding, generateEmbeddings, chunkText } from './embeddings'
+import type { Json } from '@/types/supabase'
+import { generateEmbedding, generateEmbeddings, chunkText, asVectorParam } from './embeddings'
 
 export interface IngestOptions {
   workspaceId: string
@@ -43,8 +43,8 @@ export async function ingestDocument(opts: IngestOptions): Promise<IngestResult>
       title: opts.title,
       content: opts.content,
       source_url: opts.sourceUrl ?? null,
-      embedding,
-      metadata: opts.metadata ?? null,
+      embedding: asVectorParam(embedding),
+      metadata: (opts.metadata ?? null) as Json,
       visibility_tier: opts.visibilityTier ?? 'team',
       indexed_at: new Date().toISOString(),
     })
@@ -85,8 +85,8 @@ export async function upsertDocument(opts: IngestOptions): Promise<IngestResult>
         project_id: opts.projectId ?? null,
         content: opts.content,
         source_url: opts.sourceUrl ?? null,
-        embedding,
-        metadata: opts.metadata ?? null,
+        embedding: asVectorParam(embedding),
+        metadata: (opts.metadata ?? null) as Json,
         visibility_tier: opts.visibilityTier ?? 'team',
         indexed_at: new Date().toISOString(),
       })
@@ -117,8 +117,8 @@ export async function ingestLongDocument(opts: IngestOptions): Promise<IngestRes
     title: `${opts.title} (chunk ${i + 1}/${chunks.length})`,
     content: c,
     source_url: opts.sourceUrl ?? null,
-    embedding: embeddings[i],
-    metadata: { ...(opts.metadata ?? {}), chunk_index: i, chunk_total: chunks.length },
+    embedding: asVectorParam(embeddings[i]),
+    metadata: { ...(opts.metadata ?? {}), chunk_index: i, chunk_total: chunks.length } as Json,
     visibility_tier: opts.visibilityTier ?? 'team',
     indexed_at: new Date().toISOString(),
   }))

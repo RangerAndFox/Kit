@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Auto-summarization — generates a Claude-written 1-pager per project from
  * structural data + notes + transcripts + recent actions, then re-embeds
@@ -32,9 +31,9 @@ Rules:
 
 interface ProjectContext {
   project: any
-  notes: Array<{ title: string; content: string; created_at: string }>
-  transcripts: Array<{ title: string; content: string; created_at: string }>
-  actions: Array<{ title: string; body: string; status: string }>
+  notes: Array<{ title: string; content: string; created_at: string | null }>
+  transcripts: Array<{ title: string; content: string; created_at: string | null }>
+  actions: Array<{ title: string; body: string; status: string | null }>
 }
 
 async function gatherProjectContext(workspaceId: string, projectId: string): Promise<ProjectContext> {

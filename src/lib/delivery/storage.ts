@@ -1,10 +1,15 @@
-// @ts-nocheck
 /**
  * Supabase CRUD for delivery profiles + render jobs + render workers.
  */
 
 import { createAdminClient } from '../supabase/admin'
+import type { TablesInsert, TablesUpdate } from '../../types/supabase'
 import type { DeliveryProfile, RenderJobRow, RenderWorkerRow, NamingFields, SourceFile } from './types'
+
+// delivery_profiles.audio_channels and render_jobs.source_files/naming_fields/
+// profile_snapshot are jsonb columns, so the generated row types see them as
+// `Json` while the domain types are structured — hence the `unknown` casts at
+// the read/write boundary.
 
 export async function listProfiles(includeArchived = false): Promise<DeliveryProfile[]> {
   const sb = createAdminClient()
@@ -12,7 +17,7 @@ export async function listProfiles(includeArchived = false): Promise<DeliveryPro
   if (!includeArchived) q = q.eq('archived', false)
   const { data, error } = await q
   if (error) throw new Error(`listProfiles: ${error.message}`)
-  return (data || []) as DeliveryProfile[]
+  return (data || []) as unknown as DeliveryProfile[]
 }
 
 export async function getProfile(idOrName: string): Promise<DeliveryProfile | null> {
@@ -24,25 +29,25 @@ export async function getProfile(idOrName: string): Promise<DeliveryProfile | nu
     .select('*')
     .eq(isUuid ? 'id' : 'name', idOrName)
     .maybeSingle()
-  return (data as DeliveryProfile) || null
+  return (data as unknown as DeliveryProfile) || null
 }
 
 export async function createProfile(input: Partial<DeliveryProfile>): Promise<DeliveryProfile | null> {
   const sb = createAdminClient()
   const { data, error } = await sb
     .from('delivery_profiles')
-    .insert(input)
+    .insert(input as unknown as TablesInsert<'delivery_profiles'>)
     .select('*')
     .single()
   if (error) throw new Error(`createProfile: ${error.message}`)
-  return data as DeliveryProfile
+  return data as unknown as DeliveryProfile
 }
 
 export async function updateProfile(id: string, patch: Partial<DeliveryProfile>): Promise<void> {
   const sb = createAdminClient()
   const { error } = await sb
     .from('delivery_profiles')
-    .update({ ...patch, updated_at: new Date().toISOString() })
+    .update({ ...patch, updated_at: new Date().toISOString() } as unknown as TablesUpdate<'delivery_profiles'>)
     .eq('id', id)
   if (error) throw new Error(`updateProfile: ${error.message}`)
 }
@@ -70,17 +75,17 @@ export async function submitJob(input: {
       slack_channel: input.slackChannel ?? null,
       slack_thread_ts: input.slackThreadTs ?? null,
       status: 'pending',
-    })
+    } as unknown as TablesInsert<'render_jobs'>)
     .select('*')
     .single()
   if (error) throw new Error(`submitJob: ${error.message}`)
-  return data as RenderJobRow
+  return data as unknown as RenderJobRow
 }
 
 export async function getJob(jobId: string): Promise<RenderJobRow | null> {
   const sb = createAdminClient()
   const { data } = await sb.from('render_jobs').select('*').eq('id', jobId).maybeSingle()
-  return (data as RenderJobRow) || null
+  return (data as unknown as RenderJobRow) || null
 }
 
 export async function listRecentJobs(limit = 25): Promise<RenderJobRow[]> {
@@ -90,7 +95,7 @@ export async function listRecentJobs(limit = 25): Promise<RenderJobRow[]> {
     .select('*')
     .order('created_at', { ascending: false })
     .limit(limit)
-  return (data || []) as RenderJobRow[]
+  return (data || []) as unknown as RenderJobRow[]
 }
 
 export async function listWorkers(): Promise<RenderWorkerRow[]> {
@@ -105,7 +110,7 @@ export async function listWorkers(): Promise<RenderWorkerRow[]> {
 export async function getWorker(hostname: string): Promise<RenderWorkerRow | null> {
   const sb = createAdminClient()
   const { data } = await sb.from('render_workers').select('*').eq('hostname', hostname).maybeSingle()
-  return (data as RenderWorkerRow) || null
+  return (data as RenderWorkerRow | null) || null
 }
 
 export async function setWorkerOptOut(hostname: string, optedOutBy: string, reason: string): Promise<void> {

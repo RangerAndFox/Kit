@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Dropbox new-file detection for the delivery pipeline.
  *

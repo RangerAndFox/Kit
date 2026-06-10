@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Apply a naming template to a NamingFields object.
  *

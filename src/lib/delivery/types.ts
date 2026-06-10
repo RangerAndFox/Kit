@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Shared types for the delivery pipeline.
  * Spec: DELIVERY-PIPELINE-SPEC.md

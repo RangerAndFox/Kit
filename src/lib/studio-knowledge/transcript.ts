@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Embed a call transcript into the RAG store (project_documents).
  *

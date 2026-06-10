@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Semantic search via the public.match_documents Postgres RPC.
  *
@@ -9,7 +8,7 @@
  */
 
 import { createAdminClient } from '@/lib/supabase/admin'
-import { generateEmbedding } from './embeddings'
+import { generateEmbedding, asVectorParam } from './embeddings'
 
 export interface SearchResult {
   documentId: string
@@ -33,11 +32,13 @@ export async function searchDocuments(query: string, opts: SearchOptions = {}): 
 
   const embedding = await generateEmbedding(query)
   const sb = createAdminClient()
+  // The SQL function defaults both filters to null, so omitting an arg
+  // (undefined) is equivalent to passing null explicitly.
   const { data, error } = await sb.rpc('match_documents', {
-    query_embedding: embedding,
+    query_embedding: asVectorParam(embedding),
     match_count: limit,
-    filter_workspace_id: opts.workspaceId ?? null,
-    filter_project_id: opts.projectId ?? null,
+    filter_workspace_id: opts.workspaceId ?? undefined,
+    filter_project_id: opts.projectId ?? undefined,
   })
   if (error) {
     throw new Error(`match_documents RPC failed: ${error.message}`)

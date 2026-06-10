@@ -68,7 +68,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     }
 
     const response: TaskCardResponse = {
-      cards: cards as TaskCard[],
+      cards: cards as unknown as TaskCard[],
       message: `Found ${cards?.length || 0} task cards for ${date}`,
       count: cards?.length || 0,
     };
