@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Channel mapping — translate audio_channels JSON into FFmpeg -af filter syntax.
  *

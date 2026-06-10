@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * OpenAI text-embedding-3-small wrapper for RAG.
  *
@@ -83,3 +82,12 @@ export async function generateEmbeddings(texts: string[]): Promise<number[][]> {
 
 export const EMBEDDING_DIMENSIONS = EMBED_DIMENSIONS
 export const EMBEDDING_MODEL = OPENAI_EMBED_MODEL
+
+/**
+ * The Database types generate pgvector columns and RPC args as `string`, but
+ * PostgREST also accepts a JSON array for vector input. This cast keeps the
+ * wire format (a real array) while satisfying the generated types.
+ */
+export function asVectorParam(embedding: number[]): string {
+  return embedding as unknown as string
+}

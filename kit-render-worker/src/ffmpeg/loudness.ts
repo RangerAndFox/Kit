@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Run the pass-1 loudness analysis and parse the resulting JSON.
  *

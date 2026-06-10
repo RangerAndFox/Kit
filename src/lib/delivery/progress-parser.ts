@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Parse FFmpeg stderr progress lines into a percentage + ETA.
  *

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Compose and embed a client_profiles row as a project_documents RAG entry
  * so the studio_knowledge agent can answer questions like "who do we talk

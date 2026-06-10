@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Compose a single-doc summary of a project that we embed into RAG so the
  * studio_knowledge agent can semantically retrieve it.
