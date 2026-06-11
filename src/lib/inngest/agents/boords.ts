@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Boords Agent — Storyboard & Script Visualization Expert
  *
