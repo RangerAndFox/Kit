@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Kit Agent System — Shared Types
  *
@@ -17,7 +16,13 @@ export interface AgentResult {
   agent: string
   action: string
   success: boolean
-  data?: Record<string, unknown>
+  /**
+   * Arbitrary structured payload for the LLM summarizer. Often a record, but
+   * list actions return a top-level array (e.g. delivery.list_profiles), so
+   * this is `unknown` — narrow before indexing. filterResultData preserves
+   * the shape (array stays an array) while scrubbing sensitive fields.
+   */
+  data?: unknown
   url?: string
   id?: string
   error?: string

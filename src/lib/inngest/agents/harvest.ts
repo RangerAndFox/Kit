@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Harvest Agent — Time, Money & Projects Expert
  *

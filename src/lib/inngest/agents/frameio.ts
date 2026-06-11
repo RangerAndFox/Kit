@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Frame.io Agent — Review & Approval Expert (v4 API)
  *
