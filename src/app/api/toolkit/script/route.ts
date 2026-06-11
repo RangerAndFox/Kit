@@ -8,7 +8,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Anthropic } from '@anthropic-ai/sdk';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { queryWithContext } from '@/lib/rag/query';
+import { searchDocuments, buildContext } from '@/lib/rag/query';
 import { buildPrompt } from '@/lib/agent/personality';
 import { scriptWritingPrompt } from '@/lib/agent/prompts';
 import type { Project } from '@/types/database';
@@ -61,14 +61,17 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     let ragSourceCount = 0;
 
     try {
-      const ragResult = await queryWithContext(workspaceId, `${project.name} script requirements brief deliverables`, {
+      // queryWithContext was removed in the studio-knowledge P1 rewrite of
+      // rag/query.ts — compose the same thing from its replacements.
+      // (Old maxTokens: 2000 ≈ 8000 chars; buildContext budgets by chars.)
+      const ragResults = await searchDocuments(`${project.name} script requirements brief deliverables`, {
+        workspaceId,
         projectId,
         limit: 5,
-        maxTokens: 2000,
       });
 
-      ragContext = ragResult.context;
-      ragSourceCount = ragResult.sources.length;
+      ragContext = buildContext(ragResults, 8_000);
+      ragSourceCount = ragResults.length;
     } catch (ragError) {
       console.warn('RAG query failed, continuing without context:', ragError);
       // Continue without RAG context
