@@ -30,6 +30,26 @@ const WATCH_ROOT = '/production'
 // path_display preserves the original casing.
 const PATH_RE = /^\/production\/(\d{4})\/([^/]+)\/09_Outgoing\/(01_Client Progress|02_Delivery)\/(.+)$/i
 
+// ─── Upload denylist ────────────────────────────────────────
+// File extensions we never push to Frame.io even if they land in an
+// outgoing folder. These are intermediate/secondary artifacts (loose AAC
+// audio, m4v proxies) that shouldn't become client-facing review assets.
+// Stored lowercased, with the leading dot.
+const DENIED_UPLOAD_EXTENSIONS = new Set<string>(['.aac', '.m4v'])
+
+/**
+ * True if `filename`'s extension is on the upload denylist. Case-insensitive.
+ * Operates on the basename, so a path like "051326/v1/mix.AAC" is handled.
+ * Files with no extension are never denied.
+ */
+export function isDeniedUploadFile(filename: string): boolean {
+  const base = filename.split('/').pop() || filename
+  const dot = base.lastIndexOf('.')
+  if (dot <= 0) return false // no extension (or dotfile) → not denied
+  const ext = base.slice(dot).toLowerCase()
+  return DENIED_UPLOAD_EXTENSIONS.has(ext)
+}
+
 // ─── Signature verification ─────────────────────────────────
 
 export function verifyDropboxSignature(
@@ -144,6 +164,13 @@ export async function processDropboxNotification(app: App): Promise<void> {
     if (entry.tag !== 'file') continue
     const m = entry.path_display.match(PATH_RE)
     if (!m) continue
+    // Skip denylisted extensions (e.g. .aac, .m4v) before any Frame.io work.
+    if (isDeniedUploadFile(entry.name)) {
+      console.log(
+        `[dropbox-watcher] skipping ${entry.path_display} — extension on upload denylist`,
+      )
+      continue
+    }
     matched++
     const [, year, safeName, subfolder, filename] = m
     try {
