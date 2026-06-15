@@ -212,7 +212,7 @@ export async function handleOnboardKeyword(opts: {
       channel: channelId,
       thread_ts: threadTs,
       text:
-        ":lock: Onboarding's restricted to PMs, CDs, and admins. If that's you, your `staff.role` isn't set yet — ping an admin.",
+        ":lock: Onboarding's restricted to producers, CDs, and admins. If that's you, ask an admin to set your role with `/kit role @you producer`.",
     })
     return true
   }
