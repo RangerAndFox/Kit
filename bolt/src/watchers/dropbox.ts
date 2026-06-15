@@ -30,6 +30,32 @@ const WATCH_ROOT = '/production'
 // path_display preserves the original casing.
 const PATH_RE = /^\/production\/(\d{4})\/([^/]+)\/09_Outgoing\/(01_Client Progress|02_Delivery)\/(.+)$/i
 
+// File extensions to skip when mirroring deliveries to Frame.io — e.g. audio
+// sidecars / proxies dropped next to the actual video deliverable. Override
+// with a comma-separated DELIVERY_DENY_EXTENSIONS; defaults to aac + m4v.
+const DENY_EXTENSIONS = new Set(
+  (process.env.DELIVERY_DENY_EXTENSIONS || 'aac,m4v')
+    .split(',')
+    .map((s) => s.trim().toLowerCase().replace(/^\./, ''))
+    .filter(Boolean),
+)
+
+/**
+ * True if a delivery file should be skipped based on its extension. `filename`
+ * may include intermediate subfolders (e.g. "051326/v1/mix.aac"); only the
+ * final segment's extension is considered.
+ */
+export function isDeniedDeliveryFile(
+  filename: string,
+  deny: Set<string> = DENY_EXTENSIONS,
+): boolean {
+  const base = filename.split('/').pop() || filename
+  const dot = base.lastIndexOf('.')
+  if (dot <= 0) return false
+  return deny.has(base.slice(dot + 1).toLowerCase())
+}
+
+
 // ─── Signature verification ─────────────────────────────────
 
 export function verifyDropboxSignature(
@@ -144,8 +170,14 @@ export async function processDropboxNotification(app: App): Promise<void> {
     if (entry.tag !== 'file') continue
     const m = entry.path_display.match(PATH_RE)
     if (!m) continue
-    matched++
     const [, year, safeName, subfolder, filename] = m
+    // Skip denied file types (e.g. .aac audio sidecars) so they aren't
+    // mirrored to Frame.io alongside the video deliverables.
+    if (isDeniedDeliveryFile(filename)) {
+      console.log(`[dropbox-watcher] skipping ${entry.path_display} (denied extension)`)
+      continue
+    }
+    matched++
     try {
       await handleNewDelivery(app, {
         path: entry.path_display,
