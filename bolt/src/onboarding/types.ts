@@ -8,6 +8,11 @@ export interface OnboardingInput {
   projectId: string
   artistEmail: string
   artistName: string
+  /**
+   * Optional legal/entity name for the NDA's "Company" party (e.g. an LLC the
+   * freelancer invoices through). Falls back to artistName when absent.
+   */
+  artistLegalName?: string | null
   /** Slack user id of the PM / CD requesting the onboarding */
   requestedBy: string
 }

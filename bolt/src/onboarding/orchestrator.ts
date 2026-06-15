@@ -16,6 +16,7 @@ import { inviteArtistToDropbox } from './services/dropbox'
 import { inviteArtistToFrameIo } from './services/frameio'
 import { inviteArtistToHarvest } from './services/harvest'
 import { rehydrateProjectExternalLinks } from './rehydrate'
+import { sendNdaIfFirstTimer } from './nda/send'
 
 async function loadProject(projectId: string): Promise<OnboardingProject | null> {
   const sb = createAdminClient()
@@ -136,12 +137,14 @@ export async function runOnboarding(opts: {
       project_id: project.id,
       artist_email: input.artistEmail,
       artist_name: input.artistName,
+      artist_legal_name: input.artistLegalName || null,
       requested_by_slack_user_id: input.requestedBy,
       slack_status: 'pending',
       dropbox_status: 'pending',
       frameio_status: 'pending',
       harvest_status: 'pending',
       welcome_dm_status: 'pending',
+      nda_status: 'pending',
     })
     .select('id')
     .single()
@@ -229,6 +232,17 @@ export async function runOnboarding(opts: {
     }
   }
 
+  // NDA / paperwork (gated behind FREELANCER_PAPERWORK_ENABLED). Runs
+  // independently of the Slack invite — it's email-based and keyed on the
+  // artist's email, so first-timers get the NDA even if Connect is pending.
+  // Returning freelancers (paperwork already on file) are skipped.
+  const ndaR: ServiceResult = await sendNdaIfFirstTimer({
+    artistEmail: input.artistEmail,
+    artistName: input.artistName,
+    artistLegalName: input.artistLegalName,
+    onboardingId,
+  })
+
   // Upsert artist into staff so future paths know who they are.
   // Connect-invited freelancers don't have a Slack user id yet — we'll
   // backfill on their first message via the staff sync script, or
@@ -265,6 +279,9 @@ export async function runOnboarding(opts: {
         harvest_error: harvestR.status === 'failed' ? harvestR.message : null,
         welcome_dm_status: welcomeR.status,
         welcome_dm_error: welcomeR.status === 'failed' ? welcomeR.message : null,
+        nda_status: ndaR.status,
+        nda_error: ndaR.status === 'failed' ? ndaR.message : null,
+        nda_sent_at: ndaR.status === 'ok' ? new Date().toISOString() : null,
         updated_at: new Date().toISOString(),
       })
       .eq('id', onboardingId)
@@ -278,6 +295,7 @@ export async function runOnboarding(opts: {
       frameio: frameioR,
       harvest: harvestR,
       welcomeDm: welcomeR,
+      nda: ndaR,
     },
   }
 }
@@ -300,11 +318,14 @@ export function buildRequesterSummary(opts: {
     ['frameio', 'Frame.io'],
     ['harvest', 'Harvest'],
     ['welcomeDm', 'Welcome DM'],
+    ['nda', 'NDA'],
   ]
-  const lines = order.map(([key, label]) => {
-    const r = results[key]
-    return `${icon(r.status)} *${label}* — ${r.message}`
-  })
+  const lines = order
+    .filter(([key]) => results[key])
+    .map(([key, label]) => {
+      const r = results[key]
+      return `${icon(r.status)} *${label}* — ${r.message}`
+    })
   return [`*Onboarding: ${artistName}* (${artistEmail}) → *${projectName}*`, '', ...lines].join(
     '\n',
   )

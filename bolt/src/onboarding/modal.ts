@@ -12,6 +12,7 @@ const MODAL_CALLBACK_ID = 'kit_onboard_submit'
 const PROJECT_BLOCK_ID = 'project'
 const ARTIST_NAME_BLOCK = (i: number) => `artist_${i}_name`
 const ARTIST_EMAIL_BLOCK = (i: number) => `artist_${i}_email`
+const ARTIST_LEGAL_BLOCK = (i: number) => `artist_${i}_legal`
 
 /**
  * Load up to 50 recent projects for the static_select.
@@ -61,6 +62,21 @@ export async function buildOnboardModal(opts: {
         action_id: 'value',
       },
     },
+    {
+      type: 'input',
+      block_id: ARTIST_LEGAL_BLOCK(i),
+      optional: true,
+      label: { type: 'plain_text', text: `Artist ${i + 1} — Legal/entity name (for NDA)` },
+      hint: {
+        type: 'plain_text',
+        text: 'Optional — e.g. an LLC they invoice through. Defaults to their full name.',
+      },
+      element: {
+        type: 'plain_text_input',
+        action_id: 'value',
+        placeholder: { type: 'plain_text', text: 'Optional' },
+      },
+    },
   ])
 
   return {
@@ -99,7 +115,7 @@ export async function buildOnboardModal(opts: {
 export interface ParsedOnboardSubmission {
   channelId: string
   projectId: string
-  artists: { name: string; email: string }[]
+  artists: { name: string; email: string; legalName?: string }[]
 }
 
 export function parseOnboardSubmission(view: any): ParsedOnboardSubmission | null {
@@ -109,11 +125,12 @@ export function parseOnboardSubmission(view: any): ParsedOnboardSubmission | nul
     const projectId = values[PROJECT_BLOCK_ID]?.value?.selected_option?.value
     if (!projectId) return null
 
-    const artists: { name: string; email: string }[] = []
+    const artists: { name: string; email: string; legalName?: string }[] = []
     for (let i = 0; i < 3; i++) {
       const name = values[ARTIST_NAME_BLOCK(i)]?.value?.value?.trim()
       const email = values[ARTIST_EMAIL_BLOCK(i)]?.value?.value?.trim()
-      if (name && email) artists.push({ name, email })
+      const legalName = values[ARTIST_LEGAL_BLOCK(i)]?.value?.value?.trim() || undefined
+      if (name && email) artists.push({ name, email, legalName })
     }
     if (artists.length === 0) return null
 
