@@ -20,6 +20,7 @@ import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { dropboxHeaders } from '../../../src/lib/dropbox/client'
 import { frameioHeaders } from '../../../src/lib/frameio/auth'
+import { isFrameioUploadEnabled } from '../../../src/lib/projects/settings'
 
 const DROPBOX_API = 'https://api.dropboxapi.com/2'
 const FRAMEIO_API = 'https://api.frame.io/v4'
@@ -231,6 +232,19 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
     console.log(
       `[dropbox-watcher] auto-backfilled project ${project.id} for safeName=${d.safeName}`,
     )
+  }
+
+  // ── Respect the per-project Frame.io upload toggle ──────
+  // A producer can disable Frame.io mirroring for projects that don't use
+  // Frame.io for review ("@Kit turn off frame upload"). The delivery file stays
+  // in Dropbox; we just don't mirror it. The check is before upload starts, so
+  // a transcode already in flight still uploads — the toggle takes effect on
+  // the next delivery.
+  if (!(await isFrameioUploadEnabled(project.id))) {
+    console.log(
+      `[dropbox-watcher] Frame.io upload disabled for project ${project.id} (${project.name}); leaving ${d.name} in Dropbox only`,
+    )
+    return
   }
 
   const frameioId = project.external_links?.frameio_id
