@@ -52,6 +52,55 @@ export async function runOrchestrator(
   ): Promise<ServiceResult> =>
     sel.has(key) ? fn() : Promise.resolve(skipped(fallback))
 
+  // ─── PHASE 0: Create the Kit project record (anchor) ────────
+  // The DB row is the source of truth everything else hangs off (onboarding
+  // resolves projects from here). Create it FIRST and abort on failure, so a
+  // bad insert can never leave an orphaned Slack channel or folders with no
+  // matching record. Previously this ran after the channel/folders were
+  // created and swallowed its error, which produced orphaned projects.
+  await onProgress?.('phase_project', `Creating project record for *${projectName}*...`)
+
+  // workspace_id is a required FK; an unresolved workspace is the most common
+  // cause of a failed insert. Fail fast with a clear message before touching
+  // any external service.
+  if (!workspaceId) {
+    const msg = 'no workspace could be resolved for this Slack team'
+    await onProgress?.('error', `:x: I couldn't create the project — ${msg}. Nothing was created.`)
+    throw new Error(`Project record could not be created: ${msg}`)
+  }
+
+  let projectId: string
+  try {
+    const db = createAdminClient()
+    const { data: project, error } = await db
+      .from('projects')
+      .insert({
+        workspace_id: workspaceId,
+        name: projectName,
+        client: clientName,
+        project_code: form.projectNumber,
+        project_type: form.projectType,
+        start_date: form.startDate || null,
+        target_delivery: form.deadline || null,
+        status: 'active',
+        external_links: {},
+      })
+      .select('id')
+      .single()
+
+    if (error) throw error
+    projectId = project.id
+    results.projectId = projectId
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[Provisioner] Project record insert failed — aborting before any resources are created:', err)
+    await onProgress?.(
+      'error',
+      `:x: I couldn't save the project record, so I stopped before creating any channel or folders — nothing was half-created. Error: ${msg}`,
+    )
+    throw new Error(`Project record could not be created: ${msg}`)
+  }
+
   // ─── PHASE 1: Parallel provisioning ─────────────────────────
 
   const active = ['Dropbox', 'Frame.io', 'Canva', 'FigJam']
@@ -80,35 +129,9 @@ export async function runOrchestrator(
 
   await onProgress?.('phase1_complete', buildPhase1Summary(results, sel))
 
-  // ─── PHASE 2: Create Kit project in Supabase ────────────────
-
-  await onProgress?.('phase2', 'Creating project record...')
-
-  try {
-    const db = createAdminClient()
-    const { data: project, error } = await db
-      .from('projects')
-      .insert({
-        workspace_id: workspaceId,
-        name: projectName,
-        client: clientName,
-        project_code: form.projectNumber,
-        project_type: form.projectType,
-        start_date: form.startDate || null,
-        target_delivery: form.deadline || null,
-        status: 'active',
-        external_links: {},
-      })
-      .select('id')
-      .single()
-
-    if (error) throw error
-    results.projectId = project.id
-  } catch (err) {
-    console.error('[Provisioner] Failed to create project:', err)
-  }
-
   // ─── PHASE 3: Create Slack channel ──────────────────────────
+  // Safe to create now: the project record above is committed, so the channel
+  // can never be orphaned.
 
   if (sel.has('slack')) {
     await onProgress?.('phase3', 'Setting up Slack project channel...')

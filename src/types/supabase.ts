@@ -1188,6 +1188,35 @@ export type Database = {
         }
         Relationships: []
       }
+      project_settings: {
+        Row: {
+          frameio_upload_enabled: boolean
+          project_id: string
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          frameio_upload_enabled?: boolean
+          project_id: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          frameio_upload_enabled?: boolean
+          project_id?: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "project_settings_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: true
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       edit_decisions: {
         Row: {
           created_at: string

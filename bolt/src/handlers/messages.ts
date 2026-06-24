@@ -33,6 +33,7 @@ import { isNoteTrigger } from '../notes/keyword'
 import { handleNoteMessage } from '../notes/handler'
 import { handleBrainIngestMessage } from '../brain/handler'
 import { handleRoleMessage } from '../roles/handler'
+import { handleFrameioToggleMessage } from '../delivery/frameio-toggle'
 
 import { runOrchestrator } from '../llm/orchestrator'
 import { hasPendingClarification } from '../llm/memory'
@@ -378,6 +379,28 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
     }
   } catch (err: any) {
     console.error('[Bolt] role handler failed:', err.message || err)
+  }
+
+  // ── Fast path 3.6: Frame.io upload toggle ───────────────
+  // "@Kit turn off Frame.io upload" / "is frame upload on?" etc. Producers and
+  // admins can change it; anyone can check status. Runs after the Frame.io
+  // *link* fast path above, so review links are never captured here.
+  try {
+    const handledToggle = await handleFrameioToggleMessage({
+      app,
+      channelId,
+      userId,
+      text: messageText,
+      threadTs: assistantThreadTs,
+      workspaceId,
+      caller: user,
+    })
+    if (handledToggle) {
+      await clearThinking(app, channelId, replyThreadTs || threadTs)
+      return
+    }
+  } catch (err: any) {
+    console.error('[Bolt] frame.io toggle handler failed:', err.message || err)
   }
 
   // ── Fast path 4: Shot list ──────────────────────────────

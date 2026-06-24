@@ -18,6 +18,9 @@ COPY src/lib/ ./src/lib/
 COPY bolt/src/ ./bolt/src/
 COPY bolt/tsconfig.json ./bolt/
 
+# Static assets (e.g. the NDA paperwork template) read at runtime
+COPY bolt/assets/ ./bolt/assets/
+
 WORKDIR /app/bolt
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

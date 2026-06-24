@@ -20,6 +20,7 @@ import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { dropboxHeaders } from '../../../src/lib/dropbox/client'
 import { frameioHeaders } from '../../../src/lib/frameio/auth'
+import { isFrameioUploadEnabled } from '../../../src/lib/projects/settings'
 
 const DROPBOX_API = 'https://api.dropboxapi.com/2'
 const FRAMEIO_API = 'https://api.frame.io/v4'
@@ -29,6 +30,32 @@ const WATCH_ROOT = '/production'
 // Match `/production/<year>/<safeName>/09_Outgoing/(01_Client Progress|02_Delivery)/<filename>`
 // path_display preserves the original casing.
 const PATH_RE = /^\/production\/(\d{4})\/([^/]+)\/09_Outgoing\/(01_Client Progress|02_Delivery)\/(.+)$/i
+
+// File extensions to skip when mirroring deliveries to Frame.io — e.g. audio
+// sidecars / proxies dropped next to the actual video deliverable. Override
+// with a comma-separated DELIVERY_DENY_EXTENSIONS; defaults to aac + m4v.
+const DENY_EXTENSIONS = new Set(
+  (process.env.DELIVERY_DENY_EXTENSIONS || 'aac,m4v')
+    .split(',')
+    .map((s) => s.trim().toLowerCase().replace(/^\./, ''))
+    .filter(Boolean),
+)
+
+/**
+ * True if a delivery file should be skipped based on its extension. `filename`
+ * may include intermediate subfolders (e.g. "051326/v1/mix.aac"); only the
+ * final segment's extension is considered.
+ */
+export function isDeniedDeliveryFile(
+  filename: string,
+  deny: Set<string> = DENY_EXTENSIONS,
+): boolean {
+  const base = filename.split('/').pop() || filename
+  const dot = base.lastIndexOf('.')
+  if (dot <= 0) return false
+  return deny.has(base.slice(dot + 1).toLowerCase())
+}
+
 
 // ─── Signature verification ─────────────────────────────────
 
@@ -144,8 +171,14 @@ export async function processDropboxNotification(app: App): Promise<void> {
     if (entry.tag !== 'file') continue
     const m = entry.path_display.match(PATH_RE)
     if (!m) continue
-    matched++
     const [, year, safeName, subfolder, filename] = m
+    // Skip denied file types (e.g. .aac audio sidecars) so they aren't
+    // mirrored to Frame.io alongside the video deliverables.
+    if (isDeniedDeliveryFile(filename)) {
+      console.log(`[dropbox-watcher] skipping ${entry.path_display} (denied extension)`)
+      continue
+    }
+    matched++
     try {
       await handleNewDelivery(app, {
         path: entry.path_display,
@@ -199,6 +232,19 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
     console.log(
       `[dropbox-watcher] auto-backfilled project ${project.id} for safeName=${d.safeName}`,
     )
+  }
+
+  // ── Respect the per-project Frame.io upload toggle ──────
+  // A producer can disable Frame.io mirroring for projects that don't use
+  // Frame.io for review ("@Kit turn off frame upload"). The delivery file stays
+  // in Dropbox; we just don't mirror it. The check is before upload starts, so
+  // a transcode already in flight still uploads — the toggle takes effect on
+  // the next delivery.
+  if (!(await isFrameioUploadEnabled(project.id))) {
+    console.log(
+      `[dropbox-watcher] Frame.io upload disabled for project ${project.id} (${project.name}); leaving ${d.name} in Dropbox only`,
+    )
+    return
   }
 
   const frameioId = project.external_links?.frameio_id

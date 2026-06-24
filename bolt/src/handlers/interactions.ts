@@ -76,6 +76,7 @@ export function registerInteractionHandlers(app: App) {
             projectId: parsed.projectId,
             artistEmail: artist.email,
             artistName: artist.name,
+            artistLegalName: artist.legalName,
             requestedBy,
           },
         })
