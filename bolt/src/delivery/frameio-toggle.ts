@@ -33,43 +33,72 @@ export interface FrameioToggleIntent {
   projectRef: { channelId?: string; number?: string } | null
 }
 
-// A "frame" / "frameio" / "frame.io" token must be present to consider the
-// message at all.
+// What anchors a message as a delivery-upload toggle: a "frame"/"frameio"/
+// "frame.io" token, OR an "auto upload" reference. Real users routinely say
+// "auto upload for <project>" without ever naming Frame.io, so we can't require
+// the word "frame".
 const FRAME_RE = /\bframe(?:\s?\.?\s?io)?\b/i
+const AUTO_UPLOAD_RE = /\bauto[\s-]?upload(?:s|ing)?\b/i
+const UPLOAD_RE = /\bupload(?:s|ing)?\b/i
+
 // Editing / video chatter that merely says "frame" — never a toggle command.
 const FRAME_NOISE_RE = /\b(frame\s?rate|framerate|key\s?frame|keyframe|per\s?frame|frames?\s+per|frame\s?\.?io\s+link)\b/i
 
-const DISABLE_RE = /\b(off|disabled?|skip|stop|remove|no)\b/i
-const ENABLE_RE = /\b(on|enabled?|re-?enable|resume|start|add|turn\s+on)\b/i
-const STATUS_RE = /\b(status|active)\b/i
+// Imperative toggle verbs, checked before bare on/off so a polite question
+// ("can you turn off the upload?") reads as a command, not a status query.
+const IMP_OFF_RE = /\b(turn(?:ing)?\s+off|toggle\s+off|switch\s+off|shut\s+off|disabl\w*|deactivat\w*|stop|skip|remove|no\s+(?:frame|auto))\b/i
+const IMP_ON_RE = /\b(turn(?:ing)?\s+on|toggle\s+on|switch\s+on|enabl\w*|re-?enabl\w*|reactivat\w*|activat\w*|resume|start|add)\b/i
+const STATUS_RE = /\b(status|active|currently)\b/i
+const BARE_OFF_RE = /\boff\b/i
+const BARE_ON_RE = /\bon\b/i
 
 const CHANNEL_MENTION_RE = /<#(C[A-Z0-9]+)(?:\|[^>]+)?>/i
 
 /**
  * Parse the toggle intent out of a free-text message. Returns null when the
- * message isn't clearly a Frame.io-upload toggle/status command.
+ * message isn't clearly a Frame.io / auto-upload toggle/status command.
  */
 export function parseFrameioToggleIntent(text: string): FrameioToggleIntent | null {
   if (!text) return null
-  if (!FRAME_RE.test(text)) return null
-  if (FRAME_NOISE_RE.test(text)) return null
-
-  const isQuestion = /\?\s*$/.test(text.trim())
-  const hasStatus = STATUS_RE.test(text)
-  const hasDisable = DISABLE_RE.test(text)
-  const hasEnable = ENABLE_RE.test(text)
-
-  let action: FrameioToggleAction | null = null
-  if (hasStatus) action = 'status'
-  else if (isQuestion) action = 'status' // "is frame upload on?", "frame.io on?"
-  else if (hasDisable) action = 'disable'
-  else if (hasEnable) action = 'enable'
-  if (!action) return null
 
   const chan = text.match(CHANNEL_MENTION_RE)
   const number = parseProjectNumber(text)
-  const projectRef = chan || number ? { channelId: chan?.[1], number } : null
+  const hasProjectRef = !!(chan || number)
 
+  const hasFrame = FRAME_RE.test(text)
+  const hasAutoUpload = AUTO_UPLOAD_RE.test(text)
+  const hasUpload = UPLOAD_RE.test(text)
+
+  const isImpOff = IMP_OFF_RE.test(text)
+  const isImpOn = IMP_ON_RE.test(text)
+  const hasStatusWord = STATUS_RE.test(text)
+  const hasToggleVerb = isImpOff || isImpOn || hasStatusWord
+
+  // Anchor: "frame"/"frameio" or "auto upload" anchor on their own. A plain
+  // "upload" needs BOTH a toggle verb and an explicit project reference to
+  // count — that keeps "can you upload the final to 2628?" from matching.
+  const anchored =
+    hasFrame || hasAutoUpload || (hasUpload && hasToggleVerb && hasProjectRef)
+  if (!anchored) return null
+
+  // "frame rate", "keyframe", etc. — framing the image, not Frame.io. Only
+  // bails when "frame" was the sole anchor (not when "auto upload" is present).
+  if (hasFrame && !hasAutoUpload && FRAME_NOISE_RE.test(text)) return null
+
+  const trimmed = text.trim()
+  const isQuestion =
+    /\?\s*$/.test(trimmed) ||
+    /^(is|are|does|do|what|what's|whats|check|show)\b/i.test(trimmed)
+
+  let action: FrameioToggleAction | null = null
+  if (isImpOff) action = 'disable'
+  else if (isImpOn) action = 'enable'
+  else if (hasStatusWord || isQuestion) action = 'status'
+  else if (BARE_OFF_RE.test(text)) action = 'disable'
+  else if (BARE_ON_RE.test(text)) action = 'enable'
+  if (!action) return null
+
+  const projectRef = hasProjectRef ? { channelId: chan?.[1], number } : null
   return { action, projectRef }
 }
 

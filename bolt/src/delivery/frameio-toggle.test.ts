@@ -57,7 +57,45 @@ describe('parseFrameioToggleIntent', () => {
     )
   })
 
-  it('no frame token → null', () => {
+  // Real phrasing from production: no "frame" token at all, just "auto upload"
+  // plus the project's full safe-name.
+  it('"toggle off the auto upload for 2628_Crunchyroll_Rainforest" → disable + 2628', () => {
+    const r = parseFrameioToggleIntent(
+      'Can you toggle off the auto upload for 2628_Crunchyroll_Rainforest',
+    )
+    assert.equal(r?.action, 'disable')
+    assert.equal(r?.projectRef?.number, '2628')
+  })
+
+  it('"disable auto-upload for project 2654" → disable', () => {
+    assert.equal(
+      parseFrameioToggleIntent('disable auto-upload for project 2654')?.action,
+      'disable',
+    )
+  })
+
+  it('"turn auto-upload back on for 2628" → enable', () => {
+    assert.equal(
+      parseFrameioToggleIntent('turn auto-upload back on for 2628')?.action,
+      'enable',
+    )
+  })
+
+  it('"is the auto upload on for 2628?" → status (not enable)', () => {
+    assert.equal(
+      parseFrameioToggleIntent('is the auto upload on for 2628?')?.action,
+      'status',
+    )
+  })
+
+  it('"can you upload the final to 2628 on Friday?" → null (not a toggle)', () => {
+    assert.equal(
+      parseFrameioToggleIntent('can you upload the final to 2628 on Friday?'),
+      null,
+    )
+  })
+
+  it('vague "turn off the upload please" (no project, no auto) → null', () => {
     assert.equal(parseFrameioToggleIntent('turn off the upload please'), null)
   })
 
