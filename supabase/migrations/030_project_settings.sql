@@ -18,3 +18,8 @@ CREATE TABLE IF NOT EXISTS project_settings (
 COMMENT ON TABLE project_settings IS 'Per-project toggles. A missing row means defaults apply.';
 COMMENT ON COLUMN project_settings.frameio_upload_enabled IS 'When false, the Dropbox->Frame.io delivery watcher skips mirroring this project''s delivery files; they stay in Dropbox only.';
 COMMENT ON COLUMN project_settings.updated_by IS 'Slack user ID of whoever last changed a setting.';
+
+-- Match the rest of the schema: RLS on, no policies. Kit reaches this table
+-- only through the service-role client, which bypasses RLS; anon/authenticated
+-- roles get no access.
+ALTER TABLE project_settings ENABLE ROW LEVEL SECURITY;
