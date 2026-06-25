@@ -50,17 +50,18 @@ A producer types `new project` in a Slack DM with Kit (or runs the slash command
 
 **Flow**
 1. Card button click → modal opens via `buildNewProjectModal` (`src/lib/provisioner/modal.ts`)
-2. User submits → form fields parsed → project row inserted into Supabase `projects` table
-3. `Promise.allSettled` fans out to each selected service via `dispatch(service, 'provision', payload)` from `src/lib/inngest/agents/registry.ts`
+2. User submits → form fields parsed → project row inserted into Supabase `projects` table (with `external_ids.dropbox_safe_name`, so the file watcher can reverse-match)
+3. Two-phase `Promise.allSettled` fans out to each selected service via `dispatch(service, 'provision', payload)` from `src/lib/inngest/agents/registry.ts` — link-producing services first, then Slack last so its canvas gets the Dropbox/Frame.io URLs
 4. Each progress update is `chat.postMessage`-ed back into the originating thread via the `postOpts({thread_ts})` helper
-5. Final `external_links` and `status='active'` updated on the project row
-6. Summary card posted in the new project's Slack channel
+5. Final `external_links` and `status` (`active`/`partial`) updated on the project row
+6. The project brain is auto-seeded (producers-only by default)
+
+> **Single source of truth:** `bolt/src/handlers/interactions.ts` (`kit_provision_project`). Earlier duplicate provisioners — an MCP `runOrchestrator`, an Inngest `provisionProject`, and a legacy Next.js webhook route — were removed; they had diverged and produced project records the file watcher couldn't match.
 
 **Key files**
-- `bolt/src/handlers/interactions.ts` — the orchestrator
+- `bolt/src/handlers/interactions.ts` — the orchestrator (single source of truth)
 - `src/lib/provisioner/modal.ts` — modal block kit definition
 - `src/lib/inngest/agents/*.ts` — per-service provisioning logic
-- `src/lib/provisioner/slack-summary.ts` — final summary card
 
 **Supabase**
 - Inserts into `projects` with `workspace_id, name, client, project_code, project_type, status='provisioning', start_date, target_delivery, brief_summary, budget_total, project_manager_slack_id, external_ids`

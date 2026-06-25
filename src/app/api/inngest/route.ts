@@ -1,7 +1,6 @@
 // @ts-nocheck
 import { serve } from 'inngest/next'
 import { inngest } from '@/lib/inngest/client'
-import { provisionProject } from '@/lib/inngest/orchestrator'
 import { plaudTranscriptionReady, plaudTranscriptionFailed } from '@/lib/inngest/plaud'
 import { preMeetingScan, preMeetingDispatch } from '@/lib/inngest/pre-meeting'
 import { deliveryDropboxScan, deliveryJobNotifier, deliveryStaleSweep } from '@/lib/inngest/delivery-crons'
@@ -21,7 +20,6 @@ import { brainDeadlineSweep, brainScavengerScan, brainConsolidate } from '@/lib/
 export const { GET, POST, PUT } = serve({
   client: inngest,
   functions: [
-    provisionProject,
     plaudTranscriptionReady,
     plaudTranscriptionFailed,
     preMeetingScan,
