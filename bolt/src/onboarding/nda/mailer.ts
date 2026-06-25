@@ -103,19 +103,15 @@ function getServiceAccountCreds(): { client_email: string; private_key: string }
   return creds
 }
 
-/**
- * Mint a domain-wide-delegated access token for `scope`, impersonating
- * `subject` (a real Workspace user). Shared by Gmail send and the Drive-based
- * docx→PDF conversion.
- */
-export async function getDelegatedAccessToken(scope: string, subject: string): Promise<string> {
+/** Mint a domain-wide-delegated access token for gmail.send as `subject`. */
+async function getGmailAccessToken(subject: string): Promise<string> {
   const creds = getServiceAccountCreds()
   const now = Math.floor(Date.now() / 1000)
   const header = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
   const claim = b64url(
     JSON.stringify({
       iss: creds.client_email,
-      scope,
+      scope: GMAIL_SEND_SCOPE,
       aud: TOKEN_ENDPOINT,
       sub: subject,
       iat: now,
@@ -135,16 +131,11 @@ export async function getDelegatedAccessToken(scope: string, subject: string): P
     }),
   })
   if (!res.ok) {
-    throw new Error(`Google token exchange failed (${res.status}): ${await res.text()}`)
+    throw new Error(`Gmail token exchange failed (${res.status}): ${await res.text()}`)
   }
   const data: any = await res.json()
-  if (!data.access_token) throw new Error('Google token exchange returned no access_token')
+  if (!data.access_token) throw new Error('Gmail token exchange returned no access_token')
   return data.access_token as string
-}
-
-/** Mint a domain-wide-delegated access token for gmail.send as `subject`. */
-async function getGmailAccessToken(subject: string): Promise<string> {
-  return getDelegatedAccessToken(GMAIL_SEND_SCOPE, subject)
 }
 
 /** Send a message via the Gmail API. Returns the created message id. */

@@ -1,94 +1,51 @@
 /**
- * NDA template fill.
+ * NDA document loader.
  *
- * Loads the committed Ranger & Fox one-way NDA (.docx, letterhead preserved)
- * and merges in the artist's details via docxtemplater. The template carries
- * four single-brace merge tags authored into the original document:
- *   {company_name}  — the "Company" signing party
- *   {day} {month} {year} — the "made as of this ___ day of ___ ____" date
- *
- * Output is a filled .docx (the artist signs in Word / Google Docs / on paper).
+ * Loads the committed Ranger & Fox one-way *Individual* NDA (a static PDF with
+ * the studio letterhead). The document is not personalized — it's a blank NDA
+ * the freelancer signs, prints their name on, and dates themselves. We only
+ * vary the attachment filename per recipient.
  */
 
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import PizZip from 'pizzip'
-import Docxtemplater from 'docxtemplater'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-// bolt/src/onboarding/nda/template.ts → bolt/assets/nda/<template>.docx
-export const NDA_TEMPLATE_PATH = path.resolve(
+// bolt/src/onboarding/nda/template.ts → bolt/assets/nda/<file>.pdf
+export const NDA_PDF_PATH = path.resolve(
   __dirname,
-  '../../../assets/nda/RF_One_Way_Company_NDA.template.docx',
+  '../../../assets/nda/RF_One_Way_Individual_NDA.pdf',
 )
 
-const DOCX_CONTENT_TYPE =
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+const PDF_CONTENT_TYPE = 'application/pdf'
 
-export interface NdaMergeData {
-  /** The "Company" party — legal entity name, or the artist's full name. */
-  companyName: string
-  /** Effective date of the agreement. Defaults to now. */
-  date?: Date
-}
-
-export interface FilledNda {
+export interface NdaDocument {
   buffer: Buffer
   filename: string
   contentType: string
 }
 
-function ordinal(n: number): string {
-  const suffixes = ['th', 'st', 'nd', 'rd']
-  const v = n % 100
-  return n + (suffixes[(v - 20) % 10] || suffixes[v] || suffixes[0])
-}
-
-/**
- * Format a date into the NDA's day/month/year parts, in the studio's
- * timezone (so an evening send near midnight doesn't roll the date).
- */
-export function formatNdaDateParts(
-  date: Date,
-  timeZone = 'America/Los_Angeles',
-): { day: string; month: string; year: string } {
-  const dayNum = Number(
-    new Intl.DateTimeFormat('en-US', { timeZone, day: 'numeric' }).format(date),
-  )
-  const month = new Intl.DateTimeFormat('en-US', { timeZone, month: 'long' }).format(date)
-  const year = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric' }).format(date)
-  return { day: ordinal(dayNum), month, year }
-}
-
 function safeFilenamePart(s: string): string {
-  return s.replace(/[^\w]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60) || 'Company'
+  return s.replace(/[^\w]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60)
 }
 
 /**
- * Produce a filled NDA .docx for one artist. Synchronous — the template is a
- * small local file. Throws if the template is missing or merge fails.
+ * Load the NDA PDF to attach to an onboarding email. Synchronous — the PDF is
+ * a small local file. Throws if the asset is missing.
+ *
+ * `recipientName` only flavors the attachment filename
+ * (e.g. NDA_RangerFox_Jane_Doe.pdf); the PDF bytes are identical for everyone.
  */
-export function fillNdaTemplate(
-  data: NdaMergeData,
-  opts: { templatePath?: string } = {},
-): FilledNda {
-  const templatePath = opts.templatePath || NDA_TEMPLATE_PATH
-  const content = fs.readFileSync(templatePath)
-  const zip = new PizZip(content)
-  const doc = new Docxtemplater(zip, { paragraphLoop: true, linebreaks: true })
-  const parts = formatNdaDateParts(data.date || new Date())
-  doc.render({
-    company_name: data.companyName,
-    day: parts.day,
-    month: parts.month,
-    year: parts.year,
-  })
-  const buffer = doc.getZip().generate({ type: 'nodebuffer' }) as Buffer
+export function loadNdaPdf(
+  opts: { recipientName?: string; pdfPath?: string } = {},
+): NdaDocument {
+  const buffer = fs.readFileSync(opts.pdfPath || NDA_PDF_PATH)
+  const who = opts.recipientName ? safeFilenamePart(opts.recipientName) : ''
   return {
     buffer,
-    filename: `NDA_RangerFox_${safeFilenamePart(data.companyName)}.docx`,
-    contentType: DOCX_CONTENT_TYPE,
+    filename: who ? `NDA_RangerFox_${who}.pdf` : 'NDA_RangerFox.pdf',
+    contentType: PDF_CONTENT_TYPE,
   }
 }

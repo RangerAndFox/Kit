@@ -8,9 +8,8 @@
  * freelancers are skipped so they're never double-emailed.
  */
 
-import { fillNdaTemplate } from './template'
+import { loadNdaPdf } from './template'
 import { sendGmailMessage } from './mailer'
-import { convertDocxToPdf } from './pdf'
 import {
   getPaperwork,
   hasPaperworkOnFile,
@@ -30,18 +29,15 @@ export function ndaCcList(): string[] {
   return raw.split(',').map((s) => s.trim()).filter(Boolean)
 }
 
-export function composeNdaEmailBody(opts: {
-  firstName: string
-  companyName: string
-}): string {
+export function composeNdaEmailBody(opts: { firstName: string }): string {
   return [
     `Hi ${opts.firstName},`,
     '',
     `Welcome aboard — we're glad to be working with you at Ranger & Fox.`,
     '',
     `Before we get rolling, please review and sign the attached Non-Disclosure ` +
-      `Agreement. We've filled in your details (${opts.companyName}); just add your ` +
-      `signature and send it back to us.`,
+      `Agreement. Just add your signature, print your name, date it, and send it ` +
+      `back to us.`,
     '',
     `If anything looks off or you have any questions, reply to this email and we'll sort it out.`,
     '',
@@ -89,43 +85,28 @@ export async function sendNdaIfFirstTimer(opts: {
     return { status: 'failed', message: `paperwork lookup failed: ${err.message || err}` }
   }
 
-  // The "Company" party: legal entity name if captured, else the artist's name.
-  const companyName = (opts.artistLegalName || '').trim() || opts.artistName.trim()
+  // Name we record this send under: legal name if captured, else display name.
+  const recordName = (opts.artistLegalName || '').trim() || opts.artistName.trim()
   const firstName = opts.artistName.trim().split(/\s+/)[0] || 'there'
   const cc = ndaCcList()
 
   try {
-    const nda = fillNdaTemplate({ companyName })
-
-    // Send a PDF. Convert the filled .docx via Drive; if conversion isn't
-    // available yet (e.g. the drive scope hasn't been authorized on the
-    // service account), fall back to the .docx so the freelancer still gets
-    // the NDA rather than nothing.
-    const baseName = nda.filename.replace(/\.docx$/i, '')
-    let attachment = { filename: nda.filename, content: nda.buffer, contentType: nda.contentType }
-    let format = 'docx'
-    try {
-      const pdf = await convertDocxToPdf({ docxBuffer: nda.buffer, name: baseName, subject: fromEmail })
-      attachment = { filename: `${baseName}.pdf`, content: pdf, contentType: 'application/pdf' }
-      format = 'pdf'
-    } catch (convErr: any) {
-      console.warn(
-        `[nda] docx→PDF conversion failed, sending .docx instead: ${convErr.message || convErr}`,
-      )
-    }
+    const nda = loadNdaPdf({ recipientName: opts.artistName })
 
     await sendGmailMessage({
       from: fromEmail,
       to: opts.artistEmail,
       cc,
       subject: 'Ranger & Fox NDA for signature',
-      text: composeNdaEmailBody({ firstName, companyName }),
-      attachments: [attachment],
+      text: composeNdaEmailBody({ firstName }),
+      attachments: [
+        { filename: nda.filename, content: nda.buffer, contentType: nda.contentType },
+      ],
     })
-    await recordNdaSent({ email, legalName: companyName, onboardingId: opts.onboardingId })
+    await recordNdaSent({ email, legalName: recordName, onboardingId: opts.onboardingId })
     return {
       status: 'ok',
-      message: `NDA (${format}) emailed to ${opts.artistEmail}${cc.length ? ` (cc ${cc.join(', ')})` : ''}.`,
+      message: `NDA emailed to ${opts.artistEmail}${cc.length ? ` (cc ${cc.join(', ')})` : ''}.`,
     }
   } catch (err: any) {
     return { status: 'failed', message: err.message || String(err) }

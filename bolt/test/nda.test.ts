@@ -1,11 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import PizZip from 'pizzip'
 
-import {
-  fillNdaTemplate,
-  formatNdaDateParts,
-  NDA_TEMPLATE_PATH,
-} from '../src/onboarding/nda/template'
+import { loadNdaPdf, NDA_PDF_PATH } from '../src/onboarding/nda/template'
 import { buildMimeMessage } from '../src/onboarding/nda/mailer'
 import {
   hasPaperworkOnFile,
@@ -18,64 +13,27 @@ import {
   sendNdaIfFirstTimer,
 } from '../src/onboarding/nda/send'
 
-describe('formatNdaDateParts', () => {
-  it('formats day with ordinal, full month, and year', () => {
-    const d = new Date('2026-06-15T20:00:00Z') // afternoon in LA
-    expect(formatNdaDateParts(d, 'America/Los_Angeles')).toEqual({
-      day: '15th',
-      month: 'June',
-      year: '2026',
-    })
-  })
-
-  it('uses the studio timezone (does not roll past midnight UTC)', () => {
-    // 02:30 UTC on the 16th is still 19:30 on the 15th in LA.
-    const d = new Date('2026-06-16T02:30:00Z')
-    expect(formatNdaDateParts(d, 'America/Los_Angeles').day).toBe('15th')
-  })
-
-  it('handles 1st/2nd/3rd/21st ordinals', () => {
-    const day = (iso: string) => formatNdaDateParts(new Date(iso), 'UTC').day
-    expect(day('2026-06-01T12:00:00Z')).toBe('1st')
-    expect(day('2026-06-02T12:00:00Z')).toBe('2nd')
-    expect(day('2026-06-03T12:00:00Z')).toBe('3rd')
-    expect(day('2026-06-21T12:00:00Z')).toBe('21st')
-  })
-})
-
-describe('fillNdaTemplate', () => {
-  it('merges company + date into the docx, preserves the letterhead logo', () => {
-    const { buffer, filename, contentType } = fillNdaTemplate({
-      companyName: 'Jane Doe Creative LLC',
-      date: new Date('2026-06-15T20:00:00Z'),
-    })
+describe('loadNdaPdf', () => {
+  it('loads the committed NDA PDF with a pdf content type', () => {
+    const { buffer, filename, contentType } = loadNdaPdf({ recipientName: 'Jane Doe' })
     expect(buffer.length).toBeGreaterThan(1000)
-    expect(filename).toBe('NDA_RangerFox_Jane_Doe_Creative_LLC.docx')
-    expect(contentType).toContain('wordprocessingml')
-
-    const zip = new PizZip(buffer)
-    // Collapse the XML to plain text (run boundaries become whitespace).
-    const xml = zip
-      .file('word/document.xml')!
-      .asText()
-      .replace(/<[^>]*>/g, ' ')
-      .replace(/\s+/g, ' ')
-    expect(xml).toContain('Jane Doe Creative LLC')
-    expect(xml).toContain('made as of this 15th day of June 2026')
-    // No unfilled merge tags or original blanks remain.
-    expect(xml).not.toContain('{company_name}')
-    expect(xml).not.toContain('2021')
-    // Letterhead image survives the merge.
-    expect(zip.file('word/media/image1.png')).toBeTruthy()
+    // Real PDF bytes begin with "%PDF".
+    expect(buffer.subarray(0, 4).toString('latin1')).toBe('%PDF')
+    expect(contentType).toBe('application/pdf')
+    expect(filename).toBe('NDA_RangerFox_Jane_Doe.pdf')
   })
 
-  it('sanitizes the company name into a safe filename', () => {
-    const { filename } = fillNdaTemplate({ companyName: 'José & Co. / Films' })
-    expect(filename).toMatch(/^NDA_RangerFox_[\w]+\.docx$/)
+  it('sanitizes the recipient name into a safe filename', () => {
+    const { filename } = loadNdaPdf({ recipientName: 'José Q. Filmmaker / Co.' })
+    expect(filename).toMatch(/^NDA_RangerFox_[\w]+\.pdf$/)
   })
 
-  it('reads the committed template path', () => {
-    expect(NDA_TEMPLATE_PATH).toContain('assets/nda/RF_One_Way_Company_NDA.template.docx')
+  it('falls back to a generic filename when no recipient name is given', () => {
+    expect(loadNdaPdf().filename).toBe('NDA_RangerFox.pdf')
+  })
+
+  it('reads the committed individual NDA path', () => {
+    expect(NDA_PDF_PATH).toContain('assets/nda/RF_One_Way_Individual_NDA.pdf')
   })
 })
 
@@ -165,10 +123,10 @@ describe('NDA send config + gating', () => {
     else process.env.ONBOARDING_NDA_CC = prev
   })
 
-  it('composeNdaEmailBody greets by first name and names the company', () => {
-    const body = composeNdaEmailBody({ firstName: 'Jane', companyName: 'Jane Doe LLC' })
+  it('composeNdaEmailBody greets by first name and asks them to sign', () => {
+    const body = composeNdaEmailBody({ firstName: 'Jane' })
     expect(body).toContain('Hi Jane,')
-    expect(body).toContain('Jane Doe LLC')
+    expect(body).toMatch(/sign/i)
   })
 
   it('skips when the feature flag is off (no DB/network touched)', async () => {
