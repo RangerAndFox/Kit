@@ -10,6 +10,7 @@
 
 import { fillNdaTemplate } from './template'
 import { sendGmailMessage } from './mailer'
+import { convertDocxToPdf } from './pdf'
 import {
   getPaperwork,
   hasPaperworkOnFile,
@@ -95,20 +96,36 @@ export async function sendNdaIfFirstTimer(opts: {
 
   try {
     const nda = fillNdaTemplate({ companyName })
+
+    // Send a PDF. Convert the filled .docx via Drive; if conversion isn't
+    // available yet (e.g. the drive scope hasn't been authorized on the
+    // service account), fall back to the .docx so the freelancer still gets
+    // the NDA rather than nothing.
+    const baseName = nda.filename.replace(/\.docx$/i, '')
+    let attachment = { filename: nda.filename, content: nda.buffer, contentType: nda.contentType }
+    let format = 'docx'
+    try {
+      const pdf = await convertDocxToPdf({ docxBuffer: nda.buffer, name: baseName, subject: fromEmail })
+      attachment = { filename: `${baseName}.pdf`, content: pdf, contentType: 'application/pdf' }
+      format = 'pdf'
+    } catch (convErr: any) {
+      console.warn(
+        `[nda] docx→PDF conversion failed, sending .docx instead: ${convErr.message || convErr}`,
+      )
+    }
+
     await sendGmailMessage({
       from: fromEmail,
       to: opts.artistEmail,
       cc,
       subject: 'Ranger & Fox NDA for signature',
       text: composeNdaEmailBody({ firstName, companyName }),
-      attachments: [
-        { filename: nda.filename, content: nda.buffer, contentType: nda.contentType },
-      ],
+      attachments: [attachment],
     })
     await recordNdaSent({ email, legalName: companyName, onboardingId: opts.onboardingId })
     return {
       status: 'ok',
-      message: `NDA emailed to ${opts.artistEmail}${cc.length ? ` (cc ${cc.join(', ')})` : ''}.`,
+      message: `NDA (${format}) emailed to ${opts.artistEmail}${cc.length ? ` (cc ${cc.join(', ')})` : ''}.`,
     }
   } catch (err: any) {
     return { status: 'failed', message: err.message || String(err) }
