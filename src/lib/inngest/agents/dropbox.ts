@@ -124,7 +124,9 @@ async function searchFiles(payload: Record<string, unknown>): Promise<AgentResul
 
 async function listFolder(payload: Record<string, unknown>): Promise<AgentResult> {
   try {
-    const path = (payload.path as string) || '/Ranger & Fox/Production'
+    // Same namespace note as provision: the bot's Dropbox home is the team
+    // folder root, so the canonical path is /production (no /Ranger & Fox/ prefix).
+    const path = (payload.path as string) || '/production'
     const data = await dropboxPost('/files/list_folder', {
       path,
       limit: 50,
@@ -196,7 +198,7 @@ async function getProjectFolder(payload: Record<string, unknown>): Promise<Agent
   try {
     const projectQuery = (payload.project as string) || ''
     const year = (payload.year as number) || new Date().getFullYear()
-    const basePath = `/Ranger & Fox/Production/${year}`
+    const basePath = `/production/${year}`
 
     // List the year folder and find matching projects
     const data = await dropboxPost('/files/list_folder', {
@@ -250,7 +252,7 @@ export const dropboxAgent: AgentDefinition = {
     {
       action: 'list_folder',
       description: 'List contents of a folder. Defaults to the Production root.',
-      inputDescription: 'path (folder path, defaults to /Ranger & Fox/Production)',
+      inputDescription: 'path (folder path, defaults to /production)',
       mutates: false,
     },
     {
