@@ -20,6 +20,7 @@ import {
   type HarvestProject,
 } from '../../../src/lib/harvest/client'
 import { anthropic, SPECIALIST_MODEL } from '../llm/client'
+import { checkinToday } from './date'
 
 interface OpenCheckin {
   id: string
@@ -48,7 +49,7 @@ export interface ParsedEntry {
  * Open = status in ('sent', 'nudged') for today's date.
  */
 export async function findOpenCheckin(slackUserId: string): Promise<OpenCheckin | null> {
-  const today = new Date().toISOString().split('T')[0]
+  const today = checkinToday()
   const sb = createAdminClient()
   const { data, error } = await sb
     .from('daily_hours_checkins')

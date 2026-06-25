@@ -20,6 +20,7 @@ import {
   listTimeEntriesForUser,
   type HarvestTimeEntry,
 } from '../../../src/lib/harvest/client'
+import { checkinToday, checkinDateMinusDays } from './date'
 
 interface StaffRow {
   id: string
@@ -34,11 +35,6 @@ interface CandidateProject {
   harvest_project_name: string
   signal_hours_last_7d: number
   reasons: string[]
-}
-
-/** YYYY-MM-DD in the configured timezone (defaults to UTC). */
-function isoDate(d: Date = new Date()): string {
-  return d.toISOString().split('T')[0]
 }
 
 /**
@@ -101,7 +97,7 @@ export async function sendDailyCheckin(opts: {
   staff: StaffRow
 }): Promise<{ status: 'sent' | 'skipped' | 'duplicate' | 'failed'; reason?: string }> {
   const { app, staff } = opts
-  const today = isoDate()
+  const today = checkinToday()
   const sb = createAdminClient()
 
   // Duplicate guard: skip if a *scheduled* row already exists for today,
@@ -122,9 +118,7 @@ export async function sendDailyCheckin(opts: {
 
   // Pull last 7 days of Harvest entries.
   const to = today
-  const fromDate = new Date()
-  fromDate.setDate(fromDate.getDate() - 7)
-  const from = isoDate(fromDate)
+  const from = checkinDateMinusDays(7)
 
   let candidates: CandidateProject[] = []
   try {
@@ -216,7 +210,7 @@ export async function sendAllDailyCheckins(app: App): Promise<{
  */
 export async function nudgePendingCheckins(app: App): Promise<{ nudged: number }> {
   const sb = createAdminClient()
-  const today = isoDate()
+  const today = checkinToday()
   const { data: rows, error } = await sb
     .from('daily_hours_checkins')
     .select('id, slack_user_id, dm_channel_id, dm_ts')

@@ -18,6 +18,7 @@ import {
   buildConfirmBlocks,
   type ParsedEntry,
 } from './reply'
+import { checkinToday } from './date'
 
 /**
  * Cheap pre-filter: does the message even mention hours? Avoids burning
@@ -135,7 +136,7 @@ export async function handleAdhocHoursEntry(opts: {
 
   // 4. Create an ad-hoc check-in row to track this confirmation
   const sb = createAdminClient()
-  const today = new Date().toISOString().split('T')[0]
+  const today = checkinToday()
   const { data: row, error } = await sb
     .from('daily_hours_checkins')
     .insert({
