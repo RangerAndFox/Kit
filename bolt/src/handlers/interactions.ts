@@ -476,11 +476,6 @@ export function registerInteractionHandlers(app: App) {
     // launched the flow from. Falls back to DMing the user when we
     // somehow don't have a channel (shouldn't happen via the card).
     const statusChannel = channelId || userId
-    const postOpts = (extra: Record<string, unknown> = {}) => ({
-      channel: statusChannel,
-      ...(threadTs ? { thread_ts: threadTs } : {}),
-      ...extra,
-    })
     const values = view.state?.values || {}
 
     // Extract form values. Services are read from the checkbox group;
@@ -509,6 +504,80 @@ export function registerInteractionHandlers(app: App) {
     // Resolve workspace
     const teamId = body.team?.id || ''
     const workspaceId = await resolveWorkspaceId(teamId)
+
+    // ── Duplicate guard ───────────────────────────────────
+    // If a project with this number already exists in the workspace, don't
+    // silently create a second channel + record. Ask the producer whether to
+    // replace it, create a duplicate, or cancel.
+    const existing = await findExistingProject(workspaceId, form.projectNumber)
+    if (existing) {
+      const token = putPendingProvision({ form, workspaceId, userId, statusChannel, threadTs, existing })
+      await client.chat.postMessage(
+        postProvisionDupPrompt(statusChannel, threadTs, existing, token),
+      )
+      return
+    }
+
+    await runProjectProvisioning({ client, form, workspaceId, userId, statusChannel, threadTs })
+  })
+
+  // ─── New Project: duplicate-resolution buttons ────────────
+  app.action('kit_provision_dup_duplicate', async ({ ack, body, client, respond }) => {
+    await ack()
+    const pending = takePendingProvision((body as any).actions?.[0]?.value || '')
+    if (!pending) {
+      await respond({ replace_original: true, text: ':warning: That request expired — re-run the project form.' })
+      return
+    }
+    await respond({
+      replace_original: true,
+      text: `:heavy_plus_sign: Creating a *duplicate* project for ${pending.form.projectName}...`,
+    })
+    await runProjectProvisioning({ client, ...pending })
+  })
+
+  app.action('kit_provision_dup_replace', async ({ ack, body, client, respond }) => {
+    await ack()
+    const pending = takePendingProvision((body as any).actions?.[0]?.value || '')
+    if (!pending) {
+      await respond({ replace_original: true, text: ':warning: That request expired — re-run the project form.' })
+      return
+    }
+    await respond({
+      replace_original: true,
+      text: `:wastebasket: Removing the old *${pending.existing.name}* and creating a fresh one...`,
+    })
+    try {
+      await archiveOldProject(client, pending.existing)
+    } catch (err: any) {
+      console.error('[provision-dup] archive old project failed (continuing):', err?.message)
+    }
+    await runProjectProvisioning({ client, ...pending })
+  })
+
+  app.action('kit_provision_dup_cancel', async ({ ack, body, respond }) => {
+    await ack()
+    takePendingProvision((body as any).actions?.[0]?.value || '')
+    await respond({ replace_original: true, text: ':white_circle: Cancelled — nothing was created.' })
+  })
+
+  // Provision a project across all selected services. Extracted so both the
+  // modal submit (no duplicate) and the duplicate-resolution buttons run the
+  // exact same path.
+  async function runProjectProvisioning(args: {
+    client: any
+    form: any
+    workspaceId: string
+    userId: string
+    statusChannel: string
+    threadTs?: string
+  }) {
+    const { client, form, workspaceId, userId, statusChannel, threadTs } = args
+    const postOpts = (extra: Record<string, unknown> = {}) => ({
+      channel: statusChannel,
+      ...(threadTs ? { thread_ts: threadTs } : {}),
+      ...extra,
+    })
 
     // ── Run provisioning in-process (no timeout!) ───────────
     // This is the whole point of moving to Bolt on Railway.
@@ -737,7 +806,7 @@ export function registerInteractionHandlers(app: App) {
         text: `❌ Provisioning *${form.projectName}* failed: ${err.message || 'unknown error'}`,
       }))
     }
-  })
+  }
 }
 
 // ─── Helpers ────────────────────────────────────────────────
@@ -780,4 +849,151 @@ async function resolveWorkspaceId(teamId: string): Promise<string> {
   } catch {
     return ''
   }
+}
+
+// ─── New-project duplicate guard ────────────────────────────
+
+interface PendingProvision {
+  form: any
+  workspaceId: string
+  userId: string
+  statusChannel: string
+  threadTs?: string
+  existing: { id: string; name: string; code?: string; slackId?: string }
+}
+
+// In-memory stash for a project provision awaiting a duplicate-resolution
+// click. The Bolt app is a single Railway process, so a Map is fine; entries
+// TTL out after an hour and a process restart just drops them (the producer
+// re-runs the form).
+const pendingProvisions = new Map<string, { value: PendingProvision; expires: number }>()
+const PENDING_PROVISION_TTL_MS = 60 * 60 * 1000
+
+function putPendingProvision(value: PendingProvision): string {
+  const now = Date.now()
+  for (const [k, v] of pendingProvisions) if (v.expires < now) pendingProvisions.delete(k)
+  const token = `pp_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+  pendingProvisions.set(token, { value, expires: now + PENDING_PROVISION_TTL_MS })
+  return token
+}
+
+function takePendingProvision(token: string): PendingProvision | null {
+  const entry = token ? pendingProvisions.get(token) : undefined
+  if (!entry) return null
+  pendingProvisions.delete(token)
+  return entry.expires < Date.now() ? null : entry.value
+}
+
+/**
+ * Find a non-archived project in the workspace that matches this request by
+ * project number (the studio's unique key, encoded as the `{number}-{client}`
+ * project_code). Null when there's no clash.
+ */
+async function findExistingProject(
+  workspaceId: string,
+  projectNumber: string,
+): Promise<{ id: string; name: string; code?: string; slackId?: string } | null> {
+  if (!workspaceId || !projectNumber) return null
+  try {
+    const sb = createAdminClient()
+    const { data } = await sb
+      .from('projects')
+      .select('id, name, project_code, external_links, status')
+      .eq('workspace_id', workspaceId)
+      .ilike('project_code', `${projectNumber}-%`)
+      .not('status', 'in', '("archived","cancelled")')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (!data) return null
+    return {
+      id: data.id,
+      name: data.name,
+      code: data.project_code || undefined,
+      slackId: (data as any).external_links?.slack_id || undefined,
+    }
+  } catch (err: any) {
+    console.warn('[provision-dup] findExistingProject failed:', err?.message)
+    return null
+  }
+}
+
+function postProvisionDupPrompt(
+  channel: string,
+  threadTs: string | undefined,
+  existing: { id: string; name: string; code?: string },
+  token: string,
+) {
+  const label = existing.code ? `${existing.name} (${existing.code})` : existing.name
+  return {
+    channel,
+    ...(threadTs ? { thread_ts: threadTs } : {}),
+    text: `:warning: A project already exists for this number: ${label}. What do you want to do?`,
+    blocks: [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `:warning: A project already exists for this number: *${label}*.\nWhat do you want to do?`,
+        },
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            style: 'danger',
+            text: { type: 'plain_text', text: 'Delete old + create new' },
+            action_id: 'kit_provision_dup_replace',
+            value: token,
+            confirm: {
+              title: { type: 'plain_text', text: 'Delete the old project?' },
+              text: {
+                type: 'mrkdwn',
+                text: `This archives the old Slack channel and removes Kit's record for *${label}*. Dropbox and Frame.io folders are left untouched.`,
+              },
+              confirm: { type: 'plain_text', text: 'Delete old + create new' },
+              deny: { type: 'plain_text', text: 'Back' },
+            },
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Create duplicate' },
+            action_id: 'kit_provision_dup_duplicate',
+            value: token,
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Cancel' },
+            action_id: 'kit_provision_dup_cancel',
+            value: token,
+          },
+        ],
+      },
+    ],
+  }
+}
+
+/**
+ * "Delete old" = free up the channel name (rename), archive the old Slack
+ * channel, and remove Kit's project record (cascades to project_settings etc.).
+ * External Dropbox / Frame.io folders are intentionally left intact — they
+ * can't be safely auto-deleted.
+ */
+async function archiveOldProject(
+  client: any,
+  existing: { id: string; name: string; slackId?: string },
+): Promise<void> {
+  if (existing.slackId) {
+    // Rename first so the replacement can reclaim the original slug (Slack
+    // keeps an archived channel's name reserved otherwise).
+    await client.conversations
+      .rename({ channel: existing.slackId, name: `z-archived-${existing.slackId.toLowerCase()}`.slice(0, 80) })
+      .catch(() => {})
+    await client.conversations.archive({ channel: existing.slackId }).catch((err: any) => {
+      console.warn('[provision-dup] channel archive failed (non-fatal):', err?.data?.error || err?.message)
+    })
+  }
+  const sb = createAdminClient()
+  await sb.from('projects').delete().eq('id', existing.id)
 }
