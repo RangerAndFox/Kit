@@ -38,3 +38,36 @@ export function checkinDateMinusDays(
   base.setUTCDate(base.getUTCDate() - days)
   return base.toISOString().split('T')[0]
 }
+
+const YMD_RE = /^\d{4}-\d{2}-\d{2}$/
+const DAY_MS = 86_400_000
+
+/**
+ * Validate a parser-proposed spent date against the check-in's anchor day.
+ * Hours can't be logged to the future, and a date more than ~2 weeks back is
+ * almost certainly a misparse — both fall back to the anchor. Keeps a bad LLM
+ * guess from silently writing Harvest time to the wrong day.
+ */
+export function resolveSpentDate(
+  proposed: string | null | undefined,
+  anchorYmd: string,
+): string {
+  if (!proposed || !YMD_RE.test(proposed)) return anchorYmd
+  const p = Date.parse(`${proposed}T12:00:00Z`)
+  const a = Date.parse(`${anchorYmd}T12:00:00Z`)
+  if (Number.isNaN(p) || Number.isNaN(a)) return anchorYmd
+  if (p > a) return anchorYmd // no future-dating
+  if (p < a - 14 * DAY_MS) return anchorYmd // too far back to trust
+  return proposed
+}
+
+/** "Tue Jun 24" for a YYYY-MM-DD, rendered in the check-in timezone. */
+export function formatShortDate(ymd: string, tz: string = checkinTimezone()): string {
+  if (!YMD_RE.test(ymd)) return ymd
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  }).format(new Date(`${ymd}T12:00:00Z`))
+}

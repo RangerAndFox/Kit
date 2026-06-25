@@ -4,6 +4,8 @@ import {
   checkinToday,
   checkinDateMinusDays,
   checkinTimezone,
+  resolveSpentDate,
+  formatShortDate,
 } from '../src/checkins/date'
 
 describe('checkin date helpers', () => {
@@ -41,5 +43,37 @@ describe('checkin date helpers', () => {
     expect(checkinTimezone()).toBe('America/New_York')
     if (prev === undefined) delete process.env.CHECKIN_TIMEZONE
     else process.env.CHECKIN_TIMEZONE = prev
+  })
+})
+
+describe('resolveSpentDate', () => {
+  const anchor = '2026-06-25'
+
+  it('accepts a valid recent past date (e.g. "yesterday")', () => {
+    expect(resolveSpentDate('2026-06-24', anchor)).toBe('2026-06-24')
+    expect(resolveSpentDate('2026-06-20', anchor)).toBe('2026-06-20')
+  })
+
+  it('keeps the anchor when the date is null/empty/malformed', () => {
+    expect(resolveSpentDate(null, anchor)).toBe(anchor)
+    expect(resolveSpentDate(undefined, anchor)).toBe(anchor)
+    expect(resolveSpentDate('yesterday', anchor)).toBe(anchor)
+    expect(resolveSpentDate('2026-13-40', anchor)).toBe(anchor)
+  })
+
+  it('rejects future dates (no future-dating Harvest time)', () => {
+    expect(resolveSpentDate('2026-06-26', anchor)).toBe(anchor)
+  })
+
+  it('rejects dates more than ~2 weeks back as likely misparses', () => {
+    expect(resolveSpentDate('2026-06-10', anchor)).toBe(anchor)
+    // exactly 14 days back is still allowed
+    expect(resolveSpentDate('2026-06-11', anchor)).toBe('2026-06-11')
+  })
+})
+
+describe('formatShortDate', () => {
+  it('renders a friendly weekday/month/day in the studio tz', () => {
+    expect(formatShortDate('2026-06-24', 'America/Los_Angeles')).toBe('Wed, Jun 24')
   })
 })

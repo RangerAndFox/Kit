@@ -102,7 +102,6 @@ export async function handleCheckinConfirm(opts: {
     return
   }
 
-  const spentDate = checkin.check_in_date
   const sb = createAdminClient()
   const logged: HarvestTimeEntry[] = []
   const failures: string[] = []
@@ -122,7 +121,8 @@ export async function handleCheckinConfirm(opts: {
         projectId: entry.harvest_project_id,
         taskId: task.id,
         hours: entry.hours,
-        spentDate,
+        // Per-entry day ("yesterday" etc.), falling back to the check-in day.
+        spentDate: entry.spentDate || checkin.check_in_date,
         notes: entry.notes || undefined,
         userId: staff.harvest_user_id,
       })
