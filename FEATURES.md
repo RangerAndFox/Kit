@@ -80,7 +80,7 @@ Form fields don't map 1:1 to column names — see `~/.claude/projects/.../memory
 ## 2. Slack Channel + Canvas Provisioning
 
 ### Summary
-For each new project, Kit creates a Slack channel (`#{number}-{client}-{name}`), invites the PM + team members, sets the topic, posts a welcome message, and clones every canvas tabbed to the **template channel** (`C0B1312H89L`) into the new channel — both the channel's header-anchored canvas and any standalone canvases. Producers maintain templates by editing them in the template channel; no env-var changes needed.
+For each new project, Kit creates a Slack channel (`#{number}-{client}-{name}`), invites the PM + team members, sets the topic, posts a welcome message, and clones every canvas tabbed to the **template channel** (`C0B1312H89L`) into the new channel (each cloned as a standalone canvas tabbed to the channel header). Producers maintain templates by editing them in the template channel; no env-var changes needed.
 
 ### Trigger
 Part of the [new-project provisioning](#1-new-project-provisioning) fan-out (`slack` service).

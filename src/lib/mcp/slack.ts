@@ -413,9 +413,7 @@ export async function postProjectLinks(opts: {
 // ─── Project Channel Canvases (template duplication) ──────
 
 export interface DuplicateCanvasesResult {
-  /** ID of the new channel canvas attached to the project channel header */
-  channelCanvasId: string | null
-  /** IDs of standalone canvases copied from the template and shared to the channel */
+  /** IDs of canvases copied from the template and tabbed to the new channel */
   standaloneCanvasIds: string[]
 }
 
@@ -528,7 +526,7 @@ export async function duplicateTemplateCanvases(opts: {
   dropboxUrl?: string
   frameioUrl?: string
 }): Promise<DuplicateCanvasesResult> {
-  const out: DuplicateCanvasesResult = { channelCanvasId: null, standaloneCanvasIds: [] }
+  const out: DuplicateCanvasesResult = { standaloneCanvasIds: [] }
   if (!process.env.SLACK_BOT_TOKEN) {
     console.warn('[Slack canvas] SLACK_BOT_TOKEN missing; skipping')
     return out
