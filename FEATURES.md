@@ -122,7 +122,7 @@ Part of the [new-project provisioning](#1-new-project-provisioning) fan-out (`fr
 - Uses Frame.io v4 API (`https://api.frame.io/v4`)
 
 **Auth**
-Adobe IMS OAuth via `src/lib/frameio/auth.ts` (client_credentials + refresh_token). Needs `FRAMEIO_ADOBE_CLIENT_ID, FRAMEIO_ADOBE_CLIENT_SECRET, FRAMEIO_ADOBE_REFRESH_TOKEN`.
+Adobe IMS OAuth via `src/lib/frameio/auth.ts` (`refresh_token` grant — exchanges a stored refresh token for a short-lived access token, persisting the rotated refresh token each time). Needs `FRAMEIO_ADOBE_CLIENT_ID, FRAMEIO_ADOBE_CLIENT_SECRET, FRAMEIO_ADOBE_REFRESH_TOKEN`.
 
 **Folder mirroring**
 `copyFrameioFolderTree(sourceFolderId, destFolderId, depth=0)` recursively walks the template project, creating each folder under the new project. Files/comments/shares aren't copied — just the folder names and hierarchy. Bounded by `MAX_TEMPLATE_DEPTH = 8`.
