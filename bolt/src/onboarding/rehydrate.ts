@@ -65,13 +65,13 @@ function deriveDropboxPath(project: OnboardingProject): string | null {
   const safeName: string | undefined = project.external_ids?.dropbox_safe_name
   const year = new Date().getFullYear() // best-effort; could read created_at
   if (safeName) {
-    return `/Ranger & Fox/Production/${year}/${safeName}`
+    return `/production/${year}/${safeName}`
   }
   if (project.client && project.name) {
     const slug = `${project.client}_${project.name}`
       .replace(/[^\w\s-]/g, '')
       .replace(/\s+/g, '_')
-    return `/Ranger & Fox/Production/${year}/${slug}`
+    return `/production/${year}/${slug}`
   }
   return null
 }

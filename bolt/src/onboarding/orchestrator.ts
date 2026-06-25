@@ -58,8 +58,10 @@ function composeWelcomeDm(opts: {
     summaryLines.push(`*Brief:* ${project.brief_summary}`)
   }
   const links: string[] = []
-  const frameioUrl = project.external_links?.frameio_url
-  const dropboxUrl = project.external_links?.dropbox_url
+  // Links land under either the rehydrated *_url keys or the provisioner's
+  // bare service keys, depending on which path created the project. Accept both.
+  const frameioUrl = project.external_links?.frameio_url || project.external_links?.frameio
+  const dropboxUrl = project.external_links?.dropbox_url || project.external_links?.dropbox
   if (frameioUrl) links.push(`• Frame.io: ${frameioUrl}`)
   if (dropboxUrl) links.push(`• Dropbox: ${dropboxUrl}`)
   if (links.length) {
@@ -160,7 +162,7 @@ export async function runOnboarding(opts: {
     project.external_links?.slack_channel_id ||
     null
 
-  const [slackR, dropboxR, frameioR, harvestR] = await Promise.all([
+  const settled = await Promise.allSettled([
     inviteArtistToSlack({
       email: input.artistEmail,
       fullName: input.artistName,
@@ -174,6 +176,16 @@ export async function runOnboarding(opts: {
       artistName: input.artistName,
     }),
   ])
+  // One service throwing must not abort the others (or the NDA + tracking
+  // below). A rejected invite becomes a failed ServiceResult.
+  const asResult = (s: PromiseSettledResult<ServiceResult>, name: string): ServiceResult =>
+    s.status === 'fulfilled'
+      ? s.value
+      : { status: 'failed', message: `${name} crashed: ${s.reason?.message || String(s.reason)}` }
+  const slackR = asResult(settled[0], 'slack')
+  const dropboxR = asResult(settled[1], 'dropbox')
+  const frameioR = asResult(settled[2], 'frameio')
+  const harvestR = asResult(settled[3], 'harvest')
 
   // Send welcome message. Two paths:
   //  - Slack user known → open DM and post privately
