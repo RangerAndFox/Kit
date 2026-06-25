@@ -359,7 +359,12 @@ A daily cron (`0 9 * * 1-5`, in `CHECKIN_TIMEZONE`) flags creatives who've stopp
 - Code: `bolt/src/checkins/missing-time.ts` (`computeMissingStreak` is the pure core; `scanMissingTime` is the cron entry).
 - Idempotent via `hours_missing_alerts` (migration 032): unique `(staff_id, streak_start_date)` means a persisting gap alerts **once per streak**, not daily. When the artist logs again the streak breaks; the next lapse is a fresh streak and may alert again.
 - Date math runs through `bolt/src/checkins/date.ts` so "today"/working-day calculations stay in the studio timezone.
-- *Planned follow-up:* infer likely projects from the Slack channels the artist is active in, to pre-fill the check-in DM and enrich the flag.
+
+**Slack-activity project inference**
+`bolt/src/checkins/slack-activity.ts` guesses the projects a creative is working on by intersecting **live project channels** (projects with `status` active/partial and an `external_links.slack_id`) with the channels the artist is a *member* of (`users.conversations`, one call per user — no per-channel history scans). Two consumers:
+- The daily check-in DM merges these into the candidate list (`mergeCandidates` in `daily-hours.ts`): Harvest-billed projects first, then "active in #channel" projects the artist hasn't logged to yet. Helps someone log a project they forgot.
+- The missing-time flag names the channels (`Active lately in: #x #y`) so a producer knows where to chase.
+Both uses are best-effort — any Slack/DB error returns `[]` and the check-in/flag proceeds without enrichment. Requires the bot to have `channels:read` + `groups:read` (it's already in the project channels it created).
 
 ---
 

@@ -23,6 +23,7 @@ import {
   isWorkday,
   formatShortDate,
 } from './date'
+import { inferActiveProjectChannels, type ActiveChannel } from './slack-activity'
 
 const DEFAULT_THRESHOLD = 3
 const LOOKBACK_DAYS = 21
@@ -163,6 +164,12 @@ export async function scanMissingTime(app: App): Promise<{
       continue
     }
 
+    // Best-effort: where has this artist been active lately?
+    const activeChannels = await inferActiveProjectChannels({
+      app,
+      slackUserId: s.slack_user_id,
+    })
+
     try {
       const post = await app.client.chat.postMessage({
         channel,
@@ -171,6 +178,7 @@ export async function scanMissingTime(app: App): Promise<{
           fullName: s.full_name,
           missing: result.missing,
           lastLogged: result.lastLogged,
+          activeChannels,
         }),
       })
       // Backfill the message ts for traceability.
@@ -199,6 +207,7 @@ export function buildFlagText(opts: {
   fullName: string | null
   missing: string[]
   lastLogged: string | null
+  activeChannels?: ActiveChannel[]
 }): string {
   const who = opts.slackUserId ? `<@${opts.slackUserId}>` : opts.fullName || 'A creative'
   const days = opts.missing.length
@@ -210,9 +219,14 @@ export function buildFlagText(opts: {
   const last = opts.lastLogged
     ? `Last logged: ${formatShortDate(opts.lastLogged)}.`
     : 'No logged time in the last few weeks.'
-  return (
+  const lines = [
     `:rotating_light: *Missing time* — ${who} has logged no hours in Harvest for ` +
-    `*${days} working days* (${range}). ${last}\n` +
-    `_Worth a nudge or a quick check-in._`
-  )
+      `*${days} working days* (${range}). ${last}`,
+  ]
+  const active = (opts.activeChannels || []).slice(0, 5)
+  if (active.length) {
+    lines.push(`Active lately in: ${active.map((a) => `<#${a.channelId}>`).join(' ')}`)
+  }
+  lines.push('_Worth a nudge or a quick check-in._')
+  return lines.join('\n')
 }
