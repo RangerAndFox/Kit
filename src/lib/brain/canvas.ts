@@ -6,9 +6,9 @@
  * comments stripped, plus a small footer linking back to the brain id and
  * revision so anyone can ask `/kit brain why <claim>` for sources.
  *
- * Mirrors bolt/src/shotlist/canvas.ts conventions — Bolt's app.client for
- * auth + the conversations.canvases.create / canvases.edit pair so the
- * canvas's displayed tab title is set correctly (not "Untitled").
+ * Uses Bolt's app.client for auth + the conversations.canvases.create /
+ * canvases.edit pair so the canvas's displayed tab title is set correctly
+ * (not "Untitled").
  *
  * Spec: KIT-BRAIN-SPEC.md §3.1
  */

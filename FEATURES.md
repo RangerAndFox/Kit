@@ -21,7 +21,7 @@ Cross-cutting infrastructure (Supabase schema, Bolt server, deployment) is at th
 8. [Conversational Assistant (Slack DM)](#8-conversational-assistant-slack-dm)
 9. [Freelancer Onboarding](#9-freelancer-onboarding)
 10. [Hours Check-Ins + Ad-Hoc Logging](#10-hours-check-ins--ad-hoc-logging)
-11. [Shot List Canvas](#11-shot-list-canvas)
+11. ~~Shot List Canvas~~ — removed
 12. [Delivery Pipeline](#12-delivery-pipeline)
 13. [Plaud Transcripts](#13-plaud-transcripts)
 14. [Pre-Meeting Briefings](#14-pre-meeting-briefings)
@@ -368,44 +368,12 @@ Both uses are best-effort — any Slack/DB error returns `[]` and the check-in/f
 
 ---
 
-## 11. Shot List Canvas
+## 11. Shot List Canvas — REMOVED
 
-### Summary
-Conversational Boords-style shot list creator that lives as a Slack Canvas in each project channel. User pastes a script; Kit parses to structured shots and creates a channel canvas with a markdown table (shot # / visual / sound-dialogue / duration / reference image). Drops images afterward → Kit attaches them to shots in order. Subsequent natural-language edits ("add a close-up between 2 and 3") apply structured mutations and re-render the canvas in place.
-
-### Trigger
-- `@Kit shot list from this: <script>` — fresh build (or replace existing).
-- `@Kit add/remove/edit shot <N>` — mutation against the existing canvas.
-- `/kit shotlist <script>` — slash command variant.
-- File upload of an image in the same channel — attaches to next un-thumbnailed shot.
-
-### Technical breakdown
-
-**Code path**
-- Module: `bolt/src/shotlist/` — full feature in one directory.
-  - `types.ts` — `Shot`, `ShotList`, `ShotMutation`
-  - `keyword.ts` — `isShotListTrigger` (excludes "shot of espresso" false positives)
-  - `parser.ts` — Claude Haiku, two modes: `parseScript` (free-form → Shot[]) and `parseMutation` (instruction + existing list → ShotMutation)
-  - `renderer.ts` — Shot[] → markdown table with embedded image refs
-  - `canvas.ts` — Slack Web API wrappers (`conversations.canvases.create` with `title` param, `canvases.edit` with both `rename` + `replace` operations)
-  - `storage.ts` — `shot_lists` table read/write
-  - `thumbnails.ts` — handles `message.file_share` events with images, attaches to next un-thumbnailed shot, re-renders
-  - `handler.ts` — orchestrator (parse vs. mutate routing, canvas create/update, response message)
-
-**Canvas title format**
-`<project number>_<project name>_Shot List` (e.g. `2566_Sizzle_Shot List`) when the channel is linked to a Kit project. Title set via `conversations.canvases.create({title})` on create and `canvases.edit({changes: [{operation: 'rename', title_content: ...}]})` on update — H1 in markdown affects only the body, not the tab name.
-
-**Mutation routing**
-If `shot_lists` row exists AND the message doesn't look like a fresh script (no `from this:` prefix, no long multi-line body), route to `parseMutation`. Otherwise `parseScript`. Prevents "give me 5 more shots" from silently replacing the existing list.
-
-**Insert-at-0 handling**
-`applyMutation` treats `after_shot_number ≤ 0` as "insert at front" (Haiku sometimes emits `after_shot_number: 0`).
-
-**Uniqueness constraint**
-`shot_lists.slack_channel_id` is unique — one canvas per channel. Upsert uses `onConflict: 'slack_channel_id'` to prevent race-duplicates.
-
-**Required Slack scope**
-`canvases:write` (already added).
+This feature was removed. The `bolt/src/shotlist/` module, its Slack
+triggers (`@Kit shot list`, `/kit shotlist`, image-upload thumbnails), and
+the `shot_lists` table (dropped in migration 033) are all gone. The number
+is kept as a tombstone so #12–#17 keep their identifiers.
 
 ---
 

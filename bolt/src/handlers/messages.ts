@@ -26,9 +26,6 @@ import { messageHasFrameIoLink, handleFrameIoLink } from '../../../src/lib/frame
 import { handleAdhocHoursEntry, looksLikeHoursIntent } from '../checkins/adhoc'
 import { handleOnboardKeyword, isOnboardTrigger } from '../onboarding/keyword'
 import { getPendingOnboarding } from '../onboarding/state'
-import { isShotListTrigger } from '../shotlist/keyword'
-import { handleShotListMessage } from '../shotlist/handler'
-import { handleShotListThumbnailUpload } from '../shotlist/thumbnails'
 import { isNoteTrigger } from '../notes/keyword'
 import { handleNoteMessage } from '../notes/handler'
 import { handleBrainIngestMessage } from '../brain/handler'
@@ -100,27 +97,6 @@ export function registerMessageHandlers(app: App) {
           assistantThreadTs,
         })
         return
-      }
-    }
-
-    // ── Shot list thumbnail uploads ───────────────────────
-    // File shares in channels with images may be thumbnails for an
-    // active shot list canvas. Returns false silently if no active list.
-    if (
-      msgEvent.subtype === 'file_share' &&
-      Array.isArray(msgEvent.files) &&
-      msgEvent.files.length > 0
-    ) {
-      try {
-        const handled = await handleShotListThumbnailUpload({
-          app,
-          channelId: msgEvent.channel,
-          files: msgEvent.files,
-        })
-        if (handled) return
-      } catch (err: any) {
-        console.error('[Bolt] shot list thumbnail handler failed:', err.message || err)
-        // fall through
       }
     }
 
@@ -403,26 +379,7 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
     console.error('[Bolt] frame.io toggle handler failed:', err.message || err)
   }
 
-  // ── Fast path 4: Shot list ──────────────────────────────
-  if (isShotListTrigger(messageText)) {
-    try {
-      const handled = await handleShotListMessage({
-        app,
-        channelId,
-        userId,
-        text: messageText,
-      })
-      if (handled) {
-        await clearThinking(app, channelId, replyThreadTs || threadTs)
-        return
-      }
-    } catch (err: any) {
-      console.error('[Bolt] shot list handler failed:', err.message || err)
-      // fall through to orchestrator
-    }
-  }
-
-  // ── Fast path 5: Notes capture ───────────────────────────
+  // ── Fast path 4: Notes capture ───────────────────────────
   if (isNoteTrigger(messageText)) {
     try {
       const handled = await handleNoteMessage({
