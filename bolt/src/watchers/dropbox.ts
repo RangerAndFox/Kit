@@ -299,6 +299,25 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
   const sourceUrl: string = tempLinkResp.link
   if (!sourceUrl) throw new Error('Dropbox did not return a temporary link')
 
+  // ── Idempotency: skip if this file was already mirrored ──
+  // Dropbox can replay the same delta (duplicate webhooks, a reprocessed
+  // batch). If a file with this name already exists in the target folder,
+  // don't upload a second copy. Fail open: on a lookup error, proceed with
+  // the upload rather than risk dropping a real delivery.
+  try {
+    const existingFileId = await findChildFile(acct, targetFolderId, fileName)
+    if (existingFileId) {
+      console.log(
+        `[dropbox-watcher] ${fileName} already in ${project.name} / ${d.subfolder} (file ${existingFileId}); skipping re-upload`,
+      )
+      return
+    }
+  } catch (err: any) {
+    console.warn(
+      `[dropbox-watcher] existing-file check failed for ${fileName} (continuing): ${err.message}`,
+    )
+  }
+
   // ── Hand it to Frame.io remote_upload ───────────────────
   // Frame.io v4 remote_upload accepts a source_url and pulls async.
   const createResp = await frameioPost(
@@ -595,6 +614,20 @@ async function findChildFolder(
   for (const c of children) {
     const t = c.type || c.resource_type
     if (t === 'folder' && c.name === name) return c.id
+  }
+  return null
+}
+
+async function findChildFile(
+  acct: string,
+  parentId: string,
+  name: string,
+): Promise<string | null> {
+  const r = await frameioGet(`/accounts/${acct}/folders/${parentId}/children`)
+  const children = Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []
+  for (const c of children) {
+    const t = c.type || c.resource_type
+    if (t === 'file' && c.name === name) return c.id
   }
   return null
 }
