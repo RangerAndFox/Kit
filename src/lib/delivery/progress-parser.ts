@@ -5,7 +5,8 @@
  *   frame= 1234 fps=45 q=2.0 size= 102400kB time=00:00:41.23 bitrate=20345.6kbits/s
  *
  * We extract `time=HH:MM:SS.xx` and compute percent against the known source
- * duration. ETA is extrapolated from average fps.
+ * duration. ETA uses FFmpeg's reported `speed=Nx` factor (content seconds
+ * encoded per wall-clock second).
  */
 
 export interface ProgressUpdate {
@@ -17,6 +18,7 @@ export interface ProgressUpdate {
 
 const TIME_RE = /time=(\d+):(\d+):(\d+(?:\.\d+)?)/
 const FPS_RE = /fps=\s*(\d+(?:\.\d+)?)/
+const SPEED_RE = /speed=\s*([\d.]+)x/
 
 export function parseFFmpegProgress(
   line: string,
@@ -33,8 +35,12 @@ export function parseFFmpegProgress(
   const fpsMatch = line.match(FPS_RE)
   const fps = fpsMatch ? Number(fpsMatch[1]) : null
 
-  const eta = fps && fps > 0 && totalDurationSeconds > current
-    ? Math.round((totalDurationSeconds - current) / fps * (totalDurationSeconds / current))
+  // ETA from FFmpeg's own speed factor: remaining wall time =
+  // remaining content seconds / speed (content-sec encoded per wall-sec).
+  const speedMatch = line.match(SPEED_RE)
+  const speed = speedMatch ? Number(speedMatch[1]) : null
+  const eta = speed && speed > 0 && totalDurationSeconds > current
+    ? Math.round((totalDurationSeconds - current) / speed)
     : null
 
   return {
