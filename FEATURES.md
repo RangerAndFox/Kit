@@ -354,6 +354,13 @@ Before posting a scheduled DM, the sender checks for any existing row for `(staf
 **Sync to staff table**
 `bolt/scripts/sync-staff.ts` is a one-shot that pulls Slack `users.list` + Harvest `listUsers` and upserts into `staff` with role + employment_type. Run after onboarding new team members.
 
+**Missing-time monitor**
+A daily cron (`0 9 * * 1-5`, in `CHECKIN_TIMEZONE`) flags creatives who've stopped logging. For each active employee it pulls the last ~3 weeks of Harvest entries and counts the trailing run of **working days with zero logged hours**, stopping at the first day that has time logged *or* was explicitly marked `skip`/PTO in `daily_hours_checkins`. Harvest is the source of truth — logging directly in Harvest (without replying to Kit) counts, so trackers are never nagged. At ≥ `HOURS_MISSING_THRESHOLD_DAYS` (default 3) it posts a flag to `HOURS_ALERT_CHANNEL_ID`.
+- Code: `bolt/src/checkins/missing-time.ts` (`computeMissingStreak` is the pure core; `scanMissingTime` is the cron entry).
+- Idempotent via `hours_missing_alerts` (migration 032): unique `(staff_id, streak_start_date)` means a persisting gap alerts **once per streak**, not daily. When the artist logs again the streak breaks; the next lapse is a fresh streak and may alert again.
+- Date math runs through `bolt/src/checkins/date.ts` so "today"/working-day calculations stay in the studio timezone.
+- *Planned follow-up:* infer likely projects from the Slack channels the artist is active in, to pre-fill the check-in DM and enrich the flag.
+
 ---
 
 ## 11. Shot List Canvas
@@ -686,8 +693,10 @@ Existing `project_documents` (pgvector embedded column, `match_documents` RPC) +
 - `STUDIO_KNOWLEDGE_AUTO_SUMMARIZE_ENABLED` — `true` to enable the nightly Haiku re-summarization cron
 
 ### Hours check-in
-- `CHECKIN_TIMEZONE` — default `America/Los_Angeles`
+- `CHECKIN_TIMEZONE` — default `America/Los_Angeles`. Used for both the cron fire time **and** the check-in's calendar date (so 5pm-Pacific entries log to the correct day, not the next UTC day).
 - `HARVEST_FREELANCER_USER_ID` — Harvest user id for the shared "freelancers" bucket account (per-freelancer time entries log against this with the artist's name in notes)
+- `HOURS_ALERT_CHANNEL_ID` — Slack channel for the missing-time monitor's producer flags. Unset → the monitor is silent.
+- `HOURS_MISSING_THRESHOLD_DAYS` — consecutive missing working days before flagging. Default `3`.
 
 ### Render workers (deployed separately on studio PCs — see `kit-render-worker/.env.example`)
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` — same Supabase project as Kit

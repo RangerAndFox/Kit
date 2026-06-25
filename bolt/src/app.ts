@@ -28,6 +28,7 @@ import {
 } from './watchers/dropbox'
 import cron from 'node-cron'
 import { sendAllDailyCheckins, nudgePendingCheckins } from './checkins/daily-hours'
+import { scanMissingTime } from './checkins/missing-time'
 import { dispatchAllPendingApprovals } from './brain/approvals'
 
 // ─── Boot ──────────────────────────────────────────────────
@@ -224,6 +225,21 @@ cron.schedule(
   () => {
     nudgePendingCheckins(app).catch((err) =>
       console.error('[cron] nudge fire failed:', err),
+    )
+  },
+  { timezone: CHECKIN_TZ },
+)
+
+// ─── Cron: missing-time monitor ────────────────────────────
+// 9am local Mon–Fri — flag any in-house creative who's gone N working days
+// (HOURS_MISSING_THRESHOLD_DAYS, default 3) with zero logged Harvest time.
+// Silent unless HOURS_ALERT_CHANNEL_ID is set. Alerts once per streak.
+
+cron.schedule(
+  '0 9 * * 1-5',
+  () => {
+    scanMissingTime(app).catch((err) =>
+      console.error('[cron] missing-time scan failed:', err),
     )
   },
   { timezone: CHECKIN_TZ },

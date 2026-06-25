@@ -71,3 +71,18 @@ export function formatShortDate(ymd: string, tz: string = checkinTimezone()): st
     day: 'numeric',
   }).format(new Date(`${ymd}T12:00:00Z`))
 }
+
+/** Shift a YYYY-MM-DD by N calendar days (negative = back). */
+export function ymdAddDays(ymd: string, n: number): string {
+  const base = new Date(`${ymd}T12:00:00Z`)
+  base.setUTCDate(base.getUTCDate() + n)
+  return base.toISOString().split('T')[0]
+}
+
+/** True when a YYYY-MM-DD falls Mon–Fri in the given timezone. */
+export function isWorkday(ymd: string, tz: string = checkinTimezone()): boolean {
+  const wd = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' }).format(
+    new Date(`${ymd}T12:00:00Z`),
+  )
+  return wd !== 'Sat' && wd !== 'Sun'
+}
