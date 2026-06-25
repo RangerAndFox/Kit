@@ -170,7 +170,7 @@ The bot's Dropbox home is already the team folder root — paths are relative to
 ## 5. Harvest Project Provisioning
 
 ### Summary
-Creates a Harvest project under the studio's client account with `budget_by='project'` and the project budget pulled from the modal. Used for time tracking and invoicing.
+Creates a Harvest project under the studio's client account with `budget_by='project'` (Harvest's **Total Project Hours** mode — the studio budgets in hours, not dollars) and the budget pulled from the modal's "Budget (hours)" field. Used for time tracking and invoicing.
 
 ### Trigger
 Part of the [new-project provisioning](#1-new-project-provisioning) fan-out (`harvest` service).
