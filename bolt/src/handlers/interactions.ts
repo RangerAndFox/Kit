@@ -26,10 +26,74 @@ import { handleCheckinConfirm, handleCheckinRedo } from '../checkins/confirm'
 import { parseOnboardSubmission } from '../onboarding/modal'
 import { runOnboarding, buildRequesterSummary } from '../onboarding/orchestrator'
 import { registerDeliveryViewHandlers } from '../delivery/submit-handler'
+import {
+  NDA_REVIEW_ACTION,
+  NDA_SEND_CALLBACK,
+  buildNdaModalView,
+  parseNdaContext,
+  parseNdaModalSubmission,
+} from '../onboarding/nda/card'
+import { sendNdaFromModal } from '../onboarding/nda/send'
 
 export function registerInteractionHandlers(app: App) {
   // ─── Delivery: profile-selection + create-profile modals ──
   registerDeliveryViewHandlers(app)
+
+  // ─── NDA: "Review & send NDA" card button → modal ─────────
+  app.action(NDA_REVIEW_ACTION, async ({ ack, body, client }) => {
+    await ack()
+    const ctx = parseNdaContext((body as any).actions?.[0]?.value || '')
+    if (!ctx) {
+      await client.chat.postMessage({
+        channel: (body as any).user?.id,
+        text: 'That NDA card expired — re-run onboarding for this artist to get a fresh one.',
+      })
+      return
+    }
+    try {
+      await client.views.open({
+        trigger_id: (body as any).trigger_id,
+        view: buildNdaModalView(ctx) as any,
+      })
+    } catch (err: any) {
+      console.error('[Bolt] NDA modal open failed:', err.data?.error || err.message)
+    }
+  })
+
+  // ─── NDA: modal submit → fill, convert (Company), email ────
+  app.view(NDA_SEND_CALLBACK, async ({ ack, view, body, client }) => {
+    const ctx = parseNdaContext((view as any).private_metadata || '')
+    const { ndaType, company, date } = parseNdaModalSubmission(view)
+    if (!ctx) {
+      await ack()
+      return
+    }
+    if (ndaType === 'company' && !company) {
+      await ack({
+        response_action: 'errors',
+        errors: { nda_company: 'Company NDA needs a legal entity name.' },
+      })
+      return
+    }
+    await ack()
+
+    const notify = (text: string) =>
+      client.chat
+        .postMessage({ channel: ctx.channel || (body as any).user?.id, text })
+        .catch((e) => console.error('[Bolt] NDA notify failed:', e?.message))
+
+    // Do the work off the ack path — fill + Drive conversion + email can take
+    // a few seconds, well past Slack's 3s ack window.
+    sendNdaFromModal({ ndaType, company, date, ctx })
+      .then((res) =>
+        notify(
+          res.status === 'ok'
+            ? `:white_check_mark: ${res.message}`
+            : `:warning: NDA not sent — ${res.message}`,
+        ),
+      )
+      .catch((err) => notify(`:warning: NDA send failed — ${err.message || err}`))
+  })
 
   // ─── Daily hours check-in: Confirm / Redo ─────────────────
   app.action('checkin_confirm', async ({ ack, body, client }) => {
