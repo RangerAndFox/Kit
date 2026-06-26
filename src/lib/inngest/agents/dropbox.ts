@@ -27,6 +27,26 @@ async function dropboxPost(endpoint: string, body: Record<string, unknown>): Pro
   )
 }
 
+/**
+ * Ensure the delivery watch folders exist under a project:
+ *   <projectPath>/specs/video  and  <projectPath>/specs/audio
+ * Idempotent — tolerates "already exists" conflicts. Creates `specs` first so
+ * the subfolders always have a parent.
+ */
+export async function ensureSpecsFolders(projectPath: string): Promise<void> {
+  for (const sub of ['specs', 'specs/video', 'specs/audio']) {
+    try {
+      await dropboxPost('/files/create_folder_v2', {
+        path: `${projectPath}/${sub}`,
+        autorename: false,
+      })
+    } catch (err: any) {
+      // path/conflict/folder → already there; anything else is a real failure.
+      if (!/conflict/i.test(err?.message || '')) throw err
+    }
+  }
+}
+
 // ─── Action Handlers ───────────────────────────────────────
 
 async function provision(payload: Record<string, unknown>): Promise<AgentResult> {
@@ -66,6 +86,11 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       to_path: destPath,
       allow_ownership_transfer: false,
     })
+
+    // Delivery watch folders — drop a picture in specs/video and its mix in
+    // specs/audio and Kit prompts for the spec + renders. Created explicitly so
+    // they exist even if the Dropbox template doesn't carry them.
+    await ensureSpecsFolders(destPath)
 
     const linkRes = await dropboxPost('/sharing/create_shared_link_with_settings', {
       path: destPath,
