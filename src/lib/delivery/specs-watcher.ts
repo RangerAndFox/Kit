@@ -20,6 +20,7 @@ const WATCH_ROOT = '/production'
 const SPECS_RE = /^\/production\/(\d{4})\/([^/]+)\/specs\/(video|audio)\/([^/]+)$/i
 
 export const PICK_SPEC_ACTION = 'kit_delivery_pick_spec'
+export const PROVIDE_SPECS_ACTION = 'kit_delivery_provide_specs'
 
 interface DbxFile {
   id: string
@@ -200,6 +201,21 @@ export function buildSpecsPromptBlocks(opts: {
           text: { type: 'plain_text', text: pair.needsChoice ? 'Review & pick spec' : 'Pick delivery spec' },
           action_id: PICK_SPEC_ACTION,
           value: JSON.stringify({ sources }),
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Provide specs' },
+          action_id: PROVIDE_SPECS_ACTION,
+          value: JSON.stringify({ sources }),
+        },
+      ],
+    })
+    blocks.push({
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: 'Pick a saved spec, or *Provide specs* to paste this event’s spec and I’ll extract it.',
         },
       ],
     })

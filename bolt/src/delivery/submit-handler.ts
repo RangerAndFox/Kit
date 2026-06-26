@@ -7,7 +7,10 @@ import type { App } from '@slack/bolt'
 import { submitJob, createProfile } from '../../../src/lib/delivery/storage'
 import { SELECT_PROFILE_CALLBACK_ID, buildSelectProfileModal } from './select-profile-modal'
 import { CREATE_PROFILE_CALLBACK_ID } from './create-profile-modal'
-import { PICK_SPEC_ACTION } from '../../../src/lib/delivery/specs-watcher'
+import { PICK_SPEC_ACTION, PROVIDE_SPECS_ACTION } from '../../../src/lib/delivery/specs-watcher'
+import { extractAndNormalize } from './spec-extractor'
+
+const SPEC_TEXT_CALLBACK_ID = 'kit_delivery_spec_text'
 
 export function registerDeliveryViewHandlers(app: App) {
   // Select-profile modal → submit a render job
@@ -159,6 +162,95 @@ export function registerDeliveryViewHandlers(app: App) {
       })
     } catch (err: any) {
       console.error('[Bolt] pick-spec modal open failed:', err.data?.error || err.message)
+    }
+  })
+
+  // "Provide specs" button → modal to paste this event's spec as text.
+  app.action(PROVIDE_SPECS_ACTION, async ({ ack, body, client }) => {
+    await ack()
+    const value = (body as any).actions?.[0]?.value || '{}'
+    const channelId = (body as any).channel?.id || (body as any).container?.channel_id || ''
+    try {
+      await client.views.open({
+        trigger_id: (body as any).trigger_id,
+        view: {
+          type: 'modal',
+          callback_id: SPEC_TEXT_CALLBACK_ID,
+          private_metadata: JSON.stringify({ ...JSON.parse(value), channelId }),
+          title: { type: 'plain_text', text: 'Delivery spec' },
+          submit: { type: 'plain_text', text: 'Extract & render' },
+          close: { type: 'plain_text', text: 'Cancel' },
+          blocks: [
+            {
+              type: 'input',
+              block_id: 'spec_text',
+              label: { type: 'plain_text', text: "Paste this event's delivery spec" },
+              element: {
+                type: 'plain_text_input',
+                action_id: 'v',
+                multiline: true,
+                placeholder: {
+                  type: 'plain_text',
+                  text: 'e.g. ProRes 422 HQ, 1920x1080, 29.97fps, PCM 24-bit stereo @48k, -24 LUFS / -2 dBTP, .mov',
+                },
+              },
+            },
+          ],
+        } as any,
+      })
+    } catch (err: any) {
+      console.error('[Bolt] provide-specs modal open failed:', err.data?.error || err.message)
+    }
+  })
+
+  // Spec-text modal submit → extract → create a profile → submit the render.
+  app.view(SPEC_TEXT_CALLBACK_ID, async ({ ack, body, view, client }) => {
+    const meta = (() => {
+      try { return JSON.parse(view.private_metadata || '{}') } catch { return {} }
+    })()
+    const text = view.state.values['spec_text']?.['v']?.value?.trim()
+    if (!text) {
+      await ack({ response_action: 'errors', errors: { spec_text: 'Paste the spec to extract.' } })
+      return
+    }
+    await ack()
+    const userId = body.user.id
+    const channel = meta.channelId || userId
+    const sources = Array.isArray(meta.sources) ? meta.sources : []
+
+    try {
+      const { spec, missing, warnings } = await extractAndNormalize({ text })
+      const profile = await createProfile({ ...spec, created_by: userId })
+      if (!profile) throw new Error('could not save the extracted spec')
+
+      const job = await submitJob({
+        profileId: profile.id,
+        sourceFiles: sources.map((s: any) => ({
+          path: s.path,
+          type: s.type === 'audio' ? 'audio' : 'video',
+          size_bytes: s.size_bytes || 0,
+        })),
+        namingFields: {},
+        requestedBy: userId,
+        slackChannel: channel,
+      })
+
+      const flags = [
+        ...missing.map((m: string) => `:grey_question: *${m}* wasn't in the spec — defaulted; confirm it.`),
+        ...warnings.map((w: string) => `:information_source: ${w}`),
+      ]
+      await client.chat.postMessage({
+        channel,
+        text:
+          `:dart: *Extracted spec — ${spec.name}*\n` +
+          `${spec.video_codec} • ${spec.resolution_w}x${spec.resolution_h}@${spec.frame_rate} • ` +
+          `${spec.audio_channels.length}ch ${spec.audio_codec}` +
+          (spec.lufs_target != null ? ` • ${spec.lufs_target} LUFS` : '') +
+          `\nJob \`${job?.id}\` queued.` +
+          (flags.length ? `\n\n${flags.join('\n')}` : ''),
+      })
+    } catch (err: any) {
+      await client.chat.postMessage({ channel, text: `:x: Couldn't extract/submit the spec: ${err.message || err}` })
     }
   })
 }
