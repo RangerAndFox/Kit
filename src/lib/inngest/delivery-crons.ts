@@ -26,6 +26,7 @@ import {
   buildSpecsPromptBlocks,
 } from '../delivery/specs-watcher'
 import { pairSpecsFiles } from '../delivery/pairing'
+import { progressBar } from '../delivery/progress-bar'
 import { resetStaleJobs } from '../delivery/storage'
 
 const SLACK_API = 'https://slack.com/api'
@@ -49,6 +50,25 @@ async function slackPost(channel: string, text: string, blocks?: any[], threadTs
   if (!res) return null
   const json = await res.json().catch(() => ({}))
   return json.ok ? json.ts : null
+}
+
+async function slackUpdate(channel: string, ts: string, text: string, blocks?: any[]): Promise<boolean> {
+  const token = process.env.SLACK_BOT_TOKEN
+  if (!token || !channel || !ts) return false
+  const body: any = { channel, ts, text, mrkdwn: true }
+  if (blocks) body.blocks = blocks
+  const res = await fetch(`${SLACK_API}/chat.update`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json; charset=utf-8',
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(8_000),
+  }).catch(() => null)
+  if (!res) return false
+  const json = await res.json().catch(() => ({}))
+  return !!json.ok
 }
 
 function fmtBytes(n: number): string {
@@ -173,21 +193,35 @@ export const deliveryJobNotifier = inngest.createFunction(
     let posted = 0
     for (const job of rows || []) {
       if (!job.slack_channel) continue
-      if (job.slack_notified_status === job.status) continue // already announced this status
+
+      // Terminal states announce once. 'processing' keeps updating in place so
+      // the progress bar advances; 'claimed' refreshes to processing too.
+      const terminal = job.status === 'complete' || job.status === 'failed'
+      if (terminal && job.slack_notified_status === job.status) continue
 
       const text = renderJobMessage(job)
-      const ts = await slackPost(job.slack_channel, text, undefined, job.slack_thread_ts || undefined)
-      if (!ts) continue
 
-      const patch: any = {
-        slack_notified_at: new Date().toISOString(),
-        slack_notified_status: job.status,
+      if (!job.slack_message_ts) {
+        // First message for this job — post it and remember its ts.
+        const ts = await slackPost(job.slack_channel, text, undefined, job.slack_thread_ts || undefined)
+        if (!ts) continue
+        await sb
+          .from('render_jobs')
+          .update({
+            slack_message_ts: ts,
+            slack_notified_status: job.status,
+            slack_notified_at: new Date().toISOString(),
+          })
+          .eq('id', job.id)
+      } else {
+        // Update the same message in place (live progress bar).
+        const ok = await slackUpdate(job.slack_channel, job.slack_message_ts, text)
+        if (!ok) continue
+        await sb
+          .from('render_jobs')
+          .update({ slack_notified_status: job.status, slack_notified_at: new Date().toISOString() })
+          .eq('id', job.id)
       }
-      // Save the message ts only on the very first notification so future
-      // status announcements thread under the same root if desired.
-      if (!job.slack_message_ts) patch.slack_message_ts = ts
-
-      await sb.from('render_jobs').update(patch).eq('id', job.id)
       posted++
     }
 
@@ -203,8 +237,9 @@ function renderJobMessage(job: any): string {
       return `:wrench: *${job.claimed_by}* picked up the job for \`${filename}\` — starting...`
     case 'processing':
       return (
-        `:gear: *${job.claimed_by}* — *${profileName}* on \`${filename}\`\n` +
-        `Progress: ${job.progress_percent ?? 0}% — ${job.progress_message || 'working...'}`
+        `:gear: *${profileName}* on \`${filename}\` — ${job.claimed_by}\n` +
+        `\`${progressBar(job.progress_percent ?? 0)}\`\n` +
+        `${job.progress_message || 'working...'}`
       )
     case 'complete': {
       const size = job.output_size_bytes ? ` (${fmtBytes(job.output_size_bytes)})` : ''
