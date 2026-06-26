@@ -19,6 +19,13 @@
 import { inngest } from './client'
 import { createAdminClient } from '../supabase/admin'
 import { scanDeliveryQueue, markFileNotified } from '../delivery/dropbox-watcher'
+import {
+  scanProjectSpecs,
+  markSpecsNotified,
+  resolveProjectChannel,
+  buildSpecsPromptBlocks,
+} from '../delivery/specs-watcher'
+import { pairSpecsFiles } from '../delivery/pairing'
 import { resetStaleJobs } from '../delivery/storage'
 
 const SLACK_API = 'https://slack.com/api'
@@ -94,6 +101,49 @@ export const deliveryDropboxScan = inngest.createFunction(
     }
 
     return { notified: newFiles.length }
+  },
+)
+
+// ─── Per-project specs/ folder poller ──────────────────────
+
+export const deliverySpecsScan = inngest.createFunction(
+  {
+    id: 'delivery-specs-scan',
+    name: 'Delivery — Per-project specs/ folder scan',
+    retries: 1,
+    triggers: [{ cron: '*/1 * * * *' }],
+  },
+  async ({ step }) => {
+    if (!process.env.DROPBOX_ACCESS_TOKEN && !process.env.DROPBOX_REFRESH_TOKEN) {
+      return { skipped: 'no_dropbox_token' }
+    }
+
+    const drops = await step.run('scan-specs', () => scanProjectSpecs())
+    if (drops.length === 0) return { scanned: 0 }
+
+    let posted = 0
+    for (const drop of drops) {
+      const project = await resolveProjectChannel(drop.safeName)
+      const channel = project?.channelId || DEFAULT_NOTIFY_CHANNEL
+      if (!channel) {
+        // Nowhere to post — mark notified so we don't loop on it forever.
+        await markSpecsNotified(drop.trigger.dropbox_id)
+        continue
+      }
+      const pair = pairSpecsFiles({
+        trigger: drop.trigger,
+        videoFiles: drop.videoFiles,
+        audioFiles: drop.audioFiles,
+      })
+      const blocks = buildSpecsPromptBlocks({ projectName: project?.name || drop.safeName, pair })
+
+      // Mark before posting so a Slack failure doesn't re-loop (operator can
+      // re-drop or use /kit deliver).
+      await markSpecsNotified(drop.trigger.dropbox_id)
+      const ts = await slackPost(channel, `New delivery source in ${drop.safeName}`, blocks)
+      if (ts) posted++
+    }
+    return { drops: drops.length, posted }
   },
 )
 

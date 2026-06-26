@@ -5,8 +5,9 @@
 
 import type { App } from '@slack/bolt'
 import { submitJob, createProfile } from '../../../src/lib/delivery/storage'
-import { SELECT_PROFILE_CALLBACK_ID } from './select-profile-modal'
+import { SELECT_PROFILE_CALLBACK_ID, buildSelectProfileModal } from './select-profile-modal'
 import { CREATE_PROFILE_CALLBACK_ID } from './create-profile-modal'
+import { PICK_SPEC_ACTION } from '../../../src/lib/delivery/specs-watcher'
 
 export function registerDeliveryViewHandlers(app: App) {
   // Select-profile modal → submit a render job
@@ -36,13 +37,17 @@ export function registerDeliveryViewHandlers(app: App) {
       if (value) namingFields[key] = String(value).trim()
     }
 
-    const sourceFiles = metadata.sourcePath
-      ? [{
-          path: metadata.sourcePath,
-          type: 'video',
-          size_bytes: metadata.sourceSizeBytes || 0,
-        }]
-      : []
+    // Prefer the paired video+audio sources from the specs prompt; fall back
+    // to the legacy single sourcePath (manual `/kit deliver <path>`).
+    const sourceFiles = Array.isArray(metadata.sources) && metadata.sources.length > 0
+      ? metadata.sources.map((s: any) => ({
+          path: s.path,
+          type: s.type === 'audio' ? 'audio' : 'video',
+          size_bytes: s.size_bytes || 0,
+        }))
+      : metadata.sourcePath
+        ? [{ path: metadata.sourcePath, type: 'video', size_bytes: metadata.sourceSizeBytes || 0 }]
+        : []
 
     if (sourceFiles.length === 0) {
       // No file attached (manual /kit deliver from a command). Open a follow-up
@@ -133,6 +138,27 @@ export function registerDeliveryViewHandlers(app: App) {
         channel: userId,
         text: `:x: Couldn't create profile: ${err.message || err}`,
       })
+    }
+  })
+
+  // "Pick delivery spec" button (from the specs-folder channel prompt) → open
+  // the profile picker pre-loaded with the paired video+audio sources.
+  app.action(PICK_SPEC_ACTION, async ({ ack, body, client }) => {
+    await ack()
+    let sources: any[] = []
+    try {
+      sources = JSON.parse((body as any).actions?.[0]?.value || '{}').sources || []
+    } catch {
+      /* ignore — opens an empty picker */
+    }
+    const channelId = (body as any).channel?.id || (body as any).container?.channel_id
+    try {
+      await client.views.open({
+        trigger_id: (body as any).trigger_id,
+        view: (await buildSelectProfileModal({ sources, channelId })) as any,
+      })
+    } catch (err: any) {
+      console.error('[Bolt] pick-spec modal open failed:', err.data?.error || err.message)
     }
   })
 }
