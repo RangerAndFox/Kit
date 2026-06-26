@@ -244,14 +244,27 @@ function renderJobMessage(job: any): string {
     case 'complete': {
       const size = job.output_size_bytes ? ` (${fmtBytes(job.output_size_bytes)})` : ''
       const duration = job.duration_seconds ? ` — ${Math.round(job.duration_seconds)}s` : ''
+
+      // Auto-QC results (worker ffprobed the output vs the profile).
+      const autoQc = (job.qc_checklist_status || []) as { text: string; checked: boolean }[]
+      let qcBlock = ''
+      if (autoQc.length > 0) {
+        const failed = autoQc.filter((c) => !c.checked)
+        qcBlock = failed.length === 0
+          ? '\n\n:white_check_mark: *QC passed* — output matches the spec.'
+          : '\n\n:warning: *QC flagged:*\n' + failed.map((c) => `:x: ${c.text}`).join('\n')
+      }
+
+      // Manual QC checklist from the profile (operator verifies before sending).
       const qcList = (job.profile_snapshot?.qc_checklist || []) as string[]
-      const qcLines = qcList.length > 0
-        ? '\n\n*QC Checklist — verify before submission:*\n' + qcList.map((q) => `:black_square_button: ${q}`).join('\n')
+      const manualBlock = qcList.length > 0
+        ? '\n\n*Manual QC — verify before submission:*\n' + qcList.map((q) => `:black_square_button: ${q}`).join('\n')
         : ''
+
       return (
         `:white_check_mark: *Transcode complete*\n` +
         `Output: \`${filename}\`${size}${duration}\n` +
-        `Worker: ${job.claimed_by || '?'}${qcLines}`
+        `Worker: ${job.claimed_by || '?'}${qcBlock}${manualBlock}`
       )
     }
     case 'failed':

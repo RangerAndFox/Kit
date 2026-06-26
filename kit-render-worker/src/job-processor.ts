@@ -21,6 +21,7 @@ import { runFFmpeg, probeDurationSeconds } from './ffmpeg/runner'
 import { runLoudnessAnalysis } from './ffmpeg/loudness'
 import { buildFFmpegArgs, argsToShellCommand } from './ffmpeg/command-builder'
 import { buildOutputFilename } from './ffmpeg/naming'
+import { runQualityControl } from './ffmpeg/qc'
 
 export async function processJob(job: ClaimedJob): Promise<void> {
   setCurrentJob(job.id)
@@ -132,6 +133,25 @@ export async function processJob(job: ClaimedJob): Promise<void> {
       throw new Error(`FFmpeg exited with code ${result.exitCode}.\nLast lines:\n${tail}`)
     }
 
+    // ── QC: ffprobe the output and confirm it matches the spec ──
+    await updateProgress(job.id, 97, 'QC: verifying output against spec...')
+    let qcStatus = null
+    try {
+      const report = await runQualityControl({
+        ffmpegPath: config.ffmpegPath,
+        outputPath,
+        profile,
+      })
+      qcStatus = report.checks.map((c) => ({
+        text: `${c.name}: expected ${c.expected}, got ${c.actual}`,
+        checked: c.pass,
+      }))
+      console.log(`[processor] Job ${job.id} QC ${report.pass ? 'passed' : 'FLAGGED'}`)
+    } catch (qcErr: any) {
+      console.warn(`[processor] Job ${job.id} QC probe failed: ${qcErr.message || qcErr}`)
+      qcStatus = [{ text: `QC probe failed: ${qcErr.message || qcErr}`, checked: false }]
+    }
+
     // ── Finalize ─────────────────────────────────────────────
     const outStat = fs.statSync(outputPath)
     const elapsedSeconds = (Date.now() - startedAt.getTime()) / 1000
@@ -144,6 +164,7 @@ export async function processJob(job: ClaimedJob): Promise<void> {
         progress_message: 'Complete',
         output_size_bytes: outStat.size,
         duration_seconds: elapsedSeconds,
+        qc_checklist_status: qcStatus,
         updated_at: new Date().toISOString(),
       })
       .eq('id', job.id)
