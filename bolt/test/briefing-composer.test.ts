@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 
-import { buildBriefingText } from '../../src/lib/agent/briefing-composer'
+import { buildBriefingText, matchAttendeesToStaff } from '../../src/lib/agent/briefing-composer'
 
 const event: any = {
   summary: 'Rayfin client review',
@@ -70,5 +70,48 @@ describe('buildBriefingText', () => {
     expect(text).not.toContain('*Links:*')
     expect(text).not.toContain('*Attendees:*')
     expect(text).not.toContain('*Last meeting')
+  })
+})
+
+describe('matchAttendeesToStaff (privacy)', () => {
+  const staff = [
+    { email: 'jared@rangerandfox.tv', slack_user_id: 'U_JARED', full_name: 'Jared', is_active: true },
+    { email: 'Steve@RangerAndFox.tv', slack_user_id: 'U_STEVE', full_name: 'Steve', is_active: true },
+    { email: 'former@rangerandfox.tv', slack_user_id: 'U_OLD', full_name: 'Former', is_active: false },
+    { email: 'nobot@rangerandfox.tv', slack_user_id: null, full_name: 'No Slack', is_active: true },
+  ]
+
+  it('returns only the R&F attendees actually on the invite', () => {
+    const r = matchAttendeesToStaff(
+      [{ email: 'jared@rangerandfox.tv' }, { email: 'client@acme.com' }],
+      staff,
+    )
+    expect(r.map((x) => x.slack_user_id)).toEqual(['U_JARED'])
+  })
+
+  it('excludes external attendees (clients) entirely', () => {
+    const r = matchAttendeesToStaff([{ email: 'client@acme.com' }, { email: 'vendor@x.com' }], staff)
+    expect(r).toEqual([])
+  })
+
+  it('matches case-insensitively', () => {
+    const r = matchAttendeesToStaff([{ email: 'steve@rangerandfox.tv' }], staff)
+    expect(r.map((x) => x.slack_user_id)).toEqual(['U_STEVE'])
+  })
+
+  it('excludes inactive staff and staff with no Slack id', () => {
+    const r = matchAttendeesToStaff(
+      [{ email: 'former@rangerandfox.tv' }, { email: 'nobot@rangerandfox.tv' }],
+      staff,
+    )
+    expect(r).toEqual([])
+  })
+
+  it('dedupes a staffer listed twice', () => {
+    const r = matchAttendeesToStaff(
+      [{ email: 'jared@rangerandfox.tv' }, { email: 'jared@rangerandfox.tv' }],
+      staff,
+    )
+    expect(r).toHaveLength(1)
   })
 })

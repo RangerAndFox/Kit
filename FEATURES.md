@@ -468,7 +468,7 @@ Plaud webhook → `POST /api/webhooks/plaud`. Activates when `PLAUD_INGEST_ENABL
 ## 14. Pre-Meeting Briefings
 
 ### Summary
-Inngest cron polls Google Calendar every 15 minutes for upcoming events. For each event, classifies to a Kit project via Claude Haiku; if confidence ≥ threshold, schedules a delayed dispatch event for ~30 minutes before meeting start. At dispatch, Kit composes a briefing (project header, meeting context, recent Frame.io / Dropbox links, last Plaud transcript summary if available, open `kit_actions`) and posts to the project's Slack channel.
+Inngest cron polls Google Calendar every 15 minutes for upcoming events. For each event, classifies to a Kit project via Claude Haiku; if confidence ≥ threshold, schedules a delayed dispatch event for ~30 minutes before meeting start. At dispatch, Kit composes a briefing (project header, meeting context, recent Frame.io / Dropbox links, last Plaud transcript summary if available, open `kit_actions`) and **DMs it privately to the R&F people actually on the invite** — matched from the event's attendees against `staff` by email. Nothing is posted to a shared channel by default, so a briefing for a sensitive meeting can't bleed to people who weren't on the call.
 
 ### Trigger
 Inngest cron `0,15,30,45 * * * *` (every 15 min). Activates when `GOOGLE_CALENDAR_INGEST_ENABLED=true`.
@@ -488,7 +488,7 @@ Pulls project + open `kit_actions` (where `status IN ('pending','approved')`) + 
 
 **Inngest functions** (`src/lib/inngest/pre-meeting.ts`)
 - `preMeetingScan` (cron, every 15m) — fetches events from `[now, now + lead + 16min]`, classifies each, upserts `meeting_briefings` row with status (`pending`/`skipped`/`failed`), schedules a `pre-meeting/dispatch` event for `start - lead` (lead = `BRIEFING_LEAD_TIME_MINUTES`, default 30).
-- `preMeetingDispatch` (event-triggered, idempotency: `event.data.event_id`) — composes briefing, posts to channel, optionally DMs producer (gated by `BRIEFING_DM_PRODUCER=true`, default off until project→producer mapping exists), updates row with `status='sent'`.
+- `preMeetingDispatch` (event-triggered, idempotency: `event.data.event_id`) — composes the briefing, DMs each matched R&F attendee privately (`matchAttendeesToStaff` — active staff with a Slack id whose email is on the invite; external attendees excluded), records the recipients in `meeting_briefings.notified_user_ids`, sets `status='sent'`. Channel posting is opt-in via `BRIEFING_POST_CHANNEL=true` (default off, for privacy).
 
 **Multi-tenancy safety**
 The active-projects query in the scanner uses `KIT_DEFAULT_WORKSPACE_ID` to scope (warns if unset).
@@ -656,7 +656,7 @@ Existing `project_documents` (pgvector embedded column, `match_documents` RPC) +
 - `GOOGLE_CALENDAR_IDS` — comma-separated calendar IDs the service account has been shared into
 - `BRIEFING_LEAD_TIME_MINUTES` — default `30`
 - `BRIEFING_MATCH_THRESHOLD` — classifier confidence floor, default `0.5`
-- `BRIEFING_DM_PRODUCER` — default `false` until project→producer mapping exists
+- `BRIEFING_POST_CHANNEL` — default `false`. When `true`, also posts the briefing to the project channel (exposes it to everyone in the channel). Leave off to keep briefings private to the call's R&F attendees.
 
 ### Delivery pipeline
 - `DELIVERY_NOTIFY_CHANNEL_ID` — Slack channel id where Dropbox-detected files announce

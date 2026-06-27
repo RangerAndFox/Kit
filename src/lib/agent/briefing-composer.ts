@@ -19,11 +19,47 @@ export interface BriefingContext {
   projectId: string
 }
 
+export interface BriefingRecipient {
+  slack_user_id: string
+  email: string
+  name: string | null
+}
+
 export interface BriefingArtifact {
   channelText: string
-  producerDmText: string | null
+  /** R&F people actually on the invite — the ONLY recipients (privacy). */
+  recipients: BriefingRecipient[]
+  /** Project channel, used only when BRIEFING_POST_CHANNEL is explicitly on. */
   projectChannelId: string | null
-  producerSlackUserId: string | null
+}
+
+/**
+ * Match calendar attendees to internal R&F staff — the people who get the
+ * private briefing. PRIVACY-CRITICAL: only active staff with a Slack id whose
+ * email exactly matches an attendee are returned. External attendees (clients),
+ * inactive staff, and anyone not on the invite are excluded, so the prep can't
+ * bleed to people who weren't on the call. Pure — unit-tested.
+ */
+export function matchAttendeesToStaff(
+  attendees: { email: string }[],
+  staff: { email: string | null; slack_user_id: string | null; full_name: string | null; is_active?: boolean }[],
+): BriefingRecipient[] {
+  const byEmail = new Map<string, { slack_user_id: string; full_name: string | null }>()
+  for (const s of staff) {
+    if (!s.email || !s.slack_user_id || s.is_active === false) continue
+    byEmail.set(s.email.trim().toLowerCase(), { slack_user_id: s.slack_user_id, full_name: s.full_name })
+  }
+  const seen = new Set<string>()
+  const out: BriefingRecipient[] = []
+  for (const a of attendees) {
+    const email = (a.email || '').trim().toLowerCase()
+    if (!email) continue
+    const match = byEmail.get(email)
+    if (!match || seen.has(match.slack_user_id)) continue
+    seen.add(match.slack_user_id)
+    out.push({ slack_user_id: match.slack_user_id, email, name: match.full_name })
+  }
+  return out
 }
 
 function fmtTime(iso: string): string {
@@ -125,33 +161,20 @@ export async function composeBriefing(ctx: BriefingContext): Promise<BriefingArt
     .limit(1)
     .maybeSingle()
 
-  // Producer DM is opt-in. Without a project→producer mapping, we'd otherwise
-  // spam the first active producer for every briefing. Flip BRIEFING_DM_PRODUCER=true
-  // once project_access / staff-by-project is wired up.
-  let producer: { slack_user_id: string } | null = null
-  if (process.env.BRIEFING_DM_PRODUCER === 'true') {
-    const res = await sb
-      .from('staff')
-      .select('slack_user_id')
-      .eq('role', 'producer')
-      .eq('is_active', true)
-      .limit(1)
-      .maybeSingle()
-    producer = res.data || null
-  }
+  // Recipients = the R&F people actually on the invite. We DM only them, so a
+  // briefing for a sensitive meeting never reaches anyone who wasn't on the
+  // call. Match active staff (by email) against the event's attendees.
+  const { data: staffRows } = await sb
+    .from('staff')
+    .select('email, slack_user_id, full_name, is_active')
+    .eq('is_active', true)
+  const recipients = matchAttendeesToStaff(event.attendees || [], staffRows || [])
 
   const channelText = buildBriefingText({ event, project, actions, lastTranscript })
 
-  // Producer DM — same body plus a private nudge
-  let producerDmText: string | null = null
-  if (producer?.slack_user_id) {
-    producerDmText = `${channelText}\n\n_Producer ping: anything you want surfaced before the call? Reply here._`
-  }
-
   return {
     channelText,
-    producerDmText,
+    recipients,
     projectChannelId: channelId,
-    producerSlackUserId: producer?.slack_user_id || null,
   }
 }
