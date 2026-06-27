@@ -45,6 +45,18 @@ if ([string]::IsNullOrWhiteSpace($dropboxPath)) { $dropboxPath = "D:\Dropbox" }
 $ffmpegPath = Read-Host "FFmpeg path (default: ffmpeg)"
 if ([string]::IsNullOrWhiteSpace($ffmpegPath)) { $ffmpegPath = "ffmpeg" }
 
+# After Effects render farm (optional). Auto-detect a common install path.
+$aerenderGuess = (Get-ChildItem "C:\Program Files\Adobe\Adobe After Effects *\Support Files\aerender.exe" -ErrorAction SilentlyContinue | Select-Object -Last 1).FullName
+$aerenderPrompt = if ($aerenderGuess) { "aerender path (Enter to use detected: $aerenderGuess, or 'none')" } else { "aerender path (Enter to skip if no After Effects on this machine)" }
+$aerenderPath = Read-Host $aerenderPrompt
+if ([string]::IsNullOrWhiteSpace($aerenderPath)) { $aerenderPath = $aerenderGuess }
+if ($aerenderPath -eq "none") { $aerenderPath = "" }
+if ($aerenderPath) {
+    Write-Host "This machine will be AE-capable (renders aerender chunks)." -ForegroundColor Green
+} else {
+    Write-Host "No aerender — this machine runs transcode + stitch jobs only." -ForegroundColor Yellow
+}
+
 # Write .env
 $envFile = Join-Path $PSScriptRoot ".env"
 @"
@@ -55,6 +67,7 @@ WORKER_ROLE=$role
 WORKER_PRIORITY=$priority
 DROPBOX_SYNC_PATH=$dropboxPath
 FFMPEG_PATH=$ffmpegPath
+AERENDER_PATH=$aerenderPath
 CPU_THRESHOLD=50
 MIN_DISK_FREE_GB=10
 HEARTBEAT_INTERVAL_MS=10000

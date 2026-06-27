@@ -19,6 +19,7 @@ import {
   setWorkerOptOut,
   setWorkerOptIn,
 } from '../../delivery/storage'
+import { submitAeRender, getAeRenderStatus, listAeRenders } from '../../delivery/ae-storage'
 
 async function handle(action: string, payload: Record<string, unknown>): Promise<AgentResult> {
   try {
@@ -79,6 +80,37 @@ async function handle(action: string, payload: Record<string, unknown>): Promise
         await setWorkerOptIn(String(payload.hostname))
         return { agent: 'delivery', action, success: true }
       }
+
+      // ── After Effects render farm ──────────────────────────
+      case 'submit_ae_render': {
+        const summary = await submitAeRender({
+          projectPath: String(payload.projectPath),
+          comp: String(payload.comp),
+          totalFrames: Number(payload.totalFrames),
+          frameRate: String(payload.frameRate || '24'),
+          startFrame: payload.startFrame != null ? Number(payload.startFrame) : undefined,
+          chunkCount: payload.chunkCount != null ? Number(payload.chunkCount) : undefined,
+          renderSettingsTemplate: payload.renderSettingsTemplate as string,
+          outputModuleTemplate: payload.outputModuleTemplate as string,
+          outputExtension: payload.outputExtension as string,
+          deliveryProfileId: payload.deliveryProfileId as string,
+          outputFilename: payload.outputFilename as string,
+          requestedBy: String(payload.requestedBy || 'system'),
+          slackChannel: payload.slackChannel as string,
+          slackThreadTs: payload.slackThreadTs as string,
+        })
+        return { agent: 'delivery', action, success: true, data: summary }
+      }
+      case 'ae_render_status': {
+        const status = await getAeRenderStatus(String(payload.renderId || payload.jobId))
+        if (!status) return { agent: 'delivery', action, success: false, error: 'render not found' }
+        return { agent: 'delivery', action, success: true, data: status }
+      }
+      case 'list_ae_renders': {
+        const renders = await listAeRenders(Number(payload.limit) || 25)
+        return { agent: 'delivery', action, success: true, data: renders }
+      }
+
       default:
         return { agent: 'delivery', action, success: false, error: `unknown action: ${action}` }
     }
@@ -92,7 +124,7 @@ export const deliveryAgent: AgentDefinition = {
   name: 'Delivery',
   domain: 'video transcoding & delivery',
   expertise:
-    'Manages delivery spec profiles, queues transcode jobs to the render worker pool, and tracks worker fleet status.',
+    'Manages delivery spec profiles, queues transcode jobs to the render worker pool, runs the After Effects render farm (frame-split aerender + FFmpeg stitch), and tracks worker fleet status.',
   requiredEnvVars: [], // uses Supabase service role which Kit already has
   capabilities: [
     { action: 'list_profiles', description: 'List all delivery profiles', mutates: false },
@@ -105,6 +137,9 @@ export const deliveryAgent: AgentDefinition = {
     { action: 'worker_status', description: 'Get detailed status of a specific worker', mutates: false },
     { action: 'worker_opt_out', description: 'Remove a worker from the pool', mutates: true },
     { action: 'worker_opt_in', description: 'Re-add a worker to the pool', mutates: true },
+    { action: 'submit_ae_render', description: 'Render an After Effects comp on the render farm (frame-split across AE workers)', mutates: true },
+    { action: 'ae_render_status', description: 'Check progress of an After Effects render (aggregates its chunks)', mutates: false },
+    { action: 'list_ae_renders', description: 'List recent After Effects render-farm jobs', mutates: false },
   ],
   handler: handle,
 }

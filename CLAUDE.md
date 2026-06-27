@@ -286,6 +286,15 @@ Everything below was designed and built across two Cowork sessions (May 2026). T
 26. **Architecture**: Primary render box claims jobs instantly, fallback workers (editor workstations) auto-claim after 30s timeout. Workers heartbeat to Supabase, stale workers get their jobs reassigned.
 27. **All machines are Windows PCs** — ProRes via FFmpeg `prores_ks` software encoder
 
+### Phase 7: After Effects Render Farm
+28. **Full spec written** — see `AE-RENDER-FARM-SPEC.md` in repo root.
+29. **What it is**: Renders one AE comp across every studio machine. `/kit render <project.aep> | <comp> | <frames> | <fps> [| <profile>]` splits the frame range into chunks; each AE-capable worker renders a slice with Adobe's headless `aerender.exe` into a shared Dropbox image sequence; FFmpeg stitches the frames back into one movie, which can chain into the delivery pipeline for broadcast spec.
+30. **Reuses the delivery pipeline farm** — same `render_jobs`/`render_workers` tables, atomic claim, primary/fallback failover, heartbeats, worker app. Migration `032_ae_render_farm.sql` adds a `job_type` discriminator (`transcode`/`ae_render`/`ae_chunk`/`ae_stitch`) + AE/chunk columns, and `ae_capable`/`aerender_path` on workers.
+31. **Job model**: one `ae_render` parent (tracker) → N `ae_chunk` rows (claimed only by AE-capable workers) → one `ae_stitch` row (any worker, created when the last chunk finishes via an atomic finalize lock on the parent's `claimed_by` sentinel).
+32. **New code**: worker `src/aerender/*` + `src/ae-processor.ts`; Kit `src/lib/delivery/frame-planner.ts` + `ae-storage.ts`; `delivery` agent actions `submit_ae_render`/`ae_render_status`/`list_ae_renders`; `/kit render` command.
+33. **Licensing for "every computer"**: install the free **After Effects Render Engine** (render-only, no CC seat) on each PC via the Creative Cloud app. Set `AERENDER_PATH` in the worker `.env` (installer auto-detects).
+34. **Biggest gotchas**: consistent footage paths across nodes (Dropbox sync or Collect Files), plugins/fonts on every node, and temporal-dependency effects (motion blur / frame blending) that can seam at chunk boundaries — submit those comps with `chunkCount: 1`.
+
 ### Known Issues & Gotchas
 - **Adobe IMS rotates refresh tokens** on each use. The auth module handles this in-memory, but if Railway restarts and the env var token has been rotated, you'll need to re-authorize. Consider persisting the latest refresh token to Supabase in a future iteration.
 - **Frame.io v4 API is relatively new** — response shapes may vary from what's documented. The code defensively checks `resp.data || resp` everywhere.

@@ -32,3 +32,16 @@ export function ensureOutputDir(outputPath: string): void {
   const dir = path.dirname(outputPath)
   fs.mkdirSync(dir, { recursive: true })
 }
+
+/**
+ * Map a Dropbox directory path to its local equivalent under DROPBOX_SYNC_PATH,
+ * creating it if necessary. Unlike resolveDropboxPath this does NOT require the
+ * path to already exist — it's used for render output folders.
+ */
+export function resolveDropboxDir(dropboxDir: string): string | null {
+  if (!config.dropboxSyncPath) return null
+  const rel = dropboxDir.replace(/^\/+/, '').replace(/\//g, path.sep)
+  const local = path.join(config.dropboxSyncPath, rel)
+  fs.mkdirSync(local, { recursive: true })
+  return local
+}

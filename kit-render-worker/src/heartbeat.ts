@@ -42,6 +42,9 @@ export async function sendHeartbeat(): Promise<void> {
       dropbox_sync_path: config.dropboxSyncPath || null,
       ffmpeg_path: config.ffmpegPath,
       os_version: config.osVersion,
+      ae_capable: config.aeCapable,
+      aerender_path: config.aerenderPath || null,
+      ae_version: config.aeVersion,
     },
     { onConflict: 'hostname' },
   )

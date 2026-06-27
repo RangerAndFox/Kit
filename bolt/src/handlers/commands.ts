@@ -23,7 +23,8 @@ import { handleNoteMessage } from '../notes/handler'
 import { buildSelectProfileModal } from '../delivery/select-profile-modal'
 import { buildCreateProfileModal } from '../delivery/create-profile-modal'
 import { renderJobsStatusBlocks, renderWorkersStatusBlocks } from '../delivery/status'
-import { setWorkerOptOut, setWorkerOptIn, listProfiles } from '../../../src/lib/delivery/storage'
+import { setWorkerOptOut, setWorkerOptIn, listProfiles, getProfile } from '../../../src/lib/delivery/storage'
+import { submitAeRender, listAeRenders, getAeRenderStatus } from '../../../src/lib/delivery/ae-storage'
 
 /**
  * Resolve the Slack user's Kit access context for a slash command.
@@ -244,6 +245,91 @@ export function registerCommandHandlers(app: App) {
             blocks,
             text: 'Render worker status',
           })
+        }
+        break
+      }
+
+      // ── After Effects render farm ───────────────────────────
+      case 'render': {
+        await ack()
+        const raw = (args || '').trim()
+
+        // `/kit render status` — recent render-farm jobs
+        if (raw.toLowerCase() === 'status' || raw === '') {
+          const renders = await listAeRenders(10)
+          if (renders.length === 0) {
+            await respond({
+              response_type: 'ephemeral',
+              text:
+                'No After Effects renders yet.\n' +
+                'Usage: `/kit render <project.aep path> | <comp> | <frames> | <fps> [| <delivery profile>]`\n' +
+                'Example: `/kit render /Projects/Acme/Acme.aep | Main Comp | 300 | 59.94 | Microsoft Ignite 2025`',
+            })
+            break
+          }
+          const lines = await Promise.all(
+            renders.map(async (r: any) => {
+              const st = await getAeRenderStatus(r.id)
+              const done = st ? `${st.chunksComplete}/${st.chunksTotal} chunks · ${st.percent}%` : ''
+              return `• *${r.ae_comp}* — ${r.status} ${done ? `(${done})` : ''}`
+            }),
+          )
+          await respond({ response_type: 'ephemeral', text: `*After Effects renders*\n${lines.join('\n')}` })
+          break
+        }
+
+        // Pipe-delimited so paths and comp names may contain spaces.
+        const parts = raw.split('|').map((s) => s.trim())
+        const [projectPath, comp, framesStr, fps, profileName] = parts
+        if (!projectPath || !comp || !framesStr) {
+          await respond({
+            response_type: 'ephemeral',
+            text:
+              'Need at least a project, comp, and frame count.\n' +
+              'Usage: `/kit render <project.aep path> | <comp> | <frames> | <fps> [| <delivery profile>]`',
+          })
+          break
+        }
+        const totalFrames = Number(framesStr)
+        if (!Number.isFinite(totalFrames) || totalFrames <= 0) {
+          await respond({ response_type: 'ephemeral', text: `Frame count must be a positive number (got "${framesStr}").` })
+          break
+        }
+
+        try {
+          let deliveryProfileId: string | undefined
+          if (profileName) {
+            const profile = await getProfile(profileName)
+            if (!profile) {
+              await respond({ response_type: 'ephemeral', text: `Delivery profile not found: "${profileName}". Run \`/kit profiles\` to list them.` })
+              break
+            }
+            deliveryProfileId = profile.id
+          }
+
+          const summary = await submitAeRender({
+            projectPath,
+            comp,
+            totalFrames,
+            frameRate: fps || '24',
+            deliveryProfileId,
+            requestedBy: command.user_id,
+            slackChannel: command.channel_id,
+          })
+
+          await client.chat.postMessage({
+            channel: command.channel_id,
+            text:
+              `:clapper: *After Effects render queued* — ${comp}\n` +
+              `Project: \`${projectPath}\`\n` +
+              `Frames 0–${totalFrames - 1} split into *${summary.chunkCount}* chunk(s) across *${summary.workerCount}* online AE worker(s).\n` +
+              (deliveryProfileId ? `Final encode: *${profileName}*\n` : '') +
+              `Track it with \`/kit render status\`.` +
+              (summary.workerCount === 0 ? `\n:warning: No AE-capable workers are online yet — chunks will wait until one registers.` : ''),
+          })
+        } catch (err: any) {
+          console.error('[Bolt] /kit render failed:', err.message)
+          await respond({ response_type: 'ephemeral', text: `Render submission failed: ${err.message}` })
         }
         break
       }
@@ -532,6 +618,7 @@ export function registerCommandHandlers(app: App) {
             '`/kit deliver [path]` — Submit a transcode job (or run `/kit deliver status` for queue)\n' +
             '`/kit profiles` — List delivery profiles · `/kit profiles create` to add one\n' +
             '`/kit workers` — Show render worker fleet · `opt-out <host>` / `opt-in <host>`\n' +
+            '`/kit render <project.aep> | <comp> | <frames> | <fps> [| <profile>]` — Render an AE comp on the farm (run `/kit render status` for jobs)\n' +
             '`/kit access status` — Status of accessibility jobs (captions + DV)\n' +
             '`/kit brain` — Open or refresh this channel\'s living project brain (producer/admin only)\n' +
             '`/kit brain why <claim>` — Show the sources behind a fact in the brain\n' +
