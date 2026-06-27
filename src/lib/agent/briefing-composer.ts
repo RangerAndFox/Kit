@@ -35,6 +35,60 @@ function fmtTime(iso: string): string {
   }
 }
 
+/**
+ * Assemble the briefing markdown from already-fetched context. Pure — tested.
+ * `lastTranscript` must already be scoped to this project by the caller.
+ */
+export function buildBriefingText(opts: {
+  event: CalendarEvent
+  project: any | null
+  actions: { title: string }[] | null
+  lastTranscript: { start_time: string; transcript: string } | null
+}): string {
+  const { event, project, actions, lastTranscript } = opts
+  const lines: string[] = []
+  lines.push(`:wave: *Pre-meeting briefing*`)
+  lines.push(`*Meeting:* ${event.summary} — ${fmtTime(event.start_time)}`)
+  if (project) {
+    lines.push(
+      `*Project:* ${project.name}${project.client ? ` (${project.client})` : ''}${project.project_code ? ` — ${project.project_code}` : ''}`,
+    )
+    if (project.brief_summary) lines.push(`*Brief:* ${project.brief_summary}`)
+  }
+
+  // Links — accept both the rehydrated *_url keys and the provisioner's bare
+  // keys (the same dual-key shape the onboarding welcome DM handles).
+  const el = project?.external_links || {}
+  const frameio = el.frameio_url || el.frameio
+  const dropbox = el.dropbox_url || el.dropbox
+  const links: string[] = []
+  if (frameio) links.push(`• Frame.io: ${frameio}`)
+  if (dropbox) links.push(`• Dropbox: ${dropbox}`)
+  if (event.hangoutLink) links.push(`• Google Meet: ${event.hangoutLink}`)
+  if (links.length) {
+    lines.push('', '*Links:*', ...links)
+  }
+
+  if (actions && actions.length > 0) {
+    lines.push('', '*Open actions:*')
+    for (const a of actions) lines.push(`• ${a.title}`)
+  }
+
+  if (lastTranscript?.transcript) {
+    const snippet = lastTranscript.transcript.slice(0, 400)
+    lines.push(
+      '',
+      `*Last meeting (${fmtTime(lastTranscript.start_time)}):* ${snippet}${snippet.length === 400 ? '…' : ''}`,
+    )
+  }
+
+  if (event.attendees?.length) {
+    lines.push('', `*Attendees:* ${event.attendees.map((a) => a.email).join(', ')}`)
+  }
+
+  return lines.join('\n')
+}
+
 export async function composeBriefing(ctx: BriefingContext): Promise<BriefingArtifact> {
   const { event, projectId } = ctx
   const sb = createAdminClient()
@@ -60,11 +114,13 @@ export async function composeBriefing(ctx: BriefingContext): Promise<BriefingArt
     .in('status', ['pending', 'approved'])
     .limit(5)
 
-  // Last Plaud summary if any
+  // Last Plaud summary for THIS project (scoped — an unscoped query would
+  // surface another project's meeting in this briefing).
   const { data: lastTranscript } = await sb
     .from('call_transcripts')
     .select('start_time, transcript, source')
     .eq('source', 'plaud')
+    .eq('project_id', projectId)
     .order('start_time', { ascending: false })
     .limit(1)
     .maybeSingle()
@@ -84,49 +140,7 @@ export async function composeBriefing(ctx: BriefingContext): Promise<BriefingArt
     producer = res.data || null
   }
 
-  // Compose channel post
-  const lines: string[] = []
-  lines.push(`:wave: *Pre-meeting briefing*`)
-  lines.push(`*Meeting:* ${event.summary} — ${fmtTime(event.start_time)}`)
-  if (project) {
-    lines.push(`*Project:* ${project.name}${project.client ? ` (${project.client})` : ''}${project.project_code ? ` — ${project.project_code}` : ''}`)
-    if (project.brief_summary) lines.push(`*Brief:* ${project.brief_summary}`)
-  }
-
-  // Links
-  const links: string[] = []
-  if (project?.external_links?.frameio_url) links.push(`• Frame.io: ${project.external_links.frameio_url}`)
-  if (project?.external_links?.dropbox_url) links.push(`• Dropbox: ${project.external_links.dropbox_url}`)
-  if (event.hangoutLink) links.push(`• Google Meet: ${event.hangoutLink}`)
-  if (links.length) {
-    lines.push('')
-    lines.push('*Links:*')
-    lines.push(...links)
-  }
-
-  // Open actions
-  if (actions && actions.length > 0) {
-    lines.push('')
-    lines.push('*Open actions:*')
-    for (const a of actions) {
-      lines.push(`• ${a.title}`)
-    }
-  }
-
-  // Last meeting recap
-  if (lastTranscript?.transcript) {
-    const snippet = lastTranscript.transcript.slice(0, 400)
-    lines.push('')
-    lines.push(`*Last meeting (${fmtTime(lastTranscript.start_time)}):* ${snippet}${snippet.length === 400 ? '…' : ''}`)
-  }
-
-  // Attendees
-  if (event.attendees.length) {
-    lines.push('')
-    lines.push(`*Attendees:* ${event.attendees.map((a) => a.email).join(', ')}`)
-  }
-
-  const channelText = lines.join('\n')
+  const channelText = buildBriefingText({ event, project, actions, lastTranscript })
 
   // Producer DM — same body plus a private nudge
   let producerDmText: string | null = null
