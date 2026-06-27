@@ -31,6 +31,7 @@ import { handleNoteMessage } from '../notes/handler'
 import { handleBrainIngestMessage } from '../brain/handler'
 import { handleRoleMessage } from '../roles/handler'
 import { handleFrameioToggleMessage } from '../delivery/frameio-toggle'
+import { handleSpecIntakeReply } from '../delivery/spec-intake'
 
 import { runOrchestrator } from '../llm/orchestrator'
 import { hasPendingClarification } from '../llm/memory'
@@ -97,6 +98,26 @@ export function registerMessageHandlers(app: App) {
           assistantThreadTs,
         })
         return
+      }
+    }
+
+    // ── Delivery spec intake (reply in a specs-prompt thread) ──
+    // Runs BEFORE the subtype skip so file_share replies (PDF/screenshot)
+    // are caught too. Returns false (and we continue) when the thread isn't
+    // an open delivery prompt.
+    if (msgEvent.thread_ts && msgEvent.channel && msgEvent.user) {
+      try {
+        const handled = await handleSpecIntakeReply({
+          app,
+          channelId: msgEvent.channel,
+          threadTs: msgEvent.thread_ts,
+          userId: msgEvent.user,
+          text: msgEvent.text || '',
+          files: Array.isArray(msgEvent.files) ? msgEvent.files : [],
+        })
+        if (handled) return
+      } catch (err: any) {
+        console.error('[Bolt] spec intake reply failed:', err.message || err)
       }
     }
 

@@ -8,7 +8,7 @@ import { submitJob, createProfile } from '../../../src/lib/delivery/storage'
 import { SELECT_PROFILE_CALLBACK_ID, buildSelectProfileModal } from './select-profile-modal'
 import { CREATE_PROFILE_CALLBACK_ID } from './create-profile-modal'
 import { PICK_SPEC_ACTION, PROVIDE_SPECS_ACTION } from '../../../src/lib/delivery/specs-watcher'
-import { extractAndNormalize } from './spec-extractor'
+import { runSpecExtraction } from './spec-intake'
 
 const SPEC_TEXT_CALLBACK_ID = 'kit_delivery_spec_text'
 
@@ -219,36 +219,8 @@ export function registerDeliveryViewHandlers(app: App) {
     const sources = Array.isArray(meta.sources) ? meta.sources : []
 
     try {
-      const { spec, missing, warnings } = await extractAndNormalize({ text })
-      const profile = await createProfile({ ...spec, created_by: userId })
-      if (!profile) throw new Error('could not save the extracted spec')
-
-      const job = await submitJob({
-        profileId: profile.id,
-        sourceFiles: sources.map((s: any) => ({
-          path: s.path,
-          type: s.type === 'audio' ? 'audio' : 'video',
-          size_bytes: s.size_bytes || 0,
-        })),
-        namingFields: {},
-        requestedBy: userId,
-        slackChannel: channel,
-      })
-
-      const flags = [
-        ...missing.map((m: string) => `:grey_question: *${m}* wasn't in the spec — defaulted; confirm it.`),
-        ...warnings.map((w: string) => `:information_source: ${w}`),
-      ]
-      await client.chat.postMessage({
-        channel,
-        text:
-          `:dart: *Extracted spec — ${spec.name}*\n` +
-          `${spec.video_codec} • ${spec.resolution_w}x${spec.resolution_h}@${spec.frame_rate} • ` +
-          `${spec.audio_channels.length}ch ${spec.audio_codec}` +
-          (spec.lufs_target != null ? ` • ${spec.lufs_target} LUFS` : '') +
-          `\nJob \`${job?.id}\` queued.` +
-          (flags.length ? `\n\n${flags.join('\n')}` : ''),
-      })
+      const text2 = await runSpecExtraction({ input: { text }, sources, userId, channel })
+      await client.chat.postMessage({ channel, text: text2 })
     } catch (err: any) {
       await client.chat.postMessage({ channel, text: `:x: Couldn't extract/submit the spec: ${err.message || err}` })
     }

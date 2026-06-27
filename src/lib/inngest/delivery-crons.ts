@@ -28,6 +28,7 @@ import {
 import { pairSpecsFiles } from '../delivery/pairing'
 import { progressBar } from '../delivery/progress-bar'
 import { resetStaleJobs } from '../delivery/storage'
+import { recordSpecIntake } from '../delivery/spec-intake-store'
 
 const SLACK_API = 'https://slack.com/api'
 const DEFAULT_NOTIFY_CHANNEL = process.env.DELIVERY_NOTIFY_CHANNEL_ID || ''
@@ -161,7 +162,18 @@ export const deliverySpecsScan = inngest.createFunction(
       // re-drop or use /kit deliver).
       await markSpecsNotified(drop.trigger.dropbox_id)
       const ts = await slackPost(channel, `New delivery source in ${drop.safeName}`, blocks)
-      if (ts) posted++
+      if (ts) {
+        posted++
+        // Record the prompt thread so a spec reply (text/PDF/screenshot) ties
+        // back to this video+audio pair.
+        if (pair.ok && pair.video) {
+          const sources = [
+            { path: pair.video.path, type: 'video', size_bytes: pair.video.size_bytes },
+            ...(pair.audio ? [{ path: pair.audio.path, type: 'audio', size_bytes: pair.audio.size_bytes }] : []),
+          ]
+          await recordSpecIntake({ channelId: channel, threadTs: ts, sources }).catch(() => {})
+        }
+      }
     }
     return { drops: drops.length, posted }
   },

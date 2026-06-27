@@ -215,7 +215,9 @@ export function buildSpecsPromptBlocks(opts: {
       elements: [
         {
           type: 'mrkdwn',
-          text: 'Pick a saved spec, or *Provide specs* to paste this event’s spec and I’ll extract it.',
+          text:
+            'Pick a saved spec, tap *Provide specs* to paste one, ' +
+            'or just reply in this thread with the spec — text, a PDF, or a screenshot — and I’ll extract it.',
         },
       ],
     })
