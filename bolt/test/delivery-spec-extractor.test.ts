@@ -122,4 +122,9 @@ describe('normalizeExtractedSpec', () => {
     expect(spec.resolution_w).toBe(3840)
     expect(spec.resolution_h).toBe(2160)
   })
+
+  it('passes through video_filters for 360 / unique formats (else null)', () => {
+    expect(normalizeExtractedSpec({ video_filters: 'v360=e:c3x2' }).spec.video_filters).toBe('v360=e:c3x2')
+    expect(normalizeExtractedSpec({ name: 'plain' }).spec.video_filters).toBeNull()
+  })
 })

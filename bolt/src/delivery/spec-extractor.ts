@@ -28,6 +28,7 @@ export interface ExtractedSpec {
   lufs_target: number | null
   true_peak_limit: number | null
   container: string
+  video_filters: string | null
   notes: string | null
 }
 
@@ -162,6 +163,7 @@ export function normalizeExtractedSpec(raw: any): NormalizedSpec {
     lufs_target: parseNumber(raw?.lufs_target),
     true_peak_limit: parseNumber(raw?.true_peak_limit),
     container: (raw?.container && String(raw.container).toLowerCase().replace(/[^a-z0-9]/g, '')) || 'mov',
+    video_filters: (raw?.video_filters && String(raw.video_filters).trim()) || null,
     notes: (raw?.notes && String(raw.notes).trim()) || null,
   }
 
@@ -188,6 +190,7 @@ Extract these fields (use null when the source doesn't state one — never inven
   "lufs_target": number,       // integrated loudness, e.g. -24
   "true_peak_limit": number,   // dBTP, e.g. -2
   "container": string,         // e.g. "mov", "mp4"
+  "video_filters": string,     // FFmpeg -vf chain ONLY if the spec needs a projection/360 conversion (e.g. "v360=e:c3x2"), else null
   "notes": string              // anything else relevant (head/tail slate, naming, etc.)
 }
 Return ONLY the JSON object, no prose, no code fences.`

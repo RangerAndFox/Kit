@@ -52,3 +52,29 @@ describe('buildFFmpegArgs stream mapping', () => {
     expect(mapsOf(args)).toEqual([])
   })
 })
+
+function vfOf(args: string[]): string | null {
+  const i = args.indexOf('-vf')
+  return i >= 0 ? args[i + 1] : null
+}
+
+describe('buildFFmpegArgs video filters (upres + 360)', () => {
+  it('uses a lanczos scale to the target resolution (no -s)', () => {
+    const args = buildFFmpegArgs({
+      profile: { ...baseProfile, resolution_w: 3840, resolution_h: 2160 },
+      sourceFiles: [{ path: 'pic.mov', type: 'video', size_bytes: 1 }],
+      outputPath: 'out.mov',
+    })
+    expect(args).not.toContain('-s')
+    expect(vfOf(args)).toBe('scale=3840:2160:flags=lanczos')
+  })
+
+  it('prepends profile.video_filters (e.g. v360) before the scale', () => {
+    const args = buildFFmpegArgs({
+      profile: { ...baseProfile, video_filters: 'v360=e:c3x2', resolution_w: 4096, resolution_h: 2731 },
+      sourceFiles: [{ path: 'pic.mov', type: 'video', size_bytes: 1 }],
+      outputPath: 'out.mov',
+    })
+    expect(vfOf(args)).toBe('v360=e:c3x2,scale=4096:2731:flags=lanczos')
+  })
+})
