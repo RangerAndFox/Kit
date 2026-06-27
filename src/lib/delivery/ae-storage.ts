@@ -132,6 +132,55 @@ export async function submitAeRender(req: AeRenderRequest): Promise<AeRenderSumm
   return { parent, chunks: insertedChunks || [], workerCount, chunkCount: chunks.length }
 }
 
+/**
+ * Render a project straight from its own After Effects render queue. The
+ * submitter supplies only the .aep path — Kit can't open the project, so it
+ * creates a parent tracker + an `ae_inspect` job that an AE-capable worker runs
+ * to read the render queue and fan out the chunks (see ae-processor.ts).
+ */
+export async function submitAeRenderFromProject(req: {
+  projectPath: string
+  requestedBy: string
+  slackChannel?: string
+  slackThreadTs?: string
+}): Promise<{ parent: any; inspect: any }> {
+  const sb = createAdminClient()
+
+  const { data: parent, error: parentErr } = await sb
+    .from('render_jobs')
+    .insert({
+      job_type: 'ae_render',
+      status: 'processing',
+      requested_by: req.requestedBy,
+      slack_channel: req.slackChannel ?? null,
+      slack_thread_ts: req.slackThreadTs ?? null,
+      source_files: [{ path: req.projectPath, type: 'video', size_bytes: 0 }],
+      ae_project_path: req.projectPath,
+      progress_message: 'Waiting for an AE worker to read the render queue...',
+    } as any)
+    .select('*')
+    .single()
+  if (parentErr) throw new Error(`submitAeRenderFromProject(parent): ${parentErr.message}`)
+
+  const { data: inspect, error: inspectErr } = await sb
+    .from('render_jobs')
+    .insert({
+      job_type: 'ae_inspect',
+      status: 'pending',
+      parent_job_id: parent.id,
+      requested_by: req.requestedBy,
+      slack_channel: req.slackChannel ?? null,
+      slack_thread_ts: req.slackThreadTs ?? null,
+      source_files: [{ path: req.projectPath, type: 'video', size_bytes: 0 }],
+      ae_project_path: req.projectPath,
+    } as any)
+    .select('*')
+    .single()
+  if (inspectErr) throw new Error(`submitAeRenderFromProject(inspect): ${inspectErr.message}`)
+
+  return { parent, inspect }
+}
+
 export interface AeRenderStatus {
   parent: any
   chunks: any[]

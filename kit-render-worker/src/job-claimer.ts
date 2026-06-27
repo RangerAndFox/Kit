@@ -24,10 +24,11 @@ import { readSystemSnapshot } from './system/cpu-monitor'
 
 export interface ClaimedJob {
   id: string
-  job_type: 'transcode' | 'ae_chunk' | 'ae_stitch'
+  job_type: 'transcode' | 'ae_inspect' | 'ae_chunk' | 'ae_stitch'
   source_files: any[]
   profile_snapshot: any
   naming_fields: Record<string, string> | null
+  requested_by: string | null
   slack_channel: string | null
   slack_thread_ts: string | null
 
@@ -45,15 +46,17 @@ export interface ClaimedJob {
   ae_output_module_template: string | null
   ae_output_pattern: string | null
   ae_output_dir: string | null
+  ae_rqindex: number | null
+  ae_is_movie: boolean | null
   delivery_profile_id: string | null
   output_filename: string | null
 }
 
 const CLAIM_FIELDS =
-  'id, job_type, source_files, profile_snapshot, naming_fields, slack_channel, slack_thread_ts, ' +
+  'id, job_type, source_files, profile_snapshot, naming_fields, requested_by, slack_channel, slack_thread_ts, ' +
   'parent_job_id, chunk_index, chunk_count, frame_start, frame_end, total_frames, frame_rate, ' +
   'ae_project_path, ae_comp, ae_render_settings_template, ae_output_module_template, ' +
-  'ae_output_pattern, ae_output_dir, delivery_profile_id, output_filename'
+  'ae_output_pattern, ae_output_dir, ae_rqindex, ae_is_movie, delivery_profile_id, output_filename'
 
 export async function tryClaimJob(): Promise<ClaimedJob | null> {
   // Fallback workers: pre-flight system checks
@@ -75,7 +78,7 @@ export async function tryClaimJob(): Promise<ClaimedJob | null> {
   // every worker can run transcode + stitch (both FFmpeg). The 'ae_render'
   // parent row is a tracker and is never pending, so it's excluded implicitly.
   const claimableTypes = config.aeCapable
-    ? ['transcode', 'ae_chunk', 'ae_stitch']
+    ? ['transcode', 'ae_inspect', 'ae_chunk', 'ae_stitch']
     : ['transcode', 'ae_stitch']
 
   // Find oldest pending job of a type this worker can run

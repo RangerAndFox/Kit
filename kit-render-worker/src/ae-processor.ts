@@ -2,10 +2,12 @@
 /**
  * After Effects job processors.
  *
- *   processAeChunk  — render one frame range of a comp to the shared image
- *                     sequence via aerender, then try to finalize the parent.
- *   processAeStitch — encode the completed image sequence into one movie with
- *                     FFmpeg, then mark the parent render complete.
+ *   processAeInspect — script AfterFX to read the project's render queue, then
+ *                      fan the queued items out into ae_chunk rows.
+ *   processAeChunk   — render one frame range (via aerender -rqindex) to the
+ *                      shared output folder, then try to finalize the parent.
+ *   processAeStitch  — encode the completed image sequence into one movie with
+ *                      FFmpeg, then mark the parent render complete.
  *
  * Finalize lock: when a chunk finishes it checks whether every sibling chunk is
  * complete. If so it atomically claims the parent's `claimed_by` sentinel
@@ -25,9 +27,125 @@ import { resolveDropboxPath, resolveDropboxDir, ensureOutputDir } from './dropbo
 import { buildAerenderArgs, aerenderArgsToShellCommand } from './aerender/command-builder'
 import { runAerender } from './aerender/runner'
 import { buildStitchArgs } from './aerender/stitch-builder'
+import { inspectRenderQueue } from './aerender/inspect-runner'
 import { runFFmpeg } from './ffmpeg/runner'
 
 const FINALIZE_SENTINEL = 'FINALIZED'
+
+/** Split [start..start+total-1] into `count` near-even contiguous ranges. */
+function planChunks(total: number, count: number, start = 0) {
+  const n = Math.max(1, Math.min(Math.floor(count) || 1, total))
+  const base = Math.floor(total / n)
+  const rem = total % n
+  const chunks: { index: number; frameStart: number; frameEnd: number }[] = []
+  let cursor = start
+  for (let i = 0; i < n; i++) {
+    const size = base + (i < rem ? 1 : 0)
+    chunks.push({ index: i, frameStart: cursor, frameEnd: cursor + size - 1 })
+    cursor += size
+  }
+  return chunks
+}
+
+// ─── AE inspect: read the project's render queue, fan out chunks ─────────────
+
+export async function processAeInspect(job: ClaimedJob): Promise<void> {
+  setCurrentJob(job.id)
+  try {
+    await update(job.id, { status: 'processing', progress_message: 'Reading After Effects render queue...' })
+
+    if (!config.afterfxPath) throw new Error('ae_inspect claimed but no AfterFX path configured')
+    if (!job.ae_project_path) throw new Error('ae_inspect has no ae_project_path')
+
+    const project = resolveDropboxPath(job.ae_project_path)
+    if (!project) {
+      throw new Error(
+        `Project not found locally: ${job.ae_project_path}. Ensure Dropbox has synced it under DROPBOX_SYNC_PATH=${config.dropboxSyncPath}.`,
+      )
+    }
+
+    const queue = await inspectRenderQueue(config.afterfxPath, project.localPath)
+    if (!queue.items.length) {
+      throw new Error('No QUEUED items in the project render queue. Queue at least one item in After Effects and re-submit.')
+    }
+
+    // How many AE-capable workers can share the load right now?
+    const { count: aeWorkers } = await supabase
+      .from('render_workers')
+      .select('hostname', { count: 'exact', head: true })
+      .eq('ae_capable', true)
+      .eq('status', 'online')
+    const workerCount = Math.max(1, aeWorkers || 1)
+
+    const projectDir = dropboxDirname(job.ae_project_path)
+    const chunkRows: any[] = []
+    let totalFrames = 0
+
+    for (const item of queue.items) {
+      totalFrames += item.totalFrames
+      const safeComp = sanitizeName(item.comp)
+      // Redirect output into a shared Dropbox folder next to the project so all
+      // machines' frames collect in one place (the project's own absolute output
+      // path can't resolve across nodes). Keep the project's output filename.
+      const outDir = `${projectDir}/render/${safeComp}`
+      const outName = item.outputName || (item.isSequence ? `${safeComp}_[#####].png` : `${safeComp}.mov`)
+
+      // Image sequences frame-split across machines; single-movie outputs can't
+      // be split, so they render whole on one machine.
+      const splits = item.isSequence
+        ? planChunks(item.totalFrames, workerCount, item.frameStart)
+        : [{ index: 0, frameStart: item.frameStart, frameEnd: item.frameEnd }]
+
+      splits.forEach((c, _idx) => {
+        chunkRows.push({
+          job_type: 'ae_chunk',
+          status: 'pending',
+          parent_job_id: job.parent_job_id,
+          chunk_index: chunkRows.length,
+          frame_start: c.frameStart,
+          frame_end: c.frameEnd,
+          total_frames: item.totalFrames,
+          frame_rate: String(item.fps),
+          requested_by: job.requested_by ?? 'system',
+          slack_channel: job.slack_channel,
+          slack_thread_ts: job.slack_thread_ts,
+          source_files: [{ path: job.ae_project_path, type: 'video', size_bytes: 0 }],
+          ae_project_path: job.ae_project_path,
+          ae_comp: item.comp,
+          ae_rqindex: item.rqindex,
+          ae_is_movie: !item.isSequence,
+          ae_output_dir: outDir,
+          ae_output_pattern: outName,
+        })
+      })
+    }
+
+    const { error: insErr } = await supabase.from('render_jobs').insert(chunkRows)
+    if (insErr) throw new Error(`creating chunks: ${insErr.message}`)
+
+    // Record the discovered queue + totals on the parent for visibility.
+    if (job.parent_job_id) {
+      await update(job.parent_job_id, {
+        render_queue: queue.items,
+        total_frames: totalFrames,
+        chunk_count: chunkRows.length,
+        progress_message: `Render queue: ${queue.items.length} item(s) → ${chunkRows.length} chunk(s) across ${workerCount} AE worker(s)`,
+      })
+    }
+
+    await update(job.id, { status: 'complete', progress_percent: 100, progress_message: 'Queue inspected' })
+    console.log(`[ae] inspect ${job.id}: ${queue.items.length} queued item(s) → ${chunkRows.length} chunk(s)`)
+  } catch (err: any) {
+    const message = err?.message || String(err)
+    console.error(`[ae] inspect ${job.id} failed:`, message)
+    await update(job.id, { status: 'failed', error_message: message })
+    if (job.parent_job_id) {
+      await update(job.parent_job_id, { status: 'failed', error_message: `Render-queue inspection failed: ${message}` })
+    }
+  } finally {
+    setCurrentJob(null)
+  }
+}
 
 // ─── AE chunk ──────────────────────────────────────────────────────────────
 
@@ -45,7 +163,7 @@ export async function processAeChunk(job: ClaimedJob): Promise<void> {
 
     if (!config.aerenderPath) throw new Error('Worker claimed an AE chunk but AERENDER_PATH is not set')
     if (!job.ae_project_path) throw new Error('AE chunk has no ae_project_path')
-    if (!job.ae_comp) throw new Error('AE chunk has no ae_comp')
+    if (job.ae_rqindex == null && !job.ae_comp) throw new Error('AE chunk has neither ae_rqindex nor ae_comp')
 
     // Resolve the .aep off the local Dropbox sync folder.
     const project = resolveDropboxPath(job.ae_project_path)
@@ -58,13 +176,16 @@ export async function processAeChunk(job: ClaimedJob): Promise<void> {
     // Resolve (and create) the shared output folder for the frames.
     const outDir = resolveDropboxDir(job.ae_output_dir || path.dirname(job.ae_project_path))
     if (!outDir) throw new Error('Could not resolve AE output directory (is DROPBOX_SYNC_PATH set?)')
-    const pattern = job.ae_output_pattern || `${job.ae_comp}_[#####].png`
+    const pattern = job.ae_output_pattern || `${job.ae_comp || 'comp'}_[#####].png`
     const outputPath = path.join(outDir, pattern)
     ensureOutputDir(outputPath)
 
     const args = buildAerenderArgs({
       projectPath: project.localPath,
-      comp: job.ae_comp,
+      // Prefer render-queue-driven mode (inherits the item's RS + OM); fall back
+      // to explicit comp/templates for programmatic submissions.
+      rqindex: job.ae_rqindex ?? undefined,
+      comp: job.ae_comp || undefined,
       frameStart: job.frame_start ?? 0,
       frameEnd: job.frame_end ?? 0,
       outputPath,
@@ -150,9 +271,26 @@ async function maybeFinalizeParent(parentId: string): Promise<void> {
 
   if (!won) return // another worker is finalizing
 
-  // Load parent details to build the stitch job.
   const { data: parent } = await supabase.from('render_jobs').select('*').eq('id', parentId).maybeSingle()
   if (!parent) return
+
+  // Only stitch when a delivery profile was attached AND we have a single shared
+  // sequence to encode (the explicit/programmatic path). The render-queue-driven
+  // flow honors the project's own output (sequence or movie) — the rendered
+  // frames ARE the deliverable — so it completes directly.
+  const isSequence = !!parent.ae_output_pattern && /\[#+\]|#/.test(parent.ae_output_pattern)
+  const shouldStitch = !!parent.delivery_profile_id && !!parent.ae_output_dir && isSequence
+
+  if (!shouldStitch) {
+    await update(parentId, {
+      status: 'complete',
+      completed_at: new Date().toISOString(),
+      progress_percent: 100,
+      progress_message: 'Render complete — all chunks rendered',
+    })
+    console.log(`[ae] parent ${parentId}: all chunks complete (no stitch)`)
+    return
+  }
 
   await update(parentId, {
     progress_percent: 100,

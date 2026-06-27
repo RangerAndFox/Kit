@@ -19,7 +19,7 @@ import {
   setWorkerOptOut,
   setWorkerOptIn,
 } from '../../delivery/storage'
-import { submitAeRender, getAeRenderStatus, listAeRenders } from '../../delivery/ae-storage'
+import { submitAeRender, submitAeRenderFromProject, getAeRenderStatus, listAeRenders } from '../../delivery/ae-storage'
 
 async function handle(action: string, payload: Record<string, unknown>): Promise<AgentResult> {
   try {
@@ -101,6 +101,15 @@ async function handle(action: string, payload: Record<string, unknown>): Promise
         })
         return { agent: 'delivery', action, success: true, data: summary }
       }
+      case 'render_project': {
+        const result = await submitAeRenderFromProject({
+          projectPath: String(payload.projectPath),
+          requestedBy: String(payload.requestedBy || 'system'),
+          slackChannel: payload.slackChannel as string,
+          slackThreadTs: payload.slackThreadTs as string,
+        })
+        return { agent: 'delivery', action, success: true, data: result }
+      }
       case 'ae_render_status': {
         const status = await getAeRenderStatus(String(payload.renderId || payload.jobId))
         if (!status) return { agent: 'delivery', action, success: false, error: 'render not found' }
@@ -137,7 +146,8 @@ export const deliveryAgent: AgentDefinition = {
     { action: 'worker_status', description: 'Get detailed status of a specific worker', mutates: false },
     { action: 'worker_opt_out', description: 'Remove a worker from the pool', mutates: true },
     { action: 'worker_opt_in', description: 'Re-add a worker to the pool', mutates: true },
-    { action: 'submit_ae_render', description: 'Render an After Effects comp on the render farm (frame-split across AE workers)', mutates: true },
+    { action: 'render_project', description: "Render an After Effects project from its own render queue (reads the .aep's queued items, frame-split across AE workers)", mutates: true },
+    { action: 'submit_ae_render', description: 'Render a specific After Effects comp by name/frame-count on the render farm', mutates: true },
     { action: 'ae_render_status', description: 'Check progress of an After Effects render (aggregates its chunks)', mutates: false },
     { action: 'list_ae_renders', description: 'List recent After Effects render-farm jobs', mutates: false },
   ],

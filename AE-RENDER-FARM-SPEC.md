@@ -15,23 +15,30 @@ Delivery Pipeline** (`DELIVERY-PIPELINE-SPEC.md`): the `render_jobs` /
 heartbeats, stale-worker detection, the worker app, and the Slack integration.
 The render farm is "a new job type on the farm we already have," not a new system.
 
+**Render-queue-driven.** The user just gives Kit the `.aep` — no comp, frames,
+fps, or profile. Kit reads the project's **own After Effects render queue** and
+renders every queued item with the render settings + output module the artist
+already set. Because Kit (on Railway) can't open a `.aep`, an AE-capable worker
+performs an `ae_inspect` step first that scripts After Effects to dump the queue,
+then fans the queued items out into chunks.
+
 ```
-/kit render <project.aep> | <comp> | <frames> | <fps> [| <delivery profile>]
+/kit render  ──▶  modal: just the .aep Dropbox path
         │
         ▼
-Kit ─── counts online AE-capable workers, splits frames into N chunks
-        │   inserts: 1 parent (ae_render) + N chunks (ae_chunk)
+Kit ─── inserts 1 parent (ae_render) + 1 ae_inspect job
         ▼
-Render workers ─── AE-capable workers claim chunks (primary first, fallback @30s)
-        │   each runs aerender -s <start> -e <end> → shared image sequence
+AE worker ─── claims ae_inspect → scripts AfterFX.exe to dump the render queue
+        │   for each QUEUED item: frame-split if it's an image sequence,
+        │   render whole if it's a single movie → inserts ae_chunk rows
         ▼
-Last chunk done ─── one worker wins the finalize lock, enqueues ae_stitch
-        │
+AE workers ─── claim chunks (primary first, fallback @30s); each runs
+        │   aerender -rqindex <n> -s <start> -e <end> -output <shared Dropbox dir>
         ▼
-Any worker ─── FFmpeg stitches the sequence → one movie (per delivery profile)
-        │
+Last chunk done ─── one worker wins the finalize lock → parent complete
+        │   (or, if a delivery profile was attached, enqueues an ae_stitch)
         ▼
-Kit → Slack ─── "✅ Render complete: Main Comp.mov"
+Kit → Slack ─── "✅ Render complete"
 ```
 
 ## Existing tools we utilize
@@ -79,9 +86,33 @@ Extends the existing tables — no new tables.
 
 | job_type | status at creation | who claims it | what it does |
 |---|---|---|---|
-| `ae_render` | `processing` | nobody (a tracker) | aggregates chunk progress; holds the finalize lock |
-| `ae_chunk` | `pending` | AE-capable workers | `aerender -s/-e` one frame range → image sequence |
-| `ae_stitch` | `pending` | any worker | FFmpeg image sequence → movie; marks parent complete |
+| `ae_render` | `processing` | nobody (a tracker) | aggregates progress; holds the finalize lock |
+| `ae_inspect` | `pending` | AE-capable workers | scripts AfterFX to dump the render queue, then inserts the `ae_chunk` rows |
+| `ae_chunk` | `pending` | AE-capable workers | `aerender -rqindex/-s/-e` one frame range → shared output |
+| `ae_stitch` | `pending` | any worker | FFmpeg image sequence → movie (only when a delivery profile is attached) |
+
+### Render-queue inspection
+
+`ae_inspect` runs `AfterFX.exe -noui -r inspect.jsx` (the full binary lives next
+to `aerender.exe`; aerender alone can't enumerate the queue). The generated
+ExtendScript opens the project and, for every **QUEUED** render-queue item,
+reports: AE render-queue index, comp name, fps, frame range (from the item's time
+span), the output module's filename, and whether it's an image sequence (filename
+carries a `[#####]` placeholder) or a single movie. The worker then:
+
+- **image-sequence item** → frame-split across the online AE workers (`ae_chunk`
+  rows with `ae_rqindex` set);
+- **single-movie item** → one whole-render `ae_chunk` (movies can't be split).
+
+### Honoring the project's settings vs. output path
+
+Chunks render with `aerender -rqindex <n>`, so each item's **render settings and
+output module (format) are exactly what the artist queued**. The one thing the
+farm overrides is the *destination*: a project's baked-in output path is absolute
+and machine-specific, so it can't resolve across nodes. The farm redirects
+`-output` to a shared folder next to the project (`<projectDir>/render/<comp>/`)
+using the queue item's own filename, so every machine's frames collect in one
+Dropbox location.
 
 The `ae_render` parent is never `pending`, so the existing claimer skips it. The
 claimer also filters by `job_type` so non-AE workers never grab an `ae_chunk`.
@@ -98,11 +129,13 @@ existing chunk-claim guard.
 
 ```
 src/aerender/
-├── command-builder.ts   — build aerender argv for a frame range
+├── command-builder.ts   — build aerender argv (rqindex or explicit-comp mode)
 ├── progress-parser.ts   — parse aerender PROGRESS lines → % within the chunk
 ├── runner.ts            — spawn aerender, stream progress (stdout)
+├── inspect-script.ts    — generate the ExtendScript that dumps the render queue
+├── inspect-runner.ts    — run AfterFX headless, parse the queue JSON
 └── stitch-builder.ts    — build FFmpeg argv: image sequence → movie
-src/ae-processor.ts      — processAeChunk + processAeStitch + finalize lock
+src/ae-processor.ts      — processAeInspect + processAeChunk + processAeStitch + finalize lock
 ```
 
 Wired in: `job-processor.ts` routes by `job_type`; `job-claimer.ts` capability-gates
@@ -135,22 +168,30 @@ video; send it through the delivery pipeline afterwards for audio/loudness/namin
 - `src/lib/delivery/frame-planner.ts` — `planChunks()` (even contiguous split) +
   `chooseChunkCount()` (sizes the split to the online AE worker pool, min frames
   per chunk to avoid paying AE launch cost on tiny chunks).
-- `src/lib/delivery/ae-storage.ts` — `submitAeRender()` (parent + chunk fan-out),
-  `getAeRenderStatus()` (aggregates chunk + stitch progress), `listAeRenders()`,
+- `src/lib/delivery/ae-storage.ts` — `submitAeRenderFromProject()` (parent +
+  `ae_inspect`, the modal path), `submitAeRender()` (explicit comp + chunk
+  fan-out), `getAeRenderStatus()` (aggregates progress), `listAeRenders()`,
   `countOnlineAeWorkers()`.
-- `delivery` agent actions: `submit_ae_render`, `ae_render_status`,
-  `list_ae_renders`.
-- `/kit render` Slack command (+ `/kit render status`).
+- `delivery` agent actions: `render_project`, `submit_ae_render`,
+  `ae_render_status`, `list_ae_renders`.
+- `/kit render` Slack command → opens the render modal (`render-modal.ts`,
+  handled in `submit-handler.ts`); `/kit render status` lists jobs.
 
 ## Usage
 
-```
-/kit render /Projects/Acme/Acme.aep | Main Comp | 300 | 59.94 | Microsoft Ignite 2025
-/kit render status
-```
+`/kit render` opens a modal whose only field is the Dropbox path to the `.aep`
+(prefilled if you type one after the command). Kit reads the project's render
+queue and renders the queued items — no other input. `/kit render status` lists
+recent renders with per-render chunk progress.
 
-Kit replies with how many chunks it cut and across how many AE workers, then tracks
-progress as the fleet renders.
+The `delivery` agent also exposes this conversationally:
+- `render_project` — render a `.aep` from its own queue (the modal's path).
+- `submit_ae_render` — explicit single-comp render (comp + frame count), for
+  programmatic callers that already know the range.
+
+> **Prerequisite:** queue your comps in After Effects' Render Queue (set their
+> output module / render settings) and save the project before submitting. Kit
+> renders exactly what's queued.
 
 ## Edge cases & gotchas
 
@@ -160,10 +201,14 @@ progress as the fleet renders.
   small frame overlap in a future iteration.
 - **AE launch cost** (~10–30s per chunk) — `chooseChunkCount` keeps chunks ≥ 24
   frames so we don't pay launch overhead on trivially small slices.
-- **Frame count must be supplied** — Kit can't probe the `.aep` without AE, so the
-  submitter provides the comp's frame count (producers know it).
-- **OM template names must exist on every node** — otherwise aerender falls back to
-  the comp's render-queue default. Define a shared template for predictable output.
+- **Scripting must be allowed on render nodes** — `ae_inspect` runs `AfterFX.exe`
+  with `-r script.jsx`. If a node blocks app scripting, inspection fails with a
+  clear error; another AE node can pick it up.
+- **Queue the comps first** — only items with status **QUEUED** in the project's
+  render queue are rendered. Nothing queued → the render fails with a clear message.
+- **Output path is redirected** — the farm honors the queue item's format but writes
+  to `<projectDir>/render/<comp>/` in Dropbox (a project's absolute output path
+  can't resolve across machines).
 - **No AE workers online** — the render is still submitted; chunks wait `pending`
   until an AE-capable worker registers. Slack warns when this happens.
 - **Worker dies mid-chunk** — existing stale-worker detection (60s) resets the chunk

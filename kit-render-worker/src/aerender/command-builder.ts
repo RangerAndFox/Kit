@@ -17,10 +17,17 @@
 
 export interface AerenderBuildInput {
   projectPath: string         // local path to the .aep
-  comp: string                // composition name
   frameStart: number          // inclusive
   frameEnd: number            // inclusive
   outputPath: string          // local path incl. [#####] pattern, e.g. D:\...\Comp_[#####].png
+
+  // Render-queue-driven mode (preferred): point at an existing render-queue item
+  // by its AE index. Its render settings + output module (format) are reused;
+  // -output just redirects where the frames land.
+  rqindex?: number
+
+  // Explicit mode (programmatic): render a comp by name with templates.
+  comp?: string
   renderSettingsTemplate?: string  // AE Render Settings template (default "Best Settings")
   outputModuleTemplate?: string    // AE Output Module template (empty = comp's RQ default)
 }
@@ -30,37 +37,35 @@ export interface AerenderBuildInput {
  * passed straight to child_process.spawn.
  */
 export function buildAerenderArgs(input: AerenderBuildInput): string[] {
-  const {
-    projectPath,
-    comp,
-    frameStart,
-    frameEnd,
-    outputPath,
-    renderSettingsTemplate,
-    outputModuleTemplate,
-  } = input
+  const { projectPath, frameStart, frameEnd, outputPath, rqindex, comp } = input
 
   if (frameEnd < frameStart) {
     throw new Error(`buildAerenderArgs: frameEnd (${frameEnd}) < frameStart (${frameStart})`)
   }
+  if (rqindex == null && !comp) {
+    throw new Error('buildAerenderArgs: provide either rqindex (RQ-driven) or comp (explicit)')
+  }
 
-  const args: string[] = [
-    '-project', projectPath,
-    '-comp', comp,
-    '-s', String(frameStart),
-    '-e', String(frameEnd),
-    '-RStemplate', renderSettingsTemplate || 'Best Settings',
-  ]
+  const args: string[] = ['-project', projectPath]
 
-  // Output module template is optional — when omitted, aerender uses the
-  // template already attached to the comp's render-queue item. Studios that
-  // want a guaranteed image-sequence format should define a shared OM template
-  // (e.g. "Kit PNG Sequence") and pass its name here.
-  if (outputModuleTemplate) {
-    args.push('-OMtemplate', outputModuleTemplate)
+  if (rqindex != null) {
+    // Reuse the queue item's own render settings + output module.
+    args.push('-rqindex', String(rqindex))
+  } else {
+    args.push('-comp', comp!)
+    args.push('-RStemplate', input.renderSettingsTemplate || 'Best Settings')
+    // Output module template is optional — when omitted, aerender uses the
+    // template already attached to the comp's render-queue item.
+    if (input.outputModuleTemplate) {
+      args.push('-OMtemplate', input.outputModuleTemplate)
+    }
   }
 
   args.push(
+    '-s', String(frameStart),
+    '-e', String(frameEnd),
+    // -output redirects the destination (keeping the OM's format) so chunks from
+    // every machine land in the same shared Dropbox folder.
     '-output', outputPath,
     // Keep render-farm nodes from blocking on a dialog: skip missing footage
     // rather than halting, and never play the completion sound.
