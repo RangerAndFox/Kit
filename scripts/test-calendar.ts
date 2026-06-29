@@ -42,9 +42,13 @@ async function main() {
     return
   }
 
-  const auth = new google.auth.JWT(creds.client_email, undefined, creds.private_key, [
-    'https://www.googleapis.com/auth/calendar.readonly',
-  ])
+  // Options-object form — the positional constructor was removed in
+  // google-auth-library v10 (would silently send unauthenticated requests).
+  const auth = new google.auth.JWT({
+    email: creds.client_email,
+    key: creds.private_key,
+    scopes: ['https://www.googleapis.com/auth/calendar.readonly'],
+  })
   const calendar = google.calendar({ version: 'v3', auth })
 
   const now = new Date()

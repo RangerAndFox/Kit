@@ -49,12 +49,15 @@ function getCalendarIds(): string[] {
 
 function getCalendarClient() {
   const creds = getServiceAccountCreds()
-  const auth = new google.auth.JWT(
-    creds.client_email,
-    undefined,
-    creds.private_key,
-    ['https://www.googleapis.com/auth/calendar.readonly'],
-  )
+  // Options-object form. The positional JWT(email, keyFile, key, scopes)
+  // constructor was removed in google-auth-library v10 — passing the key
+  // positionally silently yields "No key or keyFile set", so requests go out
+  // unauthenticated and Google returns 403 "unregistered callers".
+  const auth = new google.auth.JWT({
+    email: creds.client_email,
+    key: creds.private_key,
+    scopes: ['https://www.googleapis.com/auth/calendar.readonly'],
+  })
   return google.calendar({ version: 'v3', auth })
 }
 
