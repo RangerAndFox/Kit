@@ -67,7 +67,10 @@ async function boordsFetch(
   if (res.status === 429) {
     const wait = Math.min(parseInt(res.headers.get('Retry-After') || '5', 10) || 5, 30)
     await new Promise((r) => setTimeout(r, wait * 1000))
-    res = await fetch(url.toString(), init)
+    // Fresh timeout signal — the original AbortSignal.timeout(15s) has very
+    // likely fired during the wait (Retry-After up to 30s), which would abort
+    // the retry immediately instead of actually retrying.
+    res = await fetch(url.toString(), { ...init, signal: AbortSignal.timeout(15_000) })
   }
 
   if (!res.ok) {
