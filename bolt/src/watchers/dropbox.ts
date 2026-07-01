@@ -104,10 +104,16 @@ async function loadCursor(): Promise<string | null> {
 
 async function saveCursor(cursor: string): Promise<void> {
   const sb = createAdminClient()
-  await sb
+  // Upsert, not update: update() matching zero rows is a silent success, so
+  // if the singleton row was never seeded the cursor would never persist and
+  // the watcher would "seed and exit" on every webhook forever.
+  const { error } = await sb
     .from('dropbox_state')
-    .update({ cursor, updated_at: new Date().toISOString() })
-    .eq('id', 'singleton')
+    .upsert(
+      { id: 'singleton', cursor, updated_at: new Date().toISOString() },
+      { onConflict: 'id' },
+    )
+  if (error) throw new Error(`saveCursor failed: ${error.message}`)
 }
 
 async function seedCursor(): Promise<string> {
@@ -155,7 +161,33 @@ async function fetchDeltas(initial: string): Promise<{ entries: DropEntry[]; new
 
 // ─── Main entrypoint ────────────────────────────────────────
 
+// Serialize runs: Dropbox sends webhook bursts, and two concurrent runs
+// would read the same cursor and process identical entries twice (duplicate
+// Frame.io uploads + duplicate PM DMs). A notification that arrives mid-run
+// just flags a re-run so its deltas are picked up when the current pass ends.
+let _running = false
+let _rerunRequested = false
+// One-retry memory for a failing batch: if the same cursor fails twice we
+// advance anyway so a poison entry can't wedge the watcher forever.
+let _lastFailedCursor: string | null = null
+
 export async function processDropboxNotification(app: App): Promise<void> {
+  if (_running) {
+    _rerunRequested = true
+    return
+  }
+  _running = true
+  try {
+    do {
+      _rerunRequested = false
+      await processDeltasOnce(app)
+    } while (_rerunRequested)
+  } finally {
+    _running = false
+  }
+}
+
+async function processDeltasOnce(app: App): Promise<void> {
   let cursor = await loadCursor()
   if (!cursor) {
     await seedCursor()
@@ -164,9 +196,9 @@ export async function processDropboxNotification(app: App): Promise<void> {
   }
 
   const { entries, newCursor } = await fetchDeltas(cursor)
-  await saveCursor(newCursor)
 
   let matched = 0
+  let failed = 0
   for (const entry of entries) {
     if (entry.tag !== 'file') continue
     const m = entry.path_display.match(PATH_RE)
@@ -188,8 +220,28 @@ export async function processDropboxNotification(app: App): Promise<void> {
         year,
       })
     } catch (err: any) {
+      failed++
       console.error(`[dropbox-watcher] failed for ${entry.path_display}: ${err.message}`)
     }
+  }
+
+  // Advance the cursor only after processing, and only if the batch didn't
+  // fail — saving it up front permanently consumed the delta, so a Frame.io
+  // outage during processing silently lost client deliveries. A batch that
+  // fails twice in a row (same cursor) advances anyway per the poison guard.
+  if (failed === 0 || _lastFailedCursor === cursor) {
+    if (failed > 0) {
+      console.error(
+        `[dropbox-watcher] batch failed twice for the same cursor — advancing past ${failed} failed entr(ies) to avoid wedging`,
+      )
+    }
+    await saveCursor(newCursor)
+    _lastFailedCursor = null
+  } else {
+    _lastFailedCursor = cursor
+    console.error(
+      `[dropbox-watcher] ${failed}/${matched} deliveries failed — cursor NOT advanced; batch retries on the next notification`,
+    )
   }
 
   console.log(

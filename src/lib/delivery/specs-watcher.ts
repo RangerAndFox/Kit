@@ -13,6 +13,7 @@
 
 import { createAdminClient } from '../supabase/admin'
 import { dropboxHeaders } from '../dropbox/client'
+import { getSeenRowsByIds, insertFirstSightings } from './seen-files'
 import { pairSpecsFiles, type SpecsFile, type SpecsKind, type PairResult } from './pairing'
 
 const DROPBOX_API = 'https://api.dropboxapi.com/2'
@@ -117,22 +118,19 @@ export async function scanProjectSpecs(): Promise<SpecsDrop[]> {
     byProject.set(key, g)
   }
 
-  const { data: seenRows } = await sb.from('seen_dropbox_files').select('*')
-  const seenById: Record<string, any> = {}
-  for (const row of seenRows || []) seenById[row.dropbox_id] = row
+  // Seen rows scoped to this scan's ids (the old select('*') walked the
+  // whole ever-growing table every minute), first sightings batched.
+  const seenById = await getSeenRowsByIds(specs.map((s) => s.dropbox_id))
+  await insertFirstSightings(
+    specs
+      .filter((s) => !seenById[s.dropbox_id])
+      .map((s) => ({ dropbox_id: s.dropbox_id, path: s.path, size_bytes: s.size_bytes })),
+  )
 
   const drops: SpecsDrop[] = []
   for (const s of specs) {
     const prev = seenById[s.dropbox_id]
-    if (!prev) {
-      await sb.from('seen_dropbox_files').insert({
-        dropbox_id: s.dropbox_id,
-        path: s.path,
-        size_bytes: s.size_bytes,
-        stable_check_count: 1,
-      })
-      continue
-    }
+    if (!prev) continue // first sighting recorded above; stability check next tick
     if (prev.notified_at) continue
     if (prev.size_bytes === s.size_bytes) {
       const newCount = (prev.stable_check_count || 0) + 1

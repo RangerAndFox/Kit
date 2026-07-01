@@ -39,6 +39,29 @@ async function harvestGet(path: string, params?: Record<string, string>): Promis
   return res.json()
 }
 
+/**
+ * Fetch every page of a Harvest list endpoint, concatenating `key` arrays.
+ * Harvest caps per_page at 100 and reports `next_page` — a single-page fetch
+ * silently truncates once the studio passes 100 clients/projects/users
+ * (which had findOrCreateClient creating duplicate clients).
+ */
+async function harvestGetAll(
+  path: string,
+  key: string,
+  params: Record<string, string> = {},
+): Promise<any[]> {
+  const out: any[] = []
+  let page = 1
+  const MAX_PAGES = 20 // 2,000 rows — far above studio scale; loop safety cap
+  while (page <= MAX_PAGES) {
+    const data = await harvestGet(path, { ...params, per_page: '100', page: String(page) })
+    out.push(...(data[key] || []))
+    if (!data.next_page) break
+    page = data.next_page
+  }
+  return out
+}
+
 async function harvestPost(path: string, body: Record<string, unknown>): Promise<any> {
   const res = await fetch(`${BASE_URL}${path}`, {
     method: 'POST',
@@ -105,8 +128,8 @@ export interface HarvestClient {
  * List all clients.
  */
 export async function listClients(): Promise<HarvestClient[]> {
-  const data = await harvestGet('/clients', { is_active: 'true', per_page: '100' })
-  return (data.clients || []).map((c: any) => ({
+  const clients = await harvestGetAll('/clients', 'clients', { is_active: 'true' })
+  return clients.map((c: any) => ({
     id: c.id,
     name: c.name,
     is_active: c.is_active,
@@ -131,10 +154,10 @@ export async function findOrCreateClient(name: string): Promise<HarvestClient> {
  * List all active projects.
  */
 export async function listProjects(activeOnly = true): Promise<HarvestProject[]> {
-  const params: Record<string, string> = { per_page: '100' }
+  const params: Record<string, string> = {}
   if (activeOnly) params.is_active = 'true'
-  const data = await harvestGet('/projects', params)
-  return (data.projects || []).map((p: any) => ({
+  const projects = await harvestGetAll('/projects', 'projects', params)
+  return projects.map((p: any) => ({
     id: p.id,
     name: p.name,
     code: p.code || '',
@@ -416,8 +439,8 @@ export async function listTimeEntriesForUser(opts: {
  * List all active users.
  */
 export async function listUsers(): Promise<HarvestUser[]> {
-  const data = await harvestGet('/users', { is_active: 'true', per_page: '100' })
-  return (data.users || []).map((u: any) => ({
+  const users = await harvestGetAll('/users', 'users', { is_active: 'true' })
+  return users.map((u: any) => ({
     id: u.id,
     first_name: u.first_name,
     last_name: u.last_name,

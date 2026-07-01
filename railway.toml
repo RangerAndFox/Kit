@@ -11,7 +11,9 @@ dockerfilePath = "bolt/Dockerfile"
 [deploy]
 numReplicas = 1
 restartPolicyType = "ALWAYS"
-healthcheckPath = ""
+# Deploy gate: the app's /health endpoint reports real Slack connectivity
+# (auth.test watchdog) instead of the old always-200 fallback.
+healthcheckPath = "/health"
 
 # No sleep — Kit must be online 24/7
 sleepApplication = false

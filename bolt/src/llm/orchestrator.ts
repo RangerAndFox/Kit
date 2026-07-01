@@ -32,6 +32,13 @@ export interface OrchestratorRequest {
   userId: string
   user: UserContext | null
   message: string
+  /**
+   * Per-request context header ("[You are talking to …][This channel is …]").
+   * Injected into the CURRENT API call only — never stored in conversation
+   * memory, where it used to accumulate one copy per stored turn (~10
+   * duplicates per call at the history cap, crowding out real history).
+   */
+  contextPreamble?: string
 }
 
 export interface OrchestratorResult {
@@ -53,6 +60,15 @@ export async function runOrchestrator(
   const messages: Array<{ role: 'user' | 'assistant'; content: any }> = fresh.messages.map(
     (m) => ({ role: m.role, content: m.content }),
   )
+
+  // Prefix the context preamble onto the CURRENT user turn only (the stored
+  // history stays clean).
+  if (req.contextPreamble && messages.length > 0) {
+    const last = messages[messages.length - 1]
+    if (last.role === 'user' && typeof last.content === 'string') {
+      last.content = `${req.contextPreamble}\n\n${last.content}`
+    }
+  }
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const response = await anthropic.messages.create({
@@ -108,9 +124,12 @@ export async function runOrchestrator(
     return { reply, awaitingClarification }
   }
 
+  // Hitting the turn cap is a failure, not a pending question — marking it
+  // awaitingClarification made Kit consume the user's next un-mentioned
+  // channel message for 15 minutes.
   const fallback = "I went around in circles on that one — try rephrasing?"
-  appendAssistantTurn(req.teamId, req.channel, req.userId, fallback, true)
-  return { reply: fallback, awaitingClarification: true }
+  appendAssistantTurn(req.teamId, req.channel, req.userId, fallback, false)
+  return { reply: fallback, awaitingClarification: false }
 }
 
 /**
@@ -118,9 +137,16 @@ export async function runOrchestrator(
  * AND contains a disambiguation keyword. Generic questions like
  * "How can I help?" don't count — they're conversation openers, not
  * pending clarifications waiting on a specific user reply.
+ *
+ * "or" only counts in the disambiguation shape "… X or Y?" (exactly one word
+ * on each side, at the end) — bare "or" anywhere used to arm the trap on
+ * sign-offs like "Anything else, or is that all?".
  */
 function isAskingClarification(reply: string): boolean {
   const trimmed = reply.trim()
   if (!trimmed.endsWith('?')) return false
-  return /\b(which|whose|whom|or)\b/i.test(trimmed)
+  if (/\b(which|whose|whom|did you mean|clarify|what project|which one)\b/i.test(trimmed)) {
+    return true
+  }
+  return /\w+\s+or\s+\w+\?$/i.test(trimmed)
 }

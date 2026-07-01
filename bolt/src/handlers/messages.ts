@@ -34,6 +34,7 @@ import { handleBrainIngestMessage } from '../brain/handler'
 import { handleRoleMessage } from '../roles/handler'
 import { handleFrameioToggleMessage } from '../delivery/frameio-toggle'
 import { handleSpecIntakeReply } from '../delivery/spec-intake'
+import { channelHasOpenSpecIntake } from '../../../src/lib/delivery/spec-intake-store'
 
 import { runOrchestrator } from '../llm/orchestrator'
 import { hasPendingClarification } from '../llm/memory'
@@ -59,6 +60,21 @@ import { findOpenCheckin, handleCheckinReply } from '../checkins/reply'
 function dmThreadTs(m: any): string | undefined {
   if (m?.channel_type !== 'im') return undefined
   return m.thread_ts || m.ts
+}
+
+// Kit's own bot user id, fetched lazily and cached for the process. Used to
+// distinguish "this message @mentions Kit" (app_mention will fire — skip
+// here) from "this message mentions someone else" (handle it here).
+let _botUserId: string | null = null
+async function getBotUserId(app: App): Promise<string | null> {
+  if (_botUserId) return _botUserId
+  try {
+    const auth = await app.client.auth.test()
+    _botUserId = (auth as any).user_id || null
+  } catch (err: any) {
+    console.warn('[Bolt] auth.test failed:', err?.message)
+  }
+  return _botUserId
 }
 
 export function registerMessageHandlers(app: App) {
@@ -120,8 +136,15 @@ export function registerMessageHandlers(app: App) {
     // ── Delivery spec intake (reply in a specs-prompt thread) ──
     // Runs BEFORE the subtype skip so file_share replies (PDF/screenshot)
     // are caught too. Returns false (and we continue) when the thread isn't
-    // an open delivery prompt.
-    if (msgEvent.thread_ts && msgEvent.channel && msgEvent.user) {
+    // an open delivery prompt. channelHasOpenSpecIntake is a cached Set
+    // lookup — without it every threaded message in every channel paid a
+    // Supabase query.
+    if (
+      msgEvent.thread_ts &&
+      msgEvent.channel &&
+      msgEvent.user &&
+      (await channelHasOpenSpecIntake(msgEvent.channel))
+    ) {
       try {
         const handled = await handleSpecIntakeReply({
           app,
@@ -197,8 +220,14 @@ export function registerMessageHandlers(app: App) {
         return
     }
 
-    // (App_mention event handles the @mention path; ignore mentions here to avoid double-fire)
-    if ((msgEvent.text || '').includes('<@') && !isDM) return
+    // (app_mention handles the @Kit path; ignore only messages that mention
+    // KIT here to avoid double-fire. A clarification answer that mentions
+    // someone ELSE — "it's <@UJARED>'s project" — must still be handled,
+    // since app_mention never fires for it.)
+    if (!isDM && (msgEvent.text || '').includes('<@')) {
+      const botId = await getBotUserId(app)
+      if (!botId || (msgEvent.text || '').includes(`<@${botId}>`)) return
+    }
 
     // For DMs (the Slack Assistant / Agents & AI Apps pane) always thread the
     // reply to the conversation root so it appears inside the user's view.
@@ -292,28 +321,18 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
     }
   }
 
-  // Resolve workspace + user context
+  // Resolve workspace + user context. Workspace id and the user's email are
+  // effectively constant — cached with a TTL so every message doesn't pay a
+  // Supabase query + a Slack users.info round-trip before any routing.
   const workspaceId = await resolveWorkspaceId(teamId)
+  const userEmail = await lookupUserEmail(app, userId)
 
-  // Look up the Slack user's email so resolveUserContext can apply the
-  // hardcoded-admin override (founder access works before team_members is seeded).
-  let userEmail: string | undefined
-  try {
-    const info = await app.client.users.info({ user: userId })
-    userEmail = info.user?.profile?.email || undefined
-  } catch (err) {
-    console.warn('[Bolt] users.info lookup failed:', (err as any)?.message)
-  }
-
-  const user = workspaceId
-    ? await resolveUserContext(workspaceId, userId, userEmail)
-    : null
-
-  // Resolve project from channel (if this is a project channel)
-  // and inject as context so Kit knows what "this project" means.
-  const channelProject = workspaceId
-    ? await resolveProjectFromChannel(workspaceId, channelId)
-    : null
+  // User context + channel→project resolution are independent — run them in
+  // parallel instead of serially.
+  const [user, channelProject] = await Promise.all([
+    workspaceId ? resolveUserContext(workspaceId, userId, userEmail) : Promise.resolve(null),
+    workspaceId ? resolveProjectFromChannel(workspaceId, channelId) : Promise.resolve(null),
+  ])
 
   // ── Fast path 1: Frame.io link ──────────────────────────
   if (messageHasFrameIoLink(messageText)) {
@@ -450,14 +469,16 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
           `. When the user says "this project" or omits a project, they mean this one.]`,
       )
     }
-    const augmentedMessage = `${contextLines.join('\n')}\n\n${messageText}`
-
+    // Preamble travels separately: it's injected into the current API call
+    // only, so conversation memory stores clean turns (it used to bake one
+    // copy of this header into every stored message).
     const { reply } = await runOrchestrator({
       teamId,
       channel: channelId,
       userId,
       user,
-      message: augmentedMessage,
+      message: messageText,
+      contextPreamble: contextLines.join('\n'),
     })
 
     await postReply(reply)
@@ -740,8 +761,16 @@ async function handleStoryboardKeyword(opts: {
   })
 }
 
+// Workspace ids never change at runtime and there's exactly one workspace in
+// practice — cache per team so the hot path skips a Supabase query per
+// message. (1h TTL just so a manually-added workspace is picked up.)
+const WORKSPACE_CACHE_TTL_MS = 60 * 60 * 1000
+const workspaceCache = new Map<string, { id: string; at: number }>()
+
 async function resolveWorkspaceId(teamId: string): Promise<string> {
   if (!teamId) return ''
+  const hit = workspaceCache.get(teamId)
+  if (hit && Date.now() - hit.at < WORKSPACE_CACHE_TTL_MS) return hit.id
   try {
     const supabase = createAdminClient()
     const { data } = await supabase
@@ -751,16 +780,38 @@ async function resolveWorkspaceId(teamId: string): Promise<string> {
       .limit(1)
       .single()
 
-    if (data?.id) return data.id
-
-    const { data: first } = await supabase
-      .from('workspaces')
-      .select('id')
-      .limit(1)
-      .single()
-
-    return first?.id || ''
+    let id = data?.id || ''
+    if (!id) {
+      const { data: first } = await supabase
+        .from('workspaces')
+        .select('id')
+        .limit(1)
+        .single()
+      id = first?.id || ''
+    }
+    if (id) workspaceCache.set(teamId, { id, at: Date.now() })
+    return id
   } catch {
     return ''
   }
+}
+
+// Slack emails effectively never change mid-session — cache per user so the
+// hot path skips a users.info round-trip per message. Failures are cached
+// briefly too (missing users.read scope shouldn't hammer the API).
+const EMAIL_CACHE_TTL_MS = 6 * 60 * 60 * 1000
+const emailCache = new Map<string, { email: string | undefined; at: number }>()
+
+async function lookupUserEmail(app: App, userId: string): Promise<string | undefined> {
+  const hit = emailCache.get(userId)
+  if (hit && Date.now() - hit.at < EMAIL_CACHE_TTL_MS) return hit.email
+  let email: string | undefined
+  try {
+    const info = await app.client.users.info({ user: userId })
+    email = info.user?.profile?.email || undefined
+  } catch (err) {
+    console.warn('[Bolt] users.info lookup failed:', (err as any)?.message)
+  }
+  emailCache.set(userId, { email, at: Date.now() })
+  return email
 }

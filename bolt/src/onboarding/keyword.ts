@@ -196,6 +196,9 @@ function buildConfirmCard(opts: {
  *
  * @returns true if handled (caller should NOT route to orchestrator).
  */
+/** "never mind" / "cancel" / "stop" — the escape hatch out of a pending flow. */
+const CANCEL_RE = /^\s*(cancel|never\s*mind|nevermind|stop|forget it|abort)\W*$/i
+
 export async function handleOnboardKeyword(opts: {
   app: App
   channelId: string
@@ -205,9 +208,52 @@ export async function handleOnboardKeyword(opts: {
 }): Promise<boolean> {
   const { app, channelId, threadTs, userId, text } = opts
 
-  // Permission gate
+  const prior = getPendingOnboarding(channelId, userId)
+
+  // Escape hatch: a pending flow previously captured EVERY message from this
+  // user for 15 minutes with no way out. "cancel" / "never mind" ends it.
+  if (prior && CANCEL_RE.test(text)) {
+    clearPendingOnboarding(channelId, userId)
+    await app.client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      text: ':+1: Dropped the onboarding — ping me again whenever.',
+    })
+    return true
+  }
+
+  // Parse intent FIRST. The permission gate used to run before this, so any
+  // non-producer whose message merely contained the word "onboard(ing)"
+  // ("what's in the client onboarding deck?") got a lock message and their
+  // real question was swallowed.
+  const intent = await parseOnboardIntent(text)
+
+  // A pending flow only "captures" this message if it actually continues the
+  // flow — states onboarding intent again or supplies a missing field. An
+  // unrelated question mid-flow falls through to the orchestrator (pending
+  // state survives for their next real answer).
+  const contributesToPending =
+    !!prior && (!!intent.artistEmail || !!intent.projectQuery || !!intent.artistName)
+
+  // Merge with any pending state from a prior turn so the user can
+  // supply missing pieces in follow-up messages without restating.
+  const merged = {
+    isOnboardingIntent: intent.isOnboardingIntent || contributesToPending,
+    artistName: intent.artistName || prior?.artistName || null,
+    artistEmail: intent.artistEmail || prior?.artistEmail || null,
+    projectQuery: intent.projectQuery || prior?.projectQuery || null,
+  }
+
+  if (!merged.isOnboardingIntent) {
+    // False positive (or an unrelated message mid-flow) — let the
+    // orchestrator handle it.
+    return false
+  }
+
+  // Permission gate — only after we know this really is an onboarding ask.
   const allowed = await canOnboard(userId)
   if (!allowed) {
+    clearPendingOnboarding(channelId, userId)
     await app.client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,
@@ -215,24 +261,6 @@ export async function handleOnboardKeyword(opts: {
         ":lock: Onboarding's restricted to producers, CDs, and admins. If that's you, ask an admin to set your role with `/kit role @you producer`.",
     })
     return true
-  }
-
-  // Parse intent
-  const intent = await parseOnboardIntent(text)
-
-  // Merge with any pending state from a prior turn so the user can
-  // supply missing pieces in follow-up messages without restating.
-  const prior = getPendingOnboarding(channelId, userId)
-  const merged = {
-    isOnboardingIntent: intent.isOnboardingIntent || !!prior,
-    artistName: intent.artistName || prior?.artistName || null,
-    artistEmail: intent.artistEmail || prior?.artistEmail || null,
-    projectQuery: intent.projectQuery || prior?.projectQuery || null,
-  }
-
-  if (!merged.isOnboardingIntent) {
-    // False positive — let the orchestrator handle it.
-    return false
   }
 
   // Ask for missing pieces if any

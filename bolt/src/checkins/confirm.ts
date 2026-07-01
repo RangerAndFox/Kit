@@ -86,13 +86,32 @@ export async function handleCheckinConfirm(opts: {
   const { app, checkinId } = opts
   const checkin = await loadCheckin(checkinId)
   if (!checkin) return
-  if (checkin.status === 'logged') return // idempotent
 
   const entries = Array.isArray(checkin.parsed_entries) ? checkin.parsed_entries : []
   if (entries.length === 0) return
 
+  const sb = createAdminClient()
+
+  // Claim the row (compare-and-set) BEFORE writing to Harvest. A plain
+  // status check is a TOCTOU: two quick clicks (or a Slack action retry)
+  // both pass it and every entry gets logged twice. Losing the claim means
+  // another click is already mid-flight — bail silently.
+  const { data: claimed } = await sb
+    .from('daily_hours_checkins')
+    .update({ status: 'logging', updated_at: new Date().toISOString() })
+    .eq('id', checkin.id)
+    .eq('status', 'parsed')
+    .select('id')
+  if (!claimed || claimed.length === 0) return
+
   const staff = await loadStaff(checkin.staff_id)
   if (!staff?.harvest_user_id) {
+    // Release the claim so a fixed mapping can be confirmed later.
+    await sb
+      .from('daily_hours_checkins')
+      .update({ status: 'parsed', updated_at: new Date().toISOString() })
+      .eq('id', checkin.id)
+      .eq('status', 'logging')
     await postResult({
       app,
       channelId: checkin.dm_channel_id || '',
@@ -101,8 +120,6 @@ export async function handleCheckinConfirm(opts: {
     })
     return
   }
-
-  const sb = createAdminClient()
   const logged: HarvestTimeEntry[] = []
   const failures: string[] = []
 

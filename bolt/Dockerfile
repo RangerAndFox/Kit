@@ -23,7 +23,9 @@ COPY bolt/assets/ ./bolt/assets/
 
 WORKDIR /app/bolt
 
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD node -e "process.exit(0)"
+# Probe the app's real /health endpoint (Slack-connectivity watchdog) —
+# the old `process.exit(0)` always passed regardless of app state.
+HEALTHCHECK --interval=60s --timeout=5s --retries=3 \
+  CMD node -e "fetch('http://localhost:'+(process.env.PORT||3001)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 CMD ["npx", "tsx", "src/app.ts"]

@@ -53,6 +53,9 @@ export interface ParsedEntry {
 export async function findOpenCheckin(slackUserId: string): Promise<OpenCheckin | null> {
   const today = checkinToday()
   const sb = createAdminClient()
+  // limit(1) instead of maybeSingle(): if a redo + the scheduled send ever
+  // produce two open rows, maybeSingle() errors and ALL replies leak past the
+  // check-in interceptor. Prefer the newest open row instead.
   const { data, error } = await sb
     .from('daily_hours_checkins')
     .select(
@@ -61,12 +64,13 @@ export async function findOpenCheckin(slackUserId: string): Promise<OpenCheckin 
     .eq('slack_user_id', slackUserId)
     .eq('check_in_date', today)
     .in('status', ['sent', 'nudged'])
-    .maybeSingle()
+    .order('created_at', { ascending: false })
+    .limit(1)
   if (error) {
     console.warn(`[checkin-reply] findOpenCheckin failed: ${error.message}`)
     return null
   }
-  return (data as OpenCheckin) || null
+  return (data?.[0] as OpenCheckin) || null
 }
 
 /**
@@ -223,6 +227,12 @@ export function buildConfirmBlocks(opts: {
 /**
  * Handle a DM reply when an open check-in exists.
  * Returns true if the message was handled (caller should NOT route to orchestrator).
+ *
+ * Routing contract: the check-in must never swallow an unrelated DM. A reply
+ * that parses to zero entries (and isn't a skip) is treated as "not an hours
+ * message" — the check-in re-opens and the message falls through to the
+ * normal pipeline. A parse FAILURE also re-opens the row so the user's retry
+ * (or `skip`) is intercepted again instead of dead-ending.
  */
 export async function handleCheckinReply(opts: {
   app: App
@@ -235,11 +245,25 @@ export async function handleCheckinReply(opts: {
 
   if (!open.dm_channel_id) return false
 
-  // Mark replied immediately so concurrent messages don't double-fire.
-  await sb
+  // Claim the row (compare-and-set on the open statuses) so two rapid
+  // messages don't both run the parser. Losing the race means another
+  // message is mid-parse — let this one fall through to the orchestrator.
+  const { data: claimed } = await sb
     .from('daily_hours_checkins')
     .update({ status: 'replied', reply_ts: replyTs, updated_at: new Date().toISOString() })
     .eq('id', open.id)
+    .in('status', ['sent', 'nudged'])
+    .select('id')
+  if (!claimed || claimed.length === 0) return false
+
+  // Re-open the check-in (undo the claim) — used on every path where this
+  // message turned out not to complete the check-in.
+  const reopen = () =>
+    sb
+      .from('daily_hours_checkins')
+      .update({ status: 'sent', updated_at: new Date().toISOString() })
+      .eq('id', open.id)
+      .eq('status', 'replied')
 
   // Skip path
   const trimmed = replyText.trim().toLowerCase()
@@ -271,6 +295,7 @@ export async function handleCheckinReply(opts: {
     })
   } catch (err: any) {
     console.warn(`[checkin-reply] parse failed: ${err.message}`)
+    await reopen()
     await app.client.chat.postMessage({
       channel: open.dm_channel_id,
       thread_ts: open.dm_ts || undefined,
@@ -291,13 +316,10 @@ export async function handleCheckinReply(opts: {
   }
 
   if (parsed.entries.length === 0) {
-    await app.client.chat.postMessage({
-      channel: open.dm_channel_id,
-      thread_ts: open.dm_ts || undefined,
-      text:
-        ":thinking_face: I didn't pull any entries from that. Try _'4h on <project>'_, or reply `skip`.",
-    })
-    return true
+    // Not an hours message at all (e.g. "what's the Frame.io link?").
+    // Re-open the check-in and let the orchestrator answer the question.
+    await reopen()
+    return false
   }
 
   // Resolve each entry against Harvest in parallel.

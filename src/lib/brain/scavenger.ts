@@ -258,25 +258,82 @@ export interface PendingCandidateRow {
   applied_section: string | null
 }
 
-export async function getPendingForBrain(brainId: string): Promise<PendingCandidateRow[]> {
+export async function getPendingForBrain(
+  brainId: string,
+  opts: { needingDmBefore?: string } = {},
+): Promise<PendingCandidateRow[]> {
   const sb = createAdminClient()
-  const { data } = await sb
+  let q = sb
     .from('brain_scavenger_candidates')
     .select('id, brain_id, workspace_id, source_ref, source_doc_id, summary, why_relevant, similarity, applied_section')
     .eq('brain_id', brainId)
     .eq('status', 'pending')
-    .order('created_at', { ascending: false })
+  // Only candidates never DM'd, or whose last DM predates the cutoff — the
+  // dispatch cron used to re-send identical approval DMs every day until
+  // the creator acted.
+  if (opts.needingDmBefore) {
+    q = q.or(`dm_sent_at.is.null,dm_sent_at.lt.${opts.needingDmBefore}`)
+  }
+  const { data } = await q.order('created_at', { ascending: false })
   return (data as PendingCandidateRow[]) || []
 }
 
+/** PENDING candidates only — a decided candidate must never resolve again. */
 export async function getCandidate(id: number): Promise<PendingCandidateRow | null> {
   const sb = createAdminClient()
   const { data } = await sb
     .from('brain_scavenger_candidates')
     .select('id, brain_id, workspace_id, source_ref, source_doc_id, summary, why_relevant, similarity, applied_section')
     .eq('id', id)
+    .eq('status', 'pending')
     .maybeSingle()
   return (data as PendingCandidateRow) || null
+}
+
+/**
+ * Compare-and-set claim on a pending candidate. Returns false if it was
+ * already decided (double click, approve-after-reject, stale DM buttons) —
+ * the old check-then-apply flow re-applied the patch on every extra click.
+ */
+export async function claimCandidate(opts: {
+  id: number
+  status: 'approved' | 'rejected'
+  approver: string
+  appliedSection?: string | null
+}): Promise<boolean> {
+  const sb = createAdminClient()
+  const { data, error } = await sb
+    .from('brain_scavenger_candidates')
+    .update({
+      status: opts.status,
+      approver: opts.approver,
+      applied_section: opts.appliedSection ?? null,
+      decided_at: new Date().toISOString(),
+    })
+    .eq('id', opts.id)
+    .eq('status', 'pending')
+    .select('id')
+  if (error) throw new Error(`claimCandidate: ${error.message}`)
+  return (data?.length || 0) > 0
+}
+
+/** Revert a claimed candidate back to pending (apply failed after claim). */
+export async function releaseCandidate(id: number): Promise<void> {
+  const sb = createAdminClient()
+  await sb
+    .from('brain_scavenger_candidates')
+    .update({ status: 'pending', approver: null, decided_at: null })
+    .eq('id', id)
+}
+
+/** Stamp candidates as DM'd so the dispatch cron doesn't re-send daily. */
+export async function markCandidatesDmSent(ids: number[]): Promise<void> {
+  if (ids.length === 0) return
+  const sb = createAdminClient()
+  await sb
+    .from('brain_scavenger_candidates')
+    .update({ dm_sent_at: new Date().toISOString() })
+    .in('id', ids)
 }
 
 export async function markCandidateDecided(opts: {

@@ -24,6 +24,9 @@ interface CachedToken {
 
 let cached: CachedToken | null = null
 
+/** Single-flight guard — concurrent expiry shares one token exchange. */
+let refreshInFlight: Promise<CachedToken> | null = null
+
 /** Refresh slightly before actual expiry */
 const SAFETY_BUFFER_MS = 5 * 60 * 1000 // refresh 5 min early
 
@@ -93,8 +96,14 @@ export async function getDropboxAccessToken(): Promise<string> {
     return cached.accessToken
   }
 
-  // Fetch a fresh token
-  cached = await fetchFreshToken()
+  // Fetch a fresh token — single-flight so concurrent expiry doesn't fire
+  // N parallel token exchanges.
+  if (!refreshInFlight) {
+    refreshInFlight = fetchFreshToken().finally(() => {
+      refreshInFlight = null
+    })
+  }
+  cached = await refreshInFlight
   return cached.accessToken
 }
 

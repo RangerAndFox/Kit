@@ -147,11 +147,13 @@ export async function resetStaleJobs(thresholdSeconds = 60): Promise<number> {
   const sb = createAdminClient()
   // Find workers with stale heartbeats
   const cutoff = new Date(Date.now() - thresholdSeconds * 1000).toISOString()
+  // A worker mid-render heartbeats 'busy', not 'online' — a box that dies
+  // while transcoding is exactly the one failover exists for, so match both.
   const { data: staleWorkers } = await sb
     .from('render_workers')
     .select('hostname')
     .lt('last_heartbeat', cutoff)
-    .eq('status', 'online')
+    .in('status', ['online', 'busy'])
 
   if (!staleWorkers || staleWorkers.length === 0) return 0
 

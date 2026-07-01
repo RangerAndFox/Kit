@@ -12,6 +12,7 @@
 
 import { createAdminClient } from '../supabase/admin'
 import { dropboxHeaders } from '../dropbox/client'
+import { getSeenRowsByIds, insertFirstSightings } from './seen-files'
 
 const DROPBOX_API = 'https://api.dropboxapi.com/2'
 const WATCH_PATH = '/Delivery-Queue'
@@ -95,28 +96,22 @@ export interface NewFileNotification {
 export async function scanDeliveryQueue(): Promise<NewFileNotification[]> {
   const sb = createAdminClient()
   const liveFiles = await listDeliveryQueueFiles()
+  if (liveFiles.length === 0) return []
 
-  // Pull existing seen rows
-  const { data: seenRows } = await sb.from('seen_dropbox_files').select('*')
-  const seenById: Record<string, any> = {}
-  for (const row of seenRows || []) {
-    seenById[row.dropbox_id] = row
-  }
+  // Seen rows scoped to this scan's ids (the old select('*') walked the
+  // whole ever-growing table every minute), first sightings batched.
+  const seenById = await getSeenRowsByIds(liveFiles.map((f: any) => f.id))
+  await insertFirstSightings(
+    liveFiles
+      .filter((f: any) => !seenById[f.id])
+      .map((f: any) => ({ dropbox_id: f.id, path: f.path_display, size_bytes: f.size })),
+  )
 
   const ready: NewFileNotification[] = []
 
   for (const f of liveFiles) {
     const prev = seenById[f.id]
-    if (!prev) {
-      // First sighting — insert with stable_check_count = 1
-      await sb.from('seen_dropbox_files').insert({
-        dropbox_id: f.id,
-        path: f.path_display,
-        size_bytes: f.size,
-        stable_check_count: 1,
-      })
-      continue
-    }
+    if (!prev) continue // first sighting recorded above; stability check next tick
 
     if (prev.notified_at) continue // already notified
 

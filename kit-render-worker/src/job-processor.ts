@@ -97,15 +97,11 @@ export async function processJob(job: ClaimedJob): Promise<void> {
     const args = buildFFmpegArgs({ profile, sourceFiles: builderSources, outputPath, loudness })
     const cmdStr = argsToShellCommand(args, config.ffmpegPath)
 
-    await supabase
-      .from('render_jobs')
-      .update({
-        ffmpeg_command: cmdStr,
-        output_path: outputPath,
-        output_filename: outputFilename,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', job.id)
+    await ownedUpdate(job.id, {
+      ffmpeg_command: cmdStr,
+      output_path: outputPath,
+      output_filename: outputFilename,
+    })
 
     const passLabel = loudness ? 'Pass 2/2' : 'Encoding'
     await updateProgress(job.id, 15, `${passLabel}: Encoding video + audio...`)
@@ -155,51 +151,60 @@ export async function processJob(job: ClaimedJob): Promise<void> {
     // ── Finalize ─────────────────────────────────────────────
     const outStat = fs.statSync(outputPath)
     const elapsedSeconds = (Date.now() - startedAt.getTime()) / 1000
-    await supabase
-      .from('render_jobs')
-      .update({
-        status: 'complete',
-        completed_at: new Date().toISOString(),
-        progress_percent: 100,
-        progress_message: 'Complete',
-        output_size_bytes: outStat.size,
-        duration_seconds: elapsedSeconds,
-        qc_checklist_status: qcStatus,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', job.id)
+    const finalized = await ownedUpdate(job.id, {
+      status: 'complete',
+      completed_at: new Date().toISOString(),
+      progress_percent: 100,
+      progress_message: 'Complete',
+      output_size_bytes: outStat.size,
+      duration_seconds: elapsedSeconds,
+      qc_checklist_status: qcStatus,
+    })
+
+    if (!finalized) {
+      // The stale-worker sweep reassigned this job while we were rendering
+      // (our heartbeats stalled). Another worker owns it now — remove our
+      // output so we don't leave a duplicate/conflicting deliverable in the
+      // Dropbox-synced folder.
+      console.warn(
+        `[processor] Job ${job.id} was reassigned while we rendered — discarding our output`,
+      )
+      try { fs.unlinkSync(outputPath) } catch {}
+      return
+    }
 
     console.log(`[processor] Job ${job.id} complete in ${elapsedSeconds.toFixed(1)}s → ${outputPath}`)
   } catch (err: any) {
     const message = err?.message || String(err)
     console.error(`[processor] Job ${job.id} failed:`, message)
-    await supabase
-      .from('render_jobs')
-      .update({
-        status: 'failed',
-        error_message: message,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', job.id)
+    // Ownership-guarded: if the job was reassigned, don't stamp 'failed' over
+    // another worker's in-progress row.
+    await ownedUpdate(job.id, { status: 'failed', error_message: message })
   } finally {
     setCurrentJob(null)
   }
 }
 
-async function markStatus(jobId: string, status: string, extras: Record<string, any> = {}): Promise<void> {
-  await supabase
+/**
+ * Update a job row ONLY while this worker still owns the claim. Once the
+ * stale-worker sweep clears claimed_by (or another worker re-claims), our
+ * writes match zero rows instead of clobbering the new owner's state.
+ * Returns true if the row was still ours.
+ */
+async function ownedUpdate(jobId: string, patch: Record<string, any>): Promise<boolean> {
+  const { data } = await supabase
     .from('render_jobs')
-    .update({ status, updated_at: new Date().toISOString(), ...extras })
+    .update({ ...patch, updated_at: new Date().toISOString() })
     .eq('id', jobId)
+    .eq('claimed_by', config.hostname)
+    .select('id')
+  return (data?.length || 0) > 0
+}
+
+async function markStatus(jobId: string, status: string, extras: Record<string, any> = {}): Promise<void> {
+  await ownedUpdate(jobId, { status, ...extras })
 }
 
 async function updateProgress(jobId: string, percent: number, message: string): Promise<void> {
-  await supabase
-    .from('render_jobs')
-    .update({
-      progress_percent: percent,
-      progress_message: message,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', jobId)
+  await ownedUpdate(jobId, { progress_percent: percent, progress_message: message })
 }

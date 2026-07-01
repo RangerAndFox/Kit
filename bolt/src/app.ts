@@ -153,9 +153,50 @@ process.on('SIGINT', () => {
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001
 
+// ─── Slack-connectivity watchdog ───────────────────────────
+// The old health story was a no-op (Docker HEALTHCHECK always exited 0 and
+// the HTTP server 200'd every path), so a wedged Socket Mode connection left
+// Kit silently deaf until a human noticed. Every 5 minutes we auth.test;
+// after 3 consecutive failures we exit(1) so Railway's restart policy brings
+// up a fresh process. /health (below) exposes the same signal to probes.
+let consecutiveAuthFailures = 0
+let lastAuthOkAt = Date.now()
+
+setInterval(async () => {
+  try {
+    await app.client.auth.test()
+    consecutiveAuthFailures = 0
+    lastAuthOkAt = Date.now()
+  } catch (err: any) {
+    consecutiveAuthFailures++
+    console.error(
+      `[watchdog] auth.test failed (${consecutiveAuthFailures}/3): ${err?.data?.error || err?.message}`,
+    )
+    if (consecutiveAuthFailures >= 3) {
+      console.error('[watchdog] Slack unreachable for 3 consecutive checks — exiting for restart')
+      process.exit(1)
+    }
+  }
+}, 5 * 60 * 1000).unref()
+
 http
   .createServer((req, res) => {
     const url = req.url || '/'
+
+    // Health probe: 200 only while the Slack connection is verifiably alive.
+    if (url.startsWith('/health')) {
+      const healthy = consecutiveAuthFailures < 3
+      res.writeHead(healthy ? 200 : 503, { 'Content-Type': 'application/json' })
+      res.end(
+        JSON.stringify({
+          ok: healthy,
+          last_auth_ok: new Date(lastAuthOkAt).toISOString(),
+          consecutive_failures: consecutiveAuthFailures,
+          uptime_s: Math.floor(process.uptime()),
+        }),
+      )
+      return
+    }
 
     // Dropbox verification — echo the challenge back as text/plain.
     if (req.method === 'GET' && url.startsWith('/webhooks/dropbox')) {
@@ -247,13 +288,14 @@ cron.schedule(
 
 // ─── Cron: brain scavenger DM dispatch ─────────────────────
 // The Inngest cron (brainScavengerScan) populates the pending queue
-// daily at 7am UTC. This cron runs a few minutes later (in the box's
-// local time) to DM each affected brain's channel creator with the
-// approve/reject buttons. Gated on KIT_BRAIN_SCAVENGER_ENABLED so
-// it stays off until the operator activates the scavenger.
+// daily at 7am UTC. This dispatch runs HOURLY: each candidate is DM'd
+// once (dm_sent_at stamp, weekly re-remind), so frequent runs are safe
+// — and a scan that finishes late no longer silently misses a whole
+// day's dispatch window. Gated on KIT_BRAIN_SCAVENGER_ENABLED so it
+// stays off until the operator activates the scavenger.
 
 cron.schedule(
-  '15 7 * * *',
+  '15 * * * *',
   () => {
     if (process.env.KIT_BRAIN_SCAVENGER_ENABLED !== 'true') return
     const workspaceId = process.env.KIT_DEFAULT_WORKSPACE_ID
