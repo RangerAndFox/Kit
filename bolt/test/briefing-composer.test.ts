@@ -71,6 +71,29 @@ describe('buildBriefingText', () => {
     expect(text).not.toContain('*Attendees:*')
     expect(text).not.toContain('*Last meeting')
   })
+
+  it('renders suggested-prep notes when provided', () => {
+    const text = buildBriefingText({
+      event,
+      project: { name: 'Rayfin', external_links: {} },
+      actions: null,
+      lastTranscript: null,
+      prepNotes: '• Client wants a shorter cut this round\n• Budget approved for reshoots',
+    })
+    expect(text).toContain('*Suggested prep:*')
+    expect(text).toContain('Client wants a shorter cut this round')
+  })
+
+  it('omits the suggested-prep section when there are no notes', () => {
+    const text = buildBriefingText({
+      event,
+      project: { name: 'Rayfin', external_links: {} },
+      actions: null,
+      lastTranscript: null,
+      prepNotes: null,
+    })
+    expect(text).not.toContain('*Suggested prep:*')
+  })
 })
 
 describe('matchAttendeesToStaff (privacy)', () => {

@@ -18,6 +18,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { fetchUpcomingEvents } from '@/lib/integrations/google-calendar'
 import { classifyMeeting } from '@/lib/agent/meeting-classifier'
 import { composeBriefing } from '@/lib/agent/briefing-composer'
+import { composeBizdevBriefing, hasBizdevAttendee } from '@/lib/agent/bizdev-briefing'
 import { resolvePersonalBriefingChannel } from '@/lib/agent/briefing-channel'
 
 const SLACK_API = 'https://slack.com/api'
@@ -123,6 +124,23 @@ export const preMeetingScan = inngest.createFunction(
       team_emails: [],
     }))
 
+    // Bizdev-role staff emails (+ aliases) — gates the bizdev briefing path.
+    // An unmatched meeting only gets the attendee-bio treatment when one of
+    // these people is actually on the invite; otherwise it stays a silent
+    // skip, same as before.
+    const { data: bizdevStaffRows } = await sb
+      .from('staff')
+      .select('email, email_aliases')
+      .eq('role', 'bizdev')
+      .eq('is_active', true)
+    const bizdevEmails = new Set<string>()
+    for (const s of bizdevStaffRows || []) {
+      if (s.email) bizdevEmails.add(s.email.trim().toLowerCase())
+      for (const alias of s.email_aliases || []) {
+        if (alias && alias.trim()) bizdevEmails.add(alias.trim().toLowerCase())
+      }
+    }
+
     let scheduled = 0
     for (const ev of events) {
       // Skip events already tracked.
@@ -167,6 +185,32 @@ export const preMeetingScan = inngest.createFunction(
       }
 
       if (!cls.project_id || cls.confidence < matchThreshold()) {
+        // No project match — but if a bizdev staffer is on the invite, this
+        // is still worth a briefing (attendee bios instead of project
+        // context). Anything else stays a silent skip, as before.
+        const isBizdev = hasBizdevAttendee(
+          (ev.attendees || []).map((a: any) => a.email),
+          bizdevEmails,
+        )
+        if (!isBizdev) {
+          await sb.from('meeting_briefings').upsert(
+            {
+              event_id: ev.event_id,
+              calendar_id: ev.calendar_id,
+              meeting_title: ev.summary,
+              meeting_start_time: ev.start_time,
+              attendees_json: ev.attendees,
+              confidence: cls.confidence,
+              status: 'skipped',
+              error: cls.reasoning,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'event_id', ignoreDuplicates: false },
+          )
+          continue
+        }
+
+        const bizdevSendMs = Date.parse(ev.start_time) - lead
         await sb.from('meeting_briefings').upsert(
           {
             event_id: ev.event_id,
@@ -175,12 +219,23 @@ export const preMeetingScan = inngest.createFunction(
             meeting_start_time: ev.start_time,
             attendees_json: ev.attendees,
             confidence: cls.confidence,
-            status: 'skipped',
-            error: cls.reasoning,
+            status: 'pending',
+            meeting_type: 'bizdev',
             updated_at: new Date().toISOString(),
           },
           { onConflict: 'event_id', ignoreDuplicates: false },
         )
+        await inngest.send({
+          name: 'pre-meeting/dispatch',
+          data: {
+            event_id: ev.event_id,
+            project_id: null,
+            event: ev,
+            meetingType: 'bizdev',
+          },
+          ts: Math.max(now + 1_000, bizdevSendMs),
+        })
+        scheduled++
         continue
       }
 
@@ -232,11 +287,13 @@ export const preMeetingDispatch = inngest.createFunction(
     if (!ingestEnabled()) {
       return { skipped: true }
     }
-    const { event_id, project_id, event: calendarEvent } = event.data
+    const { event_id, project_id, event: calendarEvent, meetingType } = event.data
 
     try {
       const artifact = await step.run('compose', () =>
-        composeBriefing({ event: calendarEvent, projectId: project_id }),
+        meetingType === 'bizdev'
+          ? composeBizdevBriefing({ event: calendarEvent })
+          : composeBriefing({ event: calendarEvent, projectId: project_id }),
       )
 
       // PRIVACY: post the briefing to each R&F attendee's private 1:1 channel

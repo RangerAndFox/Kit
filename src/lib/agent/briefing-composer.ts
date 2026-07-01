@@ -11,7 +11,9 @@
  * Output is markdown suitable for Slack chat.postMessage with mrkdwn=true.
  */
 
+import Anthropic from '@anthropic-ai/sdk'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { searchDocuments, buildContext } from '@/lib/rag/query'
 import type { CalendarEvent } from '@/lib/integrations/google-calendar'
 
 export interface BriefingContext {
@@ -75,7 +77,59 @@ export function matchAttendeesToStaff(
   return out
 }
 
-function fmtTime(iso: string): string {
+/**
+ * Suggested prep — 2-4 bullets synthesized from the project's brain + recent
+ * notes via RAG, so a briefing surfaces relevant context without the
+ * recipient having to dig through the project's history themselves.
+ * Non-fatal: returns null on any failure (no matching docs, missing API key,
+ * model error) so a prep-notes hiccup never blocks the rest of the briefing.
+ */
+export async function buildProjectPrepNotes(opts: {
+  projectId: string
+  meetingTitle: string
+  briefSummary?: string | null
+}): Promise<string | null> {
+  try {
+    const query = [opts.meetingTitle, opts.briefSummary].filter(Boolean).join(' — ')
+    const results = await searchDocuments(query, { projectId: opts.projectId, limit: 8 })
+    if (results.length === 0) return null
+
+    const context = buildContext(results, 6_000)
+    if (!context.trim()) return null
+
+    const apiKey = process.env.ANTHROPIC_API_KEY
+    if (!apiKey) return null
+    const client = new Anthropic({ apiKey })
+
+    const res = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 300,
+      system:
+        'You summarize project context into pre-meeting prep notes for a video production ' +
+        'studio. Given retrieved brain/notes context and the meeting title, output 2-4 short ' +
+        'bullet points (each starting with "• ") of the most relevant context, open decisions, ' +
+        'or callbacks for this specific call. Be concrete and terse — no filler, no restating ' +
+        'the meeting title. If the context is not actually relevant to this meeting, output ' +
+        'nothing at all.',
+      messages: [
+        { role: 'user', content: `Meeting: ${opts.meetingTitle}\n\nRetrieved context:\n${context}` },
+      ],
+    })
+
+    const text = res.content
+      .filter((c: any) => c.type === 'text')
+      .map((c: any) => c.text)
+      .join('\n')
+      .trim()
+
+    return text || null
+  } catch (err: any) {
+    console.warn('[briefing-composer] prep notes failed:', err?.message || err)
+    return null
+  }
+}
+
+export function fmtTime(iso: string): string {
   try {
     const d = new Date(iso)
     return d.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
@@ -93,8 +147,9 @@ export function buildBriefingText(opts: {
   project: any | null
   actions: { title: string }[] | null
   lastTranscript: { start_time: string; transcript: string } | null
+  prepNotes?: string | null
 }): string {
-  const { event, project, actions, lastTranscript } = opts
+  const { event, project, actions, lastTranscript, prepNotes } = opts
   const lines: string[] = []
   lines.push(`:wave: *Pre-meeting briefing*`)
   lines.push(`*Meeting:* ${event.summary} — ${fmtTime(event.start_time)}`)
@@ -103,6 +158,10 @@ export function buildBriefingText(opts: {
       `*Project:* ${project.name}${project.client ? ` (${project.client})` : ''}${project.project_code ? ` — ${project.project_code}` : ''}`,
     )
     if (project.brief_summary) lines.push(`*Brief:* ${project.brief_summary}`)
+  }
+
+  if (prepNotes) {
+    lines.push('', '*Suggested prep:*', prepNotes)
   }
 
   // Links — accept both the rehydrated *_url keys and the provisioner's bare
@@ -183,7 +242,15 @@ export async function composeBriefing(ctx: BriefingContext): Promise<BriefingArt
     .eq('is_active', true)
   const recipients = matchAttendeesToStaff(event.attendees || [], staffRows || [])
 
-  const channelText = buildBriefingText({ event, project, actions, lastTranscript })
+  const prepNotes = project
+    ? await buildProjectPrepNotes({
+        projectId,
+        meetingTitle: event.summary,
+        briefSummary: project.brief_summary,
+      })
+    : null
+
+  const channelText = buildBriefingText({ event, project, actions, lastTranscript, prepNotes })
 
   return {
     channelText,
