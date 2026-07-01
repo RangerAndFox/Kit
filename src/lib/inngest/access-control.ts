@@ -172,12 +172,33 @@ const GATEWAY_RULES: Record<string, GatewayRule> = {
 
   // ── Dropbox ──────────────────────────────
   'dropbox:provision':          { minTier: 'producer' },
+  // get_share_link MUTATES (mints a public URL to any studio folder) and
+  // search/list_folder expose the whole production tree — client folders,
+  // contracts, deliverables. Producer+ only.
+  'dropbox:get_share_link':     { minTier: 'producer' },
+  'dropbox:search':             { minTier: 'producer' },
+  'dropbox:list_folder':        { minTier: 'producer' },
 
   // ── Frame.io ─────────────────────────────
   'frameio:provision':          { minTier: 'producer' },
 
   // ── Slack ────────────────────────────────
   'slack:provision':            { minTier: 'producer' },
+  // send_message posts AS KIT to any channel and set_topic mutates channel
+  // state — neither should be reachable by an arbitrary workspace member
+  // through conversation. get_history reads any channel Kit is in
+  // (including private project channels the requester isn't a member of).
+  'slack:send_message':         { minTier: 'producer' },
+  'slack:set_topic':            { minTier: 'producer' },
+  'slack:get_history':          { minTier: 'producer' },
+
+  // ── Delivery ─────────────────────────────
+  // Job submission + profile/worker management change studio render state.
+  // Status reads stay open (an artist can check their own job's progress).
+  'delivery:create_profile':    { minTier: 'producer' },
+  'delivery:submit_job':        { minTier: 'producer' },
+  'delivery:worker_opt_out':    { minTier: 'producer' },
+  'delivery:worker_opt_in':     { minTier: 'producer' },
 
   // ── Brain (entire surface — producer+) ──
   // Brains may contain client identifiers, budgets, contact info,
