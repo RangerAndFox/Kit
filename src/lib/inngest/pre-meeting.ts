@@ -18,6 +18,8 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { fetchUpcomingEvents } from '@/lib/integrations/google-calendar'
 import { classifyMeeting } from '@/lib/agent/meeting-classifier'
 import { composeBriefing } from '@/lib/agent/briefing-composer'
+import { composeBizdevBriefing, hasBizdevAttendee } from '@/lib/agent/bizdev-briefing'
+import { resolvePersonalBriefingChannel } from '@/lib/agent/briefing-channel'
 
 const SLACK_API = 'https://slack.com/api'
 
@@ -53,18 +55,21 @@ async function postSlack(channel: string, text: string): Promise<string> {
   return json.ts
 }
 
-async function openDmAndPost(slackUserId: string, text: string): Promise<string> {
+/**
+ * Post a briefing to a recipient's private 1:1 channel (just them + Kit),
+ * creating it on first use. Replaces the old DM path: Kit is a Slack assistant
+ * app, and proactive DMs to assistant apps land in the History tab instead of
+ * notifying. A private channel notifies normally and stays private.
+ */
+async function postToPersonalChannel(
+  slackUserId: string,
+  fullName: string | null,
+  text: string,
+): Promise<string> {
   const token = process.env.SLACK_BOT_TOKEN
   if (!token) throw new Error('SLACK_BOT_TOKEN not set')
-  if (!slackUserId) throw new Error('slackUserId required for openDmAndPost')
-  const open = await fetch(`${SLACK_API}/conversations.open`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ users: slackUserId }),
-  })
-  const oj = await open.json().catch(() => ({}))
-  if (!oj.ok) throw new Error(`conversations.open failed: ${oj.error || open.status}`)
-  return postSlack(oj.channel.id, text)
+  const channel = await resolvePersonalBriefingChannel({ slackUserId, fullName, token })
+  return postSlack(channel, text)
 }
 
 // ─── Cron: scan for upcoming events ───────────────────────────
@@ -119,6 +124,23 @@ export const preMeetingScan = inngest.createFunction(
       team_emails: [],
     }))
 
+    // Bizdev-role staff emails (+ aliases) — gates the bizdev briefing path.
+    // An unmatched meeting only gets the attendee-bio treatment when one of
+    // these people is actually on the invite; otherwise it stays a silent
+    // skip, same as before.
+    const { data: bizdevStaffRows } = await sb
+      .from('staff')
+      .select('email, email_aliases')
+      .eq('role', 'bizdev')
+      .eq('is_active', true)
+    const bizdevEmails = new Set<string>()
+    for (const s of bizdevStaffRows || []) {
+      if (s.email) bizdevEmails.add(s.email.trim().toLowerCase())
+      for (const alias of s.email_aliases || []) {
+        if (alias && alias.trim()) bizdevEmails.add(alias.trim().toLowerCase())
+      }
+    }
+
     let scheduled = 0
     for (const ev of events) {
       // Skip events already tracked.
@@ -163,6 +185,32 @@ export const preMeetingScan = inngest.createFunction(
       }
 
       if (!cls.project_id || cls.confidence < matchThreshold()) {
+        // No project match — but if a bizdev staffer is on the invite, this
+        // is still worth a briefing (attendee bios instead of project
+        // context). Anything else stays a silent skip, as before.
+        const isBizdev = hasBizdevAttendee(
+          (ev.attendees || []).map((a: any) => a.email),
+          bizdevEmails,
+        )
+        if (!isBizdev) {
+          await sb.from('meeting_briefings').upsert(
+            {
+              event_id: ev.event_id,
+              calendar_id: ev.calendar_id,
+              meeting_title: ev.summary,
+              meeting_start_time: ev.start_time,
+              attendees_json: ev.attendees,
+              confidence: cls.confidence,
+              status: 'skipped',
+              error: cls.reasoning,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'event_id', ignoreDuplicates: false },
+          )
+          continue
+        }
+
+        const bizdevSendMs = Date.parse(ev.start_time) - lead
         await sb.from('meeting_briefings').upsert(
           {
             event_id: ev.event_id,
@@ -171,12 +219,23 @@ export const preMeetingScan = inngest.createFunction(
             meeting_start_time: ev.start_time,
             attendees_json: ev.attendees,
             confidence: cls.confidence,
-            status: 'skipped',
-            error: cls.reasoning,
+            status: 'pending',
+            meeting_type: 'bizdev',
             updated_at: new Date().toISOString(),
           },
           { onConflict: 'event_id', ignoreDuplicates: false },
         )
+        await inngest.send({
+          name: 'pre-meeting/dispatch',
+          data: {
+            event_id: ev.event_id,
+            project_id: null,
+            event: ev,
+            meetingType: 'bizdev',
+          },
+          ts: Math.max(now + 1_000, bizdevSendMs),
+        })
+        scheduled++
         continue
       }
 
@@ -228,23 +287,29 @@ export const preMeetingDispatch = inngest.createFunction(
     if (!ingestEnabled()) {
       return { skipped: true }
     }
-    const { event_id, project_id, event: calendarEvent } = event.data
+    const { event_id, project_id, event: calendarEvent, meetingType } = event.data
 
     try {
       const artifact = await step.run('compose', () =>
-        composeBriefing({ event: calendarEvent, projectId: project_id }),
+        meetingType === 'bizdev'
+          ? composeBizdevBriefing({ event: calendarEvent })
+          : composeBriefing({ event: calendarEvent, projectId: project_id }),
       )
 
-      // PRIVACY: DM the briefing privately to each R&F attendee on the invite —
-      // the only delivery path by default. One bad DM doesn't fail the rest.
-      const notified = await step.run('dm-recipients', async () => {
+      // PRIVACY: post the briefing to each R&F attendee's private 1:1 channel
+      // (just them + Kit) — the only delivery path by default. This notifies
+      // like a normal message (unlike an assistant-app DM, which lands in the
+      // History tab). One bad post doesn't fail the rest.
+      const notified = await step.run('notify-recipients', async () => {
         const ok: string[] = []
         for (const r of artifact.recipients) {
           try {
-            await openDmAndPost(r.slack_user_id, artifact.channelText)
+            await postToPersonalChannel(r.slack_user_id, r.name, artifact.channelText)
             ok.push(r.slack_user_id)
           } catch (e: any) {
-            console.warn(`[pre-meeting] DM to ${r.slack_user_id} failed: ${e?.message || e}`)
+            console.warn(
+              `[pre-meeting] briefing to ${r.slack_user_id} failed: ${e?.message || e}`,
+            )
           }
         }
         return ok

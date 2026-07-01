@@ -16,7 +16,9 @@
  *     from this (channel, user) within the TTL — enables follow-ups
  *     without requiring re-@mention.
  *
- * All replies post in the main flow (no thread_ts).
+ * Reply threading: DM replies (the Assistant / AI-Apps pane) always thread to
+ * the conversation root so they stay inside the user's view; channel @mention
+ * replies post in the main flow so the whole channel sees them.
  */
 
 import type { App } from '@slack/bolt'
@@ -41,6 +43,23 @@ import { stashIntake } from '../../../src/lib/storyboard/stash'
 import { projectNameFromFilename } from '../../../src/lib/storyboard/parser'
 import { buildNewProjectCard } from './newproject-card'
 import { findOpenCheckin, handleCheckinReply } from '../checkins/reply'
+
+/**
+ * The thread ts to reply into for a DM (Slack Assistant / "Agents & AI Apps"
+ * pane). Replies MUST be threaded to the conversation root to appear inside the
+ * user's assistant view — a non-threaded reply lands in the main DM flow (the
+ * "History" pane) and looks like it "randomly" left the thread.
+ *
+ * We can't gate on the `assistant_thread` block: Slack doesn't attach it to
+ * every message event, so gating on it lets some replies escape. In a DM we
+ * always thread to `thread_ts` (falling back to the message's own ts for the
+ * rare top-level event). Returns undefined outside DMs — channel @mentions
+ * post in the main flow by design so they're visible to the whole channel.
+ */
+function dmThreadTs(m: any): string | undefined {
+  if (m?.channel_type !== 'im') return undefined
+  return m.thread_ts || m.ts
+}
 
 export function registerMessageHandlers(app: App) {
   // ─── @mentions ────────────────────────────────────────────
@@ -86,10 +105,7 @@ export function registerMessageHandlers(app: App) {
     ) {
       const scriptFile = msgEvent.files.find(isStoryboardScriptFile)
       if (scriptFile) {
-        const assistantThreadTs =
-          msgEvent.assistant_thread && msgEvent.thread_ts
-            ? msgEvent.thread_ts
-            : undefined
+        const assistantThreadTs = dmThreadTs(msgEvent)
         await handleStoryboardFileDrop({
           app,
           file: scriptFile,
@@ -151,10 +167,7 @@ export function registerMessageHandlers(app: App) {
     // intent, not just any mention of the word. The orchestrator handles
     // looser phrasings conversationally.
     if (isDM && isStoryboardTrigger((msgEvent.text || '').trim())) {
-      const assistantThreadTs =
-        msgEvent.assistant_thread && msgEvent.thread_ts
-          ? msgEvent.thread_ts
-          : undefined
+      const assistantThreadTs = dmThreadTs(msgEvent)
       await handleStoryboardKeyword({
         app,
         channelId,
@@ -166,10 +179,7 @@ export function registerMessageHandlers(app: App) {
 
     // ── New-project keyword shortcut (DM only) ────────────
     if (isDM && isNewProjectTrigger((msgEvent.text || '').trim())) {
-      const assistantThreadTs =
-        msgEvent.assistant_thread && msgEvent.thread_ts
-          ? msgEvent.thread_ts
-          : undefined
+      const assistantThreadTs = dmThreadTs(msgEvent)
       await app.client.chat.postMessage(
         buildNewProjectCard(channelId, assistantThreadTs),
       )
@@ -190,13 +200,11 @@ export function registerMessageHandlers(app: App) {
     // (App_mention event handles the @mention path; ignore mentions here to avoid double-fire)
     if ((msgEvent.text || '').includes('<@') && !isDM) return
 
-    // For DMs in a Slack Assistant thread (Agents & AI Apps), Slack
-    // populates `thread_ts` AND attaches an `assistant_thread` block.
-    // Replies must be threaded so they appear inside the user's view.
-    const assistantThreadTs =
-      isDM && msgEvent.assistant_thread && msgEvent.thread_ts
-        ? msgEvent.thread_ts
-        : undefined
+    // For DMs (the Slack Assistant / Agents & AI Apps pane) always thread the
+    // reply to the conversation root so it appears inside the user's view.
+    // We deliberately don't gate on the `assistant_thread` block — Slack omits
+    // it on some events, which used to drop replies into the main DM flow.
+    const assistantThreadTs = dmThreadTs(msgEvent)
 
     await handleConversationalMessage({
       app,
