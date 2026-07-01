@@ -39,6 +39,14 @@ interface CachedToken {
 
 let cached: CachedToken | null = null
 
+/**
+ * Single-flight guard: Adobe ROTATES the refresh token on every exchange, so
+ * two concurrent refreshes send the same (soon-to-be-invalid) token and race
+ * their persists — which can poison the persisted rotation chain. All
+ * concurrent callers must share one in-flight exchange.
+ */
+let refreshInFlight: Promise<CachedToken> | null = null
+
 /** Refresh 5 minutes before actual expiry */
 const SAFETY_BUFFER_MS = 5 * 60 * 1000
 
@@ -60,10 +68,17 @@ async function loadPersistedRefreshToken(): Promise<string | null> {
 async function persistRefreshToken(refreshToken: string): Promise<void> {
   try {
     const sb = createAdminClient()
-    await sb
+    // Upsert, not update: update() matching zero rows is a silent success, so
+    // an environment bootstrapped from the env var (row never created by the
+    // OAuth callback) would silently never persist the rotation — and the
+    // next restart would fall back to a token Adobe already invalidated.
+    const { error } = await sb
       .from('frameio_token_state')
-      .update({ refresh_token: refreshToken, updated_at: new Date().toISOString() })
-      .eq('id', 'singleton')
+      .upsert(
+        { id: 'singleton', refresh_token: refreshToken, updated_at: new Date().toISOString() },
+        { onConflict: 'id' },
+      )
+    if (error) throw new Error(error.message)
   } catch (err: any) {
     console.warn(`[FrameIO] could not persist rotated refresh token: ${err.message}`)
   }
@@ -148,8 +163,14 @@ export async function getFrameIoAccessToken(): Promise<string> {
     return cached.accessToken
   }
 
-  // Fetch fresh token
-  cached = await fetchFreshToken()
+  // Fetch fresh token — single-flight so concurrent callers share one
+  // exchange instead of racing the rotating refresh token.
+  if (!refreshInFlight) {
+    refreshInFlight = fetchFreshToken().finally(() => {
+      refreshInFlight = null
+    })
+  }
+  cached = await refreshInFlight
   console.log('[FrameIO] Access token refreshed via Adobe IMS')
   return cached.accessToken
 }
