@@ -28,15 +28,22 @@ interface RawLoudnessJson {
  * Throws if no block is found or if required fields are missing.
  */
 export function parseLoudnessJson(stderrOutput: string): LoudnessMeasurement {
-  // FFmpeg's JSON block starts at the first `{` after "[Parsed_loudnorm" or
-  // similar. We do a best-effort match for the LAST complete `{...}` block.
-  const match = stderrOutput.match(/\{[\s\S]*?"input_i"[\s\S]*?\}/m)
-  if (!match) {
+  // Anchor on the loudnorm fields, not the first `{` in stderr — FFmpeg can
+  // print other `{...}` (filtergraph/config) earlier, which would poison a
+  // leading-brace match. Take the LAST "input_i" and slice the enclosing
+  // flat-JSON braces around it.
+  const anchor = stderrOutput.lastIndexOf('"input_i"')
+  if (anchor === -1) {
+    throw new Error('No loudnorm JSON block found in FFmpeg output')
+  }
+  const open = stderrOutput.lastIndexOf('{', anchor)
+  const close = stderrOutput.indexOf('}', anchor)
+  if (open === -1 || close === -1) {
     throw new Error('No loudnorm JSON block found in FFmpeg output')
   }
   let parsed: RawLoudnessJson
   try {
-    parsed = JSON.parse(match[0])
+    parsed = JSON.parse(stderrOutput.slice(open, close + 1))
   } catch (err) {
     throw new Error(`Failed to parse loudnorm JSON: ${err instanceof Error ? err.message : String(err)}`)
   }

@@ -24,9 +24,20 @@ vi.mock('../../src/lib/inngest/agents/registry', async () => {
   }
 })
 
-// Mock access control
+// Mock access control. checkGateway defaults to allowed; individual tests
+// override it to exercise the pre-dispatch gate.
+const { gatewayMock } = vi.hoisted(() => ({ gatewayMock: vi.fn(() => ({ allowed: true })) }))
 vi.mock('../../src/lib/inngest/access-control', () => ({
+  checkGateway: gatewayMock,
   enforceAccess: vi.fn(async (_user, _agent, _action, _payload, result) => result),
+  failsafeArtistContext: vi.fn((workspaceId, slackUserId) => ({
+    teamMemberId: `unknown:${slackUserId}`,
+    workspaceId,
+    tier: 'artist',
+    name: 'unknown user',
+    slackUserId,
+    projectFinancials: new Set(),
+  })),
 }))
 
 import { runSpecialist } from '../src/llm/specialist'
@@ -43,6 +54,8 @@ const fakeUser = {
 beforeEach(() => {
   createMock.mockReset()
   dispatchMock.mockReset()
+  gatewayMock.mockReset()
+  gatewayMock.mockReturnValue({ allowed: true })
 })
 
 describe('runSpecialist', () => {
@@ -122,5 +135,31 @@ describe('runSpecialist', () => {
 
     const result = await runSpecialist('harvest', 'budget on Nope', fakeUser)
     expect(result).toContain('No project matched "Nope"')
+  })
+
+  it('blocks a gated action BEFORE dispatch (no side effect for denied users)', async () => {
+    // The LLM tries to call a gated mutation...
+    createMock.mockResolvedValueOnce({
+      stop_reason: 'tool_use',
+      content: [
+        {
+          type: 'tool_use',
+          id: 'toolu_1',
+          name: 'harvest_provision',
+          input: { payload: { projectName: 'X', client: 'Y' } },
+        },
+      ],
+    })
+    createMock.mockResolvedValueOnce({
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: "That's restricted." }],
+    })
+    // ...but the gateway denies it.
+    gatewayMock.mockReturnValue({ allowed: false, reason: 'restricted' })
+
+    await runSpecialist('harvest', 'make a project', fakeUser)
+
+    // The action must NOT have executed.
+    expect(dispatchMock).not.toHaveBeenCalled()
   })
 })

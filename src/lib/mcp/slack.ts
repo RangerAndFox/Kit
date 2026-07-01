@@ -280,6 +280,45 @@ export interface SlackChannelResult {
  * Channel naming: {client}-{project-name} slugified, max 80 chars.
  * If channel already exists (name_taken error), appends project ID suffix.
  */
+/**
+ * Invite users to a channel without letting one bad ID sink the whole batch.
+ * Tries a single batch invite first (the happy path); if that fails, falls back
+ * to per-user invites so the valid members still get added. `already_in_channel`
+ * counts as success (idempotent).
+ */
+export async function inviteUsersToChannel(
+  channelId: string,
+  userIds: string[],
+): Promise<{ invited: string[]; failed: Array<{ id: string; error: string }> }> {
+  const invited: string[] = []
+  const failed: Array<{ id: string; error: string }> = []
+  if (!channelId || userIds.length === 0) return { invited, failed }
+
+  // Happy path: one call for everyone.
+  try {
+    await slackPost('conversations.invite', { channel: channelId, users: userIds.join(',') })
+    return { invited: [...userIds], failed }
+  } catch (err: any) {
+    console.warn(`[Slack] batch invite failed (${err.message}); retrying per-user`)
+  }
+
+  // Fallback: invite each user on its own so one bad ID doesn't block the rest.
+  for (const id of userIds) {
+    try {
+      await slackPost('conversations.invite', { channel: channelId, users: id })
+      invited.push(id)
+    } catch (err: any) {
+      const msg = err.message || String(err)
+      if (msg.includes('already_in_channel')) {
+        invited.push(id)
+      } else {
+        failed.push({ id, error: msg })
+      }
+    }
+  }
+  return { invited, failed }
+}
+
 export async function createProjectSlackChannel(opts: {
   projectId: string
   projectName: string
@@ -351,14 +390,16 @@ export async function createProjectSlackChannel(opts: {
     topic,
   }).catch(() => {}) // non-critical
 
-  // Invite the requesting user so they actually see the channel
+  // Invite the requesting user, PM, and team so they actually see the channel.
+  // Resilient: one bad/deactivated user ID won't block the valid invites.
   if (inviteUserIds && inviteUserIds.length > 0) {
-    await slackPost('conversations.invite', {
-      channel: channelId,
-      users: inviteUserIds.join(','),
-    }).catch((err: any) => {
-      console.warn('[Slack] conversations.invite failed (non-fatal):', err.message)
-    })
+    const { failed } = await inviteUsersToChannel(channelId, inviteUserIds)
+    if (failed.length > 0) {
+      console.warn(
+        `[Slack] ${failed.length} invite(s) skipped for ${channelId}: ` +
+          failed.map((f) => `${f.id} (${f.error})`).join(', '),
+      )
+    }
   }
 
   // Post welcome message
@@ -413,9 +454,7 @@ export async function postProjectLinks(opts: {
 // ─── Project Channel Canvases (template duplication) ──────
 
 export interface DuplicateCanvasesResult {
-  /** ID of the new channel canvas attached to the project channel header */
-  channelCanvasId: string | null
-  /** IDs of standalone canvases copied from the template and shared to the channel */
+  /** IDs of canvases copied from the template and tabbed to the new channel */
   standaloneCanvasIds: string[]
 }
 
@@ -528,7 +567,7 @@ export async function duplicateTemplateCanvases(opts: {
   dropboxUrl?: string
   frameioUrl?: string
 }): Promise<DuplicateCanvasesResult> {
-  const out: DuplicateCanvasesResult = { channelCanvasId: null, standaloneCanvasIds: [] }
+  const out: DuplicateCanvasesResult = { standaloneCanvasIds: [] }
   if (!process.env.SLACK_BOT_TOKEN) {
     console.warn('[Slack canvas] SLACK_BOT_TOKEN missing; skipping')
     return out

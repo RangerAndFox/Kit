@@ -17,6 +17,7 @@ import {
   createTimeEntry,
   listUsers,
   listAccountTasks,
+  getProjectBudgetReport,
 } from '@/lib/harvest/client'
 import type { AgentDefinition, AgentResult } from './types'
 
@@ -136,20 +137,48 @@ async function getProjectBudget(payload: Record<string, unknown>): Promise<Agent
       }
     }
 
-    // Return all matching projects with their status
-    const results = projects.map((p) => ({
-      id: p.id,
-      name: p.name,
-      code: p.code,
-      client: p.client?.name,
-      isActive: p.is_active,
-    }))
+    // Pull real budget vs. spent from Harvest's project budget report and join
+    // it onto the matches. Non-fatal: if the report fails we still return the
+    // matches (without budget numbers) rather than erroring.
+    let byId = new Map<number, any>()
+    try {
+      const report = await getProjectBudgetReport()
+      byId = new Map(report.map((r) => [r.projectId, r]))
+    } catch (e: any) {
+      console.warn('[harvest] project budget report failed:', e.message)
+    }
+
+    const results = projects.map((p) => {
+      const b = byId.get(p.id)
+      return {
+        id: p.id,
+        name: p.name,
+        code: p.code,
+        client: p.client?.name,
+        isActive: p.is_active,
+        budget: b?.budget ?? null,
+        spent: b?.budgetSpent ?? null,
+        remaining: b?.budgetRemaining ?? null,
+        budgetBy: b?.budgetBy ?? null,
+      }
+    })
+
+    // Human-readable headline for the best match. Units follow budget_by:
+    // money for the *_cost/*_fees variants, otherwise hours.
+    const top = results[0]
+    const isMoney = !!top.budgetBy && /(cost|fees)/i.test(top.budgetBy)
+    const unit = isMoney ? 'USD' : 'hours'
+    const message =
+      top.budget != null
+        ? `${top.name}: ${top.spent ?? 0}/${top.budget} ${unit} spent` +
+          (top.remaining != null ? ` (${top.remaining} ${unit} remaining)` : '')
+        : `${top.name}: no budget set in Harvest`
 
     return {
       agent: 'harvest',
       action: 'get_budget',
       success: true,
-      message: `Found ${results.length} project(s) matching "${projectQuery}"`,
+      message,
       data: { projects: results },
     }
   } catch (err: any) {

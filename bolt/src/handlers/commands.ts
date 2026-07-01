@@ -18,7 +18,6 @@ import { dispatch } from '../../../src/lib/inngest/agents/registry'
 import { buildNewProjectCard } from './newproject-card'
 import { buildOnboardModal } from '../onboarding/modal'
 import { canOnboard } from '../onboarding/permissions'
-import { handleShotListMessage } from '../shotlist/handler'
 import { handleNoteMessage } from '../notes/handler'
 import { buildSelectProfileModal } from '../delivery/select-profile-modal'
 import { buildCreateProfileModal } from '../delivery/create-profile-modal'
@@ -141,27 +140,6 @@ export function registerCommandHandlers(app: App) {
           await respond({
             response_type: 'ephemeral',
             text: `Error looking up status: ${err.message}`,
-          })
-        }
-        break
-      }
-
-      // ── Shot List ───────────────────────────────────────────
-      case 'shotlist':
-      case 'shots': {
-        await ack()
-        try {
-          await handleShotListMessage({
-            app: { client } as any,
-            channelId: command.channel_id,
-            userId: command.user_id,
-            text: args || 'create a new empty shot list',
-          })
-        } catch (err: any) {
-          console.error('[Bolt] /kit shotlist failed:', err.data?.error || err.message)
-          await respond({
-            response_type: 'ephemeral',
-            text: `Shot list failed: ${err.data?.error || err.message}`,
           })
         }
         break
@@ -526,7 +504,6 @@ export function registerCommandHandlers(app: App) {
             '`/kit newproject` — Post the new-project card (pick services, fill in details)\n' +
             '`/kit onboard` — Onboard a freelancer to a project (Slack/Dropbox/Frame.io/Harvest)\n' +
             '`/kit status <name>` — Quick project lookup\n' +
-            '`/kit shotlist <script>` — Build a shot list canvas in this channel\n' +
             '`/kit note [project | body]` — Save a freeform note to a project (or current channel\'s project)\n' +
             '`/storyboard` — Turn a script into a Boords storyboard\n' +
             '`/kit deliver [path]` — Submit a transcode job (or run `/kit deliver status` for queue)\n' +

@@ -271,6 +271,49 @@ async function assignDefaultTasks(projectId: number): Promise<HarvestProjectTask
     .map((r) => r.value)
 }
 
+// ─── Budget reporting ───────────────────────────────────────
+
+export interface ProjectBudgetRow {
+  projectId: number
+  budget: number | null
+  budgetSpent: number | null
+  budgetRemaining: number | null
+  /**
+   * Harvest's budget_by. Units of budget/spent/remaining follow it: hours for
+   * 'project' / 'task' / 'person', money for the '*_cost' / '*_fees' variants.
+   */
+  budgetBy: string | null
+  isActive: boolean
+}
+
+/**
+ * Harvest's Project Budget report — budget vs. spent for every active project,
+ * in one place. Paginated; we walk all pages (a studio fits in one).
+ */
+export async function getProjectBudgetReport(): Promise<ProjectBudgetRow[]> {
+  const rows: ProjectBudgetRow[] = []
+  let page = 1
+  for (let guard = 0; guard < 20; guard++) {
+    const data = await harvestGet('/reports/project_budget', {
+      page: String(page),
+      per_page: '2000',
+    })
+    for (const r of data.results || []) {
+      rows.push({
+        projectId: r.project_id,
+        budget: r.budget ?? null,
+        budgetSpent: r.budget_spent ?? null,
+        budgetRemaining: r.budget_remaining ?? null,
+        budgetBy: r.budget_by ?? null,
+        isActive: r.is_active,
+      })
+    }
+    if (!data.next_page) break
+    page = data.next_page
+  }
+  return rows
+}
+
 // ─── Tasks ──────────────────────────────────────────────────
 
 /**

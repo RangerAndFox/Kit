@@ -20,6 +20,7 @@ import {
   type HarvestProject,
 } from '../../../src/lib/harvest/client'
 import { anthropic, SPECIALIST_MODEL } from '../llm/client'
+import { checkinToday, resolveSpentDate, formatShortDate } from './date'
 
 interface OpenCheckin {
   id: string
@@ -36,6 +37,8 @@ export interface ParsedEntry {
   projectQuery: string
   hours: number
   notes?: string
+  /** Day to log to (YYYY-MM-DD). Defaults to the check-in day. */
+  spentDate?: string
   // Resolved after Harvest lookup:
   harvest_project_id?: number
   harvest_project_name?: string
@@ -48,7 +51,7 @@ export interface ParsedEntry {
  * Open = status in ('sent', 'nudged') for today's date.
  */
 export async function findOpenCheckin(slackUserId: string): Promise<OpenCheckin | null> {
-  const today = new Date().toISOString().split('T')[0]
+  const today = checkinToday()
   const sb = createAdminClient()
   const { data, error } = await sb
     .from('daily_hours_checkins')
@@ -73,18 +76,26 @@ export async function findOpenCheckin(slackUserId: string): Promise<OpenCheckin 
 export async function parseReplyWithLLM(opts: {
   replyText: string
   candidateProjects: { harvest_project_name: string }[]
-}): Promise<{ entries: { projectQuery: string; hours: number; notes?: string }[]; skip: boolean }> {
+  /** Today's date (YYYY-MM-DD, studio tz) — the anchor for relative days. */
+  today?: string
+}): Promise<{
+  entries: { projectQuery: string; hours: number; notes?: string; date?: string | null }[]
+  skip: boolean
+}> {
   const { replyText, candidateProjects } = opts
+  const today = opts.today || checkinToday()
   const candidateList = candidateProjects
     .map((c) => `- ${c.harvest_project_name}`)
     .join('\n')
 
   const systemPrompt = `You parse short messages from creatives logging daily hours.
 
+Today's date is ${today}.
+
 Output strict JSON with this shape:
 {
   "skip": boolean,
-  "entries": [ { "projectQuery": string, "hours": number, "notes": string | null } ]
+  "entries": [ { "projectQuery": string, "hours": number, "notes": string | null, "date": string | null } ]
 }
 
 Rules:
@@ -93,6 +104,7 @@ Rules:
 - "projectQuery" should be the project name as the user said it (no normalization needed — we'll fuzzy-match it ourselves).
 - "hours" must be a number (parse "4h" → 4, "2.5 hours" → 2.5, "30 min" → 0.5).
 - "notes" is anything they added after the hours (or null).
+- "date": if the user names a day for an entry ("yesterday", "Monday", "June 20"), resolve it to an absolute YYYY-MM-DD relative to today's date above. If no day is mentioned, use null (we'll default it to today). Never use a future date.
 - If the user just gives bare numbers in order matching the candidate list, map them positionally.
 
 The user was offered these candidate projects (in order):
@@ -151,12 +163,16 @@ export async function resolveHarvestProject(query: string): Promise<{
 export function buildConfirmBlocks(opts: {
   checkinId: string
   entries: ParsedEntry[]
+  /** The check-in day; entries logged to a different day are labelled. */
+  anchorDate?: string
 }) {
-  const { checkinId, entries } = opts
+  const { checkinId, entries, anchorDate } = opts
+  const dayLabel = (e: ParsedEntry) =>
+    e.spentDate && e.spentDate !== anchorDate ? ` _[${formatShortDate(e.spentDate)}]_` : ''
   const lines = entries.map((e) => {
     if (e.resolution === 'matched') {
       const note = e.notes ? ` _(${e.notes})_` : ''
-      return `• *${e.hours}h* — ${e.harvest_project_name}${note}`
+      return `• *${e.hours}h* — ${e.harvest_project_name}${dayLabel(e)}${note}`
     }
     if (e.resolution === 'ambiguous') {
       const opts = (e.candidates || []).map((c) => c.name).join(' / ')
@@ -251,6 +267,7 @@ export async function handleCheckinReply(opts: {
     parsed = await parseReplyWithLLM({
       replyText,
       candidateProjects: open.candidate_projects || [],
+      today: open.check_in_date,
     })
   } catch (err: any) {
     console.warn(`[checkin-reply] parse failed: ${err.message}`)
@@ -291,6 +308,7 @@ export async function handleCheckinReply(opts: {
         projectQuery: e.projectQuery,
         hours: Number(e.hours),
         notes: e.notes || undefined,
+        spentDate: resolveSpentDate(e.date, open.check_in_date),
         resolution: r.resolution,
         harvest_project_id: r.project?.id,
         harvest_project_name: r.project?.name,
@@ -315,7 +333,11 @@ export async function handleCheckinReply(opts: {
     channel: open.dm_channel_id,
     thread_ts: open.dm_ts || undefined,
     text: 'Confirm hours',
-    blocks: buildConfirmBlocks({ checkinId: open.id, entries: resolved }),
+    blocks: buildConfirmBlocks({
+      checkinId: open.id,
+      entries: resolved,
+      anchorDate: open.check_in_date,
+    }),
   })
 
   return true

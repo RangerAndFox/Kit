@@ -18,6 +18,7 @@ import {
   buildConfirmBlocks,
   type ParsedEntry,
 } from './reply'
+import { checkinToday, resolveSpentDate } from './date'
 
 /**
  * Cheap pre-filter: does the message even mention hours? Avoids burning
@@ -94,11 +95,13 @@ export async function handleAdhocHoursEntry(opts: {
   }
 
   // 2. Parse with the LLM
+  const today = checkinToday()
   let parsed: { entries: any[]; skip: boolean }
   try {
     parsed = await parseReplyWithLLM({
       replyText: messageText,
       candidateProjects: [],
+      today,
     })
   } catch (err: any) {
     console.warn(`[adhoc-hours] parse failed: ${err.message}`)
@@ -124,6 +127,7 @@ export async function handleAdhocHoursEntry(opts: {
         projectQuery: e.projectQuery,
         hours: Number(e.hours),
         notes: e.notes || undefined,
+        spentDate: resolveSpentDate(e.date, today),
         resolution: r.resolution,
         harvest_project_id: r.project?.id,
         harvest_project_name: r.project?.name,
@@ -135,7 +139,6 @@ export async function handleAdhocHoursEntry(opts: {
 
   // 4. Create an ad-hoc check-in row to track this confirmation
   const sb = createAdminClient()
-  const today = new Date().toISOString().split('T')[0]
   const { data: row, error } = await sb
     .from('daily_hours_checkins')
     .insert({
@@ -167,7 +170,7 @@ export async function handleAdhocHoursEntry(opts: {
     channel: channelId,
     thread_ts: threadTs,
     text: 'Confirm hours',
-    blocks: buildConfirmBlocks({ checkinId: row.id, entries: resolved }),
+    blocks: buildConfirmBlocks({ checkinId: row.id, entries: resolved, anchorDate: today }),
   })
 
   return true

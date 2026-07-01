@@ -235,15 +235,28 @@ export const preMeetingDispatch = inngest.createFunction(
         composeBriefing({ event: calendarEvent, projectId: project_id }),
       )
 
-      const channelTs = artifact.projectChannelId
+      // PRIVACY: DM the briefing privately to each R&F attendee on the invite —
+      // the only delivery path by default. One bad DM doesn't fail the rest.
+      const notified = await step.run('dm-recipients', async () => {
+        const ok: string[] = []
+        for (const r of artifact.recipients) {
+          try {
+            await openDmAndPost(r.slack_user_id, artifact.channelText)
+            ok.push(r.slack_user_id)
+          } catch (e: any) {
+            console.warn(`[pre-meeting] DM to ${r.slack_user_id} failed: ${e?.message || e}`)
+          }
+        }
+        return ok
+      })
+
+      // Channel posting is OFF by default — it would expose the briefing to
+      // everyone in the channel, not just the people on the call. Opt in only
+      // for non-sensitive workflows via BRIEFING_POST_CHANNEL=true.
+      const postChannel = process.env.BRIEFING_POST_CHANNEL === 'true'
+      const channelTs = postChannel && artifact.projectChannelId
         ? await step.run('post-channel', () =>
             postSlack(artifact.projectChannelId!, artifact.channelText),
-          )
-        : null
-
-      const dmTs = artifact.producerSlackUserId && artifact.producerDmText
-        ? await step.run('dm-producer', () =>
-            openDmAndPost(artifact.producerSlackUserId!, artifact.producerDmText!),
           )
         : null
 
@@ -252,15 +265,15 @@ export const preMeetingDispatch = inngest.createFunction(
         .from('meeting_briefings')
         .update({
           briefing_md: artifact.channelText,
-          slack_channel_id: artifact.projectChannelId,
+          slack_channel_id: postChannel ? artifact.projectChannelId : null,
           slack_message_ts: channelTs,
-          producer_dm_ts: dmTs,
+          notified_user_ids: notified,
           status: 'sent',
           updated_at: new Date().toISOString(),
         })
         .eq('event_id', event_id)
 
-      return { sent: true, channelTs, dmTs }
+      return { sent: true, dmCount: notified.length, channelTs }
     } catch (err: any) {
       // Mark briefing as failed but rethrow so Inngest retries fire.
       const sb = createAdminClient()

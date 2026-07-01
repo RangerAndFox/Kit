@@ -34,7 +34,11 @@ export function splitIntoSentences(text: string): string[] {
   // Replace common abbreviation periods with a marker so the splitter
   // doesn't trip on them. Restore after splitting.
   const ABBREV = /\b(Mr|Mrs|Ms|Dr|St|Sr|Jr|vs|etc|e\.g|i\.e|U\.S|U\.K)\./gi
-  const marked = text.replace(ABBREV, (m) => m.replace('.', '⌀'))
+  // Mask EVERY period in the matched abbreviation (replace-all). A string
+  // replace() only swaps the first, leaving multi-dot abbreviations like
+  // "U.S." / "e.g." half-masked, which then split mid-sentence before a
+  // capitalized next word ("U.S. Government").
+  const marked = text.replace(ABBREV, (m) => m.replace(/\./g, '⌀'))
   const parts = marked
     .split(/(?<=[.!?])\s+(?=[A-Z"'(\[])/)
     .map((s) => s.replace(/⌀/g, '.').trim())

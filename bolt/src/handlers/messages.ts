@@ -26,14 +26,12 @@ import { messageHasFrameIoLink, handleFrameIoLink } from '../../../src/lib/frame
 import { handleAdhocHoursEntry, looksLikeHoursIntent } from '../checkins/adhoc'
 import { handleOnboardKeyword, isOnboardTrigger } from '../onboarding/keyword'
 import { getPendingOnboarding } from '../onboarding/state'
-import { isShotListTrigger } from '../shotlist/keyword'
-import { handleShotListMessage } from '../shotlist/handler'
-import { handleShotListThumbnailUpload } from '../shotlist/thumbnails'
 import { isNoteTrigger } from '../notes/keyword'
 import { handleNoteMessage } from '../notes/handler'
 import { handleBrainIngestMessage } from '../brain/handler'
 import { handleRoleMessage } from '../roles/handler'
 import { handleFrameioToggleMessage } from '../delivery/frameio-toggle'
+import { handleSpecIntakeReply } from '../delivery/spec-intake'
 
 import { runOrchestrator } from '../llm/orchestrator'
 import { hasPendingClarification } from '../llm/memory'
@@ -103,24 +101,23 @@ export function registerMessageHandlers(app: App) {
       }
     }
 
-    // ── Shot list thumbnail uploads ───────────────────────
-    // File shares in channels with images may be thumbnails for an
-    // active shot list canvas. Returns false silently if no active list.
-    if (
-      msgEvent.subtype === 'file_share' &&
-      Array.isArray(msgEvent.files) &&
-      msgEvent.files.length > 0
-    ) {
+    // ── Delivery spec intake (reply in a specs-prompt thread) ──
+    // Runs BEFORE the subtype skip so file_share replies (PDF/screenshot)
+    // are caught too. Returns false (and we continue) when the thread isn't
+    // an open delivery prompt.
+    if (msgEvent.thread_ts && msgEvent.channel && msgEvent.user) {
       try {
-        const handled = await handleShotListThumbnailUpload({
+        const handled = await handleSpecIntakeReply({
           app,
           channelId: msgEvent.channel,
-          files: msgEvent.files,
+          threadTs: msgEvent.thread_ts,
+          userId: msgEvent.user,
+          text: msgEvent.text || '',
+          files: Array.isArray(msgEvent.files) ? msgEvent.files : [],
         })
         if (handled) return
       } catch (err: any) {
-        console.error('[Bolt] shot list thumbnail handler failed:', err.message || err)
-        // fall through
+        console.error('[Bolt] spec intake reply failed:', err.message || err)
       }
     }
 
@@ -403,26 +400,7 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
     console.error('[Bolt] frame.io toggle handler failed:', err.message || err)
   }
 
-  // ── Fast path 4: Shot list ──────────────────────────────
-  if (isShotListTrigger(messageText)) {
-    try {
-      const handled = await handleShotListMessage({
-        app,
-        channelId,
-        userId,
-        text: messageText,
-      })
-      if (handled) {
-        await clearThinking(app, channelId, replyThreadTs || threadTs)
-        return
-      }
-    } catch (err: any) {
-      console.error('[Bolt] shot list handler failed:', err.message || err)
-      // fall through to orchestrator
-    }
-  }
-
-  // ── Fast path 5: Notes capture ───────────────────────────
+  // ── Fast path 4: Notes capture ───────────────────────────
   if (isNoteTrigger(messageText)) {
     try {
       const handled = await handleNoteMessage({

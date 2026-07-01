@@ -20,6 +20,8 @@ import {
   listTimeEntriesForUser,
   type HarvestTimeEntry,
 } from '../../../src/lib/harvest/client'
+import { checkinToday, checkinDateMinusDays } from './date'
+import { inferActiveProjectChannels, type ActiveChannel } from './slack-activity'
 
 interface StaffRow {
   id: string
@@ -30,15 +32,39 @@ interface StaffRow {
 }
 
 interface CandidateProject {
-  harvest_project_id: number
+  harvest_project_id?: number
   harvest_project_name: string
   signal_hours_last_7d: number
   reasons: string[]
+  slack_channel_id?: string
+  slack_channel_name?: string
 }
 
-/** YYYY-MM-DD in the configured timezone (defaults to UTC). */
-function isoDate(d: Date = new Date()): string {
-  return d.toISOString().split('T')[0]
+/**
+ * Merge Harvest-derived candidates with Slack-activity ones. Harvest entries
+ * (real logged hours) rank first; inferred project channels the artist is in
+ * but hasn't billed to are appended, deduped by project name. Capped at `max`.
+ */
+export function mergeCandidates(
+  harvest: CandidateProject[],
+  active: ActiveChannel[],
+  max = 6,
+): CandidateProject[] {
+  const seen = new Set(harvest.map((c) => c.harvest_project_name.trim().toLowerCase()))
+  const merged = [...harvest]
+  for (const a of active) {
+    const key = a.projectName.trim().toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    merged.push({
+      harvest_project_name: a.projectName,
+      signal_hours_last_7d: 0,
+      reasons: [`Active in #${a.channelName}`],
+      slack_channel_id: a.channelId,
+      slack_channel_name: a.channelName,
+    })
+  }
+  return merged.slice(0, max)
 }
 
 /**
@@ -75,14 +101,19 @@ function composeDm(opts: {
   if (candidates.length === 0) {
     return `${intro}\n\nI don't see any recent projects you've billed to. Reply with what you worked on today and how many hours, e.g. _"4h on Project Rayfin, 2h on IQ Sizzle"_.`
   }
-  const lines = candidates.map(
-    (c, i) =>
-      `  ${i + 1}. *${c.harvest_project_name}* — ${c.signal_hours_last_7d}h last 7 days`,
-  )
+  const lines = candidates.map((c, i) => {
+    const detail =
+      c.signal_hours_last_7d > 0
+        ? `${c.signal_hours_last_7d}h last 7 days`
+        : c.slack_channel_name
+          ? `active in #${c.slack_channel_name}`
+          : c.reasons[0] || 'recent activity'
+    return `  ${i + 1}. *${c.harvest_project_name}* — ${detail}`
+  })
   return [
     intro,
     '',
-    'Based on Harvest activity, your usual lately:',
+    'Based on your recent activity, your usual lately:',
     ...lines,
     '',
     'Reply with hours per project — natural language is fine. e.g.:',
@@ -101,7 +132,7 @@ export async function sendDailyCheckin(opts: {
   staff: StaffRow
 }): Promise<{ status: 'sent' | 'skipped' | 'duplicate' | 'failed'; reason?: string }> {
   const { app, staff } = opts
-  const today = isoDate()
+  const today = checkinToday()
   const sb = createAdminClient()
 
   // Duplicate guard: skip if a *scheduled* row already exists for today,
@@ -122,9 +153,7 @@ export async function sendDailyCheckin(opts: {
 
   // Pull last 7 days of Harvest entries.
   const to = today
-  const fromDate = new Date()
-  fromDate.setDate(fromDate.getDate() - 7)
-  const from = isoDate(fromDate)
+  const from = checkinDateMinusDays(7)
 
   let candidates: CandidateProject[] = []
   try {
@@ -140,6 +169,11 @@ export async function sendDailyCheckin(opts: {
     )
     // Continue with empty candidates — user can still reply free-form.
   }
+
+  // Enrich with live project channels the artist is active in but may not have
+  // billed to yet (best-effort; never blocks the check-in).
+  const active = await inferActiveProjectChannels({ app, slackUserId: staff.slack_user_id })
+  candidates = mergeCandidates(candidates, active)
 
   // Open a DM channel and post the message.
   let dmChannelId: string
@@ -216,7 +250,7 @@ export async function sendAllDailyCheckins(app: App): Promise<{
  */
 export async function nudgePendingCheckins(app: App): Promise<{ nudged: number }> {
   const sb = createAdminClient()
-  const today = isoDate()
+  const today = checkinToday()
   const { data: rows, error } = await sb
     .from('daily_hours_checkins')
     .select('id, slack_user_id, dm_channel_id, dm_ts')

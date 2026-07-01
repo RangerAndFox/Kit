@@ -48,8 +48,8 @@ npx tsx scripts/backfill-clients-from-harvest.ts
 
 Confirmed done; listed so we don't lose track.
 
-- ✅ `canvases:write` scope added (shot list canvases working).
-- The existing `/kit` slash command automatically handles all new sub-commands (`shotlist`, `note`, `deliver`, `profiles`, `workers`). No new commands to register.
+- ✅ `canvases:write` scope added (used by project channel canvas provisioning).
+- The existing `/kit` slash command automatically handles all sub-commands (`note`, `deliver`, `profiles`, `workers`). No new commands to register.
 
 ---
 
@@ -237,7 +237,6 @@ Both are idempotent. New projects + new contacts will be added; existing rows up
 | Hours check-in (5pm) | ✅ live |
 | Ad-hoc hours logging | ✅ live |
 | Frame.io review detection | ✅ live |
-| Shot list canvas | ✅ live |
 | Studio knowledge (Q&A) | 🟡 needs A1 + A2 + A3 |
 | Notes capture | 🟡 needs A1 (notes embed requires OpenAI) |
 | Pre-meeting briefings | 🟡 needs C1-C5 |

@@ -1,8 +1,6 @@
 // @ts-nocheck
 import { z } from 'zod'
 import { createAdminClient, ok, fail } from '../helpers'
-import { inngest } from '@/lib/inngest/client'
-import type { ServiceKey } from '@/lib/inngest/agents/types'
 import type { KitTool } from '../types'
 
 const workspaceId = z.string().uuid().describe('The workspace this operation scopes to')
@@ -81,77 +79,6 @@ export const getProject: KitTool = {
       deliverables: deliverables || [],
       milestones: milestones || [],
     })
-  },
-}
-
-// ─── kit_create_project ──────────────────────────────────────
-
-export const createProject: KitTool = {
-  name: 'kit_create_project',
-  description:
-    'Create a new project. This is the main way Kit spins up work after a kickoff call. Name and client are required. You can also pass initial budget, target delivery date, brief summary, and SOW summary. Returns the newly-created project with its UUID.',
-  schema: z.object({
-    workspace_id: workspaceId,
-    name: z.string().min(1).describe('Project name (e.g., "NRG Spring Campaign 2026")'),
-    client: z.string().min(1).describe('Client name (e.g., "NRG Energy")'),
-    project_code: z.string().optional().describe('Short code for internal use'),
-    project_type: z.string().optional().describe('Category: e.g., "campaign", "broadcast", "brand-identity"'),
-    start_date: z.string().optional().describe('ISO date string'),
-    target_delivery: z.string().optional().describe('ISO date string for final delivery'),
-    budget_total: z.number().optional().describe('Total budget in USD'),
-    margin_target: z.number().optional().describe('Target profit margin as decimal (e.g., 0.40 for 40%)'),
-    revision_rounds_budgeted: z.number().int().optional().describe('How many revision rounds are in scope'),
-    brief_summary: z.string().optional().describe('Short summary of the creative brief'),
-    sow_summary: z.string().optional().describe('Short summary of the statement of work'),
-  }),
-  annotations: { destructiveHint: false, idempotentHint: false },
-  handler: async (input) => {
-    const db = createAdminClient()
-    const { workspace_id, ...fields } = input
-
-    // ── Step 1: Create project record in Supabase (fast, <1s) ──
-    const { data, error } = await db
-      .from('projects' as any)
-      .insert({ workspace_id, ...fields })
-      .select('*')
-      .single()
-    if (error) return fail(error.message)
-
-    // ── Step 2: Fire Inngest event for async provisioning ───────
-    // Kit returns immediately. The orchestrator runs in the background
-    // with full retry, timeout, and observability per agent.
-    const services: ServiceKey[] = ['harvest', 'dropbox', 'frameio', 'slack']
-
-    try {
-      await inngest.send({
-        name: 'kit/project.provision',
-        data: {
-          projectId: data.id,
-          workspaceId: workspace_id,
-          projectName: data.name,
-          client: data.client,
-          projectCode: data.project_code || undefined,
-          projectType: data.project_type || undefined,
-          startDate: data.start_date || undefined,
-          targetDelivery: data.target_delivery || undefined,
-          briefSummary: data.brief_summary || undefined,
-          budgetTotal: data.budget_total || undefined,
-          services,
-        },
-      })
-    } catch (sendErr: any) {
-      console.error('[kit_create_project] Failed to send Inngest event:', sendErr?.message)
-      // Non-fatal — the project record is already created
-    }
-
-    return ok(
-      {
-        ...data,
-        provisioning: 'in_progress',
-        provisioning_services: services,
-      },
-      `Created project "${data.name}" (${data.id}) — provisioning Harvest, Dropbox, Frame.io, and Slack in the background.`
-    )
   },
 }
 

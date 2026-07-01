@@ -19,7 +19,16 @@
 import { inngest } from './client'
 import { createAdminClient } from '../supabase/admin'
 import { scanDeliveryQueue, markFileNotified } from '../delivery/dropbox-watcher'
+import {
+  scanProjectSpecs,
+  markSpecsNotified,
+  resolveProjectChannel,
+  buildSpecsPromptBlocks,
+} from '../delivery/specs-watcher'
+import { pairSpecsFiles } from '../delivery/pairing'
+import { progressBar } from '../delivery/progress-bar'
 import { resetStaleJobs } from '../delivery/storage'
+import { recordSpecIntake } from '../delivery/spec-intake-store'
 
 const SLACK_API = 'https://slack.com/api'
 const DEFAULT_NOTIFY_CHANNEL = process.env.DELIVERY_NOTIFY_CHANNEL_ID || ''
@@ -42,6 +51,25 @@ async function slackPost(channel: string, text: string, blocks?: any[], threadTs
   if (!res) return null
   const json = await res.json().catch(() => ({}))
   return json.ok ? json.ts : null
+}
+
+async function slackUpdate(channel: string, ts: string, text: string, blocks?: any[]): Promise<boolean> {
+  const token = process.env.SLACK_BOT_TOKEN
+  if (!token || !channel || !ts) return false
+  const body: any = { channel, ts, text, mrkdwn: true }
+  if (blocks) body.blocks = blocks
+  const res = await fetch(`${SLACK_API}/chat.update`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json; charset=utf-8',
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(8_000),
+  }).catch(() => null)
+  if (!res) return false
+  const json = await res.json().catch(() => ({}))
+  return !!json.ok
 }
 
 function fmtBytes(n: number): string {
@@ -97,6 +125,60 @@ export const deliveryDropboxScan = inngest.createFunction(
   },
 )
 
+// ─── Per-project specs/ folder poller ──────────────────────
+
+export const deliverySpecsScan = inngest.createFunction(
+  {
+    id: 'delivery-specs-scan',
+    name: 'Delivery — Per-project specs/ folder scan',
+    retries: 1,
+    triggers: [{ cron: '*/1 * * * *' }],
+  },
+  async ({ step }) => {
+    if (!process.env.DROPBOX_ACCESS_TOKEN && !process.env.DROPBOX_REFRESH_TOKEN) {
+      return { skipped: 'no_dropbox_token' }
+    }
+
+    const drops = await step.run('scan-specs', () => scanProjectSpecs())
+    if (drops.length === 0) return { scanned: 0 }
+
+    let posted = 0
+    for (const drop of drops) {
+      const project = await resolveProjectChannel(drop.safeName)
+      const channel = project?.channelId || DEFAULT_NOTIFY_CHANNEL
+      if (!channel) {
+        // Nowhere to post — mark notified so we don't loop on it forever.
+        await markSpecsNotified(drop.trigger.dropbox_id)
+        continue
+      }
+      const pair = pairSpecsFiles({
+        trigger: drop.trigger,
+        videoFiles: drop.videoFiles,
+        audioFiles: drop.audioFiles,
+      })
+      const blocks = buildSpecsPromptBlocks({ projectName: project?.name || drop.safeName, pair })
+
+      // Mark before posting so a Slack failure doesn't re-loop (operator can
+      // re-drop or use /kit deliver).
+      await markSpecsNotified(drop.trigger.dropbox_id)
+      const ts = await slackPost(channel, `New delivery source in ${drop.safeName}`, blocks)
+      if (ts) {
+        posted++
+        // Record the prompt thread so a spec reply (text/PDF/screenshot) ties
+        // back to this video+audio pair.
+        if (pair.ok && pair.video) {
+          const sources = [
+            { path: pair.video.path, type: 'video', size_bytes: pair.video.size_bytes },
+            ...(pair.audio ? [{ path: pair.audio.path, type: 'audio', size_bytes: pair.audio.size_bytes }] : []),
+          ]
+          await recordSpecIntake({ channelId: channel, threadTs: ts, sources }).catch(() => {})
+        }
+      }
+    }
+    return { drops: drops.length, posted }
+  },
+)
+
 // ─── Job-state notifier ────────────────────────────────────
 
 export const deliveryJobNotifier = inngest.createFunction(
@@ -123,21 +205,35 @@ export const deliveryJobNotifier = inngest.createFunction(
     let posted = 0
     for (const job of rows || []) {
       if (!job.slack_channel) continue
-      if (job.slack_notified_status === job.status) continue // already announced this status
+
+      // Terminal states announce once. 'processing' keeps updating in place so
+      // the progress bar advances; 'claimed' refreshes to processing too.
+      const terminal = job.status === 'complete' || job.status === 'failed'
+      if (terminal && job.slack_notified_status === job.status) continue
 
       const text = renderJobMessage(job)
-      const ts = await slackPost(job.slack_channel, text, undefined, job.slack_thread_ts || undefined)
-      if (!ts) continue
 
-      const patch: any = {
-        slack_notified_at: new Date().toISOString(),
-        slack_notified_status: job.status,
+      if (!job.slack_message_ts) {
+        // First message for this job — post it and remember its ts.
+        const ts = await slackPost(job.slack_channel, text, undefined, job.slack_thread_ts || undefined)
+        if (!ts) continue
+        await sb
+          .from('render_jobs')
+          .update({
+            slack_message_ts: ts,
+            slack_notified_status: job.status,
+            slack_notified_at: new Date().toISOString(),
+          })
+          .eq('id', job.id)
+      } else {
+        // Update the same message in place (live progress bar).
+        const ok = await slackUpdate(job.slack_channel, job.slack_message_ts, text)
+        if (!ok) continue
+        await sb
+          .from('render_jobs')
+          .update({ slack_notified_status: job.status, slack_notified_at: new Date().toISOString() })
+          .eq('id', job.id)
       }
-      // Save the message ts only on the very first notification so future
-      // status announcements thread under the same root if desired.
-      if (!job.slack_message_ts) patch.slack_message_ts = ts
-
-      await sb.from('render_jobs').update(patch).eq('id', job.id)
       posted++
     }
 
@@ -153,20 +249,34 @@ function renderJobMessage(job: any): string {
       return `:wrench: *${job.claimed_by}* picked up the job for \`${filename}\` — starting...`
     case 'processing':
       return (
-        `:gear: *${job.claimed_by}* — *${profileName}* on \`${filename}\`\n` +
-        `Progress: ${job.progress_percent ?? 0}% — ${job.progress_message || 'working...'}`
+        `:gear: *${profileName}* on \`${filename}\` — ${job.claimed_by}\n` +
+        `\`${progressBar(job.progress_percent ?? 0)}\`\n` +
+        `${job.progress_message || 'working...'}`
       )
     case 'complete': {
       const size = job.output_size_bytes ? ` (${fmtBytes(job.output_size_bytes)})` : ''
       const duration = job.duration_seconds ? ` — ${Math.round(job.duration_seconds)}s` : ''
+
+      // Auto-QC results (worker ffprobed the output vs the profile).
+      const autoQc = (job.qc_checklist_status || []) as { text: string; checked: boolean }[]
+      let qcBlock = ''
+      if (autoQc.length > 0) {
+        const failed = autoQc.filter((c) => !c.checked)
+        qcBlock = failed.length === 0
+          ? '\n\n:white_check_mark: *QC passed* — output matches the spec.'
+          : '\n\n:warning: *QC flagged:*\n' + failed.map((c) => `:x: ${c.text}`).join('\n')
+      }
+
+      // Manual QC checklist from the profile (operator verifies before sending).
       const qcList = (job.profile_snapshot?.qc_checklist || []) as string[]
-      const qcLines = qcList.length > 0
-        ? '\n\n*QC Checklist — verify before submission:*\n' + qcList.map((q) => `:black_square_button: ${q}`).join('\n')
+      const manualBlock = qcList.length > 0
+        ? '\n\n*Manual QC — verify before submission:*\n' + qcList.map((q) => `:black_square_button: ${q}`).join('\n')
         : ''
+
       return (
         `:white_check_mark: *Transcode complete*\n` +
         `Output: \`${filename}\`${size}${duration}\n` +
-        `Worker: ${job.claimed_by || '?'}${qcLines}`
+        `Worker: ${job.claimed_by || '?'}${qcBlock}${manualBlock}`
       )
     }
     case 'failed':

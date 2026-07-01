@@ -21,6 +21,7 @@ import { runFFmpeg, probeDurationSeconds } from './ffmpeg/runner'
 import { runLoudnessAnalysis } from './ffmpeg/loudness'
 import { buildFFmpegArgs, argsToShellCommand } from './ffmpeg/command-builder'
 import { buildOutputFilename } from './ffmpeg/naming'
+import { runQualityControl } from './ffmpeg/qc'
 
 export async function processJob(job: ClaimedJob): Promise<void> {
   setCurrentJob(job.id)
@@ -36,48 +37,64 @@ export async function processJob(job: ClaimedJob): Promise<void> {
     const profile = job.profile_snapshot
     if (!profile) throw new Error('Job has no profile_snapshot')
 
-    const sourceFile = (job.source_files || [])[0]
-    if (!sourceFile) throw new Error('Job has no source files')
+    const sources = job.source_files || []
+    if (sources.length === 0) throw new Error('Job has no source files')
+    const videoSource = sources.find((s) => s.type === 'video') || sources[0]
+    const audioSource = sources.find((s) => s.type === 'audio') || null
 
-    // ── Resolve source ───────────────────────────────────────
-    const resolved = resolveDropboxPath(sourceFile.path)
-    if (!resolved) {
+    // ── Resolve sources (video + optional separate audio mix) ──
+    const resolvedVideo = resolveDropboxPath(videoSource.path)
+    if (!resolvedVideo) {
       throw new Error(
-        `Source file not found locally: ${sourceFile.path}. Verify Dropbox has synced this path under DROPBOX_SYNC_PATH=${config.dropboxSyncPath}.`,
+        `Source video not found locally: ${videoSource.path}. Verify Dropbox has synced this path under DROPBOX_SYNC_PATH=${config.dropboxSyncPath}.`,
       )
     }
+    let resolvedAudio = null
+    if (audioSource) {
+      resolvedAudio = resolveDropboxPath(audioSource.path)
+      if (!resolvedAudio) {
+        throw new Error(
+          `Source audio not found locally: ${audioSource.path}. Verify Dropbox has synced it under DROPBOX_SYNC_PATH=${config.dropboxSyncPath}.`,
+        )
+      }
+    }
 
-    // ── Probe duration for progress tracking ─────────────────
+    // ── Probe duration for progress tracking (from the picture) ──
     await updateProgress(job.id, 5, 'Probing source duration...')
-    const duration = await probeDurationSeconds(config.ffmpegPath, resolved.localPath)
+    const duration = await probeDurationSeconds(config.ffmpegPath, resolvedVideo.localPath)
 
     // ── Build output path ────────────────────────────────────
     const outputFilename = profile.naming_template && job.naming_fields
       ? buildOutputFilename(profile.naming_template, job.naming_fields, profile.container || 'mov')
-      : path.basename(resolved.localPath)
-    const sourceDir = path.dirname(resolved.localPath)
+      : path.basename(resolvedVideo.localPath)
+    const sourceDir = path.dirname(resolvedVideo.localPath)
     const outputDir = path.join(sourceDir, 'delivery')
     const outputPath = path.join(outputDir, outputFilename)
     ensureOutputDir(outputPath)
 
     // ── Pass 1: loudness analysis (if profile sets lufs_target) ──
+    // Measure the stream pass 2 will normalize: the external mix when present,
+    // otherwise the picture's embedded audio.
     let loudness = null
     if (profile.lufs_target != null) {
       await updateProgress(job.id, 10, 'Pass 1/2: Analyzing loudness...')
       loudness = await runLoudnessAnalysis({
         ffmpegPath: config.ffmpegPath,
         profile,
-        sourcePath: resolved.localPath,
+        sourcePath: resolvedAudio ? resolvedAudio.localPath : resolvedVideo.localPath,
       })
     }
 
     // ── Pass 2: full transcode ───────────────────────────────
-    const args = buildFFmpegArgs({
-      profile,
-      sourceFiles: [{ path: resolved.localPath, type: 'video', size_bytes: resolved.sizeBytes }],
-      outputPath,
-      loudness,
-    })
+    // Video first (input 0), then the audio mix (input 1) so the builder's
+    // -map indices line up.
+    const builderSources = [
+      { path: resolvedVideo.localPath, type: 'video', size_bytes: resolvedVideo.sizeBytes },
+      ...(resolvedAudio
+        ? [{ path: resolvedAudio.localPath, type: 'audio', size_bytes: resolvedAudio.sizeBytes }]
+        : []),
+    ]
+    const args = buildFFmpegArgs({ profile, sourceFiles: builderSources, outputPath, loudness })
     const cmdStr = argsToShellCommand(args, config.ffmpegPath)
 
     await supabase
@@ -116,6 +133,25 @@ export async function processJob(job: ClaimedJob): Promise<void> {
       throw new Error(`FFmpeg exited with code ${result.exitCode}.\nLast lines:\n${tail}`)
     }
 
+    // ── QC: ffprobe the output and confirm it matches the spec ──
+    await updateProgress(job.id, 97, 'QC: verifying output against spec...')
+    let qcStatus = null
+    try {
+      const report = await runQualityControl({
+        ffmpegPath: config.ffmpegPath,
+        outputPath,
+        profile,
+      })
+      qcStatus = report.checks.map((c) => ({
+        text: `${c.name}: expected ${c.expected}, got ${c.actual}`,
+        checked: c.pass,
+      }))
+      console.log(`[processor] Job ${job.id} QC ${report.pass ? 'passed' : 'FLAGGED'}`)
+    } catch (qcErr: any) {
+      console.warn(`[processor] Job ${job.id} QC probe failed: ${qcErr.message || qcErr}`)
+      qcStatus = [{ text: `QC probe failed: ${qcErr.message || qcErr}`, checked: false }]
+    }
+
     // ── Finalize ─────────────────────────────────────────────
     const outStat = fs.statSync(outputPath)
     const elapsedSeconds = (Date.now() - startedAt.getTime()) / 1000
@@ -128,6 +164,7 @@ export async function processJob(job: ClaimedJob): Promise<void> {
         progress_message: 'Complete',
         output_size_bytes: outStat.size,
         duration_seconds: elapsedSeconds,
+        qc_checklist_status: qcStatus,
         updated_at: new Date().toISOString(),
       })
       .eq('id', job.id)

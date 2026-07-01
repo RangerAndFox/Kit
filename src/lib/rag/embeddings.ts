@@ -48,6 +48,36 @@ export async function generateEmbedding(text: string): Promise<number[]> {
   return vec
 }
 
+/**
+ * Reorder an OpenAI embeddings response by each item's `index` and validate
+ * shape. OpenAI does NOT guarantee response order — the `index` field is the
+ * authoritative position within the request. Pushing items in array order
+ * (ignoring index) can misalign embeddings with their inputs, which for a
+ * chunked document stores the wrong vector for each chunk. Pure — tested.
+ */
+export function extractOrderedEmbeddings(
+  items: any[],
+  expectedCount: number,
+  expectedDims: number = EMBED_DIMENSIONS,
+): number[][] {
+  const ordered: (number[] | undefined)[] = new Array(expectedCount)
+  for (const item of items) {
+    const idx = item?.index
+    if (!Number.isInteger(idx) || idx < 0 || idx >= expectedCount) {
+      throw new Error(`OpenAI embedding item has invalid index ${idx} (expected 0..${expectedCount - 1})`)
+    }
+    const v = item?.embedding
+    if (!Array.isArray(v) || v.length !== expectedDims) {
+      throw new Error(`OpenAI returned unexpected embedding shape (expected ${expectedDims} dims, got ${v?.length ?? 'none'})`)
+    }
+    ordered[idx] = v
+  }
+  for (let i = 0; i < expectedCount; i++) {
+    if (!ordered[i]) throw new Error(`OpenAI response missing embedding for index ${i}`)
+  }
+  return ordered as number[][]
+}
+
 export async function generateEmbeddings(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return []
   // OpenAI hard limit: 2048 inputs per request, 8191 tokens per input.
@@ -69,13 +99,9 @@ export async function generateEmbeddings(texts: string[]): Promise<number[][]> {
       throw new Error(`OpenAI embeddings ${res.status}: ${detail}`)
     }
     const data = await res.json()
-    for (const item of data.data || []) {
-      const v = item?.embedding
-      if (!Array.isArray(v) || v.length !== EMBED_DIMENSIONS) {
-        throw new Error(`OpenAI returned unexpected embedding shape (expected ${EMBED_DIMENSIONS} dims, got ${v?.length ?? 'none'})`)
-      }
-      out.push(v)
-    }
+    // Order by `index` so each embedding aligns with its input text, even if
+    // OpenAI returns the batch out of order.
+    out.push(...extractOrderedEmbeddings(data.data || [], batch.length, EMBED_DIMENSIONS))
   }
   return out
 }

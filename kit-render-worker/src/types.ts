@@ -41,6 +41,7 @@ export interface DeliveryProfile {
   scan_mode: 'progressive' | 'interlaced'
   pixel_format: string | null
   color_space: string | null
+  video_filters: string | null
 
   // Audio
   audio_codec: string

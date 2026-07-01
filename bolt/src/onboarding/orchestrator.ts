@@ -16,7 +16,7 @@ import { inviteArtistToDropbox } from './services/dropbox'
 import { inviteArtistToFrameIo } from './services/frameio'
 import { inviteArtistToHarvest } from './services/harvest'
 import { rehydrateProjectExternalLinks } from './rehydrate'
-import { sendNdaIfFirstTimer } from './nda/send'
+import { postNdaCardIfFirstTimer } from './nda/send'
 
 async function loadProject(projectId: string): Promise<OnboardingProject | null> {
   const sb = createAdminClient()
@@ -58,8 +58,10 @@ function composeWelcomeDm(opts: {
     summaryLines.push(`*Brief:* ${project.brief_summary}`)
   }
   const links: string[] = []
-  const frameioUrl = project.external_links?.frameio_url
-  const dropboxUrl = project.external_links?.dropbox_url
+  // Links land under either the rehydrated *_url keys or the provisioner's
+  // bare service keys, depending on which path created the project. Accept both.
+  const frameioUrl = project.external_links?.frameio_url || project.external_links?.frameio
+  const dropboxUrl = project.external_links?.dropbox_url || project.external_links?.dropbox
   if (frameioUrl) links.push(`• Frame.io: ${frameioUrl}`)
   if (dropboxUrl) links.push(`• Dropbox: ${dropboxUrl}`)
   if (links.length) {
@@ -160,7 +162,7 @@ export async function runOnboarding(opts: {
     project.external_links?.slack_channel_id ||
     null
 
-  const [slackR, dropboxR, frameioR, harvestR] = await Promise.all([
+  const settled = await Promise.allSettled([
     inviteArtistToSlack({
       email: input.artistEmail,
       fullName: input.artistName,
@@ -174,6 +176,16 @@ export async function runOnboarding(opts: {
       artistName: input.artistName,
     }),
   ])
+  // One service throwing must not abort the others (or the NDA + tracking
+  // below). A rejected invite becomes a failed ServiceResult.
+  const asResult = (s: PromiseSettledResult<ServiceResult>, name: string): ServiceResult =>
+    s.status === 'fulfilled'
+      ? s.value
+      : { status: 'failed', message: `${name} crashed: ${s.reason?.message || String(s.reason)}` }
+  const slackR = asResult(settled[0], 'slack')
+  const dropboxR = asResult(settled[1], 'dropbox')
+  const frameioR = asResult(settled[2], 'frameio')
+  const harvestR = asResult(settled[3], 'harvest')
 
   // Send welcome message. Two paths:
   //  - Slack user known → open DM and post privately
@@ -232,11 +244,14 @@ export async function runOnboarding(opts: {
     }
   }
 
-  // NDA / paperwork (gated behind FREELANCER_PAPERWORK_ENABLED). Runs
-  // independently of the Slack invite — it's email-based and keyed on the
-  // artist's email, so first-timers get the NDA even if Connect is pending.
-  // Returning freelancers (paperwork already on file) are skipped.
-  const ndaR: ServiceResult = await sendNdaIfFirstTimer({
+  // NDA / paperwork (gated behind FREELANCER_PAPERWORK_ENABLED). For a
+  // first-timer we post a confirmation card to the requester (falling back to
+  // the project channel); they pick the NDA type, confirm the details, and
+  // send it from the modal. Returning freelancers (paperwork on file) skipped.
+  const ndaCardChannel = input.requestedBy || projectChannelId || ''
+  const ndaR: ServiceResult = await postNdaCardIfFirstTimer({
+    app,
+    channel: ndaCardChannel,
     artistEmail: input.artistEmail,
     artistName: input.artistName,
     artistLegalName: input.artistLegalName,
@@ -279,9 +294,10 @@ export async function runOnboarding(opts: {
         harvest_error: harvestR.status === 'failed' ? harvestR.message : null,
         welcome_dm_status: welcomeR.status,
         welcome_dm_error: welcomeR.status === 'failed' ? welcomeR.message : null,
-        nda_status: ndaR.status,
+        // 'ok' here means the card was posted; the actual send (and nda_sent_at)
+        // is recorded later by the modal handler (sendNdaFromModal).
+        nda_status: ndaR.status === 'ok' ? 'card_posted' : ndaR.status,
         nda_error: ndaR.status === 'failed' ? ndaR.message : null,
-        nda_sent_at: ndaR.status === 'ok' ? new Date().toISOString() : null,
         updated_at: new Date().toISOString(),
       })
       .eq('id', onboardingId)
