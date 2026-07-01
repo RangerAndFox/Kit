@@ -157,15 +157,36 @@ export async function getAsset(fileId: string): Promise<FrameIoAsset> {
 // ─── Comments ───────────────────────────────────────────────
 
 /**
- * Fetch all comments for a file.
+ * Fetch ALL comments for a file, following v4 cursor pagination.
  * GET /v4/accounts/{account_id}/files/{file_id}/comments
+ *
+ * Without the pagination walk, heavily-reviewed cuts silently truncated at
+ * the API's default page size — the exported notes doc just missed comments.
  */
 export async function getAssetComments(fileId: string): Promise<FrameIoComment[]> {
   const acct = getAccountId()
-  const data = await frameioGet(`/accounts/${acct}/files/${fileId}/comments`)
-  const items = data.data || data.comments || data.items || data
+  const all: any[] = []
+  let path: string | null = `/accounts/${acct}/files/${fileId}/comments`
+  let safety = 20 // pagination cap — thousands of comments means something is wrong
 
-  return (Array.isArray(items) ? items : []).map((c: any) => ({
+  while (path && safety-- > 0) {
+    const data = await frameioGet(path)
+    const items = data.data || data.comments || data.items || data
+    if (Array.isArray(items)) all.push(...items)
+
+    // v4 list responses carry links.next (absolute URL or path) when there
+    // are more pages. Normalize an absolute URL back to a BASE_URL-relative
+    // path for frameioGet.
+    const next: string | undefined = data.links?.next || data.links?.next_page || undefined
+    if (next && typeof next === 'string') {
+      path = next.startsWith('http') ? next.replace(BASE_URL, '') : next
+      if (path.startsWith('http')) break // different host — don't follow
+    } else {
+      path = null
+    }
+  }
+
+  return all.map((c: any) => ({
     id: c.id,
     text: c.text || '',
     timestamp: typeof c.timestamp === 'number' ? c.timestamp : null,

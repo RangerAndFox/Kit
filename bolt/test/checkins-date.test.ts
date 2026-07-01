@@ -6,6 +6,8 @@ import {
   checkinTimezone,
   resolveSpentDate,
   formatShortDate,
+  studioHolidays,
+  isWorkday,
 } from '../src/checkins/date'
 
 describe('checkin date helpers', () => {
@@ -75,5 +77,34 @@ describe('resolveSpentDate', () => {
 describe('formatShortDate', () => {
   it('renders a friendly weekday/month/day in the studio tz', () => {
     expect(formatShortDate('2026-06-24', 'America/Los_Angeles')).toBe('Wed, Jun 24')
+  })
+})
+
+describe('studio holidays', () => {
+  it('computes 2026 fixed and floating US holidays', () => {
+    const set = studioHolidays(2026)
+    expect(set.has('2026-01-01')).toBe(true) // New Year's (Thursday)
+    expect(set.has('2026-01-19')).toBe(true) // MLK Day (3rd Monday)
+    expect(set.has('2026-05-25')).toBe(true) // Memorial Day (last Monday)
+    expect(set.has('2026-06-19')).toBe(true) // Juneteenth (Friday)
+    expect(set.has('2026-07-03')).toBe(true) // July 4 observed (Sat → Fri)
+    expect(set.has('2026-09-07')).toBe(true) // Labor Day
+    expect(set.has('2026-11-26')).toBe(true) // Thanksgiving (4th Thursday)
+    expect(set.has('2026-11-27')).toBe(true) // Day after Thanksgiving
+    expect(set.has('2026-12-25')).toBe(true) // Christmas (Friday)
+  })
+
+  it('isWorkday is false on holidays and weekends, true on normal weekdays', () => {
+    expect(isWorkday('2026-07-03')).toBe(false) // observed July 4
+    expect(isWorkday('2026-07-04')).toBe(false) // Saturday anyway
+    expect(isWorkday('2026-11-26')).toBe(false) // Thanksgiving
+    expect(isWorkday('2026-07-01')).toBe(true) // ordinary Wednesday
+  })
+
+  it('honors STUDIO_HOLIDAYS env overrides', () => {
+    process.env.STUDIO_HOLIDAYS = '2026-07-06'
+    expect(isWorkday('2026-07-06')).toBe(false) // one-off studio closure
+    delete process.env.STUDIO_HOLIDAYS
+    expect(isWorkday('2026-07-06')).toBe(true)
   })
 })

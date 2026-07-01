@@ -310,6 +310,11 @@ cron.schedule(
 // ─── Start ─────────────────────────────────────────────────
 
 ;(async () => {
+  // Restore mid-conversation context persisted before the last restart so a
+  // deploy doesn't wipe pending clarifications. Best-effort, never blocks boot.
+  const { restoreConversationMemory } = await import('./llm/memory')
+  await restoreConversationMemory()
+
   await app.start()
   console.log('⚡ Kit is online (Socket Mode)')
   console.log(`   Bot token: ...${process.env.SLACK_BOT_TOKEN?.slice(-6)}`)

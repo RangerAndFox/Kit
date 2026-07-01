@@ -103,6 +103,11 @@ export function parseSpecsPath(f: { path_display?: string; path_lower?: string; 
  * One scan tick. Returns newly-stable specs drops, each bundled with the
  * current contents of that project's specs/video + specs/audio folders so the
  * caller can pair without another Dropbox round-trip.
+ *
+ * SCALING NOTE: listProductionFiles() walks the whole /production tree each
+ * tick. Fine at today's scale (a few hundred files); once the tree reaches
+ * tens of thousands, switch to Dropbox's list_folder cursor API (persist the
+ * cursor like bolt/src/watchers/dropbox.ts does) so ticks only see deltas.
  */
 export async function scanProjectSpecs(): Promise<SpecsDrop[]> {
   const sb = createAdminClient()
