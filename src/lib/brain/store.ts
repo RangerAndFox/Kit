@@ -134,56 +134,77 @@ export async function createBrain(input: CreateBrainInput): Promise<LoadedBrain>
  * Apply a set of patches to an existing brain. Atomic at the row level
  * (single UPDATE bumps revision); audit rows + embeddings are best-effort
  * after the write.
+ *
+ * Optimistic concurrency: the UPDATE is predicated on the revision we read.
+ * Without it, the message-driven writer and the nightly consolidator racing
+ * the same brain meant read-modify-write lost the first writer's patches
+ * wholesale. On conflict we re-read and retry (bounded).
  */
 export async function applyPatches(opts: {
   brainId: string
   patches: BrainPatch[]
   author?: string
 }): Promise<LoadedBrain> {
-  const loaded = await getBrainById(opts.brainId)
-  if (!loaded) throw new Error(`applyPatches: brain ${opts.brainId} not found`)
-  const { row, brain } = loaded
-  const touchedSections = new Set<string>()
-  const diffs: string[] = []
-  for (const p of opts.patches) {
-    const d = applyPatch(brain, p)
-    if (d) {
-      diffs.push(d)
-      touchedSections.add(p.section)
+  const MAX_ATTEMPTS = 3
+  let lastConflict: string | null = null
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const loaded = await getBrainById(opts.brainId)
+    if (!loaded) throw new Error(`applyPatches: brain ${opts.brainId} not found`)
+    const { row, brain } = loaded
+    const touchedSections = new Set<string>()
+    const diffs: string[] = []
+    for (const p of opts.patches) {
+      const d = applyPatch(brain, p)
+      if (d) {
+        diffs.push(d)
+        touchedSections.add(p.section)
+      }
     }
+    const nextRevision = (row.revision || 0) + 1
+    brain.frontmatter.revision = nextRevision
+    brain.frontmatter.updated = new Date().toISOString()
+    const markdown = serializeBrain(brain)
+
+    const sb = createAdminClient()
+    const { data, error } = await sb
+      .from('brains')
+      .update({ markdown, revision: nextRevision, updated_at: new Date().toISOString() })
+      .eq('id', opts.brainId)
+      .eq('revision', row.revision ?? 0)
+      .select('*')
+      .maybeSingle()
+    if (error) throw new Error(`applyPatches: ${error.message}`)
+    if (!data) {
+      // Someone else bumped the revision between our read and write — retry
+      // against the fresh state so their patches survive alongside ours.
+      lastConflict = `revision ${row.revision} was stale`
+      continue
+    }
+
+    // Audit one row per patch.
+    if (opts.patches.length > 0) {
+      await sb.from('brain_revisions').insert(
+        opts.patches.map((p, i) => ({
+          brain_id: opts.brainId,
+          revision: nextRevision,
+          section: p.section,
+          operation: p.operation,
+          diff: diffs[i] || null,
+          provenance: p.provenance ?? null,
+          author: opts.author ?? 'system',
+        })),
+      )
+    }
+
+    await embedBrainSections(row.workspace_id, opts.brainId, row.project_id, brain, touchedSections)
+
+    return { row: data as BrainRow, brain }
   }
-  const nextRevision = (row.revision || 0) + 1
-  brain.frontmatter.revision = nextRevision
-  brain.frontmatter.updated = new Date().toISOString()
-  const markdown = serializeBrain(brain)
 
-  const sb = createAdminClient()
-  const { data, error } = await sb
-    .from('brains')
-    .update({ markdown, revision: nextRevision, updated_at: new Date().toISOString() })
-    .eq('id', opts.brainId)
-    .select('*')
-    .single()
-  if (error) throw new Error(`applyPatches: ${error.message}`)
-
-  // Audit one row per patch.
-  if (opts.patches.length > 0) {
-    await sb.from('brain_revisions').insert(
-      opts.patches.map((p, i) => ({
-        brain_id: opts.brainId,
-        revision: nextRevision,
-        section: p.section,
-        operation: p.operation,
-        diff: diffs[i] || null,
-        provenance: p.provenance ?? null,
-        author: opts.author ?? 'system',
-      })),
-    )
-  }
-
-  await embedBrainSections(row.workspace_id, opts.brainId, row.project_id, brain, touchedSections)
-
-  return { row: data as BrainRow, brain }
+  throw new Error(
+    `applyPatches: gave up after ${MAX_ATTEMPTS} optimistic-concurrency retries (${lastConflict})`,
+  )
 }
 
 export async function setCanvasHandle(brainId: string, canvasId: string, canvasUrl: string | null): Promise<void> {

@@ -80,37 +80,48 @@ export async function fetchUpcomingEvents(
     return []
   }
 
-  const out: CalendarEvent[] = []
-  for (const calendarId of calendarIds) {
-    const res = await calendar.events.list({
-      calendarId,
-      timeMin: fromIso,
-      timeMax: toIso,
-      singleEvents: true,
-      orderBy: 'startTime',
-      maxResults: 50,
-    })
-    const items = res.data.items || []
-    for (const ev of items) {
-      if (!ev.id || !ev.start?.dateTime) continue
-      out.push({
-        event_id: `${calendarId}:${ev.id}`,
-        calendar_id: calendarId,
-        summary: ev.summary || '',
-        description: ev.description || undefined,
-        start_time: ev.start.dateTime,
-        end_time: ev.end?.dateTime || ev.start.dateTime,
-        attendees: (ev.attendees || []).map((a) => ({
-          email: a.email || '',
-          displayName: a.displayName || undefined,
-          responseStatus: a.responseStatus || undefined,
-        })),
-        organizer: ev.organizer
-          ? { email: ev.organizer.email || '', displayName: ev.organizer.displayName || undefined }
-          : undefined,
-        hangoutLink: ev.hangoutLink || undefined,
-      })
-    }
-  }
-  return out
+  // Calendars fetch in parallel; each calendar follows nextPageToken so a
+  // busy shared calendar (recurring events explode under singleEvents:true)
+  // can't silently truncate — a missed event here means no briefing, ever.
+  const perCalendar = await Promise.all(
+    calendarIds.map(async (calendarId) => {
+      const events: CalendarEvent[] = []
+      let pageToken: string | undefined
+      let safety = 10 // 500 events per calendar per window — loop safety cap
+      do {
+        const res = await calendar.events.list({
+          calendarId,
+          timeMin: fromIso,
+          timeMax: toIso,
+          singleEvents: true,
+          orderBy: 'startTime',
+          maxResults: 50,
+          pageToken,
+        })
+        for (const ev of res.data.items || []) {
+          if (!ev.id || !ev.start?.dateTime) continue
+          events.push({
+            event_id: `${calendarId}:${ev.id}`,
+            calendar_id: calendarId,
+            summary: ev.summary || '',
+            description: ev.description || undefined,
+            start_time: ev.start.dateTime,
+            end_time: ev.end?.dateTime || ev.start.dateTime,
+            attendees: (ev.attendees || []).map((a) => ({
+              email: a.email || '',
+              displayName: a.displayName || undefined,
+              responseStatus: a.responseStatus || undefined,
+            })),
+            organizer: ev.organizer
+              ? { email: ev.organizer.email || '', displayName: ev.organizer.displayName || undefined }
+              : undefined,
+            hangoutLink: ev.hangoutLink || undefined,
+          })
+        }
+        pageToken = res.data.nextPageToken || undefined
+      } while (pageToken && safety-- > 0)
+      return events
+    }),
+  )
+  return perCalendar.flat()
 }

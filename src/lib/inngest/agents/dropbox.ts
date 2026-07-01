@@ -81,11 +81,20 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
   const destPath = `/production/${year}/${safeName}`
 
   try {
-    await dropboxPost('/files/copy_v2', {
-      from_path: templatePath,
-      to_path: destPath,
-      allow_ownership_transfer: false,
-    })
+    try {
+      await dropboxPost('/files/copy_v2', {
+        from_path: templatePath,
+        to_path: destPath,
+        allow_ownership_transfer: false,
+      })
+    } catch (err: any) {
+      // copy_v2 is retried by withRetry but isn't idempotent: a timeout whose
+      // first attempt actually landed makes the retry hit a to_path conflict
+      // — the folder exists, which is the outcome we wanted. Treat the
+      // conflict as success and continue provisioning.
+      if (!/conflict/i.test(err?.message || '')) throw err
+      console.warn(`[dropbox:provision] ${destPath} already exists — continuing`)
+    }
 
     // Delivery watch folders — drop a picture in specs/video and its mix in
     // specs/audio and Kit prompts for the spec + renders. Created explicitly so

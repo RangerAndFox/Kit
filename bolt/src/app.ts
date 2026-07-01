@@ -247,13 +247,14 @@ cron.schedule(
 
 // ─── Cron: brain scavenger DM dispatch ─────────────────────
 // The Inngest cron (brainScavengerScan) populates the pending queue
-// daily at 7am UTC. This cron runs a few minutes later (in the box's
-// local time) to DM each affected brain's channel creator with the
-// approve/reject buttons. Gated on KIT_BRAIN_SCAVENGER_ENABLED so
-// it stays off until the operator activates the scavenger.
+// daily at 7am UTC. This dispatch runs HOURLY: each candidate is DM'd
+// once (dm_sent_at stamp, weekly re-remind), so frequent runs are safe
+// — and a scan that finishes late no longer silently misses a whole
+// day's dispatch window. Gated on KIT_BRAIN_SCAVENGER_ENABLED so it
+// stays off until the operator activates the scavenger.
 
 cron.schedule(
-  '15 7 * * *',
+  '15 * * * *',
   () => {
     if (process.env.KIT_BRAIN_SCAVENGER_ENABLED !== 'true') return
     const workspaceId = process.env.KIT_DEFAULT_WORKSPACE_ID

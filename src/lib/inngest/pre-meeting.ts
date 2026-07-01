@@ -96,60 +96,83 @@ export const preMeetingScan = inngest.createFunction(
       fetchUpcomingEvents(fromIso, toIso),
     )
 
-    const sb = createAdminClient()
+    // All the DB reads the loop needs, in ONE memoized step. Inngest replays
+    // the whole function body after each step resolves, so un-memoized reads
+    // in the loop re-ran O(N²) times — and un-memoized writes made scheduling
+    // depend on whichever replay happened to reach them.
+    const scanContext = await step.run('load-scan-context', async () => {
+      const sb = createAdminClient()
 
-    // Pull active projects once for batch classification.
-    const workspaceId = process.env.KIT_DEFAULT_WORKSPACE_ID
-    let projectsQuery = sb
-      .from('projects')
-      .select('id, name, client, project_code, brief_summary, external_ids')
-      .eq('status', 'active')
-      .limit(50)
-    if (workspaceId) {
-      projectsQuery = projectsQuery.eq('workspace_id', workspaceId)
-    } else {
-      console.warn(
-        '[pre-meeting-scan] KIT_DEFAULT_WORKSPACE_ID is not set; classifier may see projects from all workspaces',
-      )
-    }
-    const { data: projectRows } = await projectsQuery
-
-    const activeProjects = (projectRows || []).map((p: any) => ({
-      id: p.id,
-      name: p.name,
-      client: p.client,
-      project_code: p.project_code,
-      brief_summary: p.brief_summary,
-      // No staff-by-project mapping yet; team_emails left empty for now.
-      team_emails: [],
-    }))
-
-    // Bizdev-role staff emails (+ aliases) — gates the bizdev briefing path.
-    // An unmatched meeting only gets the attendee-bio treatment when one of
-    // these people is actually on the invite; otherwise it stays a silent
-    // skip, same as before.
-    const { data: bizdevStaffRows } = await sb
-      .from('staff')
-      .select('email, email_aliases')
-      .eq('role', 'bizdev')
-      .eq('is_active', true)
-    const bizdevEmails = new Set<string>()
-    for (const s of bizdevStaffRows || []) {
-      if (s.email) bizdevEmails.add(s.email.trim().toLowerCase())
-      for (const alias of s.email_aliases || []) {
-        if (alias && alias.trim()) bizdevEmails.add(alias.trim().toLowerCase())
+      const workspaceId = process.env.KIT_DEFAULT_WORKSPACE_ID
+      let projectsQuery = sb
+        .from('projects')
+        .select('id, name, client, project_code, brief_summary, external_ids')
+        .eq('status', 'active')
+        .limit(50)
+      if (workspaceId) {
+        projectsQuery = projectsQuery.eq('workspace_id', workspaceId)
+      } else {
+        console.warn(
+          '[pre-meeting-scan] KIT_DEFAULT_WORKSPACE_ID is not set; classifier may see projects from all workspaces',
+        )
       }
-    }
+      const { data: projectRows } = await projectsQuery
 
-    let scheduled = 0
+      // Bizdev-role staff emails (+ aliases) — gates the bizdev briefing
+      // path for meetings that don't classify to any project.
+      const { data: bizdevStaffRows } = await sb
+        .from('staff')
+        .select('email, email_aliases')
+        .eq('role', 'bizdev')
+        .eq('is_active', true)
+      const bizdevEmails: string[] = []
+      for (const s of bizdevStaffRows || []) {
+        if (s.email) bizdevEmails.push(s.email.trim().toLowerCase())
+        for (const alias of s.email_aliases || []) {
+          if (alias && alias.trim()) bizdevEmails.push(alias.trim().toLowerCase())
+        }
+      }
+
+      // Which events are already tracked — one batched query instead of one
+      // per event per replay.
+      const eventIds = events.map((ev: any) => ev.event_id)
+      const { data: existingRows } = eventIds.length
+        ? await sb
+            .from('meeting_briefings')
+            .select('event_id, status')
+            .in('event_id', eventIds)
+        : { data: [] }
+      const alreadyTracked = (existingRows || [])
+        .filter((r: any) => r.status !== 'failed')
+        .map((r: any) => r.event_id)
+
+      return {
+        activeProjects: (projectRows || []).map((p: any) => ({
+          id: p.id,
+          name: p.name,
+          client: p.client,
+          project_code: p.project_code,
+          brief_summary: p.brief_summary,
+          // No staff-by-project mapping yet; team_emails left empty for now.
+          team_emails: [],
+        })),
+        bizdevEmails,
+        alreadyTracked,
+      }
+    })
+
+    const { activeProjects, alreadyTracked } = scanContext
+    const bizdevEmails = new Set<string>(scanContext.bizdevEmails)
+    const trackedSet = new Set<string>(alreadyTracked)
+
+    // Classify each new event (one memoized step per event), then collect
+    // every row + dispatch into plain arrays — the actual writes happen in
+    // dedicated steps AFTER the loop so they run exactly once.
+    const rows: any[] = []
+    const dispatches: { event_id: string; project_id: string | null; event: any; meetingType?: string; sendMs: number }[] = []
+
     for (const ev of events) {
-      // Skip events already tracked.
-      const { data: existing } = await sb
-        .from('meeting_briefings')
-        .select('id, status')
-        .eq('event_id', ev.event_id)
-        .maybeSingle()
-      if (existing && existing.status !== 'failed') continue
+      if (trackedSet.has(ev.event_id)) continue
 
       let cls: { project_id: string | null; confidence: number; reasoning: string }
       let classifierFailed = false
@@ -166,21 +189,18 @@ export const preMeetingScan = inngest.createFunction(
         }
       }
 
+      const baseRow = {
+        event_id: ev.event_id,
+        calendar_id: ev.calendar_id,
+        meeting_title: ev.summary,
+        meeting_start_time: ev.start_time,
+        attendees_json: ev.attendees,
+        confidence: cls.confidence,
+        updated_at: new Date().toISOString(),
+      }
+
       if (classifierFailed) {
-        await sb.from('meeting_briefings').upsert(
-          {
-            event_id: ev.event_id,
-            calendar_id: ev.calendar_id,
-            meeting_title: ev.summary,
-            meeting_start_time: ev.start_time,
-            attendees_json: ev.attendees,
-            confidence: 0,
-            status: 'failed',
-            error: cls.reasoning,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'event_id', ignoreDuplicates: false },
-        )
+        rows.push({ ...baseRow, confidence: 0, status: 'failed', error: cls.reasoning })
         continue
       }
 
@@ -193,83 +213,57 @@ export const preMeetingScan = inngest.createFunction(
           bizdevEmails,
         )
         if (!isBizdev) {
-          await sb.from('meeting_briefings').upsert(
-            {
-              event_id: ev.event_id,
-              calendar_id: ev.calendar_id,
-              meeting_title: ev.summary,
-              meeting_start_time: ev.start_time,
-              attendees_json: ev.attendees,
-              confidence: cls.confidence,
-              status: 'skipped',
-              error: cls.reasoning,
-              updated_at: new Date().toISOString(),
-            },
-            { onConflict: 'event_id', ignoreDuplicates: false },
-          )
+          rows.push({ ...baseRow, status: 'skipped', error: cls.reasoning })
           continue
         }
-
-        const bizdevSendMs = Date.parse(ev.start_time) - lead
-        await sb.from('meeting_briefings').upsert(
-          {
-            event_id: ev.event_id,
-            calendar_id: ev.calendar_id,
-            meeting_title: ev.summary,
-            meeting_start_time: ev.start_time,
-            attendees_json: ev.attendees,
-            confidence: cls.confidence,
-            status: 'pending',
-            meeting_type: 'bizdev',
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'event_id', ignoreDuplicates: false },
-        )
-        await inngest.send({
-          name: 'pre-meeting/dispatch',
-          data: {
-            event_id: ev.event_id,
-            project_id: null,
-            event: ev,
-            meetingType: 'bizdev',
-          },
-          ts: Math.max(now + 1_000, bizdevSendMs),
+        rows.push({ ...baseRow, status: 'pending', meeting_type: 'bizdev' })
+        dispatches.push({
+          event_id: ev.event_id,
+          project_id: null,
+          event: ev,
+          meetingType: 'bizdev',
+          sendMs: Date.parse(ev.start_time) - lead,
         })
-        scheduled++
         continue
       }
 
-      const startMs = Date.parse(ev.start_time)
-      const sendMs = startMs - lead
-
-      await sb.from('meeting_briefings').upsert(
-        {
-          event_id: ev.event_id,
-          calendar_id: ev.calendar_id,
-          project_id: cls.project_id,
-          meeting_title: ev.summary,
-          meeting_start_time: ev.start_time,
-          attendees_json: ev.attendees,
-          confidence: cls.confidence,
-          status: 'pending',
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'event_id', ignoreDuplicates: false },
-      )
-
-      await inngest.send({
-        name: 'pre-meeting/dispatch',
-        data: {
-          event_id: ev.event_id,
-          project_id: cls.project_id,
-          event: ev,
-        },
-        ts: Math.max(now + 1_000, sendMs),
+      rows.push({ ...baseRow, project_id: cls.project_id, status: 'pending' })
+      dispatches.push({
+        event_id: ev.event_id,
+        project_id: cls.project_id,
+        event: ev,
+        sendMs: Date.parse(ev.start_time) - lead,
       })
-      scheduled++
     }
 
-    return { scheduled, scanned: events.length }
+    if (rows.length > 0) {
+      await step.run('persist-briefings', async () => {
+        const sb = createAdminClient()
+        const { error } = await sb
+          .from('meeting_briefings')
+          .upsert(rows, { onConflict: 'event_id', ignoreDuplicates: false })
+        if (error) throw new Error(`persist-briefings: ${error.message}`)
+        return rows.length
+      })
+    }
+
+    if (dispatches.length > 0) {
+      await step.sendEvent(
+        'dispatch-briefings',
+        dispatches.map((d) => ({
+          name: 'pre-meeting/dispatch',
+          data: {
+            event_id: d.event_id,
+            project_id: d.project_id,
+            event: d.event,
+            ...(d.meetingType ? { meetingType: d.meetingType } : {}),
+          },
+          ts: Math.max(now + 1_000, d.sendMs),
+        })),
+      )
+    }
+
+    return { scheduled: dispatches.length, scanned: events.length }
   },
 )
 
@@ -311,6 +305,14 @@ export const preMeetingDispatch = inngest.createFunction(
               `[pre-meeting] briefing to ${r.slack_user_id} failed: ${e?.message || e}`,
             )
           }
+        }
+        // Recipients existed but NOBODY was reached (revoked scope, channel
+        // failure, bad token) — that's a delivery failure, not a sent
+        // briefing. Throw so Inngest retries instead of marking 'sent'.
+        if (artifact.recipients.length > 0 && ok.length === 0) {
+          throw new Error(
+            `briefing delivery failed for all ${artifact.recipients.length} recipient(s)`,
+          )
         }
         return ok
       })

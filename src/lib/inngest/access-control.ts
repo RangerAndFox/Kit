@@ -250,16 +250,23 @@ export function checkGateway(
     }
   }
 
-  // Producer + financial access required → check project-level override
-  if (
-    rule.requiresFinancialAccess &&
-    user.tier === 'producer' &&
-    projectId &&
-    !user.projectFinancials?.has(projectId)
-  ) {
-    return {
-      allowed: false,
-      reason: `Sorry, budget details for this project are restricted. Ask an admin to grant you financial access.`,
+  // Producer + financial access required → check project-level override.
+  //
+  // Semantics (made explicit after the audit found the old check was a
+  // silent no-op — callers never pass a Kit project UUID for budget asks):
+  //   - No per-project grants configured for this producer → the tier floor
+  //     governs (grants are an opt-in restriction layer, unused ≙ open).
+  //   - Grants ARE configured → fail CLOSED whenever we can't positively
+  //     verify the project, instead of silently allowing.
+  if (rule.requiresFinancialAccess && user.tier === 'producer') {
+    const grants = user.projectFinancials
+    if (grants && grants.size > 0) {
+      if (!projectId || !grants.has(projectId)) {
+        return {
+          allowed: false,
+          reason: `Sorry, budget details for this project are restricted. Ask an admin to grant you financial access.`,
+        }
+      }
     }
   }
 

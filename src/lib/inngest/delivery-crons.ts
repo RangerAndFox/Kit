@@ -143,7 +143,17 @@ export const deliverySpecsScan = inngest.createFunction(
     if (drops.length === 0) return { scanned: 0 }
 
     let posted = 0
+    // One prompt per project per tick: a video + its audio mix dropped
+    // together become stable on the same scan and used to fire TWO
+    // back-to-back "pick delivery spec" prompts for the same pair.
+    const promptedProjects = new Set<string>()
     for (const drop of drops) {
+      const projectKey = `${drop.year}/${drop.safeName}`
+      if (promptedProjects.has(projectKey)) {
+        // Covered by this tick's prompt for the same project — consume it.
+        await markSpecsNotified(drop.trigger.dropbox_id)
+        continue
+      }
       const project = await resolveProjectChannel(drop.safeName)
       const channel = project?.channelId || DEFAULT_NOTIFY_CHANNEL
       if (!channel) {
@@ -160,6 +170,7 @@ export const deliverySpecsScan = inngest.createFunction(
 
       // Mark before posting so a Slack failure doesn't re-loop (operator can
       // re-drop or use /kit deliver).
+      promptedProjects.add(projectKey)
       await markSpecsNotified(drop.trigger.dropbox_id)
       const ts = await slackPost(channel, `New delivery source in ${drop.safeName}`, blocks)
       if (ts) {
@@ -167,6 +178,12 @@ export const deliverySpecsScan = inngest.createFunction(
         // Record the prompt thread so a spec reply (text/PDF/screenshot) ties
         // back to this video+audio pair.
         if (pair.ok && pair.video) {
+          // The prompt covers the whole pair — mark both halves notified so
+          // the partner file can't fire its own prompt on a later tick.
+          const pairIds = [pair.video.dropbox_id, pair.audio?.dropbox_id].filter(Boolean) as string[]
+          for (const id of pairIds) {
+            if (id !== drop.trigger.dropbox_id) await markSpecsNotified(id)
+          }
           const sources = [
             { path: pair.video.path, type: 'video', size_bytes: pair.video.size_bytes },
             ...(pair.audio ? [{ path: pair.audio.path, type: 'audio', size_bytes: pair.audio.size_bytes }] : []),
