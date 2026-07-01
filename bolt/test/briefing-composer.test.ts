@@ -114,4 +114,37 @@ describe('matchAttendeesToStaff (privacy)', () => {
     )
     expect(r).toHaveLength(1)
   })
+
+  it('matches an invite that uses an email alias (Slack email differs from calendar email)', () => {
+    const aliased = [
+      {
+        email: 'jared@rangerandfox.tv',
+        email_aliases: ['jareddoud@rangerandfox.tv'],
+        slack_user_id: 'U_JARED',
+        full_name: 'Jared Doud',
+        is_active: true,
+      },
+    ]
+    // The invite carries the calendar address, not the Slack address.
+    const r = matchAttendeesToStaff([{ email: 'jareddoud@rangerandfox.tv' }], aliased)
+    expect(r.map((x) => x.slack_user_id)).toEqual(['U_JARED'])
+  })
+
+  it('matches an alias case-insensitively and still dedupes vs the primary', () => {
+    const aliased = [
+      {
+        email: 'jared@rangerandfox.tv',
+        email_aliases: ['jareddoud@rangerandfox.tv'],
+        slack_user_id: 'U_JARED',
+        full_name: 'Jared Doud',
+        is_active: true,
+      },
+    ]
+    const r = matchAttendeesToStaff(
+      [{ email: 'JaredDoud@RangerAndFox.tv' }, { email: 'jared@rangerandfox.tv' }],
+      aliased,
+    )
+    expect(r).toHaveLength(1)
+    expect(r[0].slack_user_id).toBe('U_JARED')
+  })
 })
