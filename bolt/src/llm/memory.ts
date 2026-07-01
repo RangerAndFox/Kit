@@ -24,6 +24,18 @@ const MAX_MESSAGES_PER_CONVO = 20
 
 const conversations = new Map<string, ConversationState>()
 
+// Periodic eviction: expired entries were only overwritten on the next write
+// from the same (team, channel, user) key, so the map grew by one entry per
+// distinct conversation forever — a slow leak on an always-on process.
+const SWEEP_INTERVAL_MS = 10 * 60 * 1000
+const sweeper = setInterval(() => {
+  for (const [k, state] of conversations) {
+    if (isExpired(state)) conversations.delete(k)
+  }
+}, SWEEP_INTERVAL_MS)
+// Don't hold the process open just for the sweeper (tests, shutdown).
+if (typeof sweeper.unref === 'function') sweeper.unref()
+
 function key(teamId: string, channel: string, userId: string): string {
   return `${teamId}:${channel}:${userId}`
 }

@@ -50,6 +50,40 @@ export function intersectProjectChannels(
 }
 
 /**
+ * Live project→channel list, cached for a few minutes: the check-in and
+ * missing-time crons call inferActiveProjectChannels once PER STAFF MEMBER,
+ * which used to re-query every active project from Supabase each time.
+ */
+const PROJECT_CHANNELS_TTL_MS = 5 * 60 * 1000
+let _projectChannels: {
+  list: { channelId: string; projectId: string; projectName: string }[]
+  at: number
+} | null = null
+
+async function loadLiveProjectChannels(): Promise<
+  { channelId: string; projectId: string; projectName: string }[]
+> {
+  if (_projectChannels && Date.now() - _projectChannels.at < PROJECT_CHANNELS_TTL_MS) {
+    return _projectChannels.list
+  }
+  const sb = createAdminClient()
+  const { data: projects } = await sb
+    .from('projects')
+    .select('id, name, status, external_links')
+    .in('status', ['active', 'partial'])
+
+  const list = (projects || [])
+    .map((p: any) => ({
+      channelId: p.external_links?.slack_id as string | undefined,
+      projectId: p.id as string,
+      projectName: p.name as string,
+    }))
+    .filter((p) => !!p.channelId) as { channelId: string; projectId: string; projectName: string }[]
+  _projectChannels = { list, at: Date.now() }
+  return list
+}
+
+/**
  * Resolve the live project channels a creative is active in. Never throws —
  * returns [] on any Slack/DB hiccup so callers can treat it as best-effort.
  */
@@ -59,19 +93,7 @@ export async function inferActiveProjectChannels(opts: {
 }): Promise<ActiveChannel[]> {
   const { app, slackUserId } = opts
   try {
-    const sb = createAdminClient()
-    const { data: projects } = await sb
-      .from('projects')
-      .select('id, name, status, external_links')
-      .in('status', ['active', 'partial'])
-
-    const projectChannels = (projects || [])
-      .map((p: any) => ({
-        channelId: p.external_links?.slack_id as string | undefined,
-        projectId: p.id as string,
-        projectName: p.name as string,
-      }))
-      .filter((p) => !!p.channelId)
+    const projectChannels = await loadLiveProjectChannels()
     if (projectChannels.length === 0) return []
 
     const res = await app.client.users.conversations({
