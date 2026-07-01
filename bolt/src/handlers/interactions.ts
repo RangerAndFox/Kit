@@ -383,6 +383,23 @@ export function registerInteractionHandlers(app: App) {
     const userId = body.user.id
     const channelId = intake?.channelId || userId
     const threadTs = intake?.assistantThreadTs
+
+    // Stash lost (process restart between card and submit, or the 30-min TTL
+    // lapsed) while the user attached a FILE via the intake card: without the
+    // stash there is no file reference, and proceeding used to silently
+    // create a BLANK storyboard. Detect it via the token: a token was issued
+    // but no intake came back, and the modal has no pasted script to fall
+    // back on.
+    const modalScript = (view.state?.values?.script?.val?.value || '').trim()
+    if (stashToken && !intake && !modalScript) {
+      await client.chat.postMessage({
+        channel: userId,
+        text:
+          "⚠️ I lost track of the script you attached (it expires after 30 minutes, and a redeploy clears it). " +
+          'Re-upload the file or paste the script into the storyboard form and try again.',
+      })
+      return
+    }
     const postOpts = (extra: Record<string, unknown> = {}) => ({
       channel: channelId,
       ...(threadTs ? { thread_ts: threadTs } : {}),

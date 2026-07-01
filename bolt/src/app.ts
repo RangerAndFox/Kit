@@ -153,9 +153,50 @@ process.on('SIGINT', () => {
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001
 
+// ─── Slack-connectivity watchdog ───────────────────────────
+// The old health story was a no-op (Docker HEALTHCHECK always exited 0 and
+// the HTTP server 200'd every path), so a wedged Socket Mode connection left
+// Kit silently deaf until a human noticed. Every 5 minutes we auth.test;
+// after 3 consecutive failures we exit(1) so Railway's restart policy brings
+// up a fresh process. /health (below) exposes the same signal to probes.
+let consecutiveAuthFailures = 0
+let lastAuthOkAt = Date.now()
+
+setInterval(async () => {
+  try {
+    await app.client.auth.test()
+    consecutiveAuthFailures = 0
+    lastAuthOkAt = Date.now()
+  } catch (err: any) {
+    consecutiveAuthFailures++
+    console.error(
+      `[watchdog] auth.test failed (${consecutiveAuthFailures}/3): ${err?.data?.error || err?.message}`,
+    )
+    if (consecutiveAuthFailures >= 3) {
+      console.error('[watchdog] Slack unreachable for 3 consecutive checks — exiting for restart')
+      process.exit(1)
+    }
+  }
+}, 5 * 60 * 1000).unref()
+
 http
   .createServer((req, res) => {
     const url = req.url || '/'
+
+    // Health probe: 200 only while the Slack connection is verifiably alive.
+    if (url.startsWith('/health')) {
+      const healthy = consecutiveAuthFailures < 3
+      res.writeHead(healthy ? 200 : 503, { 'Content-Type': 'application/json' })
+      res.end(
+        JSON.stringify({
+          ok: healthy,
+          last_auth_ok: new Date(lastAuthOkAt).toISOString(),
+          consecutive_failures: consecutiveAuthFailures,
+          uptime_s: Math.floor(process.uptime()),
+        }),
+      )
+      return
+    }
 
     // Dropbox verification — echo the challenge back as text/plain.
     if (req.method === 'GET' && url.startsWith('/webhooks/dropbox')) {
