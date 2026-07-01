@@ -18,6 +18,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { fetchUpcomingEvents } from '@/lib/integrations/google-calendar'
 import { classifyMeeting } from '@/lib/agent/meeting-classifier'
 import { composeBriefing } from '@/lib/agent/briefing-composer'
+import { resolvePersonalBriefingChannel } from '@/lib/agent/briefing-channel'
 
 const SLACK_API = 'https://slack.com/api'
 
@@ -53,18 +54,21 @@ async function postSlack(channel: string, text: string): Promise<string> {
   return json.ts
 }
 
-async function openDmAndPost(slackUserId: string, text: string): Promise<string> {
+/**
+ * Post a briefing to a recipient's private 1:1 channel (just them + Kit),
+ * creating it on first use. Replaces the old DM path: Kit is a Slack assistant
+ * app, and proactive DMs to assistant apps land in the History tab instead of
+ * notifying. A private channel notifies normally and stays private.
+ */
+async function postToPersonalChannel(
+  slackUserId: string,
+  fullName: string | null,
+  text: string,
+): Promise<string> {
   const token = process.env.SLACK_BOT_TOKEN
   if (!token) throw new Error('SLACK_BOT_TOKEN not set')
-  if (!slackUserId) throw new Error('slackUserId required for openDmAndPost')
-  const open = await fetch(`${SLACK_API}/conversations.open`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ users: slackUserId }),
-  })
-  const oj = await open.json().catch(() => ({}))
-  if (!oj.ok) throw new Error(`conversations.open failed: ${oj.error || open.status}`)
-  return postSlack(oj.channel.id, text)
+  const channel = await resolvePersonalBriefingChannel({ slackUserId, fullName, token })
+  return postSlack(channel, text)
 }
 
 // ─── Cron: scan for upcoming events ───────────────────────────
@@ -235,16 +239,20 @@ export const preMeetingDispatch = inngest.createFunction(
         composeBriefing({ event: calendarEvent, projectId: project_id }),
       )
 
-      // PRIVACY: DM the briefing privately to each R&F attendee on the invite —
-      // the only delivery path by default. One bad DM doesn't fail the rest.
-      const notified = await step.run('dm-recipients', async () => {
+      // PRIVACY: post the briefing to each R&F attendee's private 1:1 channel
+      // (just them + Kit) — the only delivery path by default. This notifies
+      // like a normal message (unlike an assistant-app DM, which lands in the
+      // History tab). One bad post doesn't fail the rest.
+      const notified = await step.run('notify-recipients', async () => {
         const ok: string[] = []
         for (const r of artifact.recipients) {
           try {
-            await openDmAndPost(r.slack_user_id, artifact.channelText)
+            await postToPersonalChannel(r.slack_user_id, r.name, artifact.channelText)
             ok.push(r.slack_user_id)
           } catch (e: any) {
-            console.warn(`[pre-meeting] DM to ${r.slack_user_id} failed: ${e?.message || e}`)
+            console.warn(
+              `[pre-meeting] briefing to ${r.slack_user_id} failed: ${e?.message || e}`,
+            )
           }
         }
         return ok
