@@ -20,7 +20,7 @@ import {
   listTimeEntriesForUser,
   type HarvestTimeEntry,
 } from '../../../src/lib/harvest/client'
-import { checkinToday, checkinDateMinusDays } from './date'
+import { checkinToday, checkinDateMinusDays, isWorkday } from './date'
 import { inferActiveProjectChannels, type ActiveChannel } from './slack-activity'
 
 interface StaffRow {
@@ -225,6 +225,14 @@ export async function sendAllDailyCheckins(app: App): Promise<{
   skipped: number
   failed: number
 }> {
+  // Don't ask for hours on a studio holiday (the cron itself only knows
+  // Mon–Fri).
+  const today = checkinToday()
+  if (!isWorkday(today)) {
+    console.log(`[daily-hours] ${today} is a holiday/weekend — skipping check-ins`)
+    return { sent: 0, duplicate: 0, skipped: 0, failed: 0 }
+  }
+
   const sb = createAdminClient()
   const { data: staff, error } = await sb
     .from('staff')
