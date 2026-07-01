@@ -184,6 +184,10 @@ export function registerInteractionHandlers(app: App) {
   })
 
   // ─── Onboarding: natural-language [Onboard] confirm button ─
+  // In-process double-click guard: replace_original isn't instantaneous, so
+  // two quick clicks (or a Slack action retry) would run the full onboarding
+  // twice — duplicate service invites, duplicate paperwork rows, two NDAs.
+  const onboardInFlight = new Set<string>()
   app.action('kit_onboard_confirm', async ({ ack, body, client, respond }) => {
     await ack()
     const raw = (body as any).actions?.[0]?.value || '{}'
@@ -208,6 +212,10 @@ export function registerInteractionHandlers(app: App) {
       })
       return
     }
+
+    const inflightKey = `${projectId}:${artistEmail.toLowerCase()}`
+    if (onboardInFlight.has(inflightKey)) return
+    onboardInFlight.add(inflightKey)
 
     // Replace the card with a "running" state.
     try {
@@ -264,6 +272,8 @@ export function registerInteractionHandlers(app: App) {
         thread_ts: threadTs,
         text: `:x: Onboarding *${artistName}* crashed: ${err.message || String(err)}`,
       })
+    } finally {
+      onboardInFlight.delete(inflightKey)
     }
   })
 

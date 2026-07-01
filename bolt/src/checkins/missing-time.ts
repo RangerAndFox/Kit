@@ -192,6 +192,16 @@ export async function scanMissingTime(app: App): Promise<{
       tally.flagged++
     } catch (err: any) {
       console.warn(`[missing-time] flag post failed for ${s.slack_user_id}: ${err.message}`)
+      // The alert row was inserted before the post (that's what makes the
+      // insert the idempotency claim) — but a row without a delivered message
+      // would suppress this streak forever while no producer ever saw it.
+      // Delete the claim so the next scan retries the alert.
+      await sb
+        .from('hours_missing_alerts')
+        .delete()
+        .eq('staff_id', s.id)
+        .eq('streak_start_date', streakStart)
+        .is('alert_ts', null)
     }
   }
 

@@ -61,6 +61,21 @@ function dmThreadTs(m: any): string | undefined {
   return m.thread_ts || m.ts
 }
 
+// Kit's own bot user id, fetched lazily and cached for the process. Used to
+// distinguish "this message @mentions Kit" (app_mention will fire — skip
+// here) from "this message mentions someone else" (handle it here).
+let _botUserId: string | null = null
+async function getBotUserId(app: App): Promise<string | null> {
+  if (_botUserId) return _botUserId
+  try {
+    const auth = await app.client.auth.test()
+    _botUserId = (auth as any).user_id || null
+  } catch (err: any) {
+    console.warn('[Bolt] auth.test failed:', err?.message)
+  }
+  return _botUserId
+}
+
 export function registerMessageHandlers(app: App) {
   // ─── @mentions ────────────────────────────────────────────
   app.event('app_mention', async ({ event }) => {
@@ -197,8 +212,14 @@ export function registerMessageHandlers(app: App) {
         return
     }
 
-    // (App_mention event handles the @mention path; ignore mentions here to avoid double-fire)
-    if ((msgEvent.text || '').includes('<@') && !isDM) return
+    // (app_mention handles the @Kit path; ignore only messages that mention
+    // KIT here to avoid double-fire. A clarification answer that mentions
+    // someone ELSE — "it's <@UJARED>'s project" — must still be handled,
+    // since app_mention never fires for it.)
+    if (!isDM && (msgEvent.text || '').includes('<@')) {
+      const botId = await getBotUserId(app)
+      if (!botId || (msgEvent.text || '').includes(`<@${botId}>`)) return
+    }
 
     // For DMs (the Slack Assistant / Agents & AI Apps pane) always thread the
     // reply to the conversation root so it appears inside the user's view.

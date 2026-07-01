@@ -33,11 +33,15 @@ export interface FrameioToggleIntent {
   projectRef: { channelId?: string; number?: string } | null
 }
 
-// What anchors a message as a delivery-upload toggle: a "frame"/"frameio"/
-// "frame.io" token, OR an "auto upload" reference. Real users routinely say
-// "auto upload for <project>" without ever naming Frame.io, so we can't require
-// the word "frame".
-const FRAME_RE = /\bframe(?:\s?\.?\s?io)?\b/i
+// What anchors a message as a delivery-upload toggle: an explicit
+// "frameio"/"frame.io" token, the bare word "frame" WITH upload/mirror/sync
+// context, OR an "auto upload" reference. Real users routinely say
+// "auto upload for <project>" without ever naming Frame.io, so we can't
+// require the word "frame" — but a bare "frame" alone must not anchor a
+// mutation ("remove the black frame at the top" used to disable the mirror).
+const FRAMEIO_RE = /\bframe\s?\.?\s?io\b/i
+const FRAME_WORD_RE = /\bframe\b/i
+const UPLOAD_CONTEXT_RE = /\b(upload|import|mirror|sync|auto)\w*\b/i
 const AUTO_UPLOAD_RE = /\bauto[\s-]?upload(?:s|ing)?\b/i
 const UPLOAD_RE = /\bupload(?:s|ing)?\b/i
 
@@ -65,7 +69,10 @@ export function parseFrameioToggleIntent(text: string): FrameioToggleIntent | nu
   const number = parseProjectNumber(text)
   const hasProjectRef = !!(chan || number)
 
-  const hasFrame = FRAME_RE.test(text)
+  // "frame.io" anchors on its own; the bare word "frame" only anchors with
+  // upload/import/mirror/sync context nearby.
+  const hasFrame =
+    FRAMEIO_RE.test(text) || (FRAME_WORD_RE.test(text) && UPLOAD_CONTEXT_RE.test(text))
   const hasAutoUpload = AUTO_UPLOAD_RE.test(text)
   const hasUpload = UPLOAD_RE.test(text)
 

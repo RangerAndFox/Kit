@@ -135,15 +135,19 @@ export async function sendDailyCheckin(opts: {
   const today = checkinToday()
   const sb = createAdminClient()
 
-  // Duplicate guard: skip if a *scheduled* row already exists for today,
-  // or if the user already logged today via ad-hoc.
+  // Duplicate guard: skip if a scheduled row already exists for today, the
+  // user already logged via ad-hoc, OR any row for today is still OPEN
+  // (sent/nudged/parsed/logging — e.g. an ad-hoc redo). Two open rows would
+  // make every reply ambiguous about which check-in it answers.
   const { data: existing } = await sb
     .from('daily_hours_checkins')
     .select('id, status, origin')
     .eq('staff_id', staff.id)
     .eq('check_in_date', today)
   const blocked = (existing || []).some(
-    (r: any) => r.origin === 'scheduled' || r.status === 'logged',
+    (r: any) =>
+      r.origin === 'scheduled' ||
+      ['logged', 'sent', 'nudged', 'parsed', 'logging'].includes(r.status),
   )
   if (blocked) return { status: 'duplicate' }
 
@@ -245,17 +249,18 @@ export async function sendAllDailyCheckins(app: App): Promise<{
 }
 
 /**
- * Send a single nudge to anyone with status='sent' from today and no reply.
- * Marks status='nudged'. Called by the cron at 10pm local.
+ * Send a single nudge to anyone whose check-in from today is still
+ * unfinished: no reply yet (status='sent'), or a confirmation card they
+ * never clicked (status='parsed'). Called by the cron at 10pm local.
  */
 export async function nudgePendingCheckins(app: App): Promise<{ nudged: number }> {
   const sb = createAdminClient()
   const today = checkinToday()
   const { data: rows, error } = await sb
     .from('daily_hours_checkins')
-    .select('id, slack_user_id, dm_channel_id, dm_ts')
+    .select('id, slack_user_id, dm_channel_id, dm_ts, status')
     .eq('check_in_date', today)
-    .eq('status', 'sent')
+    .in('status', ['sent', 'parsed'])
     .is('nudged_at', null)
   if (error) throw new Error(`load pending failed: ${error.message}`)
 
@@ -263,14 +268,23 @@ export async function nudgePendingCheckins(app: App): Promise<{ nudged: number }
   for (const r of rows || []) {
     if (!r.dm_channel_id) continue
     try {
+      const text =
+        r.status === 'parsed'
+          ? ':wave: Friendly nudge — your hours are parsed but waiting on the *Confirm & log* button above.'
+          : ":wave: Friendly nudge — got a sec to log today's hours? Just reply with what you worked on."
       await app.client.chat.postMessage({
         channel: r.dm_channel_id,
         thread_ts: r.dm_ts || undefined,
-        text: ":wave: Friendly nudge — got a sec to log today's hours? Just reply with what you worked on.",
+        text,
       })
+      // Keep 'parsed' status (the card is still actionable) — only mark the
+      // nudge timestamp; 'sent' rows advance to 'nudged' as before.
       await sb
         .from('daily_hours_checkins')
-        .update({ status: 'nudged', nudged_at: new Date().toISOString() })
+        .update({
+          ...(r.status === 'sent' ? { status: 'nudged' } : {}),
+          nudged_at: new Date().toISOString(),
+        })
         .eq('id', r.id)
       nudged++
     } catch (err: any) {
