@@ -27,7 +27,7 @@ import {
   processDropboxNotification,
 } from './watchers/dropbox'
 import cron from 'node-cron'
-import { sendAllDailyCheckins, nudgePendingCheckins } from './checkins/daily-hours'
+import { sendAllDailyCheckins } from './checkins/daily-hours'
 import { scanMissingTime } from './checkins/missing-time'
 import { dispatchAllPendingApprovals } from './brain/approvals'
 
@@ -245,7 +245,8 @@ http
   })
 
 // ─── Cron: daily hours check-in ────────────────────────────
-// 5pm local — send the prompt; 10pm — single nudge if no reply.
+// 5pm local — send the prompt. No evening nudge (after work hours, per
+// operator direction); the 9am missing-time monitor is the follow-up path.
 // Timezone is configurable; Ranger & Fox defaults to America/Los_Angeles.
 // Set CHECKIN_TIMEZONE to override.
 
@@ -256,16 +257,6 @@ cron.schedule(
   () => {
     sendAllDailyCheckins(app).catch((err) =>
       console.error('[cron] daily-checkins fire failed:', err),
-    )
-  },
-  { timezone: CHECKIN_TZ },
-)
-
-cron.schedule(
-  '0 22 * * 1-5',
-  () => {
-    nudgePendingCheckins(app).catch((err) =>
-      console.error('[cron] nudge fire failed:', err),
     )
   },
   { timezone: CHECKIN_TZ },
