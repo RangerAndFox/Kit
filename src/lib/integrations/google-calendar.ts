@@ -101,7 +101,13 @@ export async function fetchUpcomingEvents(
         for (const ev of res.data.items || []) {
           if (!ev.id || !ev.start?.dateTime) continue
           events.push({
-            event_id: `${calendarId}:${ev.id}`,
+            // Bare Google event id (STABLE across attendee-calendar copies):
+            // when personal calendars are watched, the same meeting appears
+            // on every attendee's calendar — a calendar-prefixed id treated
+            // those copies as distinct events and would brief N times.
+            // (Legacy rows use `${calendarId}:${id}`; ids never collide
+            // across the formats, so old rows stay inert.)
+            event_id: ev.id,
             calendar_id: calendarId,
             summary: ev.summary || '',
             description: ev.description || undefined,
@@ -123,5 +129,16 @@ export async function fetchUpcomingEvents(
       return events
     }),
   )
-  return perCalendar.flat()
+
+  // Dedupe across calendars: an event shows up on the organizer's calendar,
+  // every attendee's personal calendar, and any shared calendar it lives on.
+  // Keep the first sighting (GOOGLE_CALENDAR_IDS order = priority).
+  const seen = new Set<string>()
+  const out: CalendarEvent[] = []
+  for (const ev of perCalendar.flat()) {
+    if (seen.has(ev.event_id)) continue
+    seen.add(ev.event_id)
+    out.push(ev)
+  }
+  return out
 }
