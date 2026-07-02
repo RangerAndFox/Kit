@@ -27,8 +27,8 @@
 
 import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
-import { brainFirstRetrieve } from '../../../src/lib/brain/retrieve'
 import { anthropic, SPECIALIST_MODEL } from '../llm/client'
+import { gatherParticipationContext } from './context'
 
 // ─── Tunables ───────────────────────────────────────────────
 
@@ -102,37 +102,6 @@ const FINANCIAL_RE = /\$\s?\d|\bbudget\b|\brevenue\b|\bmargin\b|\brate card\b|\b
 
 // ─── Context assembly ───────────────────────────────────────
 
-interface ChannelProject {
-  id: string
-  name: string
-  frameioUrl: string | null
-  dropboxUrl: string | null
-}
-
-async function resolveChannelProject(workspaceId: string, channelId: string): Promise<ChannelProject | null> {
-  try {
-    const sb = createAdminClient()
-    const { data } = await sb
-      .from('projects')
-      .select('id, name, external_links, slack_channel_id')
-      .eq('workspace_id', workspaceId)
-      .or(
-        `external_links->>slack_id.eq.${channelId},external_links->>slack_channel_id.eq.${channelId},slack_channel_id.eq.${channelId}`,
-      )
-      .limit(1)
-      .maybeSingle()
-    if (!data) return null
-    const el = data.external_links || {}
-    return {
-      id: data.id,
-      name: data.name,
-      frameioUrl: el.frameio_url || el.frameio || null,
-      dropboxUrl: el.dropbox_url || el.dropbox || null,
-    }
-  } catch {
-    return null
-  }
-}
 
 async function loadTeamRoster(): Promise<{ slackId: string; name: string; role: string }[]> {
   try {
@@ -156,9 +125,14 @@ async function loadTeamRoster(): Promise<{ slackId: string; name: string; role: 
 
 const SYSTEM_PROMPT = `You are Kit, a production agent embedded in a video studio's Slack project channel. A teammate just posted a message (they did NOT address you). Decide whether you can add clear value by replying — and stay QUIET unless you are sure.
 
-You will receive:
-- PROJECT: the channel's project (may include Frame.io / Dropbox links)
-- KNOWLEDGE: retrieved context from the project's brain and knowledge base
+You will receive context blocks (any may be empty):
+- PROJECT: the channel's project — status, delivery date, links (Frame.io / Dropbox)
+- KNOWLEDGE: retrieved from the project's brain, notes, and knowledge base
+- DASHBOARD: structured project state — milestones, open action items
+- FEEDBACK: open feedback items on the project
+- LAST CALL: the most recent call transcript excerpt
+- CANVASES: the channel's Slack canvases (team-maintained docs/dashboards)
+- FRAMEIO COMMENTS: recent review comments on the latest cuts
 - TEAM: the studio roster (for routing questions to a person)
 - MESSAGE: what was posted
 
@@ -171,7 +145,7 @@ Output JSON ONLY:
 }
 
 Rules:
-- "answer": ONLY when the KNOWLEDGE context clearly and directly contains the answer. Answer in 1-3 sentences, state the fact plainly, and name where it comes from (e.g. "per the project brain"). NEVER answer from general knowledge or guesses — if the context doesn't contain it, you don't know it.
+- "answer": ONLY when one of the context blocks clearly and directly contains the answer. Answer in 1-3 sentences, state the fact plainly, and name where it comes from (e.g. "per the project brain", "per the channel canvas", "from Tuesday's call", "per the Frame.io comments on v3"). NEVER answer from general knowledge or guesses — if the context doesn't contain it, you don't know it.
 - "asset": the message asks for a link/location the PROJECT record has (Frame.io project, Dropbox folder). Reply with the link and nothing else fancy.
 - "ping": the question needs a HUMAN (a decision, approval, creative preference, or knowledge Kit lacks) AND one specific TEAM member is the obvious owner given their role. Reply like a helpful teammate: "That one's for <@ID> I think." Use this SPARINGLY.
 - "quiet": everything else. Rhetorical questions, banter, questions already being discussed, anything you're not certain about. When in doubt: quiet.
@@ -202,41 +176,21 @@ export async function maybeParticipate(args: ParticipateArgs): Promise<void> {
     if (threadAlreadyAnswered(args.channelId, threadKey)) return
     if (underCooldown(args.channelId)) return
 
-    // Retrieval-first: no context, no opinion.
-    const [project, retrieval, roster] = await Promise.all([
-      resolveChannelProject(args.workspaceId, args.channelId),
-      brainFirstRetrieve({
-        query: args.messageText,
-        channelId: args.channelId,
+    // Retrieval-first: gather every groundable source in parallel — brain +
+    // knowledge base, structured project state, feedback, latest transcript,
+    // channel canvases, and (when the message is review-flavored) live
+    // Frame.io comments. No signal anywhere → Kit has nothing to offer.
+    const [ctx, roster] = await Promise.all([
+      gatherParticipationContext({
+        app: args.app,
         workspaceId: args.workspaceId,
-        limit: 6,
-      }).catch(() => null),
+        channelId: args.channelId,
+        messageText: args.messageText,
+      }),
       loadTeamRoster(),
     ])
-
-    // No project link AND no knowledge → Kit has nothing to offer here.
-    const hasKnowledge = (retrieval?.results?.length || 0) > 0
-    if (!project && !hasKnowledge) return
-
-    // Respect brain visibility: producers-only brain content must not be
-    // volunteered into the channel — use only general project docs then.
-    let knowledgeResults = retrieval?.results || []
-    if (retrieval?.brainId) {
-      const sb = createAdminClient()
-      const { data: brainRow } = await sb
-        .from('brains')
-        .select('visibility')
-        .eq('id', retrieval.brainId)
-        .maybeSingle()
-      if (brainRow?.visibility === 'producers_only') {
-        knowledgeResults = retrieval?.generalResults || []
-      }
-    }
-
-    const knowledgeBlock = knowledgeResults
-      .slice(0, 6)
-      .map((r: any, i: number) => `${i + 1}. [${r.title}] ${String(r.content || '').slice(0, 500)}`)
-      .join('\n')
+    if (!ctx.hasAnySignal) return
+    const project = ctx.project
 
     const userPrompt = `PROJECT: ${
       project
@@ -245,7 +199,22 @@ export async function maybeParticipate(args: ParticipateArgs): Promise<void> {
     }
 
 KNOWLEDGE:
-${knowledgeBlock || '(nothing relevant retrieved)'}
+${ctx.knowledgeBlock || '(nothing relevant retrieved)'}
+
+DASHBOARD:
+${ctx.dashboardBlock || '(none)'}
+
+FEEDBACK:
+${ctx.feedbackBlock || '(none open)'}
+
+LAST CALL:
+${ctx.transcriptBlock || '(no transcript)'}
+
+CANVASES:
+${ctx.canvasBlock || '(none)'}
+
+FRAMEIO COMMENTS:
+${ctx.frameioBlock || '(not fetched or none)'}
 
 TEAM:
 ${roster.map((m) => `- ${m.name} (${m.role}) → ${m.slackId}`).join('\n') || '(unknown)'}
