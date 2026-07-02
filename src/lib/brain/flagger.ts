@@ -195,6 +195,12 @@ export function collectCanonicalFacts(brain: Brain): Array<{ text: string; secti
     if (heading.startsWith('glossary')) {
       for (const b of s.bullets) {
         if (b.provenance?.src === 'system') continue
+        // Bullets containing URLs are links, not comparable spec facts.
+        // A stored Frame.io/Dropbox link's ID "contradicts" every OTHER
+        // link ever pasted (new cuts get new IDs by design) — this had
+        // Kit posting "the view ID differs from the canonical one" on
+        // every frame link in the channel.
+        if (/https?:\/\//i.test(b.text)) continue
         out.push({ text: b.text, section: s.heading, provenance: b.provenance })
       }
     } else if (heading === 'operating context') {
@@ -207,6 +213,8 @@ export function collectCanonicalFacts(brain: Brain): Array<{ text: string; secti
         if (/\$|\bbudget\b|\brevenue\b|\bcost\b|\bmargin\b|\brate\b|\binvoice\b/i.test(b.text)) {
           continue
         }
+        // Bullets containing URLs are links, not comparable spec facts.
+        if (/https?:\/\//i.test(b.text)) continue
         // Only the "spec-like" bullets — dates, codes, formats.
         if (
           /\b\d{4}-\d{2}-\d{2}\b/.test(b.text) ||
@@ -253,11 +261,33 @@ RULES:
 - If the message just MENTIONS a canonical fact correctly, return no catches.
 - If the message is unrelated to canonical facts, return no catches.
 - If the message asks a question ("is the SKU 44071?"), return no catches — questions aren't mistakes.
+- URLs and the IDs inside them (Frame.io review/share/view links, Dropbox links, any [link] placeholder) are NEVER mistakes — every new cut gets a new link ID by design. Never flag a link or an ID that came from a URL.
 - Return {"catches": []} when in doubt. False positives erode trust.`
 
 export interface CheckMistakeOpts {
   brain: Brain
   messageText: string
+}
+
+/**
+ * Neutralize URLs before the contradiction check: the long IDs inside
+ * Frame.io/Dropbox links read as "values" to the model and contradict any
+ * stored link ID by design (every cut gets a fresh link). Pure — tested.
+ */
+export function sanitizeMessageForMistakeCheck(text: string): string {
+  return text
+    .replace(/<(https?:\/\/[^|>]+)(\|[^>]*)?>/gi, '[link]') // Slack-formatted <url|label>
+    .replace(/https?:\/\/\S+/gi, '[link]')
+}
+
+/** Does the sanitized message still contain anything a canonical fact could contradict? */
+function hasComparableValues(text: string): boolean {
+  return (
+    /\d/.test(text) ||
+    /\b(prores|h\.?264|h\.?265|aac|stereo|mono|wav|mp4|mov|fps|kbps|mbps|lufs|true\s*peak|sku|asset id|project code)\b/i.test(
+      text,
+    )
+  )
 }
 
 /**
@@ -270,6 +300,16 @@ export async function checkMessageForMistakes(opts: CheckMistakeOpts): Promise<M
   if (facts.length === 0) {
     return { catches: [], skipped: 'no_canonical_facts' }
   }
+
+  // Strip URLs, then bail without an LLM call if nothing comparable remains —
+  // a bare pasted Frame.io link (the most common channel message) can't
+  // contradict a spec fact, and used to cost a Haiku call plus a false
+  // ":eyes:" reply every time.
+  const messageText = sanitizeMessageForMistakeCheck(opts.messageText)
+  if (!hasComparableValues(messageText)) {
+    return { catches: [], skipped: 'no_comparable_values' }
+  }
+
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) {
     return { catches: [], skipped: 'no_anthropic_api_key' }
@@ -281,7 +321,7 @@ ${facts.map((f, i) => `${i + 1}. [${f.section}] ${f.text}`).join('\n')}
 
 NEW MESSAGE just posted in the channel:
 """
-${opts.messageText}
+${messageText}
 """
 
 Decide whether the message contains a value that contradicts any canonical fact. Output JSON only.`
