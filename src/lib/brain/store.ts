@@ -228,7 +228,7 @@ export async function setCanvasHandle(brainId: string, canvasId: string, canvasU
  * upsertDocument matches on (workspace_id, doc_type, title) so re-running
  * is idempotent.
  */
-async function embedBrainSections(
+export async function embedBrainSections(
   workspaceId: string,
   brainId: string,
   projectId: string | null,

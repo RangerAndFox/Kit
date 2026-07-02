@@ -143,22 +143,25 @@ export const deliverySpecsScan = inngest.createFunction(
     if (drops.length === 0) return { scanned: 0 }
 
     let posted = 0
-    // One prompt per project per tick: a video + its audio mix dropped
-    // together become stable on the same scan and used to fire TWO
-    // back-to-back "pick delivery spec" prompts for the same pair.
-    const promptedProjects = new Set<string>()
+    // Dedupe by the files a posted prompt actually COVERED — not blindly by
+    // project. The pair prompt covers exactly its video+audio; a second,
+    // unrelated video dropped the same tick must keep its own prompt (a
+    // project-level consume used to strand it as notified-but-never-posted).
+    const coveredThisTick = new Set<string>()
     for (const drop of drops) {
-      const projectKey = `${drop.year}/${drop.safeName}`
-      if (promptedProjects.has(projectKey)) {
-        // Covered by this tick's prompt for the same project — consume it.
+      if (coveredThisTick.has(drop.trigger.dropbox_id)) {
+        // This file was part of a pair already prompted this tick — consume.
         await markSpecsNotified(drop.trigger.dropbox_id)
         continue
       }
       const project = await resolveProjectChannel(drop.safeName)
       const channel = project?.channelId || DEFAULT_NOTIFY_CHANNEL
       if (!channel) {
-        // Nowhere to post — mark notified so we don't loop on it forever.
-        await markSpecsNotified(drop.trigger.dropbox_id)
+        // Nowhere to post. Do NOT mark notified — that would strand the file
+        // permanently; leave it to retry once a channel is configured.
+        console.warn(
+          `[delivery-specs] no Slack channel for ${drop.safeName} — will retry (set DELIVERY_NOTIFY_CHANNEL_ID or link the project channel)`,
+        )
         continue
       }
       const pair = pairSpecsFiles({
@@ -169,9 +172,11 @@ export const deliverySpecsScan = inngest.createFunction(
       const blocks = buildSpecsPromptBlocks({ projectName: project?.name || drop.safeName, pair })
 
       // Mark before posting so a Slack failure doesn't re-loop (operator can
-      // re-drop or use /kit deliver).
-      promptedProjects.add(projectKey)
+      // re-drop or use /kit deliver). markSpecsNotified THROWS on a failed
+      // write — if we can't record the claim, we don't post (retry next tick)
+      // rather than prompting every minute forever.
       await markSpecsNotified(drop.trigger.dropbox_id)
+      coveredThisTick.add(drop.trigger.dropbox_id)
       const ts = await slackPost(channel, `New delivery source in ${drop.safeName}`, blocks)
       if (ts) {
         posted++
@@ -182,7 +187,12 @@ export const deliverySpecsScan = inngest.createFunction(
           // the partner file can't fire its own prompt on a later tick.
           const pairIds = [pair.video.dropbox_id, pair.audio?.dropbox_id].filter(Boolean) as string[]
           for (const id of pairIds) {
-            if (id !== drop.trigger.dropbox_id) await markSpecsNotified(id)
+            coveredThisTick.add(id)
+            if (id !== drop.trigger.dropbox_id) {
+              await markSpecsNotified(id).catch((err) =>
+                console.warn(`[delivery-specs] pair-partner mark failed: ${err?.message}`),
+              )
+            }
           }
           const sources = [
             { path: pair.video.path, type: 'video', size_bytes: pair.video.size_bytes },

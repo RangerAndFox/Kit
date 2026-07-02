@@ -39,7 +39,6 @@ import { channelHasOpenSpecIntake } from '../../../src/lib/delivery/spec-intake-
 import { runOrchestrator } from '../llm/orchestrator'
 import { hasPendingClarification } from '../llm/memory'
 import { setThinking, clearThinking } from '../llm/status'
-import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
 import { stashIntake } from '../../../src/lib/storyboard/stash'
 import { projectNameFromFilename } from '../../../src/lib/storyboard/parser'
 import { buildNewProjectCard } from './newproject-card'

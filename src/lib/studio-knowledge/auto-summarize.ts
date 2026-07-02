@@ -196,6 +196,18 @@ export async function regenerateAllProjectSummaries(workspaceId: string, opts: {
     }
   }
 
+  // Open action items feed the summary too — without this, a project whose
+  // only change is a new kit_action was skipped until something else moved.
+  const { data: actionRows } = await sb
+    .from('kit_actions')
+    .select('project_id, created_at')
+    .in('status', ['suggested', 'pending', 'approved'])
+  for (const a of actionRows || []) {
+    if (!a.project_id) continue
+    const ts = Date.parse(a.created_at || '') || 0
+    newestSourceAt.set(a.project_id, Math.max(newestSourceAt.get(a.project_id) || 0, ts))
+  }
+
   let updated = 0
   let failed = 0
   let skipped = 0
