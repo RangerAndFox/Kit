@@ -47,6 +47,9 @@ export interface ParticipationContext {
   transcriptBlock: string
   canvasBlock: string
   frameioBlock: string
+  historyBlock: string
+  threadBlock: string
+  roster: RosterMember[]
   hasAnySignal: boolean
 }
 
@@ -186,6 +189,97 @@ async function loadLatestTranscript(project: ChannelProject | null): Promise<str
   }
 }
 
+// ─── Channel chat history ───────────────────────────────────
+
+export interface RosterMember {
+  slackId: string
+  name: string
+  role: string
+}
+
+export async function loadTeamRoster(): Promise<RosterMember[]> {
+  try {
+    const sb = createAdminClient()
+    const { data } = await sb
+      .from('staff')
+      .select('slack_user_id, full_name, role')
+      .eq('is_active', true)
+      .not('slack_user_id', 'is', null)
+    return (data || []).map((s: any) => ({
+      slackId: s.slack_user_id,
+      name: s.full_name || s.slack_user_id,
+      role: s.role || 'unknown',
+    }))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Render raw Slack messages into "Name: text" lines, oldest first.
+ * Pure — unit-tested. Skips system subtypes and the triggering message;
+ * labels bot posts; resolves author names from the roster (unknown users
+ * keep their mention form so replies can still reference them).
+ */
+export function formatHistoryMessages(
+  messages: any[],
+  names: Map<string, string>,
+  excludeTs?: string,
+): string {
+  const lines: string[] = []
+  for (const m of messages) {
+    if (!m || m.ts === excludeTs) continue
+    if (m.subtype && m.subtype !== 'thread_broadcast' && m.subtype !== 'bot_message') continue
+    const text = clip(String(m.text || ''), 250)
+    if (!text) continue
+    const who = m.bot_id
+      ? `${m.username || 'Kit'} (bot)`
+      : names.get(m.user) || `<@${m.user}>`
+    lines.push(`${who}: ${text}`)
+  }
+  return lines.join('\n')
+}
+
+const HISTORY_CACHE_TTL_MS = 60 * 1000
+const historyCache = new Map<string, { messages: any[]; at: number }>()
+
+/** Last ~40 channel messages, oldest→newest, cached 60s per channel. */
+async function loadChannelHistory(app: App, channelId: string): Promise<any[]> {
+  const hit = historyCache.get(channelId)
+  if (hit && Date.now() - hit.at < HISTORY_CACHE_TTL_MS) return hit.messages
+  let messages: any[] = []
+  try {
+    const res: any = await app.client.conversations.history({
+      channel: channelId,
+      limit: 40,
+    })
+    messages = (res.messages || []).slice().reverse() // API is newest-first
+  } catch {
+    messages = []
+  }
+  historyCache.set(channelId, { messages, at: Date.now() })
+  return messages
+}
+
+/** Prior messages in the thread the question was asked in (if any). */
+async function loadThreadMessages(
+  app: App,
+  channelId: string,
+  threadTs: string | undefined,
+): Promise<any[]> {
+  if (!threadTs) return []
+  try {
+    const res: any = await app.client.conversations.replies({
+      channel: channelId,
+      ts: threadTs,
+      limit: 20,
+    })
+    return res.messages || []
+  } catch {
+    return []
+  }
+}
+
 // ─── Channel canvases ───────────────────────────────────────
 
 const CANVAS_CACHE_TTL_MS = 10 * 60 * 1000
@@ -301,25 +395,43 @@ export async function gatherParticipationContext(opts: {
   workspaceId: string
   channelId: string
   messageText: string
+  messageTs?: string
+  threadTs?: string
 }): Promise<ParticipationContext> {
   const project = await resolveChannelProject(opts.workspaceId, opts.channelId)
 
-  const [retrieval, dashboardBlock, feedbackBlock, transcriptBlock, canvasBlock, frameioBlock] =
-    await Promise.all([
-      brainFirstRetrieve({
-        query: opts.messageText,
-        channelId: opts.channelId,
-        workspaceId: opts.workspaceId,
-        limit: 6,
-      }).catch(() => null),
-      loadDashboard(opts.workspaceId, project),
-      loadFeedback(project),
-      loadLatestTranscript(project),
-      loadChannelCanvases(opts.app, opts.channelId),
-      wantsFrameioComments(opts.messageText)
-        ? loadFrameioComments(project)
-        : Promise.resolve(''),
-    ])
+  const [
+    retrieval,
+    dashboardBlock,
+    feedbackBlock,
+    transcriptBlock,
+    canvasBlock,
+    frameioBlock,
+    historyMessages,
+    threadMessages,
+    roster,
+  ] = await Promise.all([
+    brainFirstRetrieve({
+      query: opts.messageText,
+      channelId: opts.channelId,
+      workspaceId: opts.workspaceId,
+      limit: 6,
+    }).catch(() => null),
+    loadDashboard(opts.workspaceId, project),
+    loadFeedback(project),
+    loadLatestTranscript(project),
+    loadChannelCanvases(opts.app, opts.channelId),
+    wantsFrameioComments(opts.messageText)
+      ? loadFrameioComments(project)
+      : Promise.resolve(''),
+    loadChannelHistory(opts.app, opts.channelId),
+    loadThreadMessages(opts.app, opts.channelId, opts.threadTs),
+    loadTeamRoster(),
+  ])
+
+  const names = new Map(roster.map((m) => [m.slackId, m.name]))
+  const historyBlock = formatHistoryMessages(historyMessages, names, opts.messageTs)
+  const threadBlock = formatHistoryMessages(threadMessages, names, opts.messageTs)
 
   // Respect brain visibility: producers-only brain content must not be
   // volunteered into the channel — use only general project docs then.
@@ -351,7 +463,9 @@ export async function gatherParticipationContext(opts: {
     feedbackBlock ||
     transcriptBlock ||
     canvasBlock ||
-    frameioBlock
+    frameioBlock ||
+    historyBlock ||
+    threadBlock
   )
 
   return {
@@ -362,6 +476,9 @@ export async function gatherParticipationContext(opts: {
     transcriptBlock,
     canvasBlock,
     frameioBlock,
+    historyBlock,
+    threadBlock,
+    roster,
     hasAnySignal,
   }
 }

@@ -26,7 +26,6 @@
  */
 
 import type { App } from '@slack/bolt'
-import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { anthropic, SPECIALIST_MODEL } from '../llm/client'
 import { gatherParticipationContext } from './context'
 
@@ -100,26 +99,6 @@ export function _resetParticipationStateForTest(): void {
 /** Channel replies are visible to the whole channel — never volunteer money. */
 const FINANCIAL_RE = /\$\s?\d|\bbudget\b|\brevenue\b|\bmargin\b|\brate card\b|\binvoice\b|\bday rate\b/i
 
-// ─── Context assembly ───────────────────────────────────────
-
-
-async function loadTeamRoster(): Promise<{ slackId: string; name: string; role: string }[]> {
-  try {
-    const sb = createAdminClient()
-    const { data } = await sb
-      .from('staff')
-      .select('slack_user_id, full_name, role')
-      .eq('is_active', true)
-      .not('slack_user_id', 'is', null)
-    return (data || []).map((s: any) => ({
-      slackId: s.slack_user_id,
-      name: s.full_name || s.slack_user_id,
-      role: s.role || 'unknown',
-    }))
-  } catch {
-    return []
-  }
-}
 
 // ─── Decision ───────────────────────────────────────────────
 
@@ -133,6 +112,8 @@ You will receive context blocks (any may be empty):
 - LAST CALL: the most recent call transcript excerpt
 - CANVASES: the channel's Slack canvases (team-maintained docs/dashboards)
 - FRAMEIO COMMENTS: recent review comments on the latest cuts
+- THREAD: earlier messages in the thread the question was asked in
+- CHANNEL HISTORY: recent messages in this channel (oldest first)
 - TEAM: the studio roster (for routing questions to a person)
 - MESSAGE: what was posted
 
@@ -146,6 +127,8 @@ Output JSON ONLY:
 
 Rules:
 - "answer": ONLY when one of the context blocks clearly and directly contains the answer. Answer in 1-3 sentences, state the fact plainly, and name where it comes from (e.g. "per the project brain", "per the channel canvas", "from Tuesday's call", "per the Frame.io comments on v3"). NEVER answer from general knowledge or guesses — if the context doesn't contain it, you don't know it.
+- CHANNEL HISTORY and THREAD record what people SAID — attribute, don't assert: "Jonathan said Thursday works, a few messages up" not "the deadline is Thursday". If people contradicted each other, say so instead of picking a side.
+- If THREAD shows the question was already answered, output "quiet" — don't repeat teammates.
 - "asset": the message asks for a link/location the PROJECT record has (Frame.io project, Dropbox folder). Reply with the link and nothing else fancy.
 - "ping": the question needs a HUMAN (a decision, approval, creative preference, or knowledge Kit lacks) AND one specific TEAM member is the obvious owner given their role. Reply like a helpful teammate: "That one's for <@ID> I think." Use this SPARINGLY.
 - "quiet": everything else. Rhetorical questions, banter, questions already being discussed, anything you're not certain about. When in doubt: quiet.
@@ -178,19 +161,19 @@ export async function maybeParticipate(args: ParticipateArgs): Promise<void> {
 
     // Retrieval-first: gather every groundable source in parallel — brain +
     // knowledge base, structured project state, feedback, latest transcript,
-    // channel canvases, and (when the message is review-flavored) live
-    // Frame.io comments. No signal anywhere → Kit has nothing to offer.
-    const [ctx, roster] = await Promise.all([
-      gatherParticipationContext({
-        app: args.app,
-        workspaceId: args.workspaceId,
-        channelId: args.channelId,
-        messageText: args.messageText,
-      }),
-      loadTeamRoster(),
-    ])
+    // channel canvases, chat history + current thread, and (when the message
+    // is review-flavored) live Frame.io comments. No signal → nothing to say.
+    const ctx = await gatherParticipationContext({
+      app: args.app,
+      workspaceId: args.workspaceId,
+      channelId: args.channelId,
+      messageText: args.messageText,
+      messageTs: args.messageTs,
+      threadTs: args.threadTs,
+    })
     if (!ctx.hasAnySignal) return
     const project = ctx.project
+    const roster = ctx.roster
 
     const userPrompt = `PROJECT: ${
       project
@@ -215,6 +198,12 @@ ${ctx.canvasBlock || '(none)'}
 
 FRAMEIO COMMENTS:
 ${ctx.frameioBlock || '(not fetched or none)'}
+
+THREAD:
+${ctx.threadBlock || '(not in a thread)'}
+
+CHANNEL HISTORY (recent, oldest first):
+${ctx.historyBlock || '(none)'}
 
 TEAM:
 ${roster.map((m) => `- ${m.name} (${m.role}) → ${m.slackId}`).join('\n') || '(unknown)'}
