@@ -69,3 +69,28 @@ describe('participation context helpers', () => {
     expect(parseFrameioProjectId(null)).toBe(null)
   })
 })
+
+describe('formatHistoryMessages', () => {
+  it('renders name-attributed lines, skipping the trigger and system subtypes', async () => {
+    const { formatHistoryMessages } = await import('../src/participation/context')
+    const names = new Map([['U1', 'Jonathan'], ['U2', 'Ted']])
+    const out = formatHistoryMessages(
+      [
+        { ts: '1', user: 'U1', text: 'end card should be the tan one' },
+        { ts: '2', user: 'U2', text: 'agreed, tan' },
+        { ts: '3', subtype: 'channel_join', user: 'U9', text: 'joined' },
+        { ts: '4', user: 'U9', text: 'client here, looks great' },
+        { ts: '5', bot_id: 'B1', username: 'Kit', text: 'per the brain, delivery is Aug 1' },
+        { ts: '6', user: 'U2', text: 'which end card again?' },
+      ],
+      names,
+      '6', // the triggering message — excluded
+    )
+    expect(out).toContain('Jonathan: end card should be the tan one')
+    expect(out).toContain('Ted: agreed, tan')
+    expect(out).toContain('<@U9>: client here, looks great') // unknown user keeps mention form
+    expect(out).toContain('Kit (bot): per the brain')
+    expect(out).not.toContain('joined')
+    expect(out).not.toContain('which end card again?')
+  })
+})
