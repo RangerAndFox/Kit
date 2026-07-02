@@ -35,6 +35,7 @@ import { handleRoleMessage } from '../roles/handler'
 import { handleFrameioToggleMessage } from '../delivery/frameio-toggle'
 import { handleSpecIntakeReply } from '../delivery/spec-intake'
 import { channelHasOpenSpecIntake } from '../../../src/lib/delivery/spec-intake-store'
+import { maybeParticipate } from '../participation/participant'
 
 import { runOrchestrator } from '../llm/orchestrator'
 import { hasPendingClarification } from '../llm/memory'
@@ -182,6 +183,33 @@ export function registerMessageHandlers(app: App) {
         messageTs: msgEvent.ts,
         threadTs: msgEvent.thread_ts,
       }).catch((err) => console.error('[Bolt] brain ingest failed:', err.message || err))
+
+      // ── Channel participation (unprompted, high-precision) ──
+      // Kit answers channel questions it can ground in the knowledge base,
+      // shares project assets, or routes to the right teammate — without
+      // being @mentioned. Heavily gated (prefilter → retrieval → confidence
+      // floors → cooldowns) so it stays quiet unless it's sure. Skipped when
+      // this message is about to be handled conversationally anyway.
+      if (
+        !hasPendingClarification(teamId, channelId, userId) &&
+        !getPendingOnboarding(channelId, userId)
+      ) {
+        resolveWorkspaceId(teamId)
+          .then((wsId) =>
+            wsId
+              ? maybeParticipate({
+                  app,
+                  workspaceId: wsId,
+                  channelId,
+                  userId,
+                  messageText: msgEvent.text || '',
+                  messageTs: msgEvent.ts,
+                  threadTs: msgEvent.thread_ts,
+                })
+              : undefined,
+          )
+          .catch((err) => console.warn('[Bolt] participation failed:', err?.message || err))
+      }
     }
 
     // ── Storyboard keyword shortcut (DM only) ─────────────
