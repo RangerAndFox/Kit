@@ -14,7 +14,7 @@ export interface TranscriptInput {
   id: string
   workspace_id: string
   project_id: string | null
-  source: 'plaud' | 'manual' | 'granola'
+  source: 'plaud' | 'manual' | 'granola' | 'drive'
   transcript: string
   participants: any[] | null
   start_time: string | null
@@ -25,7 +25,14 @@ export interface TranscriptInput {
 
 export function composeTranscriptTitle(t: TranscriptInput): string {
   const date = t.start_time ? new Date(t.start_time).toISOString().slice(0, 10) : 'unknown date'
-  const sourceLabel = t.source === 'plaud' ? 'Plaud' : t.source === 'granola' ? 'Granola' : 'Manual'
+  const sourceLabel =
+    t.source === 'plaud'
+      ? 'Plaud'
+      : t.source === 'granola'
+        ? 'Granola'
+        : t.source === 'drive'
+          ? 'Call'
+          : 'Manual'
   // Try to derive a meaningful label from participants
   const peopleNames = (t.participants || [])
     .map((p: any) => p?.displayName || p?.name || p?.email || '')

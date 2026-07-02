@@ -222,12 +222,12 @@ export async function composeBriefing(ctx: BriefingContext): Promise<BriefingArt
     .in('status', ['pending', 'approved'])
     .limit(5)
 
-  // Last Plaud summary for THIS project (scoped — an unscoped query would
+  // Last call transcript for THIS project, any source — Plaud webhooks or
+  // the Drive-folder zap (scoped to the project; an unscoped query would
   // surface another project's meeting in this briefing).
   const { data: lastTranscript } = await sb
     .from('call_transcripts')
     .select('start_time, transcript, source')
-    .eq('source', 'plaud')
     .eq('project_id', projectId)
     .order('start_time', { ascending: false })
     .limit(1)
