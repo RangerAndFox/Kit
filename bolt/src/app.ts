@@ -274,7 +274,8 @@ cron.schedule(
 // ─── Cron: missing-time monitor ────────────────────────────
 // 9am local Mon–Fri — flag any in-house creative who's gone N working days
 // (HOURS_MISSING_THRESHOLD_DAYS, default 3) with zero logged Harvest time.
-// Silent unless HOURS_ALERT_CHANNEL_ID is set. Alerts once per streak.
+// Flags deliver privately to each active producer/CD's personal Kit
+// channel. Alerts once per streak.
 
 cron.schedule(
   '0 9 * * 1-5',

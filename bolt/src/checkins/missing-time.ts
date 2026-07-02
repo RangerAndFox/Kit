@@ -4,10 +4,10 @@
  *
  * A daily scan over each in-house creative's Harvest activity. If someone has
  * gone N consecutive *working* days (default 3) with zero logged hours — and
- * didn't explicitly mark those days "skip"/PTO via a check-in — Kit flags it to
- * the producers' channel. Harvest is the source of truth: logging directly in
- * Harvest (without ever replying to Kit) counts, so we never nag someone who's
- * actually tracking their time.
+ * didn't explicitly mark those days "skip"/PTO via a check-in — Kit flags it
+ * privately to each producer/CD (their personal Kit channel). Harvest is the
+ * source of truth: logging directly in Harvest (without ever replying to Kit)
+ * counts, so we never nag someone who's actually tracking their time.
  *
  * Idempotent: alerts once per streak (keyed on the streak's start date), then
  * stays quiet until the artist logs again and a fresh gap opens.
@@ -24,6 +24,7 @@ import {
   formatShortDate,
 } from './date'
 import { inferActiveProjectChannels, type ActiveChannel } from './slack-activity'
+import { resolvePersonalBriefingChannel } from '../../../src/lib/agent/briefing-channel'
 
 const DEFAULT_THRESHOLD = 3
 const LOOKBACK_DAYS = 21
@@ -116,20 +117,31 @@ async function evaluateStaff(staff: StaffRow): Promise<{
 
 /**
  * Scan all in-house creatives and flag anyone newly over the missing-time
- * threshold. Posts to HOURS_ALERT_CHANNEL_ID (silent if unset).
+ * threshold. Each flag is delivered privately to every active producer/CD
+ * via their personal Kit channel (them + Kit) — the same mechanism as
+ * pre-meeting briefings, because a plain proactive DM from an assistant app
+ * lands in the History tab without notifying. No shared channel involved.
  */
 export async function scanMissingTime(app: App): Promise<{
   scanned: number
   flagged: number
   skippedAlready: number
 }> {
-  const channel = process.env.HOURS_ALERT_CHANNEL_ID
-  if (!channel) {
-    console.log('[missing-time] HOURS_ALERT_CHANNEL_ID unset — scan skipped.')
+  const sb = createAdminClient()
+
+  // Who receives flags: active producers + CDs with a Slack id.
+  const { data: recipientRows } = await sb
+    .from('staff')
+    .select('slack_user_id, full_name')
+    .in('role', ['producer', 'cd'])
+    .eq('is_active', true)
+    .not('slack_user_id', 'is', null)
+  const recipients = (recipientRows || []) as { slack_user_id: string; full_name: string | null }[]
+  if (recipients.length === 0) {
+    console.log('[missing-time] no active producers/CDs to notify — scan skipped.')
     return { scanned: 0, flagged: 0, skippedAlready: 0 }
   }
 
-  const sb = createAdminClient()
   const { data: staff, error } = await sb
     .from('staff')
     .select('id, slack_user_id, full_name, harvest_user_id')
@@ -155,7 +167,6 @@ export async function scanMissingTime(app: App): Promise<{
       streak_days: result.missing.length,
       missing_dates: result.missing,
       last_logged_date: result.lastLogged,
-      alert_channel_id: channel,
     })
     if (insErr) {
       // Unique violation (23505) → already alerted this streak.
@@ -170,32 +181,51 @@ export async function scanMissingTime(app: App): Promise<{
       slackUserId: s.slack_user_id,
     })
 
-    try {
-      const post = await app.client.chat.postMessage({
-        channel,
-        text: buildFlagText({
-          slackUserId: s.slack_user_id,
-          fullName: s.full_name,
-          missing: result.missing,
-          lastLogged: result.lastLogged,
-          activeChannels,
-        }),
-      })
-      // Backfill the message ts for traceability.
-      if (post.ts) {
-        await sb
-          .from('hours_missing_alerts')
-          .update({ alert_ts: post.ts })
-          .eq('staff_id', s.id)
-          .eq('streak_start_date', streakStart)
+    const text = buildFlagText({
+      slackUserId: s.slack_user_id,
+      fullName: s.full_name,
+      missing: result.missing,
+      lastLogged: result.lastLogged,
+      activeChannels,
+    })
+
+    // Deliver to each producer/CD's private Kit channel. One bad recipient
+    // doesn't sink the rest; the alert counts as delivered when at least one
+    // person got it.
+    const token = process.env.SLACK_BOT_TOKEN || ''
+    let firstChannel: string | null = null
+    let firstTs: string | null = null
+    for (const r of recipients) {
+      try {
+        const personalChannel = await resolvePersonalBriefingChannel({
+          slackUserId: r.slack_user_id,
+          fullName: r.full_name,
+          token,
+        })
+        const post = await app.client.chat.postMessage({ channel: personalChannel, text })
+        if (!firstChannel && post.ts) {
+          firstChannel = personalChannel
+          firstTs = post.ts
+        }
+      } catch (err: any) {
+        console.warn(
+          `[missing-time] flag delivery to ${r.slack_user_id} failed: ${err?.message || err}`,
+        )
       }
+    }
+
+    if (firstTs) {
+      // Traceability: record where the first successful copy landed.
+      await sb
+        .from('hours_missing_alerts')
+        .update({ alert_channel_id: firstChannel, alert_ts: firstTs })
+        .eq('staff_id', s.id)
+        .eq('streak_start_date', streakStart)
       tally.flagged++
-    } catch (err: any) {
-      console.warn(`[missing-time] flag post failed for ${s.slack_user_id}: ${err.message}`)
-      // The alert row was inserted before the post (that's what makes the
-      // insert the idempotency claim) — but a row without a delivered message
-      // would suppress this streak forever while no producer ever saw it.
-      // Delete the claim so the next scan retries the alert.
+    } else {
+      console.warn(`[missing-time] flag for ${s.slack_user_id} reached NO recipients`)
+      // A claim row without a delivered message would suppress this streak
+      // forever while nobody ever saw it — delete so the next scan retries.
       await sb
         .from('hours_missing_alerts')
         .delete()
