@@ -147,7 +147,7 @@ export async function sendDailyCheckin(opts: {
   const blocked = (existing || []).some(
     (r: any) =>
       r.origin === 'scheduled' ||
-      ['logged', 'sent', 'nudged', 'parsed', 'logging'].includes(r.status),
+      ['logged', 'sent', 'nudged', 'replied', 'parsed', 'logging'].includes(r.status),
   )
   if (blocked) return { status: 'duplicate' }
 
@@ -240,7 +240,6 @@ export async function sendAllDailyCheckins(app: App): Promise<{
     .from('staff')
     .select('id, slack_user_id, email, full_name, harvest_user_id')
     .eq('daily_checkin', true)
-    .eq('is_active', true)
     .eq('is_active', true)
   if (error) throw new Error(`load staff failed: ${error.message}`)
 

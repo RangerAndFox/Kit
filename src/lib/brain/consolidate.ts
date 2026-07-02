@@ -34,6 +34,7 @@ import {
   ensureSection,
 } from './format'
 import { parseDateFromBullet } from './flagger'
+import { embedBrainSections } from './store'
 import { createAdminClient } from '@/lib/supabase/admin'
 
 // ─── Tunables ──────────────────────────────────────────────────────────────
@@ -292,7 +293,7 @@ export async function consolidateBrain(brainId: string, opts: ConsolidateOpts = 
   const sb = createAdminClient()
   const { data: row, error } = await sb
     .from('brains')
-    .select('id, workspace_id, revision, markdown')
+    .select('id, workspace_id, project_id, revision, markdown')
     .eq('id', brainId)
     .maybeSingle()
   if (error) throw new Error(`consolidateBrain: ${error.message}`)
@@ -321,11 +322,28 @@ export async function consolidateBrain(brainId: string, opts: ConsolidateOpts = 
   brain.frontmatter.updated = new Date().toISOString()
   const markdown = serializeBrain(brain)
 
-  const { error: updErr } = await sb
+  // Optimistic concurrency — same guard as applyPatches. Without it, the
+  // consolidator racing a message-driven applyPatches overwrote the writer's
+  // patches wholesale (only one side of that race was guarded). On conflict,
+  // skip this run; tonight's changes get picked up by the next nightly pass.
+  const { data: updated, error: updErr } = await sb
     .from('brains')
     .update({ markdown, revision: newRevision, updated_at: new Date().toISOString() })
     .eq('id', brainId)
+    .eq('revision', row.revision ?? 0)
+    .select('id')
   if (updErr) throw new Error(`consolidateBrain: update failed: ${updErr.message}`)
+  if (!updated || updated.length === 0) {
+    return {
+      brainId,
+      newRevision: row.revision,
+      watchlist_removed: 0,
+      decisions_moved: 0,
+      sections_examined: deduped.sections_examined,
+      duplicates_removed: 0,
+      skipped: 'revision_conflict',
+    }
+  }
 
   await sb.from('brain_revisions').insert({
     brain_id: brainId,
@@ -334,6 +352,10 @@ export async function consolidateBrain(brainId: string, opts: ConsolidateOpts = 
     diff: `consolidate: ${aged.removed.length} aged-out, ${compressed.moved} compressed, ${deduped.duplicates_removed} deduped`,
     author: 'system:consolidate',
   })
+
+  // Re-embed so retrieval doesn't keep serving aged-out/deduped bullets as
+  // stale brain_section docs (null = all sections; upsert is idempotent).
+  await embedBrainSections(row.workspace_id, brainId, row.project_id ?? null, brain, null)
 
   return {
     brainId,

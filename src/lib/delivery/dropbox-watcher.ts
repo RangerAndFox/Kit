@@ -140,8 +140,10 @@ export async function scanDeliveryQueue(): Promise<NewFileNotification[]> {
 
 export async function markFileNotified(dropboxId: string): Promise<void> {
   const sb = createAdminClient()
-  await sb
+  const { error } = await sb
     .from('seen_dropbox_files')
     .update({ notified_at: new Date().toISOString() })
     .eq('dropbox_id', dropboxId)
+  // Throw on failure so a silently-unmarked file can't re-notify every tick.
+  if (error) throw new Error(`markFileNotified(${dropboxId}): ${error.message}`)
 }

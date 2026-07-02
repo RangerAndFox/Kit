@@ -336,21 +336,3 @@ export async function markCandidatesDmSent(ids: number[]): Promise<void> {
     .in('id', ids)
 }
 
-export async function markCandidateDecided(opts: {
-  id: number
-  status: 'approved' | 'rejected' | 'expired'
-  approver?: string | null
-  appliedSection?: string | null
-}): Promise<void> {
-  const sb = createAdminClient()
-  const { error } = await sb
-    .from('brain_scavenger_candidates')
-    .update({
-      status: opts.status,
-      approver: opts.approver ?? null,
-      applied_section: opts.appliedSection ?? null,
-      decided_at: new Date().toISOString(),
-    })
-    .eq('id', opts.id)
-  if (error) throw new Error(`markCandidateDecided: ${error.message}`)
-}

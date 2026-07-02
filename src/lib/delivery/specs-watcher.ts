@@ -154,7 +154,14 @@ export async function scanProjectSpecs(): Promise<SpecsDrop[]> {
 
 export async function markSpecsNotified(dropboxId: string): Promise<void> {
   const sb = createAdminClient()
-  await sb.from('seen_dropbox_files').update({ notified_at: new Date().toISOString() }).eq('dropbox_id', dropboxId)
+  const { error } = await sb
+    .from('seen_dropbox_files')
+    .update({ notified_at: new Date().toISOString() })
+    .eq('dropbox_id', dropboxId)
+  // Throw on failure: callers mark BEFORE posting precisely so a file can't
+  // prompt twice — a silently-failed mark inverted that into an every-tick
+  // repeat prompt.
+  if (error) throw new Error(`markSpecsNotified(${dropboxId}): ${error.message}`)
 }
 
 /** Look up the project (name + Slack channel) for a Dropbox safeName. */
