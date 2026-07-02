@@ -234,11 +234,13 @@ export async function sendAllDailyCheckins(app: App): Promise<{
   }
 
   const sb = createAdminClient()
+  // Membership is the explicit daily_checkin flag (not role) — producers,
+  // CDs, and admins can opt in alongside the in-house creatives.
   const { data: staff, error } = await sb
     .from('staff')
     .select('id, slack_user_id, email, full_name, harvest_user_id')
-    .eq('role', 'creative')
-    .eq('employment_type', 'employee')
+    .eq('daily_checkin', true)
+    .eq('is_active', true)
     .eq('is_active', true)
   if (error) throw new Error(`load staff failed: ${error.message}`)
 
