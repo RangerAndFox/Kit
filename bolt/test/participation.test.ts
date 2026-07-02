@@ -51,3 +51,21 @@ describe('participation rate limiting', () => {
     expect(threadAlreadyAnswered('C1', '111.222')).toBe(false)
   })
 })
+
+describe('participation context helpers', () => {
+  it('gates Frame.io comment fetching on review-flavored messages', async () => {
+    const { wantsFrameioComments } = await import('../src/participation/context')
+    expect(wantsFrameioComments('did the client leave notes on v3?')).toBe(true)
+    expect(wantsFrameioComments('any feedback on the latest cut?')).toBe(true)
+    expect(wantsFrameioComments('what codec are we delivering in?')).toBe(false)
+  })
+
+  it('parses a Frame.io project id from a stored URL', async () => {
+    const { parseFrameioProjectId } = await import('../src/participation/context')
+    expect(
+      parseFrameioProjectId('https://app.frame.io/projects/6d1c0769-5205-4c2b-8a0a-08a7aff4ca5c'),
+    ).toBe('6d1c0769-5205-4c2b-8a0a-08a7aff4ca5c')
+    expect(parseFrameioProjectId('https://app.frame.io/reviews/abc')).toBe(null)
+    expect(parseFrameioProjectId(null)).toBe(null)
+  })
+})
