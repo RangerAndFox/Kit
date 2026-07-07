@@ -371,7 +371,6 @@ export async function handleCheckinReply(opts: {
       .eq('id', open.id)
     await app.client.chat.postMessage({
       channel: open.dm_channel_id,
-      thread_ts: open.dm_ts || undefined,
       text: ':+1: Marked as skipped. Talk tomorrow.',
     })
     return true
@@ -389,7 +388,6 @@ export async function handleCheckinReply(opts: {
     await reopen()
     await app.client.chat.postMessage({
       channel: open.dm_channel_id,
-      thread_ts: open.dm_ts || undefined,
       text:
         ":thinking_face: I couldn't parse that. Try a format like: _'4h on Rayfin, 2h on IQ Sizzle'_ — or reply `skip`.",
     })
@@ -400,7 +398,6 @@ export async function handleCheckinReply(opts: {
     await sb.from('daily_hours_checkins').update({ status: 'skipped' }).eq('id', open.id)
     await app.client.chat.postMessage({
       channel: open.dm_channel_id,
-      thread_ts: open.dm_ts || undefined,
       text: ':+1: Marked as skipped.',
     })
     return true
@@ -444,7 +441,6 @@ export async function handleCheckinReply(opts: {
   // Post confirmation card threaded under the original DM.
   await app.client.chat.postMessage({
     channel: open.dm_channel_id,
-    thread_ts: open.dm_ts || undefined,
     text: 'Confirm hours',
     blocks: buildConfirmBlocks({
       checkinId: open.id,

@@ -59,9 +59,9 @@ async function loadStaff(staffId: string): Promise<StaffRow | null> {
 }
 
 /**
- * Replace the confirmation card with a result message, keeping the
- * conversation tidy. Uses chat.update via the response_url if available,
- * otherwise posts a new threaded message.
+ * Post the result message flat in the DM — check-in messages never thread.
+ * People reply in the main chat, so a threaded result hides behind a
+ * "1 reply" link they'll never open (operator-reported).
  */
 async function postResult(opts: {
   app: App
@@ -69,10 +69,9 @@ async function postResult(opts: {
   threadTs: string | null
   text: string
 }) {
-  const { app, channelId, threadTs, text } = opts
+  const { app, channelId, text } = opts
   await app.client.chat.postMessage({
     channel: channelId,
-    thread_ts: threadTs || undefined,
     text,
   })
 }

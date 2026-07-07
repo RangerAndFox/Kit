@@ -245,7 +245,6 @@ export async function nudgePendingCheckins(app: App): Promise<{ nudged: number }
           : ":wave: Friendly nudge — got a sec to log today's hours? Just reply with what you worked on."
       await app.client.chat.postMessage({
         channel: r.dm_channel_id,
-        thread_ts: r.dm_ts || undefined,
         text,
       })
       // Keep 'parsed' status (the card is still actionable) — only mark the
