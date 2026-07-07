@@ -21,6 +21,7 @@ import {
 } from '../../../src/lib/harvest/client'
 import { anthropic, SPECIALIST_MODEL } from '../llm/client'
 import { checkinToday, resolveSpentDate, formatShortDate } from './date'
+import { handleCheckinConfirm, handleCheckinRedo } from './confirm'
 
 interface OpenCheckin {
   id: string
@@ -71,6 +72,83 @@ export async function findOpenCheckin(slackUserId: string): Promise<OpenCheckin 
     return null
   }
   return (data?.[0] as OpenCheckin) || null
+}
+
+/**
+ * Interpret a short reply as a confirm/redo decision on a parsed check-in.
+ * Deliberately strict: the ENTIRE message must be a known phrase, so
+ * "yes but what's the Frame.io link?" never silently logs hours. Pure —
+ * unit-tested.
+ */
+const CONFIRM_TEXT_RE =
+  /^(?:yes|y|yep|yup|yeah|confirm|confirmed|correct|looks good|lgtm|log it|log them|do it|send it|go ahead|:white_check_mark:|:thumbsup:|✅|👍)[.!\s]*$/i
+const REDO_TEXT_RE =
+  /^(?:no|nope|redo|edit|change|wrong|start over|try again|:pencil2:|✏️)[.!\s]*$/i
+
+export function parseConfirmDecision(text: string): 'confirm' | 'redo' | null {
+  const trimmed = (text || '').trim()
+  if (!trimmed || trimmed.length > 40) return null
+  if (CONFIRM_TEXT_RE.test(trimmed)) return 'confirm'
+  if (REDO_TEXT_RE.test(trimmed)) return 'redo'
+  return null
+}
+
+/**
+ * The user's most recent check-in awaiting confirmation (status='parsed'),
+ * capped at a week old so a typed "yes" can never resurrect stale hours.
+ */
+export async function findParsedCheckin(slackUserId: string): Promise<OpenCheckin | null> {
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const sb = createAdminClient()
+  const { data, error } = await sb
+    .from('daily_hours_checkins')
+    .select(
+      'id, staff_id, slack_user_id, check_in_date, status, dm_channel_id, dm_ts, candidate_projects',
+    )
+    .eq('slack_user_id', slackUserId)
+    .eq('status', 'parsed')
+    .gte('check_in_date', weekAgo)
+    .order('check_in_date', { ascending: false })
+    .limit(1)
+  if (error) {
+    console.warn(`[checkin-reply] findParsedCheckin failed: ${error.message}`)
+    return null
+  }
+  return (data?.[0] as OpenCheckin) || null
+}
+
+/**
+ * Text fallback for the confirmation card's buttons: a typed "yes"/"redo"
+ * completes or resets the pending check-in. Exists because button clicks
+ * travel a different Slack delivery path than messages, and only messages
+ * are verifiably reaching us — the check-in flow must not depend on the
+ * flakier of the two. Returns true when the message was consumed.
+ */
+export async function handleParsedCheckinText(opts: {
+  app: App
+  slackUserId: string
+  replyText: string
+}): Promise<boolean> {
+  const decision = parseConfirmDecision(opts.replyText)
+  if (!decision) return false
+  const parsedRow = await findParsedCheckin(opts.slackUserId)
+  if (!parsedRow) return false
+  if (decision === 'confirm') {
+    await handleCheckinConfirm({
+      app: opts.app,
+      client: opts.app.client,
+      body: {},
+      checkinId: parsedRow.id,
+    })
+  } else {
+    await handleCheckinRedo({
+      app: opts.app,
+      client: opts.app.client,
+      body: {},
+      checkinId: parsedRow.id,
+    })
+  }
+  return true
 }
 
 /**
@@ -193,6 +271,17 @@ export function buildConfirmBlocks(opts: {
         type: 'mrkdwn',
         text: `*Logging to Harvest:*\n${lines.join('\n')}`,
       },
+    },
+    {
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: allMatched
+            ? 'Tap a button or just reply *yes* to log / *redo* to start over.'
+            : 'Reply *redo* to start over, then resend your hours.',
+        },
+      ],
     },
     {
       type: 'actions',

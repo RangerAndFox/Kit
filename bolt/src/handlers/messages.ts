@@ -43,7 +43,11 @@ import { setThinking, clearThinking } from '../llm/status'
 import { stashIntake } from '../../../src/lib/storyboard/stash'
 import { projectNameFromFilename } from '../../../src/lib/storyboard/parser'
 import { buildNewProjectCard } from './newproject-card'
-import { findOpenCheckin, handleCheckinReply } from '../checkins/reply'
+import {
+  findOpenCheckin,
+  handleCheckinReply,
+  handleParsedCheckinText,
+} from '../checkins/reply'
 
 /**
  * The thread ts to reply into for a DM (Slack Assistant / "Agents & AI Apps"
@@ -346,6 +350,16 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
       })
       if (handled) return
     }
+
+    // Parsed check-in awaiting confirmation: a typed "yes"/"redo" completes
+    // it — the buttons' click events travel a Slack path that has proven
+    // unreliable, so the flow can't depend on them.
+    const confirmed = await handleParsedCheckinText({
+      app,
+      slackUserId: userId,
+      replyText: messageText,
+    })
+    if (confirmed) return
   }
 
   // Resolve workspace + user context. Workspace id and the user's email are
