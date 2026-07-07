@@ -8,6 +8,7 @@
  */
 
 import { rankProjects } from './search'
+import { studioToday } from '../time/studio-date'
 
 const BASE_URL = 'https://api.harvestapp.com/v2'
 
@@ -381,7 +382,7 @@ export async function createTimeEntry(opts: {
   projectId: number
   taskId: number
   hours: number
-  spentDate?: string // YYYY-MM-DD, defaults to today
+  spentDate?: string // YYYY-MM-DD, defaults to today in the studio timezone
   notes?: string
   userId?: number // if attributing to a specific user
 }): Promise<HarvestTimeEntry> {
@@ -389,7 +390,8 @@ export async function createTimeEntry(opts: {
     project_id: opts.projectId,
     task_id: opts.taskId,
     hours: opts.hours,
-    spent_date: opts.spentDate || new Date().toISOString().split('T')[0],
+    // Studio-tz default: UTC "today" is already tomorrow by 5pm Pacific.
+    spent_date: opts.spentDate || studioToday(),
   }
   if (opts.notes) body.notes = opts.notes
   if (opts.userId) body.user_id = opts.userId

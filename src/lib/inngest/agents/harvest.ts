@@ -19,6 +19,7 @@ import {
   listAccountTasks,
   getProjectBudgetReport,
 } from '@/lib/harvest/client'
+import { studioToday, studioDateMinusDays } from '@/lib/time/studio-date'
 import type { AgentDefinition, AgentResult } from './types'
 
 // ─── Action Handlers ───────────────────────────────────────
@@ -62,7 +63,16 @@ async function logTime(payload: Record<string, unknown>): Promise<AgentResult> {
     const hours = payload.hours as number
     const notes = (payload.notes as string) || ''
     const taskName = (payload.task as string) || ''
-    const date = (payload.date as string) || new Date().toISOString().split('T')[0]
+    // Anchor everything to the studio timezone — a UTC "today" is already
+    // tomorrow by 5pm PT, which put evening entries on the next day. The
+    // specialist LLM isn't told the current date, so relative words are
+    // resolved here and non-dates / future dates fall back to today.
+    const rawDate = String(payload.date || '').trim().toLowerCase()
+    const today = studioToday()
+    let date: string
+    if (rawDate === 'yesterday') date = studioDateMinusDays(1)
+    else if (/^\d{4}-\d{2}-\d{2}$/.test(rawDate) && rawDate <= today) date = rawDate
+    else date = today
 
     // Find the project
     const projects = await searchProjects(projectQuery)
@@ -285,7 +295,8 @@ export const harvestAgent: AgentDefinition = {
     {
       action: 'log_time',
       description: 'Log a time entry for a team member on a project. Supports natural project names ("NRG", "Nike campaign") and auto-resolves the right task.',
-      inputDescription: 'project (name/code), hours, task (optional), notes (optional), date (optional, defaults to today)',
+      inputDescription:
+        'project (name/code), hours, task (optional), notes (optional), date (optional: YYYY-MM-DD or the word "yesterday" — omit for today; resolved in the studio timezone)',
       mutates: true,
     },
     {
