@@ -14,7 +14,8 @@
 
 import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
-import { checkinToday, isWorkday } from './date'
+import { checkinToday, checkinTimezone, isWorkday } from './date'
+import { resolveUserTimezone } from './user-tz'
 import type { ActiveChannel } from './slack-activity'
 
 interface StaffRow {
@@ -81,15 +82,34 @@ function composeDm(opts: { firstName: string }): string {
 }
 
 /**
+ * True when it's currently the check-in hour (5pm by default) in the given
+ * timezone. Computed per call via Intl so DST is always right. Pure — tested.
+ */
+export function isLocalCheckinHour(
+  now: Date,
+  tz: string,
+  hour = 17,
+): boolean {
+  const localHour = Number(
+    new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', hourCycle: 'h23' }).format(
+      now,
+    ),
+  )
+  return localHour === hour
+}
+
+/**
  * Send the daily check-in DM to one staff member. No-ops if a check-in
- * already exists for today.
+ * already exists for today (their local today).
  */
 export async function sendDailyCheckin(opts: {
   app: App
   staff: StaffRow
+  /** The recipient's timezone — anchors check_in_date to THEIR calendar day. */
+  tz?: string
 }): Promise<{ status: 'sent' | 'skipped' | 'duplicate' | 'failed'; reason?: string }> {
   const { app, staff } = opts
-  const today = checkinToday()
+  const today = checkinToday(new Date(), opts.tz || checkinTimezone())
   const sb = createAdminClient()
 
   // Duplicate guard: skip if a scheduled row already exists for today, the
@@ -150,23 +170,18 @@ export async function sendDailyCheckin(opts: {
 }
 
 /**
- * Send all daily check-ins. Called by the cron at 5pm local.
- * Returns a per-user summary for logging.
+ * Send due daily check-ins. Called by an HOURLY cron: each person gets
+ * their check-in at 5pm in THEIR timezone (Slack profile), and their
+ * check_in_date / holiday calendar resolve on their local day. People for
+ * whom it isn't 5pm right now are simply not due this cycle.
  */
 export async function sendAllDailyCheckins(app: App): Promise<{
   sent: number
   duplicate: number
   skipped: number
   failed: number
+  notDue: number
 }> {
-  // Don't ask for hours on a studio holiday (the cron itself only knows
-  // Mon–Fri).
-  const today = checkinToday()
-  if (!isWorkday(today)) {
-    console.log(`[daily-hours] ${today} is a holiday/weekend — skipping check-ins`)
-    return { sent: 0, duplicate: 0, skipped: 0, failed: 0 }
-  }
-
   const sb = createAdminClient()
   // Membership is the explicit daily_checkin flag (not role) — producers,
   // CDs, and admins can opt in alongside the in-house creatives.
@@ -177,17 +192,30 @@ export async function sendAllDailyCheckins(app: App): Promise<{
     .eq('is_active', true)
   if (error) throw new Error(`load staff failed: ${error.message}`)
 
-  const tally = { sent: 0, duplicate: 0, skipped: 0, failed: 0 }
+  const now = new Date()
+  const tally = { sent: 0, duplicate: 0, skipped: 0, failed: 0, notDue: 0 }
   for (const s of staff || []) {
-    const r = await sendDailyCheckin({ app, staff: s as StaffRow })
+    const tz = await resolveUserTimezone({ app, slackUserId: s.slack_user_id })
+    if (!isLocalCheckinHour(now, tz)) {
+      tally.notDue += 1
+      continue
+    }
+    // Weekend/holiday on THEIR calendar day — no check-in.
+    if (!isWorkday(checkinToday(now, tz), tz)) {
+      tally.skipped += 1
+      continue
+    }
+    const r = await sendDailyCheckin({ app, staff: s as StaffRow, tz })
     tally[r.status === 'duplicate' ? 'duplicate' : r.status] += 1
     if (r.status === 'failed') {
       console.warn(`[daily-hours] ${s.slack_user_id} failed: ${r.reason}`)
     }
   }
-  console.log(
-    `[daily-hours] cycle done — sent=${tally.sent} duplicate=${tally.duplicate} skipped=${tally.skipped} failed=${tally.failed}`,
-  )
+  if (tally.sent || tally.failed || tally.duplicate) {
+    console.log(
+      `[daily-hours] cycle done — sent=${tally.sent} duplicate=${tally.duplicate} skipped=${tally.skipped} failed=${tally.failed} notDue=${tally.notDue}`,
+    )
+  }
   return tally
 }
 

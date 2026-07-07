@@ -497,6 +497,31 @@ export function registerCommandHandlers(app: App) {
           if (res.updated.length === 0 && res.unmatched.length === 0) {
             lines.push('Everyone active is already mapped. :white_check_mark:')
           }
+
+          // Refresh everyone's timezone from their Slack profile while we're
+          // here — check-in timing and date resolution are per-person.
+          try {
+            const { resolveUserTimezone } = await import('../checkins/user-tz')
+            const sbAdmin = (await import('../../../src/lib/supabase/admin')).createAdminClient()
+            const { data: allStaff } = await sbAdmin
+              .from('staff')
+              .select('slack_user_id')
+              .eq('is_active', true)
+              .not('slack_user_id', 'is', null)
+            const tzs = new Map<string, number>()
+            for (const s of allStaff || []) {
+              const tz = await resolveUserTimezone({ app: { client } as any, slackUserId: s.slack_user_id })
+              tzs.set(tz, (tzs.get(tz) || 0) + 1)
+            }
+            if (tzs.size > 0) {
+              lines.push(
+                `Timezones refreshed: ${[...tzs.entries()].map(([tz, n]) => `${tz} ×${n}`).join(', ')}`,
+              )
+            }
+          } catch (tzErr: any) {
+            console.warn('[Bolt] sync-staff tz refresh failed:', tzErr?.message || tzErr)
+          }
+
           await respond({ response_type: 'ephemeral', text: lines.join('\n') })
         } catch (err: any) {
           console.error('[Bolt] /kit sync-staff failed:', err?.message || err)

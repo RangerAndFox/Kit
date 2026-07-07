@@ -20,6 +20,7 @@ import {
   getProjectBudgetReport,
 } from '@/lib/harvest/client'
 import { studioToday, studioDateMinusDays } from '@/lib/time/studio-date'
+import { staffTimezone } from '@/lib/staff/timezone'
 import type { AgentDefinition, AgentResult } from './types'
 
 // ─── Action Handlers ───────────────────────────────────────
@@ -63,14 +64,17 @@ async function logTime(payload: Record<string, unknown>): Promise<AgentResult> {
     const hours = payload.hours as number
     const notes = (payload.notes as string) || ''
     const taskName = (payload.task as string) || ''
-    // Anchor everything to the studio timezone — a UTC "today" is already
-    // tomorrow by 5pm PT, which put evening entries on the next day. The
-    // specialist LLM isn't told the current date, so relative words are
-    // resolved here and non-dates / future dates fall back to today.
+    // Anchor everything to the LOGGER's timezone (staff.timezone, cached
+    // from their Slack profile; studio default when unknown) — a UTC
+    // "today" is already tomorrow by 5pm PT, which put evening entries on
+    // the next day. The specialist LLM isn't told the current date, so
+    // relative words are resolved here and non-dates / future dates fall
+    // back to today.
+    const tz = await staffTimezone(payload.slackUserId as string)
     const rawDate = String(payload.date || '').trim().toLowerCase()
-    const today = studioToday()
+    const today = studioToday(new Date(), tz)
     let date: string
-    if (rawDate === 'yesterday') date = studioDateMinusDays(1)
+    if (rawDate === 'yesterday') date = studioDateMinusDays(1, new Date(), tz)
     else if (/^\d{4}-\d{2}-\d{2}$/.test(rawDate) && rawDate <= today) date = rawDate
     else date = today
 

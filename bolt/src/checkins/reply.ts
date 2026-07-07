@@ -20,7 +20,7 @@ import {
   type HarvestProject,
 } from '../../../src/lib/harvest/client'
 import { anthropic, SPECIALIST_MODEL } from '../llm/client'
-import { checkinToday, resolveSpentDate, formatShortDate } from './date'
+import { checkinToday, checkinDateMinusDays, resolveSpentDate, formatShortDate } from './date'
 import { handleCheckinConfirm, handleCheckinRedo } from './confirm'
 
 interface OpenCheckin {
@@ -48,11 +48,13 @@ export interface ParsedEntry {
 }
 
 /**
- * Return the open check-in row for this user today, or null if none.
- * Open = status in ('sent', 'nudged') for today's date.
+ * Return the open check-in row for this user, or null if none.
+ * Open = status in ('sent', 'nudged') within the last two calendar days —
+ * check_in_date is stamped in the USER's timezone (which may differ from
+ * the studio's), so an exact studio-today match would miss rows around
+ * midnight boundaries.
  */
 export async function findOpenCheckin(slackUserId: string): Promise<OpenCheckin | null> {
-  const today = checkinToday()
   const sb = createAdminClient()
   // limit(1) instead of maybeSingle(): if a redo + the scheduled send ever
   // produce two open rows, maybeSingle() errors and ALL replies leak past the
@@ -63,7 +65,7 @@ export async function findOpenCheckin(slackUserId: string): Promise<OpenCheckin 
       'id, staff_id, slack_user_id, check_in_date, status, dm_channel_id, dm_ts, candidate_projects',
     )
     .eq('slack_user_id', slackUserId)
-    .eq('check_in_date', today)
+    .gte('check_in_date', checkinDateMinusDays(2))
     .in('status', ['sent', 'nudged'])
     .order('created_at', { ascending: false })
     .limit(1)

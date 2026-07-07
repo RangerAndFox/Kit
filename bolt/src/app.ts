@@ -245,21 +245,23 @@ http
   })
 
 // ─── Cron: daily hours check-in ────────────────────────────
-// 5pm local — send the prompt. No evening nudge (after work hours, per
-// operator direction); the 9am missing-time monitor is the follow-up path.
-// Timezone is configurable; Ranger & Fox defaults to America/Los_Angeles.
-// Set CHECKIN_TIMEZONE to override.
+// HOURLY sweep: each person gets their check-in at 5pm in THEIR timezone
+// (from their Slack profile — the team spans Pacific/Central/Eastern), on
+// their own workday calendar. sendAllDailyCheckins no-ops for anyone whose
+// local hour isn't 17. No evening nudge (after work hours, per operator
+// direction); the 9am missing-time monitor is the follow-up path.
+// CHECKIN_TIMEZONE remains the studio default for anyone without a Slack tz.
 
 const CHECKIN_TZ = process.env.CHECKIN_TIMEZONE || 'America/Los_Angeles'
 
 cron.schedule(
-  '0 17 * * 1-5',
+  '0 * * * *',
   () => {
     sendAllDailyCheckins(app).catch((err) =>
       console.error('[cron] daily-checkins fire failed:', err),
     )
   },
-  { timezone: CHECKIN_TZ },
+  { timezone: 'UTC' },
 )
 
 // ─── Cron: missing-time monitor ────────────────────────────
