@@ -75,6 +75,26 @@ export async function listTranscriptFiles(limit = 25): Promise<DriveTranscriptFi
 }
 
 /**
+ * Strip the HTML remnants the Zapier zap leaves in transcript docs
+ * (`<br>` line breaks, stray tags, entities) so stored transcripts, briefing
+ * snippets, and embeddings read as plain text. Pure — tested.
+ */
+export function sanitizeTranscriptText(raw: string): string {
+  return raw
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/?[a-z][^>]*>/gi, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+/**
  * Download a transcript file's text. Google Docs export as text/plain;
  * plain-text-ish files download raw. Unsupported types (PDF scans, audio)
  * return null so the caller can skip with a log instead of erroring.

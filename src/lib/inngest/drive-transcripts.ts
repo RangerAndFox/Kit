@@ -5,7 +5,7 @@
  * Every 15 minutes: list the watched Drive folder (Plaud → Zapier drops),
  * ingest any file not seen before through the same pipeline the Plaud
  * webhook path uses — store the call_transcripts row, classify it to a
- * project (matchToProject), embed it into RAG (embedTranscript).
+ * project (matchTranscriptToProject), embed it into RAG (embedTranscript).
  *
  * Idempotency: external_recording_id = 'drive:<fileId>' is UNIQUE on
  * call_transcripts; the scan batch-checks existing ids and each file's
@@ -23,8 +23,9 @@ import {
   driveTranscriptsFolderId,
   listTranscriptFiles,
   downloadTranscriptText,
+  sanitizeTranscriptText,
 } from '@/lib/integrations/drive-transcripts'
-import { matchToProject } from '@/lib/agent/call-classifier'
+import { matchTranscriptToProject } from '@/lib/agent/call-classifier'
 import { embedTranscript } from '@/lib/studio-knowledge/transcript'
 
 const MAX_PER_RUN = 10
@@ -62,13 +63,59 @@ export const driveTranscriptScan = inngest.createFunction(
       return files.filter((f) => !seen.has(`drive:${f.id}`)).slice(0, MAX_PER_RUN)
     })
 
-    if (newFiles.length === 0) return { scanned: 0, ingested: 0 }
+    // One-shot rematch for rows ingested before content-aware matching (or
+    // whose match errored): each unmatched transcript gets exactly one retry,
+    // stamped via project_match_attempted_at so the LLM isn't re-consulted
+    // every 15 minutes. Runs even when there are no new files.
+    const rematched = await step.run('rematch-unmatched', async () => {
+      const sb = createAdminClient()
+      const { data: rows } = await sb
+        .from('call_transcripts')
+        .select('id, transcript')
+        .eq('source', 'drive')
+        .is('project_id', null)
+        .is('project_match_attempted_at', null)
+        .limit(5)
+      let matched = 0
+      for (const row of rows || []) {
+        let projectId: string | null = null
+        try {
+          projectId = await matchTranscriptToProject({
+            workspaceId,
+            title: '',
+            transcript: row.transcript || '',
+          })
+        } catch (err: any) {
+          console.warn(`[drive-transcripts] rematch failed for ${row.id}: ${err.message}`)
+        }
+        await sb
+          .from('call_transcripts')
+          .update({
+            project_id: projectId,
+            project_match_attempted_at: new Date().toISOString(),
+          })
+          .eq('id', row.id)
+        if (projectId) {
+          matched++
+          // Keep the RAG chunks' project scoping in sync with the transcript.
+          await sb
+            .from('project_documents')
+            .update({ project_id: projectId })
+            .eq('doc_type', 'call_transcript')
+            .filter('metadata->>call_transcripts_id', 'eq', row.id)
+        }
+      }
+      return { attempted: (rows || []).length, matched }
+    })
+
+    if (newFiles.length === 0) return { scanned: 0, ingested: 0, rematched }
 
     let ingested = 0
     let skipped = 0
     for (const file of newFiles) {
       const result = await step.run(`ingest-${file.id}`, async () => {
-        const text = (await downloadTranscriptText(file))?.trim()
+        const raw = await downloadTranscriptText(file)
+        const text = raw ? sanitizeTranscriptText(raw) : ''
         if (!text) {
           console.warn(`[drive-transcripts] unsupported/empty file skipped: ${file.name} (${file.mimeType})`)
           return 'skipped'
@@ -88,6 +135,7 @@ export const driveTranscriptScan = inngest.createFunction(
               transcript: text,
               start_time: file.createdTime || null,
               ingest_status: 'ingested',
+              project_match_attempted_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
             },
             { onConflict: 'external_recording_id', ignoreDuplicates: true },
@@ -97,10 +145,15 @@ export const driveTranscriptScan = inngest.createFunction(
         if (!inserted || inserted.length === 0) return 'duplicate'
         const rowId = inserted[0].id
 
-        // Classify to a project — file name + transcript-derived title cues.
+        // Classify to a project — title first, then transcript content; a
+        // project is only assigned when the call is clearly about it.
         let projectId: string | null = null
         try {
-          projectId = await matchToProject(workspaceId, [], file.name)
+          projectId = await matchTranscriptToProject({
+            workspaceId,
+            title: file.name,
+            transcript: text,
+          })
           if (projectId) {
             await sb.from('call_transcripts').update({ project_id: projectId }).eq('id', rowId)
           }
@@ -135,6 +188,6 @@ export const driveTranscriptScan = inngest.createFunction(
       else skipped++
     }
 
-    return { scanned: newFiles.length, ingested, skipped }
+    return { scanned: newFiles.length, ingested, skipped, rematched }
   },
 )

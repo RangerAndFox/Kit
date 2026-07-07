@@ -68,16 +68,37 @@ export async function determineStream(
   return 'team';
 }
 
+interface MatchableProject {
+  id: string;
+  name: string | null;
+  client: string | null;
+  project_code: string | null;
+}
+
+async function loadMatchableProjects(workspaceId: string): Promise<MatchableProject[]> {
+  const admin = createAdminClient();
+  const { data: projects } = await admin
+    .from('projects' as any)
+    .select('id, name, client, project_code, status')
+    .eq('workspace_id', workspaceId)
+    .eq('status', 'active');
+  // Placeholder rows ("Unknown") can never be a meaningful match.
+  return ((projects as any[]) || []).filter(
+    (p) => (p.name || '').trim().toLowerCase() !== 'unknown'
+  );
+}
+
 /**
- * Match a call to an existing project based on participants and title keywords
- * Uses fuzzy matching on participant emails and title
+ * Match a call to an existing project based on title keywords.
+ * Uses fuzzy matching on the title against project name / client / code.
  */
 export async function matchToProject(
   workspaceId: string,
-  participants: string[],
+  _participants: string[],
   title: string
 ): Promise<string | undefined> {
-  const admin = createAdminClient();
+  const projects = await loadMatchableProjects(workspaceId);
+  if (projects.length === 0) return undefined;
 
   // Extract keywords from title
   const titleWords = title
@@ -85,34 +106,20 @@ export async function matchToProject(
     .split(/\s+/)
     .filter((w) => w.length > 3 && !['call', 'meeting', 'with', 'the', 'and', 'for'].includes(w));
 
-  // Get all projects in workspace
-  const { data: projects } = await admin
-    .from('projects' as any)
-    .select('id, name, client_name, team_members')
-    .eq('workspace_id', workspaceId);
-
-  if (!projects || projects.length === 0) return undefined;
-
   let bestMatch: string | undefined;
   let bestScore = 0;
 
   for (const project of projects) {
     let score = 0;
-
-    // Check for participant overlap
-    const projectMembers = (project.team_members as string[]) || [];
-    const participantOverlap = participants.filter((p) =>
-      projectMembers.some((m) => p.includes(m) || m.includes(p))
-    ).length;
-    score += participantOverlap * 10;
-
-    // Check for name match
     const projectName = (project.name || '').toLowerCase();
-    const clientName = (project.client_name || '').toLowerCase();
+    const clientName = (project.client || '').toLowerCase();
+    const projectCode = (project.project_code || '').toLowerCase();
 
     for (const word of titleWords) {
-      if (projectName.includes(word) || clientName.includes(word)) {
+      if (projectName.includes(word) || (projectCode && projectCode.includes(word))) {
         score += 5;
+      } else if (clientName && clientName.includes(word)) {
+        score += 2;
       }
     }
 
@@ -124,6 +131,106 @@ export async function matchToProject(
 
   // Only return match if we have reasonable confidence (score >= 5)
   return bestScore >= 5 ? bestMatch : undefined;
+}
+
+/**
+ * Count how strongly a transcript talks about one project. Pure — tested.
+ * Name and code hits are strong signals; client alone is weak (nearly every
+ * R&F call mentions "Microsoft") so it only breaks ties.
+ */
+export function scoreProjectMentions(
+  text: string,
+  project: { name: string | null; client: string | null; project_code: string | null }
+): number {
+  const countOf = (needle: string): number => {
+    if (!needle || needle.length < 4) return 0;
+    let n = 0;
+    let idx = text.indexOf(needle);
+    while (idx !== -1) {
+      n++;
+      idx = text.indexOf(needle, idx + needle.length);
+    }
+    return n;
+  };
+  const name = (project.name || '').trim().toLowerCase();
+  const code = (project.project_code || '').trim().toLowerCase();
+  const client = (project.client || '').trim().toLowerCase();
+  return countOf(name) * 3 + countOf(code) * 5 + Math.min(countOf(client), 2);
+}
+
+/**
+ * Content-aware project matching for full transcripts (Drive/Plaud ingests).
+ *
+ * A transcript is attached to a project only when ONE project clearly
+ * dominates the conversation. Weekly/internal meetings that touch several
+ * projects stay workspace-level (null) — pinning them to one project at
+ * random would surface the wrong "last meeting" in briefings. Order:
+ *   1. Title names exactly one project → that project.
+ *   2. Mention counting over the transcript → accept a dominant winner.
+ *   3. Ambiguous (several projects discussed) → Haiku picks the PRIMARY
+ *      subject, or none. Non-fatal: any LLM failure degrades to null.
+ */
+export async function matchTranscriptToProject(opts: {
+  workspaceId: string;
+  title: string;
+  transcript: string;
+}): Promise<string | null> {
+  const projects = await loadMatchableProjects(opts.workspaceId);
+  if (projects.length === 0) return null;
+
+  const byTitle = await matchToProject(opts.workspaceId, [], opts.title);
+  if (byTitle) return byTitle;
+
+  const text = opts.transcript.slice(0, 60_000).toLowerCase();
+  const scored = projects
+    .map((p) => ({ p, score: scoreProjectMentions(text, p) }))
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  if (scored.length === 0) return null;
+  if (scored.length === 1 && scored[0].score >= 6) return scored[0].p.id;
+  if (scored.length > 1 && scored[0].score >= 9 && scored[0].score >= scored[1].score * 2) {
+    return scored[0].p.id;
+  }
+
+  // Multiple projects in play with no dominant one — let a small model judge
+  // whether the meeting is ABOUT one of them or just mentions them in passing.
+  try {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) return null;
+    const { default: Anthropic } = await import('@anthropic-ai/sdk');
+    const client = new Anthropic({ apiKey });
+    const candidates = scored
+      .slice(0, 6)
+      .map((s) => `${s.p.id} — ${s.p.name}${s.p.client ? ` (${s.p.client})` : ''}`)
+      .join('\n');
+    const res = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 100,
+      system:
+        'You classify meeting transcripts for a video production studio. Given candidate ' +
+        'projects and a transcript excerpt, decide whether the meeting is PRIMARILY about ' +
+        'exactly one of the candidates. Passing mentions, status roundups covering several ' +
+        'projects, or business-development calls are NOT a match. Respond with ONLY the ' +
+        'project id, or the word none.',
+      messages: [
+        {
+          role: 'user',
+          content: `Candidates:\n${candidates}\n\nMeeting title: ${opts.title || '(untitled)'}\n\nTranscript excerpt:\n${opts.transcript.slice(0, 4_000)}`,
+        },
+      ],
+    });
+    const answer = res.content
+      .filter((c: any) => c.type === 'text')
+      .map((c: any) => c.text)
+      .join('')
+      .trim();
+    const picked = scored.find((s) => answer.includes(s.p.id));
+    return picked ? picked.p.id : null;
+  } catch (err: any) {
+    console.warn('[call-classifier] LLM project match failed:', err?.message || err);
+    return null;
+  }
 }
 
 /**
