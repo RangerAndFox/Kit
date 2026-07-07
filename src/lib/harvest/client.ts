@@ -7,6 +7,8 @@
  *   HARVEST_ACCOUNT_ID    — your Harvest account ID
  */
 
+import { rankProjects } from './search'
+
 const BASE_URL = 'https://api.harvestapp.com/v2'
 
 function headers() {
@@ -167,17 +169,14 @@ export async function listProjects(activeOnly = true): Promise<HarvestProject[]>
 }
 
 /**
- * Search projects by name (case-insensitive partial match).
+ * Search projects by code, client, name, or keywords — fuzzy and
+ * separator-insensitive ("2611", "crunchy roll", "magic quadrant" all
+ * resolve). Returns a single project when one clearly wins, otherwise the
+ * plausible candidates best-first (see harvest/search.ts).
  */
 export async function searchProjects(query: string): Promise<HarvestProject[]> {
   const all = await listProjects(true)
-  const q = query.toLowerCase()
-  return all.filter(
-    (p) =>
-      p.name.toLowerCase().includes(q) ||
-      p.code.toLowerCase().includes(q) ||
-      p.client?.name.toLowerCase().includes(q)
-  )
+  return rankProjects(query, all)
 }
 
 /**

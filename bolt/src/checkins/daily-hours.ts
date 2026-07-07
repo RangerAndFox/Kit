@@ -2,13 +2,11 @@
 /**
  * Daily Hours Check-in
  *
- * Phase 1: Harvest-only signal.
- *
- * For each active creative in public.staff:
- *   1. Pull their Harvest time entries from the last 7 days.
- *   2. Rank projects by total hours logged (frequency × intensity).
- *   3. DM them with the top candidates + an open question for hours.
- *   4. Insert a daily_hours_checkins row tracking the conversation.
+ * For each staff member with the daily_checkin flag: DM an open question
+ * for today's hours and insert a daily_hours_checkins row tracking the
+ * conversation. No suggested-projects list (operator direction) — replies
+ * are free-form and the resolver fuzzy-matches project code, client name,
+ * or keywords.
  *
  * The reply is handled separately in handlers/messages.ts (intercepts
  * DMs from staff with an open check-in row).
@@ -16,12 +14,8 @@
 
 import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
-import {
-  listTimeEntriesForUser,
-  type HarvestTimeEntry,
-} from '../../../src/lib/harvest/client'
-import { checkinToday, checkinDateMinusDays, isWorkday } from './date'
-import { inferActiveProjectChannels, type ActiveChannel } from './slack-activity'
+import { checkinToday, isWorkday } from './date'
+import type { ActiveChannel } from './slack-activity'
 
 interface StaffRow {
   id: string
@@ -68,58 +62,21 @@ export function mergeCandidates(
 }
 
 /**
- * Build per-user candidate projects from Harvest time entries in the last
- * 7 days. Higher recent hours → higher rank. Returns top 5.
- */
-function rankCandidatesFromHarvest(entries: HarvestTimeEntry[]): CandidateProject[] {
-  const byProject = new Map<number, { name: string; hours: number }>()
-  for (const e of entries) {
-    const cur = byProject.get(e.project.id) || { name: e.project.name, hours: 0 }
-    cur.hours += e.hours
-    byProject.set(e.project.id, cur)
-  }
-  return [...byProject.entries()]
-    .map(([id, v]) => ({
-      harvest_project_id: id,
-      harvest_project_name: v.name,
-      signal_hours_last_7d: Math.round(v.hours * 10) / 10,
-      reasons: ['Harvest (last 7d)'],
-    }))
-    .sort((a, b) => b.signal_hours_last_7d - a.signal_hours_last_7d)
-    .slice(0, 5)
-}
-
-/**
  * Compose the DM body. Uses Slack mrkdwn (single-asterisk bold).
+ * Deliberately no suggested-projects list (operator direction): just ask.
+ * Project names in replies are fuzzy-matched — code, client, or keywords
+ * all resolve.
  */
-function composeDm(opts: {
-  firstName: string
-  candidates: CandidateProject[]
-}): string {
-  const { firstName, candidates } = opts
-  const intro = `:hourglass_flowing_sand: *Hours check-in for today*\n\nHey ${firstName} — quick log so we keep Harvest tidy.`
-  if (candidates.length === 0) {
-    return `${intro}\n\nI don't see any recent projects you've billed to. Reply with what you worked on today and how many hours, e.g. _"4h on Project Rayfin, 2h on IQ Sizzle"_.`
-  }
-  const lines = candidates.map((c, i) => {
-    const detail =
-      c.signal_hours_last_7d > 0
-        ? `${c.signal_hours_last_7d}h last 7 days`
-        : c.slack_channel_name
-          ? `active in #${c.slack_channel_name}`
-          : c.reasons[0] || 'recent activity'
-    return `  ${i + 1}. *${c.harvest_project_name}* — ${detail}`
-  })
+function composeDm(opts: { firstName: string }): string {
   return [
-    intro,
+    `:hourglass_flowing_sand: *Hours check-in for today*`,
     '',
-    'Based on your recent activity, your usual lately:',
-    ...lines,
+    `Hey ${opts.firstName} — quick log so we keep Harvest tidy.`,
     '',
-    'Reply with hours per project — natural language is fine. e.g.:',
-    '> _4h on Rayfin, 2.5h on IQ Sizzle, 1h internal_',
+    'Reply with hours per project — natural language is fine, and project codes, client names, or keywords all work. e.g.:',
+    '> _4h on Rayfin, 2h on 2611, 30 min on the crunchyroll expo_',
     '',
-    'Or `skip` if you didn\'t work today.',
+    "Or `skip` if you didn't work today.",
   ].join('\n')
 }
 
@@ -155,31 +112,8 @@ export async function sendDailyCheckin(opts: {
     return { status: 'skipped', reason: 'no harvest_user_id mapping' }
   }
 
-  // Pull last 7 days of Harvest entries.
-  const to = today
-  const from = checkinDateMinusDays(7)
-
-  let candidates: CandidateProject[] = []
-  try {
-    const entries = await listTimeEntriesForUser({
-      userId: staff.harvest_user_id,
-      from,
-      to,
-    })
-    candidates = rankCandidatesFromHarvest(entries)
-  } catch (err: any) {
-    console.warn(
-      `[daily-hours] Harvest fetch failed for ${staff.slack_user_id} (${staff.email}): ${err.message}`,
-    )
-    // Continue with empty candidates — user can still reply free-form.
-  }
-
-  // Enrich with live project channels the artist is active in but may not have
-  // billed to yet (best-effort; never blocks the check-in).
-  const active = await inferActiveProjectChannels({ app, slackUserId: staff.slack_user_id })
-  candidates = mergeCandidates(candidates, active)
-
-  // Open a DM channel and post the message.
+  // Open a DM channel and post the message. (No suggested-projects list —
+  // replies are free-form and the resolver fuzzy-matches code/client/name.)
   let dmChannelId: string
   let dmTs: string
   try {
@@ -188,7 +122,7 @@ export async function sendDailyCheckin(opts: {
     if (!dmChannelId) throw new Error('conversations.open returned no channel id')
 
     const firstName = (staff.full_name || '').split(/\s+/)[0] || 'there'
-    const text = composeDm({ firstName, candidates })
+    const text = composeDm({ firstName })
     const post = await app.client.chat.postMessage({ channel: dmChannelId, text })
     dmTs = post.ts || ''
     if (!dmTs) throw new Error('chat.postMessage returned no ts')
@@ -203,7 +137,7 @@ export async function sendDailyCheckin(opts: {
     check_in_date: today,
     status: 'sent',
     origin: 'scheduled',
-    candidate_projects: candidates,
+    candidate_projects: [],
     dm_channel_id: dmChannelId,
     dm_ts: dmTs,
   })
