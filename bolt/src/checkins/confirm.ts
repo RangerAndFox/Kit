@@ -94,13 +94,25 @@ export async function handleCheckinConfirm(opts: {
   // Claim the row (compare-and-set) BEFORE writing to Harvest. A plain
   // status check is a TOCTOU: two quick clicks (or a Slack action retry)
   // both pass it and every entry gets logged twice. Losing the claim means
-  // another click is already mid-flight — bail silently.
-  const { data: claimed } = await sb
+  // another click is already mid-flight — bail silently. A claim ERROR is
+  // different and must be loud: a status-constraint mismatch silently
+  // killed every confirm for days.
+  const { data: claimed, error: claimError } = await sb
     .from('daily_hours_checkins')
     .update({ status: 'logging', updated_at: new Date().toISOString() })
     .eq('id', checkin.id)
     .eq('status', 'parsed')
     .select('id')
+  if (claimError) {
+    console.error(`[checkin-confirm] claim write failed: ${claimError.message}`)
+    await postResult({
+      app,
+      channelId: checkin.dm_channel_id || '',
+      threadTs: checkin.dm_ts,
+      text: `:warning: Couldn't start logging (internal error: ${claimError.message}). Ping an admin.`,
+    })
+    return
+  }
   if (!claimed || claimed.length === 0) return
 
   const staff = await loadStaff(checkin.staff_id)
