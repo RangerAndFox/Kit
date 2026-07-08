@@ -19,6 +19,8 @@
 import { inngest } from './client'
 import { createAdminClient } from '../supabase/admin'
 import { scanDeliveryQueue, markFileNotified } from '../delivery/dropbox-watcher'
+import { isSrtFile } from '../delivery/subtitle-convert'
+import { processSrtFile } from '../delivery/subtitle-watcher'
 import {
   scanProjectSpecs,
   markSpecsNotified,
@@ -99,8 +101,69 @@ export const deliveryDropboxScan = inngest.createFunction(
     const newFiles = await step.run('scan', () => scanDeliveryQueue())
     if (newFiles.length === 0) return { scanned: 0 }
 
+    let notified = 0
+    let converted = 0
     for (const f of newFiles) {
       const name = f.path.split(/[\\/]/).pop() || f.path
+
+      // Generated caption siblings (.ttml/.vtt/.txt) — ours or hand-dropped.
+      // Consume silently: a "pick a profile" prompt for a caption file is
+      // noise, and our own uploads must never re-trigger the scanner.
+      if (/\.(ttml|vtt|txt)$/i.test(name)) {
+        await markFileNotified(f.dropbox_id)
+        continue
+      }
+
+      // SRT drop → generate TTML/VTT/TXT next to it (same basename)
+      // instead of prompting for a transcode profile.
+      if (isSrtFile(name)) {
+        const result = await step.run(`convert-srt-${f.dropbox_id}`, async () => {
+          await markFileNotified(f.dropbox_id) // never retry-loop a bad SRT
+          try {
+            const r = await processSrtFile({ path: f.path, sizeBytes: f.size_bytes })
+            return { ok: true as const, generated: r.generated, cueCount: r.cueCount }
+          } catch (err: any) {
+            return { ok: false as const, error: err.message }
+          }
+        })
+        if (result.ok) {
+          converted++
+          const siblings = result.generated
+            .map((p: string) => `\`${p.split(/[\\/]/).pop()}\``)
+            .join(', ')
+          await slackPost(
+            DEFAULT_NOTIFY_CHANNEL,
+            `Captions generated from ${name}`,
+            [
+              {
+                type: 'section',
+                text: {
+                  type: 'mrkdwn',
+                  text:
+                    `:speech_balloon: *Captions generated* from \`${name}\` (${result.cueCount} cues)\n` +
+                    `${siblings} dropped in the same folder.`,
+                },
+              },
+            ],
+          )
+        } else {
+          await slackPost(
+            DEFAULT_NOTIFY_CHANNEL,
+            `Caption conversion failed: ${name}`,
+            [
+              {
+                type: 'section',
+                text: {
+                  type: 'mrkdwn',
+                  text: `:warning: Couldn't convert \`${f.path}\` — ${result.error}`,
+                },
+              },
+            ],
+          )
+        }
+        continue
+      }
+
       const blocks = [
         {
           type: 'section',
@@ -119,9 +182,10 @@ export const deliveryDropboxScan = inngest.createFunction(
       // wasn't notified and can `/kit deliver <path>` manually.
       await markFileNotified(f.dropbox_id)
       await slackPost(DEFAULT_NOTIFY_CHANNEL, `New file: ${name}`, blocks)
+      notified++
     }
 
-    return { notified: newFiles.length }
+    return { notified, converted }
   },
 )
 
