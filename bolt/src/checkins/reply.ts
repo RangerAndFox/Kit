@@ -7,10 +7,9 @@
  *   1. Parses the natural-language reply with Claude Haiku into structured
  *      { projectQuery, hours, notes }[] entries.
  *   2. Resolves each projectQuery to a real Harvest project via search.
- *   3. Posts a confirmation Block Kit card with Confirm / Edit buttons.
+ *   3. Posts a confirmation card (text-only — reply "yes" to log, "redo"
+ *      to start over; Slack never delivered this app's button clicks).
  *   4. Stores parsed_entries on the check-in row, status='parsed'.
- *
- * The Confirm button is wired in handlers/interactions.ts.
  */
 
 import type { App } from '@slack/bolt'
@@ -250,7 +249,7 @@ export function buildConfirmBlocks(opts: {
   /** The check-in day; entries logged to a different day are labelled. */
   anchorDate?: string
 }) {
-  const { checkinId, entries, anchorDate } = opts
+  const { entries, anchorDate } = opts
   const dayLabel = (e: ParsedEntry) =>
     e.spentDate && e.spentDate !== anchorDate ? ` _[${formatShortDate(e.spentDate)}]_` : ''
   const lines = entries.map((e) => {
@@ -266,6 +265,10 @@ export function buildConfirmBlocks(opts: {
   })
   const allMatched = entries.every((e) => e.resolution === 'matched')
 
+  // Text-only confirmation — no buttons. Slack has never delivered this
+  // app's block_actions clicks (interactivity is on, socket healthy,
+  // events flow; clicks vanish), so buttons sat dead and read as broken.
+  // The typed path is the reliable one.
   return [
     {
       type: 'section',
@@ -280,37 +283,10 @@ export function buildConfirmBlocks(opts: {
         {
           type: 'mrkdwn',
           text: allMatched
-            ? 'Tap a button or just reply *yes* to log / *redo* to start over.'
+            ? 'Reply *yes* to log it, or *redo* to start over.'
             : 'Reply *redo* to start over, then resend your hours.',
         },
       ],
-    },
-    {
-      type: 'actions',
-      elements: allMatched
-        ? [
-            {
-              type: 'button',
-              text: { type: 'plain_text', text: '✅ Confirm & log' },
-              style: 'primary',
-              action_id: 'checkin_confirm',
-              value: checkinId,
-            },
-            {
-              type: 'button',
-              text: { type: 'plain_text', text: '✏️ Redo' },
-              action_id: 'checkin_redo',
-              value: checkinId,
-            },
-          ]
-        : [
-            {
-              type: 'button',
-              text: { type: 'plain_text', text: '✏️ Try again' },
-              action_id: 'checkin_redo',
-              value: checkinId,
-            },
-          ],
     },
   ]
 }
