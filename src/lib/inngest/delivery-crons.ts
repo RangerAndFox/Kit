@@ -18,7 +18,7 @@
 
 import { inngest } from './client'
 import { createAdminClient } from '../supabase/admin'
-import { scanDeliveryQueue, markFileNotified } from '../delivery/dropbox-watcher'
+import { scanDeliveryQueue, markFileNotified, resolveDeliveryChannel } from '../delivery/dropbox-watcher'
 import { isSrtFile } from '../delivery/subtitle-convert'
 import { processSrtFile } from '../delivery/subtitle-watcher'
 import {
@@ -94,9 +94,6 @@ export const deliveryDropboxScan = inngest.createFunction(
     if (!process.env.DROPBOX_ACCESS_TOKEN && !process.env.DROPBOX_REFRESH_TOKEN) {
       return { skipped: 'no_dropbox_token' }
     }
-    if (!DEFAULT_NOTIFY_CHANNEL) {
-      return { skipped: 'no_DELIVERY_NOTIFY_CHANNEL_ID' }
-    }
 
     const newFiles = await step.run('scan', () => scanDeliveryQueue())
     if (newFiles.length === 0) return { scanned: 0 }
@@ -105,6 +102,12 @@ export const deliveryDropboxScan = inngest.createFunction(
     let converted = 0
     for (const f of newFiles) {
       const name = f.path.split(/[\\/]/).pop() || f.path
+
+      // Deliveries are per-project (operator direction): the folder under
+      // /Delivery-Queue/ maps to the project's own Slack channel.
+      // DELIVERY_NOTIFY_CHANNEL_ID is an optional catch-all fallback.
+      const resolved = await resolveDeliveryChannel(f.path)
+      const channel = resolved.channelId || DEFAULT_NOTIFY_CHANNEL
 
       // Generated caption siblings (.ttml/.vtt/.txt) — ours or hand-dropped.
       // Consume silently: a "pick a profile" prompt for a caption file is
@@ -115,7 +118,8 @@ export const deliveryDropboxScan = inngest.createFunction(
       }
 
       // SRT drop → generate TTML/VTT/TXT next to it (same basename)
-      // instead of prompting for a transcode profile.
+      // instead of prompting for a transcode profile. Conversion happens
+      // regardless of whether a channel resolved — the files ARE the point.
       if (isSrtFile(name)) {
         const result = await step.run(`convert-srt-${f.dropbox_id}`, async () => {
           await markFileNotified(f.dropbox_id) // never retry-loop a bad SRT
@@ -132,7 +136,7 @@ export const deliveryDropboxScan = inngest.createFunction(
             .map((p: string) => `\`${p.split(/[\\/]/).pop()}\``)
             .join(', ')
           await slackPost(
-            DEFAULT_NOTIFY_CHANNEL,
+            channel,
             `Captions generated from ${name}`,
             [
               {
@@ -148,7 +152,7 @@ export const deliveryDropboxScan = inngest.createFunction(
           )
         } else {
           await slackPost(
-            DEFAULT_NOTIFY_CHANNEL,
+            channel,
             `Caption conversion failed: ${name}`,
             [
               {
@@ -164,13 +168,22 @@ export const deliveryDropboxScan = inngest.createFunction(
         continue
       }
 
+      if (!channel) {
+        // Nowhere to post. Do NOT mark notified — leave the file to prompt
+        // once its project channel is linked (or the fallback env is set).
+        console.warn(
+          `[delivery-scan] no Slack channel for ${f.path} — will retry (link the project channel or set DELIVERY_NOTIFY_CHANNEL_ID)`,
+        )
+        continue
+      }
+
       const blocks = [
         {
           type: 'section',
           text: {
             type: 'mrkdwn',
             text:
-              `:inbox_tray: *New file in /Delivery-Queue/*\n` +
+              `:inbox_tray: *New delivery file${resolved.projectName ? ` — ${resolved.projectName}` : ''}*\n` +
               `:paperclip: \`${f.path}\` (${fmtBytes(f.size_bytes)})\n` +
               `Run \`/kit deliver ${f.path}\` to pick a delivery profile and start a transcode.`,
           },
@@ -181,7 +194,7 @@ export const deliveryDropboxScan = inngest.createFunction(
       // where Slack post fails after the mark — operator will see the file
       // wasn't notified and can `/kit deliver <path>` manually.
       await markFileNotified(f.dropbox_id)
-      await slackPost(DEFAULT_NOTIFY_CHANNEL, `New file: ${name}`, blocks)
+      await slackPost(channel, `New file: ${name}`, blocks)
       notified++
     }
 
