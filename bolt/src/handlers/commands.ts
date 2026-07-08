@@ -498,6 +498,20 @@ export function registerCommandHandlers(app: App) {
             lines.push('Everyone active is already mapped. :white_check_mark:')
           }
 
+          // Ensure the whole team is assigned to every active Harvest
+          // project (studio policy — assignment friction blocks time entry).
+          try {
+            const { ensureAllUserAssignments } = await import('../../../src/lib/harvest/client')
+            const ass = await ensureAllUserAssignments()
+            lines.push(
+              ass.assigned > 0
+                ? `Harvest assignments: added ${ass.assigned} across ${ass.projects} active projects.`
+                : `Harvest assignments: everyone already on all ${ass.projects} active projects. :white_check_mark:`,
+            )
+          } catch (assErr: any) {
+            lines.push(`:warning: Harvest assignment sweep failed: ${assErr?.message || assErr}`)
+          }
+
           // Refresh everyone's timezone from their Slack profile while we're
           // here — check-in timing and date resolution are per-person.
           try {

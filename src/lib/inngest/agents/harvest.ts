@@ -10,6 +10,7 @@
 import {
   findOrCreateClient,
   createHarvestProject,
+  assignAllUsersToProject,
   listProjects,
   searchProjects,
   listProjectTasks,
@@ -20,7 +21,7 @@ import {
   getProjectBudgetReport,
 } from '@/lib/harvest/client'
 import { studioToday, studioDateMinusDays } from '@/lib/time/studio-date'
-import { staffTimezone } from '@/lib/staff/timezone'
+import { staffProfile } from '@/lib/staff/timezone'
 import type { AgentDefinition, AgentResult } from './types'
 
 // ─── Action Handlers ───────────────────────────────────────
@@ -39,18 +40,29 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       notes: (payload.briefSummary as string) || undefined,
     })
 
+    // Studio policy: everyone is assigned to every project, so time entry
+    // never hits Harvest's must-be-assigned rule. Non-fatal — the
+    // createTimeEntry self-heal covers any user this misses.
+    let teamAssigned = 0
+    try {
+      teamAssigned = (await assignAllUsersToProject(project.id)).assigned
+    } catch (err: any) {
+      console.warn(`[harvest] team assignment for new project ${project.id} failed: ${err.message}`)
+    }
+
     return {
       agent: 'harvest',
       action: 'provision',
       success: true,
       url: `https://rangerandfox.harvestapp.com/projects/${project.id}`,
       id: String(project.id),
-      message: `Created Harvest project "${project.name}" with ${project.task_assignments.length} tasks`,
+      message: `Created Harvest project "${project.name}" with ${project.task_assignments.length} tasks; assigned ${teamAssigned} team members`,
       data: {
         clientName: harvestClient.name,
         clientId: harvestClient.id,
         taskCount: project.task_assignments.length,
         tasks: project.task_assignments.map((ta: any) => ta.task.name),
+        teamAssigned,
       },
     }
   } catch (err: any) {
@@ -70,7 +82,7 @@ async function logTime(payload: Record<string, unknown>): Promise<AgentResult> {
     // the next day. The specialist LLM isn't told the current date, so
     // relative words are resolved here and non-dates / future dates fall
     // back to today.
-    const tz = await staffTimezone(payload.slackUserId as string)
+    const { timezone: tz, harvestUserId } = await staffProfile(payload.slackUserId as string)
     const rawDate = String(payload.date || '').trim().toLowerCase()
     const today = studioToday(new Date(), tz)
     let date: string
@@ -111,12 +123,15 @@ async function logTime(payload: Record<string, unknown>): Promise<AgentResult> {
       taskId = defaultTask.id
     }
 
+    // Attribute to the LOGGER — without user_id Harvest books the entry
+    // to the API token owner, i.e. someone else's timesheet.
     const entry = await createTimeEntry({
       projectId: project.id,
       taskId,
       hours,
       spentDate: date,
       notes,
+      userId: harvestUserId || undefined,
     })
 
     return {

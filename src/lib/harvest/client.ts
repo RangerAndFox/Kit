@@ -396,8 +396,7 @@ export async function createTimeEntry(opts: {
   if (opts.notes) body.notes = opts.notes
   if (opts.userId) body.user_id = opts.userId
 
-  const data = await harvestPost('/time_entries', body)
-  return {
+  const mapEntry = (data: any): HarvestTimeEntry => ({
     id: data.id,
     project: { id: data.project.id, name: data.project.name },
     task: { id: data.task.id, name: data.task.name },
@@ -405,6 +404,19 @@ export async function createTimeEntry(opts: {
     hours: data.hours,
     spent_date: data.spent_date,
     notes: data.notes || '',
+  })
+
+  try {
+    return mapEntry(await harvestPost('/time_entries', body))
+  } catch (err: any) {
+    // Harvest rejects entries for users not assigned to the project.
+    // Self-heal: assign and retry once, so time logging never has
+    // assignment friction (studio policy: everyone on every project).
+    if (!/assign/i.test(err?.message || '')) throw err
+    const userId = opts.userId ?? (await harvestGet('/users/me'))?.id
+    if (!userId) throw err
+    await assignUserToProject({ projectId: opts.projectId, userId })
+    return mapEntry(await harvestPost('/time_entries', body))
   }
 }
 
@@ -509,4 +521,56 @@ export async function assignUserToProject(opts: {
   if (opts.hourlyRate != null) body.hourly_rate = opts.hourlyRate
   const data = await harvestPost(`/projects/${opts.projectId}/user_assignments`, body)
   return { id: data.id, user_id: data.user.id, project_id: opts.projectId }
+}
+
+/**
+ * Assign every active Harvest user to a project (skips existing
+ * assignments). Studio policy: the whole team is on every project so time
+ * entry never hits Harvest's must-be-assigned rule.
+ */
+export async function assignAllUsersToProject(
+  projectId: number,
+): Promise<{ assigned: number; already: number }> {
+  const users = await listUsers()
+  const existing = await harvestGet(`/projects/${projectId}/user_assignments`, {
+    is_active: 'true',
+    per_page: '100',
+  })
+  const have = new Set(
+    (existing.user_assignments || []).map((ua: any) => ua.user?.id).filter(Boolean),
+  )
+  let assigned = 0
+  let already = 0
+  for (const u of users) {
+    if (have.has(u.id)) {
+      already++
+      continue
+    }
+    try {
+      await harvestPost(`/projects/${projectId}/user_assignments`, { user_id: u.id })
+      assigned++
+    } catch (err: any) {
+      console.warn(
+        `[harvest] assign user ${u.id} to project ${projectId} failed: ${err.message}`,
+      )
+    }
+  }
+  return { assigned, already }
+}
+
+/**
+ * Backfill: assign every active user to every active project. Idempotent —
+ * run any time (wired into /kit sync-staff).
+ */
+export async function ensureAllUserAssignments(): Promise<{
+  projects: number
+  assigned: number
+}> {
+  const projects = await listProjects(true)
+  let assigned = 0
+  for (const p of projects) {
+    const r = await assignAllUsersToProject(p.id)
+    assigned += r.assigned
+  }
+  return { projects: projects.length, assigned }
 }
