@@ -84,7 +84,11 @@ export async function handleCheckinConfirm(opts: {
 }): Promise<void> {
   const { app, checkinId } = opts
   const checkin = await loadCheckin(checkinId)
-  if (!checkin) return
+  if (!checkin) {
+    console.warn(`[checkin-confirm] checkin ${checkinId} not found`)
+    return
+  }
+  console.log(`[checkin-confirm] confirming ${checkinId} (status=${checkin.status})`)
 
   const entries = Array.isArray(checkin.parsed_entries) ? checkin.parsed_entries : []
   if (entries.length === 0) return
@@ -163,24 +167,32 @@ export async function handleCheckinConfirm(opts: {
     }
   }
 
-  // Update row
+  const entryIds = logged.map((e) => e.id)
+  console.log(
+    `[checkin-confirm] ${checkin.id}: created ${logged.length} Harvest entr(ies) [${entryIds.join(', ')}], ${failures.length} failure(s)`,
+  )
+
+  // Update row — store the real Harvest entry ids so a "logged" status is
+  // verifiable (and any hand-entered duplicate is traceable back to these).
   await sb
     .from('daily_hours_checkins')
     .update({
       status: failures.length === 0 ? 'logged' : 'failed',
       logged_at: new Date().toISOString(),
+      harvest_entry_ids: entryIds.length ? entryIds : null,
       error_message: failures.length ? failures.join('; ') : null,
       updated_at: new Date().toISOString(),
     })
     .eq('id', checkin.id)
 
-  // Reply with the result
+  // Reply with the result — cite the Harvest entry id per line so the write
+  // is verifiable in Harvest (heads off "did it actually log?" re-entry).
   const summary = logged
-    .map((e) => `• *${e.hours}h* — ${e.project.name} (${e.task.name})`)
+    .map((e) => `• *${e.hours}h* — ${e.project.name} (${e.task.name}) — Harvest #${e.id}`)
     .join('\n')
   let text: string
   if (failures.length === 0) {
-    text = `:white_check_mark: Logged to Harvest:\n${summary}`
+    text = `:white_check_mark: *Logged to Harvest* — you're all set, no need to enter these manually.\n${summary}`
   } else if (logged.length === 0) {
     text = `:x: Couldn't log any entries:\n• ${failures.join('\n• ')}`
   } else {

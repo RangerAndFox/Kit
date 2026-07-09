@@ -133,7 +133,20 @@ export async function handleParsedCheckinText(opts: {
   const decision = parseConfirmDecision(opts.replyText)
   if (!decision) return false
   const parsedRow = await findParsedCheckin(opts.slackUserId)
-  if (!parsedRow) return false
+  console.log(
+    `[checkin-confirm] typed "${opts.replyText.slice(0, 20)}" from ${opts.slackUserId} → decision=${decision}, parsedRow=${parsedRow?.id || 'none'}`,
+  )
+  if (!parsedRow) {
+    // Decision word but no pending check-in: tell them, so a lost "yes"
+    // doesn't just vanish into the orchestrator.
+    await opts.app.client.chat
+      .postMessage({
+        channel: opts.slackUserId,
+        text: "I don't have a pending hours check-in to confirm right now.",
+      })
+      .catch(() => {})
+    return true
+  }
   if (decision === 'confirm') {
     await handleCheckinConfirm({
       app: opts.app,

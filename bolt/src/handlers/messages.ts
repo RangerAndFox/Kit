@@ -354,6 +354,9 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
     // Parsed check-in awaiting confirmation: a typed "yes"/"redo" completes
     // it — the buttons' click events travel a Slack path that has proven
     // unreliable, so the flow can't depend on them.
+    console.log(
+      `[checkin] DM from ${userId} (channelType=${channelType}, hasAssistantThread=${!!assistantThreadTs}) text="${messageText.slice(0, 24)}" — checking parsed-confirm`,
+    )
     const confirmed = await handleParsedCheckinText({
       app,
       slackUserId: userId,
