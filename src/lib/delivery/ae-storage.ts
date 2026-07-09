@@ -134,33 +134,49 @@ export async function submitAeRender(req: AeRenderRequest): Promise<AeRenderSumm
 
 /**
  * Render a project straight from its own After Effects render queue. The
- * submitter supplies only the .aep path — Kit can't open the project, so it
- * creates a parent tracker + an `ae_inspect` job that an AE-capable worker runs
- * to read the render queue and fan out the chunks (see ae-processor.ts).
+ * submitter supplies only the .aep path — Kit can't open the project, so the
+ * queue is read downstream.
+ *
+ * Two backends (selected by RENDER_BACKEND, default 'kit-worker'):
+ *   • kit-worker — creates the parent + an `ae_inspect` job that an AE-capable
+ *     worker runs to read the queue and fan out chunks (see ae-processor.ts).
+ *   • deadline   — creates just the parent (render_backend='deadline'); the
+ *     kit-deadline-relay reads the queue and submits Deadline jobs.
  */
 export async function submitAeRenderFromProject(req: {
   projectPath: string
   requestedBy: string
   slackChannel?: string
   slackThreadTs?: string
-}): Promise<{ parent: any; inspect: any }> {
+}): Promise<{ parent: any; inspect: any; backend: string }> {
   const sb = createAdminClient()
+  const backend = process.env.RENDER_BACKEND === 'deadline' ? 'deadline' : 'kit-worker'
 
   const { data: parent, error: parentErr } = await sb
     .from('render_jobs')
     .insert({
       job_type: 'ae_render',
       status: 'processing',
+      render_backend: backend,
       requested_by: req.requestedBy,
       slack_channel: req.slackChannel ?? null,
       slack_thread_ts: req.slackThreadTs ?? null,
       source_files: [{ path: req.projectPath, type: 'video', size_bytes: 0 }],
       ae_project_path: req.projectPath,
-      progress_message: 'Waiting for an AE worker to read the render queue...',
+      progress_message:
+        backend === 'deadline'
+          ? 'Waiting for the Deadline relay to read the render queue...'
+          : 'Waiting for an AE worker to read the render queue...',
     } as any)
     .select('*')
     .single()
   if (parentErr) throw new Error(`submitAeRenderFromProject(parent): ${parentErr.message}`)
+
+  // The Deadline relay reads the queue + submits jobs itself, so it needs no
+  // ae_inspect row. The kit-worker backend does.
+  if (backend === 'deadline') {
+    return { parent, inspect: null, backend }
+  }
 
   const { data: inspect, error: inspectErr } = await sb
     .from('render_jobs')
@@ -178,7 +194,31 @@ export async function submitAeRenderFromProject(req: {
     .single()
   if (inspectErr) throw new Error(`submitAeRenderFromProject(inspect): ${inspectErr.message}`)
 
-  return { parent, inspect }
+  return { parent, inspect, backend }
+}
+
+/** Parents that need the Deadline relay to submit them (backend=deadline, unclaimed). */
+export async function claimDeadlineParent(relayHost: string): Promise<any | null> {
+  const sb = createAdminClient()
+  const { data: candidates } = await sb
+    .from('render_jobs')
+    .select('id')
+    .eq('job_type', 'ae_render')
+    .eq('render_backend', 'deadline')
+    .eq('status', 'processing')
+    .is('claimed_by', null)
+    .order('created_at', { ascending: true })
+    .limit(1)
+  if (!candidates || candidates.length === 0) return null
+
+  const { data: claimed } = await sb
+    .from('render_jobs')
+    .update({ claimed_by: relayHost, claimed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .eq('id', candidates[0].id)
+    .is('claimed_by', null)
+    .select('*')
+    .maybeSingle()
+  return claimed || null
 }
 
 export interface AeRenderStatus {

@@ -193,6 +193,40 @@ The `delivery` agent also exposes this conversationally:
 > output module / render settings) and save the project before submitting. Kit
 > renders exactly what's queued.
 
+## Backend: Deadline (for studios already running a Deadline farm)
+
+Kit's render backend is pluggable (`RENDER_BACKEND` env, default `kit-worker`).
+Set `RENDER_BACKEND=deadline` and `/kit render` hands work to an existing
+Thinkbox/AWS **Deadline** farm instead of Kit's own worker fleet — no per-box
+worker install, because Deadline's Workers are already on every node.
+
+```
+/kit render (modal)  ──▶  Kit inserts an ae_render parent (render_backend='deadline')
+        ▼
+kit-deadline-relay ─── ONE studio box; claims the parent
+        │   reads the render queue (AfterFX -r inspect.jsx), then per queued comp:
+        │   deadlinecommand -SubmitJob  (image seq → ChunkSize split; movie → whole)
+        ▼
+Deadline farm ─── its Workers render the comps (AfterEffects plugin → aerender)
+        ▼
+relay polls deadlinecommand -GetJob ─── rolls status → Supabase → /kit render status
+```
+
+- **No new tables.** Migration `034` adds `render_backend` + a `deadline_jobs`
+  jsonb (the per-comp JobIDs) to `render_jobs`.
+- **The relay is one small Node service** (`kit-deadline-relay/`) on a box that
+  has `deadlinecommand`, After Effects (to read the queue), and share access.
+- **Settings honored** the same way: submission sets `Comp`, `Version`, and an
+  `Output` redirected to `<projectDir>/render/<comp>/`; Deadline frame-splits via
+  the job's `Frames` + `ChunkSize`.
+- **Path mapping**: `DEADLINE_PATH_MAP` converts Kit's Dropbox paths to the farm
+  share (e.g. `/Projects=>\\thewire\projects`) before submission.
+
+**Deadline setup notes:** every render node needs After Effects (or the AE Render
+Engine) + the Deadline AfterEffects plugin; make an AE-only pool/group so renders
+only target capable nodes; and confirm the plugin knows your AE version (older
+Deadline AE plugins top out at CC 2022 — update the plugin for AE 2023+).
+
 ## Edge cases & gotchas
 
 - **Temporal-dependency effects** (motion blur, frame blending, particle sims with
