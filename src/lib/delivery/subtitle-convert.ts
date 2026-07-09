@@ -117,8 +117,34 @@ export function isSrtFile(name: string): boolean {
   return /\.srt$/i.test(name)
 }
 
-/** "/path/Spot_V2.srt" → { ttml: "/path/Spot_V2.ttml", vtt: ..., txt: ... } */
+/** Render a format token matching the case of the "srt" it replaces. */
+function casedToken(fmt: string, matched: string): string {
+  if (matched === matched.toUpperCase()) return fmt.toUpperCase()
+  if (matched === matched.toLowerCase()) return fmt.toLowerCase()
+  return fmt.charAt(0).toUpperCase() + fmt.slice(1) // Title-case (e.g. "Srt" → "Ttml")
+}
+
+/**
+ * Replace a standalone "srt" token in the file stem with the target format,
+ * so `Spot_SRT.srt` → `Spot_TTML.ttml`. Only whole tokens (bounded by
+ * non-letters or ends) are swapped, so words that merely contain the
+ * letters are left alone. Case is preserved from the matched token.
+ */
+function retokenizeStem(stem: string, fmt: string): string {
+  return stem.replace(/(?<![A-Za-z])srt(?![A-Za-z])/gi, (m) => casedToken(fmt, m))
+}
+
+/**
+ * "/path/Spot_V2.srt" → { ttml: "/path/Spot_V2.ttml", … }, and
+ * "/path/Spot_SRT.srt" → { ttml: "/path/Spot_TTML.ttml", … } — an "SRT"
+ * token in the name is rewritten to the format. Only the final path
+ * segment is touched, never parent folder names.
+ */
 export function siblingPaths(srtPath: string): { ttml: string; vtt: string; txt: string } {
-  const base = srtPath.replace(/\.srt$/i, '')
-  return { ttml: `${base}.ttml`, vtt: `${base}.vtt`, txt: `${base}.txt` }
+  const slash = srtPath.lastIndexOf('/')
+  const dir = slash >= 0 ? srtPath.slice(0, slash + 1) : ''
+  const file = slash >= 0 ? srtPath.slice(slash + 1) : srtPath
+  const stem = file.replace(/\.srt$/i, '')
+  const make = (fmt: string) => `${dir}${retokenizeStem(stem, fmt)}.${fmt}`
+  return { ttml: make('ttml'), vtt: make('vtt'), txt: make('txt') }
 }

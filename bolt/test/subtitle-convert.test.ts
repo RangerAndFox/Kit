@@ -107,4 +107,26 @@ describe('file naming', () => {
       txt: '/Delivery-Queue/Acme/Spot_V2.txt',
     })
   })
+
+  it('rewrites an uppercase SRT token in the name to the format', () => {
+    expect(siblingPaths('/p/Spot_SRT.srt')).toEqual({
+      ttml: '/p/Spot_TTML.ttml',
+      vtt: '/p/Spot_VTT.vtt',
+      txt: '/p/Spot_TXT.txt',
+    })
+  })
+
+  it('preserves the token case (lowercase / title-case)', () => {
+    expect(siblingPaths('/p/spot_srt_final.srt').txt).toBe('/p/spot_txt_final.txt')
+    expect(siblingPaths('/p/Spot_Srt.srt').ttml).toBe('/p/Spot_Ttml.ttml')
+  })
+
+  it('only swaps whole tokens, not letters inside a word', () => {
+    // "assort" contains s-r-t only as part of a word — leave it
+    expect(siblingPaths('/p/assort_SRT.srt').vtt).toBe('/p/assort_VTT.vtt')
+  })
+
+  it('does not touch parent folder names containing srt-like text', () => {
+    expect(siblingPaths('/srt-files/Spot.srt').ttml).toBe('/srt-files/Spot.ttml')
+  })
 })
