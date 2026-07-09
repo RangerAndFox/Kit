@@ -1,18 +1,18 @@
-# Kit Render Worker — install script
+# Kit Render Worker - install script
 #
 # Usage: .\install.ps1
 #
 # Prompts for worker role, priority, Dropbox sync path, FFmpeg location,
 # then writes .env and registers the worker in Supabase (via first heartbeat
 # when the worker is started). Does NOT install as a Windows service by
-# default — operator can do that via NSSM, sc.exe, or Task Scheduler.
+# default - operator can do that via NSSM, sc.exe, or Task Scheduler.
 
 $ErrorActionPreference = "Stop"
 
 Write-Host ""
-Write-Host "═══════════════════════════════════════════════════════"
-Write-Host " Kit Render Worker — Installer"
-Write-Host "═══════════════════════════════════════════════════════"
+Write-Host "======================================================="
+Write-Host " Kit Render Worker - Installer"
+Write-Host "======================================================="
 Write-Host ""
 
 # Pre-flight: FFmpeg
@@ -54,7 +54,7 @@ if ($aerenderPath -eq "none") { $aerenderPath = "" }
 if ($aerenderPath) {
     Write-Host "This machine will be AE-capable (renders aerender chunks)." -ForegroundColor Green
 } else {
-    Write-Host "No aerender — this machine runs transcode + stitch jobs only." -ForegroundColor Yellow
+    Write-Host "No aerender - this machine runs transcode + stitch jobs only." -ForegroundColor Yellow
 }
 
 # Write .env
@@ -86,7 +86,7 @@ npm install
 Pop-Location
 
 Write-Host ""
-Write-Host "═══════════════════════════════════════════════════════"
+Write-Host "======================================================="
 Write-Host " Setup complete."
 Write-Host ""
 Write-Host " To start the worker:"
@@ -96,4 +96,4 @@ Write-Host ""
 Write-Host " To run as a Windows service, recommended options:"
 Write-Host "   - NSSM:           https://nssm.cc/  (free, easiest)"
 Write-Host "   - Task Scheduler: at logon, run 'npm start' from this folder"
-Write-Host "═══════════════════════════════════════════════════════"
+Write-Host "======================================================="

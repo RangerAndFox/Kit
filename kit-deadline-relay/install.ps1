@@ -1,4 +1,4 @@
-# Kit Deadline Relay — install script
+# Kit Deadline Relay - install script
 #
 # Run on ONE studio machine that has: the Deadline client (deadlinecommand),
 # After Effects (to read render queues), and access to the project share.
@@ -8,9 +8,9 @@
 $ErrorActionPreference = "Stop"
 
 Write-Host ""
-Write-Host "═══════════════════════════════════════════════════════"
-Write-Host " Kit Deadline Relay — Installer"
-Write-Host "═══════════════════════════════════════════════════════"
+Write-Host "======================================================="
+Write-Host " Kit Deadline Relay - Installer"
+Write-Host "======================================================="
 Write-Host ""
 
 # Pre-flight: locate deadlinecommand
@@ -31,9 +31,9 @@ $supabaseUrl = Read-Host "SUPABASE_URL"
 $supabaseKey = Read-Host "SUPABASE_SERVICE_ROLE_KEY" -AsSecureString
 $supabaseKeyPlain = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($supabaseKey))
 
-$plugin = Read-Host "Deadline plugin (default: AfterEffects; use KitAfterEffects for a custom AE 2026 overlay)"; if ([string]::IsNullOrWhiteSpace($plugin)) { $plugin = "AfterEffects" }
+$plugin = Read-Host "Deadline plugin (default: KitAfterEffects, the AE 2026 overlay; or AfterEffects for stock)"; if ([string]::IsNullOrWhiteSpace($plugin)) { $plugin = "KitAfterEffects" }
 $pool = Read-Host "Deadline pool (default: none)"; if ([string]::IsNullOrWhiteSpace($pool)) { $pool = "none" }
-$group = Read-Host "Dedicated AE group (default: kit_ae) — must NOT be a C4D group"; if ([string]::IsNullOrWhiteSpace($group)) { $group = "kit_ae" }
+$group = Read-Host "Dedicated AE group (default: kit_ae) - must NOT be a C4D group"; if ([string]::IsNullOrWhiteSpace($group)) { $group = "kit_ae" }
 $priority = Read-Host "Priority 0-100 (default: 50)"; if ([string]::IsNullOrWhiteSpace($priority)) { $priority = "50" }
 $aeVer = Read-Host "AE version for Deadline (AE 2026 = 26.0)"; if ([string]::IsNullOrWhiteSpace($aeVer)) { $aeVer = "26.0" }
 $chunk = Read-Host "Frames per Deadline task for sequences (default: 10)"; if ([string]::IsNullOrWhiteSpace($chunk)) { $chunk = "10" }
@@ -71,9 +71,9 @@ npm install
 Pop-Location
 
 Write-Host ""
-Write-Host "═══════════════════════════════════════════════════════"
+Write-Host "======================================================="
 Write-Host " Setup complete."
 Write-Host ""
 Write-Host " Start the relay:   npm start"
 Write-Host " Then set RENDER_BACKEND=deadline in Kit's Railway env."
-Write-Host "═══════════════════════════════════════════════════════"
+Write-Host "======================================================="
