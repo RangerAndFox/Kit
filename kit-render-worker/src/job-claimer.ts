@@ -24,12 +24,39 @@ import { readSystemSnapshot } from './system/cpu-monitor'
 
 export interface ClaimedJob {
   id: string
+  job_type: 'transcode' | 'ae_inspect' | 'ae_chunk' | 'ae_stitch'
   source_files: any[]
   profile_snapshot: any
   naming_fields: Record<string, string> | null
+  requested_by: string | null
   slack_channel: string | null
   slack_thread_ts: string | null
+
+  // AE chunk / stitch fields (null on plain transcode jobs)
+  parent_job_id: string | null
+  chunk_index: number | null
+  chunk_count: number | null
+  frame_start: number | null
+  frame_end: number | null
+  total_frames: number | null
+  frame_rate: string | null
+  ae_project_path: string | null
+  ae_comp: string | null
+  ae_render_settings_template: string | null
+  ae_output_module_template: string | null
+  ae_output_pattern: string | null
+  ae_output_dir: string | null
+  ae_rqindex: number | null
+  ae_is_movie: boolean | null
+  delivery_profile_id: string | null
+  output_filename: string | null
 }
+
+const CLAIM_FIELDS =
+  'id, job_type, source_files, profile_snapshot, naming_fields, requested_by, slack_channel, slack_thread_ts, ' +
+  'parent_job_id, chunk_index, chunk_count, frame_start, frame_end, total_frames, frame_rate, ' +
+  'ae_project_path, ae_comp, ae_render_settings_template, ae_output_module_template, ' +
+  'ae_output_pattern, ae_output_dir, ae_rqindex, ae_is_movie, delivery_profile_id, output_filename'
 
 export async function tryClaimJob(): Promise<ClaimedJob | null> {
   // Fallback workers: pre-flight system checks
@@ -47,11 +74,19 @@ export async function tryClaimJob(): Promise<ClaimedJob | null> {
     ? null
     : new Date(Date.now() - config.fallbackDelaySeconds * 1000).toISOString()
 
-  // Find oldest pending job
+  // Which job types may this worker run? AE chunks need an aerender binary;
+  // every worker can run transcode + stitch (both FFmpeg). The 'ae_render'
+  // parent row is a tracker and is never pending, so it's excluded implicitly.
+  const claimableTypes = config.aeCapable
+    ? ['transcode', 'ae_inspect', 'ae_chunk', 'ae_stitch']
+    : ['transcode', 'ae_stitch']
+
+  // Find oldest pending job of a type this worker can run
   let query = supabase
     .from('render_jobs')
     .select('id')
     .eq('status', 'pending')
+    .in('job_type', claimableTypes)
     .order('created_at', { ascending: true })
     .limit(1)
   if (ageThresholdIso) {
@@ -74,7 +109,7 @@ export async function tryClaimJob(): Promise<ClaimedJob | null> {
     })
     .eq('id', candidateId)
     .eq('status', 'pending')
-    .select('id, source_files, profile_snapshot, naming_fields, slack_channel, slack_thread_ts')
+    .select(CLAIM_FIELDS)
     .maybeSingle()
 
   if (claimErr) {

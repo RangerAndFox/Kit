@@ -1,0 +1,21 @@
+{
+  "name": "kit-deadline-relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Bridges Kit's render queue to an existing Thinkbox/AWS Deadline farm. Reads a project's After Effects render queue, submits one Deadline job per queued comp, and reports progress back to Supabase.",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc",
+    "start": "tsx src/index.ts",
+    "start:prod": "node dist/index.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.46.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "@types/node": "^20.14.0"
+  }
+}

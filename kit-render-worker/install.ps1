@@ -1,18 +1,18 @@
-# Kit Render Worker — install script
+# Kit Render Worker - install script
 #
 # Usage: .\install.ps1
 #
 # Prompts for worker role, priority, Dropbox sync path, FFmpeg location,
 # then writes .env and registers the worker in Supabase (via first heartbeat
 # when the worker is started). Does NOT install as a Windows service by
-# default — operator can do that via NSSM, sc.exe, or Task Scheduler.
+# default - operator can do that via NSSM, sc.exe, or Task Scheduler.
 
 $ErrorActionPreference = "Stop"
 
 Write-Host ""
-Write-Host "═══════════════════════════════════════════════════════"
-Write-Host " Kit Render Worker — Installer"
-Write-Host "═══════════════════════════════════════════════════════"
+Write-Host "======================================================="
+Write-Host " Kit Render Worker - Installer"
+Write-Host "======================================================="
 Write-Host ""
 
 # Pre-flight: FFmpeg
@@ -45,6 +45,18 @@ if ([string]::IsNullOrWhiteSpace($dropboxPath)) { $dropboxPath = "D:\Dropbox" }
 $ffmpegPath = Read-Host "FFmpeg path (default: ffmpeg)"
 if ([string]::IsNullOrWhiteSpace($ffmpegPath)) { $ffmpegPath = "ffmpeg" }
 
+# After Effects render farm (optional). Auto-detect a common install path.
+$aerenderGuess = (Get-ChildItem "C:\Program Files\Adobe\Adobe After Effects *\Support Files\aerender.exe" -ErrorAction SilentlyContinue | Select-Object -Last 1).FullName
+$aerenderPrompt = if ($aerenderGuess) { "aerender path (Enter to use detected: $aerenderGuess, or 'none')" } else { "aerender path (Enter to skip if no After Effects on this machine)" }
+$aerenderPath = Read-Host $aerenderPrompt
+if ([string]::IsNullOrWhiteSpace($aerenderPath)) { $aerenderPath = $aerenderGuess }
+if ($aerenderPath -eq "none") { $aerenderPath = "" }
+if ($aerenderPath) {
+    Write-Host "This machine will be AE-capable (renders aerender chunks)." -ForegroundColor Green
+} else {
+    Write-Host "No aerender - this machine runs transcode + stitch jobs only." -ForegroundColor Yellow
+}
+
 # Write .env
 $envFile = Join-Path $PSScriptRoot ".env"
 @"
@@ -55,6 +67,7 @@ WORKER_ROLE=$role
 WORKER_PRIORITY=$priority
 DROPBOX_SYNC_PATH=$dropboxPath
 FFMPEG_PATH=$ffmpegPath
+AERENDER_PATH=$aerenderPath
 CPU_THRESHOLD=50
 MIN_DISK_FREE_GB=10
 HEARTBEAT_INTERVAL_MS=10000
@@ -73,7 +86,7 @@ npm install
 Pop-Location
 
 Write-Host ""
-Write-Host "═══════════════════════════════════════════════════════"
+Write-Host "======================================================="
 Write-Host " Setup complete."
 Write-Host ""
 Write-Host " To start the worker:"
@@ -83,4 +96,4 @@ Write-Host ""
 Write-Host " To run as a Windows service, recommended options:"
 Write-Host "   - NSSM:           https://nssm.cc/  (free, easiest)"
 Write-Host "   - Task Scheduler: at logon, run 'npm start' from this folder"
-Write-Host "═══════════════════════════════════════════════════════"
+Write-Host "======================================================="

@@ -23,6 +23,8 @@ import { buildSelectProfileModal } from '../delivery/select-profile-modal'
 import { buildCreateProfileModal } from '../delivery/create-profile-modal'
 import { renderJobsStatusBlocks, renderWorkersStatusBlocks } from '../delivery/status'
 import { setWorkerOptOut, setWorkerOptIn, listProfiles } from '../../../src/lib/delivery/storage'
+import { listAeRenders, getAeRenderStatus } from '../../../src/lib/delivery/ae-storage'
+import { buildRenderModal } from '../delivery/render-modal'
 
 /**
  * Resolve the Slack user's Kit access context for a slash command.
@@ -222,6 +224,44 @@ export function registerCommandHandlers(app: App) {
             blocks,
             text: 'Render worker status',
           })
+        }
+        break
+      }
+
+      // ── After Effects render farm ───────────────────────────
+      case 'render': {
+        const raw = (args || '').trim()
+
+        // `/kit render status` — recent render-farm jobs
+        if (raw.toLowerCase() === 'status') {
+          await ack()
+          const renders = await listAeRenders(10)
+          if (renders.length === 0) {
+            await respond({ response_type: 'ephemeral', text: 'No After Effects renders yet. Run `/kit render` to start one.' })
+            break
+          }
+          const lines = await Promise.all(
+            renders.map(async (r: any) => {
+              const st = await getAeRenderStatus(r.id)
+              const label = r.ae_comp || (r.ae_project_path ? r.ae_project_path.split('/').pop() : 'render')
+              const done = st && st.chunksTotal ? ` (${st.chunksComplete}/${st.chunksTotal} chunks · ${st.percent}%)` : ''
+              return `• *${label}* — ${r.status}${done}`
+            }),
+          )
+          await respond({ response_type: 'ephemeral', text: `*After Effects renders*\n${lines.join('\n')}` })
+          break
+        }
+
+        // Otherwise open the render modal (prefill the .aep path if one was typed).
+        await ack()
+        try {
+          await client.views.open({
+            trigger_id: command.trigger_id,
+            view: buildRenderModal({ projectPath: raw || undefined, channelId: command.channel_id }),
+          })
+        } catch (err: any) {
+          console.error('[Bolt] /kit render failed:', err.data?.error || err.message)
+          await respond({ response_type: 'ephemeral', text: `Couldn't open the render modal: ${err.data?.error || err.message}` })
         }
         break
       }
@@ -652,6 +692,7 @@ export function registerCommandHandlers(app: App) {
             '`/kit deliver [path]` — Submit a transcode job (or run `/kit deliver status` for queue)\n' +
             '`/kit profiles` — List delivery profiles · `/kit profiles create` to add one\n' +
             '`/kit workers` — Show render worker fleet · `opt-out <host>` / `opt-in <host>`\n' +
+            '`/kit render` — Render an After Effects project on the farm (reads its render queue; `/kit render status` for jobs)\n' +
             '`/kit access status` — Status of accessibility jobs (captions + DV)\n' +
             '`/kit brain` — Open or refresh this channel\'s living project brain (producer/admin only)\n' +
             '`/kit brain why <claim>` — Show the sources behind a fact in the brain\n' +

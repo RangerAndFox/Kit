@@ -22,8 +22,17 @@ import { runLoudnessAnalysis } from './ffmpeg/loudness'
 import { buildFFmpegArgs, argsToShellCommand } from './ffmpeg/command-builder'
 import { buildOutputFilename } from './ffmpeg/naming'
 import { runQualityControl } from './ffmpeg/qc'
+import { processAeInspect, processAeChunk, processAeStitch } from './ae-processor'
 
 export async function processJob(job: ClaimedJob): Promise<void> {
+  // Route AE jobs to their dedicated processors; transcode falls through.
+  if (job.job_type === 'ae_inspect') return processAeInspect(job)
+  if (job.job_type === 'ae_chunk') return processAeChunk(job)
+  if (job.job_type === 'ae_stitch') return processAeStitch(job)
+  return processTranscodeJob(job)
+}
+
+async function processTranscodeJob(job: ClaimedJob): Promise<void> {
   setCurrentJob(job.id)
   const startedAt = new Date()
 

@@ -5,14 +5,54 @@
 
 import type { App } from '@slack/bolt'
 import { submitJob, createProfile } from '../../../src/lib/delivery/storage'
+import { submitAeRenderFromProject } from '../../../src/lib/delivery/ae-storage'
 import { SELECT_PROFILE_CALLBACK_ID, buildSelectProfileModal } from './select-profile-modal'
 import { CREATE_PROFILE_CALLBACK_ID } from './create-profile-modal'
+import { AE_RENDER_CALLBACK_ID } from './render-modal'
 import { PICK_SPEC_ACTION, PROVIDE_SPECS_ACTION } from '../../../src/lib/delivery/specs-watcher'
 import { runSpecExtraction } from './spec-intake'
 
 const SPEC_TEXT_CALLBACK_ID = 'kit_delivery_spec_text'
 
 export function registerDeliveryViewHandlers(app: App) {
+  // AE render modal → read the project's render queue and dispatch chunks
+  app.view(AE_RENDER_CALLBACK_ID, async ({ ack, body, view, client }) => {
+    const projectPath = view.state.values['aep_block']?.['aep_path']?.value?.trim()
+    if (!projectPath) {
+      await ack({
+        response_action: 'errors',
+        errors: { aep_block: 'Enter the path to the .aep on the render share' },
+      })
+      return
+    }
+    await ack()
+    const userId = body.user.id
+    const metadata = (() => {
+      try { return JSON.parse(view.private_metadata || '{}') } catch { return {} }
+    })()
+    const channel = metadata.channelId || userId
+
+    try {
+      await submitAeRenderFromProject({
+        projectPath,
+        requestedBy: userId,
+        slackChannel: channel,
+      })
+      await client.chat.postMessage({
+        channel,
+        text:
+          `:clapper: *Render queued* — \`${projectPath}\`\n` +
+          `Reading the project's After Effects render queue and splitting the queued comps across the studio's AE machines.\n` +
+          `Track it with \`/kit render status\`.`,
+      })
+    } catch (err: any) {
+      await client.chat.postMessage({
+        channel: userId,
+        text: `:x: Couldn't start the render: ${err.message || err}`,
+      })
+    }
+  })
+
   // Select-profile modal → submit a render job
   app.view(SELECT_PROFILE_CALLBACK_ID, async ({ ack, body, view, client }) => {
     await ack()
