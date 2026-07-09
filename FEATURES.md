@@ -21,7 +21,7 @@ Cross-cutting infrastructure (Supabase schema, Bolt server, deployment) is at th
 8. [Conversational Assistant (Slack DM)](#8-conversational-assistant-slack-dm)
 9. [Freelancer Onboarding](#9-freelancer-onboarding)
 10. [Hours Check-Ins + Ad-Hoc Logging](#10-hours-check-ins--ad-hoc-logging)
-11. [Shot List Canvas](#11-shot-list-canvas)
+11. ~~Shot List Canvas~~ — removed
 12. [Delivery Pipeline](#12-delivery-pipeline)
 13. [Plaud Transcripts](#13-plaud-transcripts)
 14. [Pre-Meeting Briefings](#14-pre-meeting-briefings)
@@ -50,17 +50,18 @@ A producer types `new project` in a Slack DM with Kit (or runs the slash command
 
 **Flow**
 1. Card button click → modal opens via `buildNewProjectModal` (`src/lib/provisioner/modal.ts`)
-2. User submits → form fields parsed → project row inserted into Supabase `projects` table
-3. `Promise.allSettled` fans out to each selected service via `dispatch(service, 'provision', payload)` from `src/lib/inngest/agents/registry.ts`
+2. User submits → form fields parsed → project row inserted into Supabase `projects` table (with `external_ids.dropbox_safe_name`, so the file watcher can reverse-match)
+3. Two-phase `Promise.allSettled` fans out to each selected service via `dispatch(service, 'provision', payload)` from `src/lib/inngest/agents/registry.ts` — link-producing services first, then Slack last so its canvas gets the Dropbox/Frame.io URLs
 4. Each progress update is `chat.postMessage`-ed back into the originating thread via the `postOpts({thread_ts})` helper
-5. Final `external_links` and `status='active'` updated on the project row
-6. Summary card posted in the new project's Slack channel
+5. Final `external_links` and `status` (`active`/`partial`) updated on the project row
+6. The project brain is auto-seeded (producers-only by default)
+
+> **Single source of truth:** `bolt/src/handlers/interactions.ts` (`kit_provision_project`). Earlier duplicate provisioners — an MCP `runOrchestrator`, an Inngest `provisionProject`, and a legacy Next.js webhook route — were removed; they had diverged and produced project records the file watcher couldn't match.
 
 **Key files**
-- `bolt/src/handlers/interactions.ts` — the orchestrator
+- `bolt/src/handlers/interactions.ts` — the orchestrator (single source of truth)
 - `src/lib/provisioner/modal.ts` — modal block kit definition
 - `src/lib/inngest/agents/*.ts` — per-service provisioning logic
-- `src/lib/provisioner/slack-summary.ts` — final summary card
 
 **Supabase**
 - Inserts into `projects` with `workspace_id, name, client, project_code, project_type, status='provisioning', start_date, target_delivery, brief_summary, budget_total, project_manager_slack_id, external_ids`
@@ -79,7 +80,7 @@ Form fields don't map 1:1 to column names — see `~/.claude/projects/.../memory
 ## 2. Slack Channel + Canvas Provisioning
 
 ### Summary
-For each new project, Kit creates a Slack channel (`#{number}-{client}-{name}`), invites the PM + team members, sets the topic, posts a welcome message, and clones every canvas tabbed to the **template channel** (`C0B1312H89L`) into the new channel — both the channel's header-anchored canvas and any standalone canvases. Producers maintain templates by editing them in the template channel; no env-var changes needed.
+For each new project, Kit creates a Slack channel (`#{number}-{client}-{name}`), invites the PM + team members, sets the topic, posts a welcome message, and clones every canvas tabbed to the **template channel** (`C0B1312H89L`) into the new channel (each cloned as a standalone canvas tabbed to the channel header). Producers maintain templates by editing them in the template channel; no env-var changes needed.
 
 ### Trigger
 Part of the [new-project provisioning](#1-new-project-provisioning) fan-out (`slack` service).
@@ -121,7 +122,7 @@ Part of the [new-project provisioning](#1-new-project-provisioning) fan-out (`fr
 - Uses Frame.io v4 API (`https://api.frame.io/v4`)
 
 **Auth**
-Adobe IMS OAuth via `src/lib/frameio/auth.ts` (client_credentials + refresh_token). Needs `FRAMEIO_ADOBE_CLIENT_ID, FRAMEIO_ADOBE_CLIENT_SECRET, FRAMEIO_ADOBE_REFRESH_TOKEN`.
+Adobe IMS OAuth via `src/lib/frameio/auth.ts` (`refresh_token` grant — exchanges a stored refresh token for a short-lived access token, persisting the rotated refresh token each time). Needs `FRAMEIO_ADOBE_CLIENT_ID, FRAMEIO_ADOBE_CLIENT_SECRET, FRAMEIO_ADOBE_REFRESH_TOKEN`.
 
 **Folder mirroring**
 `copyFrameioFolderTree(sourceFolderId, destFolderId, depth=0)` recursively walks the template project, creating each folder under the new project. Files/comments/shares aren't copied — just the folder names and hierarchy. Bounded by `MAX_TEMPLATE_DEPTH = 8`.
@@ -169,7 +170,7 @@ The bot's Dropbox home is already the team folder root — paths are relative to
 ## 5. Harvest Project Provisioning
 
 ### Summary
-Creates a Harvest project under the studio's client account with `budget_by='project'` and the project budget pulled from the modal. Used for time tracking and invoicing.
+Creates a Harvest project under the studio's client account with `budget_by='project'` (Harvest's **Total Project Hours** mode — the studio budgets in hours, not dollars) and the budget pulled from the modal's "Budget (hours)" field. Used for time tracking and invoicing.
 
 ### Trigger
 Part of the [new-project provisioning](#1-new-project-provisioning) fan-out (`harvest` service).
@@ -353,46 +354,26 @@ Before posting a scheduled DM, the sender checks for any existing row for `(staf
 **Sync to staff table**
 `bolt/scripts/sync-staff.ts` is a one-shot that pulls Slack `users.list` + Harvest `listUsers` and upserts into `staff` with role + employment_type. Run after onboarding new team members.
 
+**Missing-time monitor**
+A daily cron (`0 9 * * 1-5`, in `CHECKIN_TIMEZONE`) flags creatives who've stopped logging. For each active employee it pulls the last ~3 weeks of Harvest entries and counts the trailing run of **working days with zero logged hours**, stopping at the first day that has time logged *or* was explicitly marked `skip`/PTO in `daily_hours_checkins`. Harvest is the source of truth — logging directly in Harvest (without replying to Kit) counts, so trackers are never nagged. At ≥ `HOURS_MISSING_THRESHOLD_DAYS` (default 3) it posts a flag to `HOURS_ALERT_CHANNEL_ID`.
+- Code: `bolt/src/checkins/missing-time.ts` (`computeMissingStreak` is the pure core; `scanMissingTime` is the cron entry).
+- Idempotent via `hours_missing_alerts` (migration 032): unique `(staff_id, streak_start_date)` means a persisting gap alerts **once per streak**, not daily. When the artist logs again the streak breaks; the next lapse is a fresh streak and may alert again.
+- Date math runs through `bolt/src/checkins/date.ts` so "today"/working-day calculations stay in the studio timezone.
+
+**Slack-activity project inference**
+`bolt/src/checkins/slack-activity.ts` guesses the projects a creative is working on by intersecting **live project channels** (projects with `status` active/partial and an `external_links.slack_id`) with the channels the artist is a *member* of (`users.conversations`, one call per user — no per-channel history scans). Two consumers:
+- The daily check-in DM merges these into the candidate list (`mergeCandidates` in `daily-hours.ts`): Harvest-billed projects first, then "active in #channel" projects the artist hasn't logged to yet. Helps someone log a project they forgot.
+- The missing-time flag names the channels (`Active lately in: #x #y`) so a producer knows where to chase.
+Both uses are best-effort — any Slack/DB error returns `[]` and the check-in/flag proceeds without enrichment. Requires the bot to have `channels:read` + `groups:read` (it's already in the project channels it created).
+
 ---
 
-## 11. Shot List Canvas
+## 11. Shot List Canvas — REMOVED
 
-### Summary
-Conversational Boords-style shot list creator that lives as a Slack Canvas in each project channel. User pastes a script; Kit parses to structured shots and creates a channel canvas with a markdown table (shot # / visual / sound-dialogue / duration / reference image). Drops images afterward → Kit attaches them to shots in order. Subsequent natural-language edits ("add a close-up between 2 and 3") apply structured mutations and re-render the canvas in place.
-
-### Trigger
-- `@Kit shot list from this: <script>` — fresh build (or replace existing).
-- `@Kit add/remove/edit shot <N>` — mutation against the existing canvas.
-- `/kit shotlist <script>` — slash command variant.
-- File upload of an image in the same channel — attaches to next un-thumbnailed shot.
-
-### Technical breakdown
-
-**Code path**
-- Module: `bolt/src/shotlist/` — full feature in one directory.
-  - `types.ts` — `Shot`, `ShotList`, `ShotMutation`
-  - `keyword.ts` — `isShotListTrigger` (excludes "shot of espresso" false positives)
-  - `parser.ts` — Claude Haiku, two modes: `parseScript` (free-form → Shot[]) and `parseMutation` (instruction + existing list → ShotMutation)
-  - `renderer.ts` — Shot[] → markdown table with embedded image refs
-  - `canvas.ts` — Slack Web API wrappers (`conversations.canvases.create` with `title` param, `canvases.edit` with both `rename` + `replace` operations)
-  - `storage.ts` — `shot_lists` table read/write
-  - `thumbnails.ts` — handles `message.file_share` events with images, attaches to next un-thumbnailed shot, re-renders
-  - `handler.ts` — orchestrator (parse vs. mutate routing, canvas create/update, response message)
-
-**Canvas title format**
-`<project number>_<project name>_Shot List` (e.g. `2566_Sizzle_Shot List`) when the channel is linked to a Kit project. Title set via `conversations.canvases.create({title})` on create and `canvases.edit({changes: [{operation: 'rename', title_content: ...}]})` on update — H1 in markdown affects only the body, not the tab name.
-
-**Mutation routing**
-If `shot_lists` row exists AND the message doesn't look like a fresh script (no `from this:` prefix, no long multi-line body), route to `parseMutation`. Otherwise `parseScript`. Prevents "give me 5 more shots" from silently replacing the existing list.
-
-**Insert-at-0 handling**
-`applyMutation` treats `after_shot_number ≤ 0` as "insert at front" (Haiku sometimes emits `after_shot_number: 0`).
-
-**Uniqueness constraint**
-`shot_lists.slack_channel_id` is unique — one canvas per channel. Upsert uses `onConflict: 'slack_channel_id'` to prevent race-duplicates.
-
-**Required Slack scope**
-`canvases:write` (already added).
+This feature was removed. The `bolt/src/shotlist/` module, its Slack
+triggers (`@Kit shot list`, `/kit shotlist`, image-upload thumbnails), and
+the `shot_lists` table (dropped in migration 033) are all gone. The number
+is kept as a tombstone so #12–#17 keep their identifiers.
 
 ---
 
@@ -487,7 +468,7 @@ Plaud webhook → `POST /api/webhooks/plaud`. Activates when `PLAUD_INGEST_ENABL
 ## 14. Pre-Meeting Briefings
 
 ### Summary
-Inngest cron polls Google Calendar every 15 minutes for upcoming events. For each event, classifies to a Kit project via Claude Haiku; if confidence ≥ threshold, schedules a delayed dispatch event for ~30 minutes before meeting start. At dispatch, Kit composes a briefing (project header, meeting context, recent Frame.io / Dropbox links, last Plaud transcript summary if available, open `kit_actions`) and posts to the project's Slack channel.
+Inngest cron polls Google Calendar every 15 minutes for upcoming events. For each event, classifies to a Kit project via Claude Haiku; if confidence ≥ threshold, schedules a delayed dispatch event for ~30 minutes before meeting start. At dispatch, Kit composes a briefing (project header, meeting context, recent Frame.io / Dropbox links, last Plaud transcript summary if available, open `kit_actions`) and **DMs it privately to the R&F people actually on the invite** — matched from the event's attendees against `staff` by email. Nothing is posted to a shared channel by default, so a briefing for a sensitive meeting can't bleed to people who weren't on the call.
 
 ### Trigger
 Inngest cron `0,15,30,45 * * * *` (every 15 min). Activates when `GOOGLE_CALENDAR_INGEST_ENABLED=true`.
@@ -507,7 +488,7 @@ Pulls project + open `kit_actions` (where `status IN ('pending','approved')`) + 
 
 **Inngest functions** (`src/lib/inngest/pre-meeting.ts`)
 - `preMeetingScan` (cron, every 15m) — fetches events from `[now, now + lead + 16min]`, classifies each, upserts `meeting_briefings` row with status (`pending`/`skipped`/`failed`), schedules a `pre-meeting/dispatch` event for `start - lead` (lead = `BRIEFING_LEAD_TIME_MINUTES`, default 30).
-- `preMeetingDispatch` (event-triggered, idempotency: `event.data.event_id`) — composes briefing, posts to channel, optionally DMs producer (gated by `BRIEFING_DM_PRODUCER=true`, default off until project→producer mapping exists), updates row with `status='sent'`.
+- `preMeetingDispatch` (event-triggered, idempotency: `event.data.event_id`) — composes the briefing, DMs each matched R&F attendee privately (`matchAttendeesToStaff` — active staff with a Slack id whose email is on the invite; external attendees excluded), records the recipients in `meeting_briefings.notified_user_ids`, sets `status='sent'`. Channel posting is opt-in via `BRIEFING_POST_CHANNEL=true` (default off, for privacy).
 
 **Multi-tenancy safety**
 The active-projects query in the scanner uses `KIT_DEFAULT_WORKSPACE_ID` to scope (warns if unset).
@@ -675,7 +656,7 @@ Existing `project_documents` (pgvector embedded column, `match_documents` RPC) +
 - `GOOGLE_CALENDAR_IDS` — comma-separated calendar IDs the service account has been shared into
 - `BRIEFING_LEAD_TIME_MINUTES` — default `30`
 - `BRIEFING_MATCH_THRESHOLD` — classifier confidence floor, default `0.5`
-- `BRIEFING_DM_PRODUCER` — default `false` until project→producer mapping exists
+- `BRIEFING_POST_CHANNEL` — default `false`. When `true`, also posts the briefing to the project channel (exposes it to everyone in the channel). Leave off to keep briefings private to the call's R&F attendees.
 
 ### Delivery pipeline
 - `DELIVERY_NOTIFY_CHANNEL_ID` — Slack channel id where Dropbox-detected files announce
@@ -685,8 +666,10 @@ Existing `project_documents` (pgvector embedded column, `match_documents` RPC) +
 - `STUDIO_KNOWLEDGE_AUTO_SUMMARIZE_ENABLED` — `true` to enable the nightly Haiku re-summarization cron
 
 ### Hours check-in
-- `CHECKIN_TIMEZONE` — default `America/Los_Angeles`
+- `CHECKIN_TIMEZONE` — default `America/Los_Angeles`. Used for both the cron fire time **and** the check-in's calendar date (so 5pm-Pacific entries log to the correct day, not the next UTC day).
 - `HARVEST_FREELANCER_USER_ID` — Harvest user id for the shared "freelancers" bucket account (per-freelancer time entries log against this with the artist's name in notes)
+- `HOURS_ALERT_CHANNEL_ID` — Slack channel for the missing-time monitor's producer flags. Unset → the monitor is silent.
+- `HOURS_MISSING_THRESHOLD_DAYS` — consecutive missing working days before flagging. Default `3`.
 
 ### Render workers (deployed separately on studio PCs — see `kit-render-worker/.env.example`)
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` — same Supabase project as Kit

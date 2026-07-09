@@ -237,7 +237,8 @@ function buildSummaryMessage(result: {
     `*${result.totalComments}* notes found`,
   ]
   if (result.thumbnailsFound > 0) {
-    lines.push(`*${result.thumbnailsFound}* frame thumbnails captured`)
+    // v4 exposes only the asset's poster frame — not per-timecode captures.
+    lines.push('poster frame included')
   }
   return lines.join(' · ')
 }

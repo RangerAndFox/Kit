@@ -60,6 +60,23 @@ async function framePost(path: string, body: Record<string, unknown>): Promise<a
 }
 
 /**
+ * Single-attempt POST — for non-idempotent creates where a retried timeout
+ * whose first attempt actually landed would duplicate the resource (e.g.
+ * project creation: two "2628_Crunchyroll_Expo" projects).
+ */
+async function framePostOnce(path: string, body: Record<string, unknown>): Promise<any> {
+  const hdrs = await frameioHeaders()
+  const r = await fetch(`${FRAMEIO_API}${path}`, {
+    method: 'POST',
+    headers: hdrs,
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
+  })
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
+  return r.json()
+}
+
+/**
  * Recursively mirror a Frame.io folder tree, structure only.
  * Walks every folder under `sourceFolderId` and creates an equivalent under
  * `destFolderId` in the new project. Files, comments, and shares are not
@@ -136,24 +153,25 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
     const ws = getWorkspaceId()
 
     // v4: POST /v4/accounts/{account_id}/workspaces/{workspace_id}/projects
-    const resp = await framePost(`/accounts/${acct}/workspaces/${ws}/projects`, {
+    // Single attempt — a retried timeout that actually landed would create a
+    // second project with the same name.
+    const resp = await framePostOnce(`/accounts/${acct}/workspaces/${ws}/projects`, {
       data: { name: projectLabel },
     })
     const project = resp.data || resp
 
-    // Get the project's root folder ID
-    // v4: the project response should include root_folder_id or similar
-    const rootFolderId = project.root_folder_id || project.root_asset_id
+    // Determine the project's root folder ID. v4 sometimes returns it on the
+    // create response (root_folder_id or root_asset_id); when it doesn't, fetch
+    // the project detail to get it.
+    let parentId: string | undefined = project.root_folder_id || project.root_asset_id
 
-    if (!rootFolderId) {
-      // If root folder ID isn't in the response, list the project's folders
+    if (!parentId) {
       const projDetail = await frameGet(`/accounts/${acct}/projects/${project.id}`)
       const projData = projDetail.data || projDetail
-      const folderId = projData.root_folder_id || projData.root_asset_id
-      if (!folderId) throw new Error('Could not determine project root folder ID')
+      parentId = projData.root_folder_id || projData.root_asset_id
     }
 
-    const parentId = rootFolderId || project.root_folder_id
+    if (!parentId) throw new Error('Could not determine project root folder ID')
 
     // If a template project is configured, mirror its folder structure
     // (recursively, folders only — files/comments are not duplicated).

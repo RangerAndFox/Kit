@@ -58,6 +58,34 @@ export interface PlaudFile {
   participants?: string[]
 }
 
+// ─── Row hydration ────────────────────────────────────────────
+
+/**
+ * The call_transcripts fields written when a Plaud transcript is hydrated.
+ *
+ * Pulls through the metadata the File API gives us — `participants` (used to
+ * build the RAG title) and `duration_seconds` — not just the transcript text.
+ * Dropping these left every Plaud row with a generic title and no duration.
+ */
+export function buildIngestedFields(
+  transcript: PlaudTranscript,
+  file: PlaudFile,
+): {
+  transcript: string
+  participants: string[] | null
+  duration_seconds: number | null
+  start_time: string | null
+  ingest_status: 'ingested'
+} {
+  return {
+    transcript: transcript.text,
+    participants: file.participants ?? null,
+    duration_seconds: file.duration_seconds ?? null,
+    start_time: file.created_at ?? null,
+    ingest_status: 'ingested',
+  }
+}
+
 // ─── Signature verification ───────────────────────────────────
 
 /**

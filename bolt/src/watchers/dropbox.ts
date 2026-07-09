@@ -21,6 +21,7 @@ import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { dropboxHeaders } from '../../../src/lib/dropbox/client'
 import { frameioHeaders } from '../../../src/lib/frameio/auth'
 import { isFrameioUploadEnabled } from '../../../src/lib/projects/settings'
+import { processSrtFile } from '../../../src/lib/delivery/subtitle-watcher'
 
 const DROPBOX_API = 'https://api.dropboxapi.com/2'
 const FRAMEIO_API = 'https://api.frame.io/v4'
@@ -30,6 +31,21 @@ const WATCH_ROOT = '/production'
 // Match `/production/<year>/<safeName>/09_Outgoing/(01_Client Progress|02_Delivery)/<filename>`
 // path_display preserves the original casing.
 const PATH_RE = /^\/production\/(\d{4})\/([^/]+)\/09_Outgoing\/(01_Client Progress|02_Delivery)\/(.+)$/i
+
+// An .srt landing in any accessibility folder inside a project tree
+// ("02_Accessibility Files" and similar) → generate TTML/VTT/TXT siblings.
+// The .srt's immediate parent folder must contain "accessibility".
+const ACCESSIBILITY_SRT_RE =
+  /^\/production\/\d{4}\/([^/]+)\/(?:.*\/)?[^/]*accessibility[^/]*\/[^/]+\.srt$/i
+
+/**
+ * If the path is a project-tree accessibility SRT, return its safeName;
+ * else null. Pure — exported for tests.
+ */
+export function matchAccessibilitySrt(path: string): string | null {
+  const m = path.match(ACCESSIBILITY_SRT_RE)
+  return m ? m[1] : null
+}
 
 // File extensions to skip when mirroring deliveries to Frame.io — e.g. audio
 // sidecars / proxies dropped next to the actual video deliverable. Override
@@ -104,10 +120,16 @@ async function loadCursor(): Promise<string | null> {
 
 async function saveCursor(cursor: string): Promise<void> {
   const sb = createAdminClient()
-  await sb
+  // Upsert, not update: update() matching zero rows is a silent success, so
+  // if the singleton row was never seeded the cursor would never persist and
+  // the watcher would "seed and exit" on every webhook forever.
+  const { error } = await sb
     .from('dropbox_state')
-    .update({ cursor, updated_at: new Date().toISOString() })
-    .eq('id', 'singleton')
+    .upsert(
+      { id: 'singleton', cursor, updated_at: new Date().toISOString() },
+      { onConflict: 'id' },
+    )
+  if (error) throw new Error(`saveCursor failed: ${error.message}`)
 }
 
 async function seedCursor(): Promise<string> {
@@ -155,7 +177,33 @@ async function fetchDeltas(initial: string): Promise<{ entries: DropEntry[]; new
 
 // ─── Main entrypoint ────────────────────────────────────────
 
+// Serialize runs: Dropbox sends webhook bursts, and two concurrent runs
+// would read the same cursor and process identical entries twice (duplicate
+// Frame.io uploads + duplicate PM DMs). A notification that arrives mid-run
+// just flags a re-run so its deltas are picked up when the current pass ends.
+let _running = false
+let _rerunRequested = false
+// One-retry memory for a failing batch: if the same cursor fails twice we
+// advance anyway so a poison entry can't wedge the watcher forever.
+let _lastFailedCursor: string | null = null
+
 export async function processDropboxNotification(app: App): Promise<void> {
+  if (_running) {
+    _rerunRequested = true
+    return
+  }
+  _running = true
+  try {
+    do {
+      _rerunRequested = false
+      await processDeltasOnce(app)
+    } while (_rerunRequested)
+  } finally {
+    _running = false
+  }
+}
+
+async function processDeltasOnce(app: App): Promise<void> {
   let cursor = await loadCursor()
   if (!cursor) {
     await seedCursor()
@@ -164,11 +212,31 @@ export async function processDropboxNotification(app: App): Promise<void> {
   }
 
   const { entries, newCursor } = await fetchDeltas(cursor)
-  await saveCursor(newCursor)
 
   let matched = 0
+  let failed = 0
   for (const entry of entries) {
     if (entry.tag !== 'file') continue
+
+    // Accessibility SRT → generate TTML/VTT/TXT siblings in the same folder.
+    // Checked before PATH_RE (captions live in an accessibility folder, not
+    // 09_Outgoing). Our own .ttml/.vtt/.txt uploads don't re-match (not .srt).
+    const accSafeName = matchAccessibilitySrt(entry.path_display)
+    if (accSafeName) {
+      matched++
+      try {
+        await handleAccessibilitySrt(app, {
+          path: entry.path_display,
+          safeName: accSafeName,
+          sizeBytes: entry.size || 0,
+        })
+      } catch (err: any) {
+        failed++
+        console.error(`[dropbox-watcher] accessibility SRT failed for ${entry.path_display}: ${err.message}`)
+      }
+      continue
+    }
+
     const m = entry.path_display.match(PATH_RE)
     if (!m) continue
     const [, year, safeName, subfolder, filename] = m
@@ -188,8 +256,28 @@ export async function processDropboxNotification(app: App): Promise<void> {
         year,
       })
     } catch (err: any) {
+      failed++
       console.error(`[dropbox-watcher] failed for ${entry.path_display}: ${err.message}`)
     }
+  }
+
+  // Advance the cursor only after processing, and only if the batch didn't
+  // fail — saving it up front permanently consumed the delta, so a Frame.io
+  // outage during processing silently lost client deliveries. A batch that
+  // fails twice in a row (same cursor) advances anyway per the poison guard.
+  if (failed === 0 || _lastFailedCursor === cursor) {
+    if (failed > 0) {
+      console.error(
+        `[dropbox-watcher] batch failed twice for the same cursor — advancing past ${failed} failed entr(ies) to avoid wedging`,
+      )
+    }
+    await saveCursor(newCursor)
+    _lastFailedCursor = null
+  } else {
+    _lastFailedCursor = cursor
+    console.error(
+      `[dropbox-watcher] ${failed}/${matched} deliveries failed — cursor NOT advanced; batch retries on the next notification`,
+    )
   }
 
   console.log(
@@ -205,6 +293,74 @@ interface Delivery {
   safeName: string
   subfolder: string // "01_Client Progress" | "02_Delivery"
   year: string
+}
+
+/**
+ * An .srt landed in a project's accessibility folder: generate the TTML,
+ * VTT, and TXT siblings next to it (same basename) and post a note to the
+ * project channel. Conversion is the deliverable — it runs even when the
+ * project or its channel can't be resolved.
+ */
+async function handleAccessibilitySrt(
+  app: App,
+  d: { path: string; safeName: string; sizeBytes: number },
+): Promise<void> {
+  const name = d.path.split('/').pop() || d.path
+  let result: { generated: string[]; cueCount: number }
+  try {
+    result = await processSrtFile({ path: d.path, sizeBytes: d.sizeBytes })
+  } catch (err: any) {
+    const channel = await resolveProjectChannelBySafeName(d.safeName)
+    if (channel) {
+      await app.client.chat
+        .postMessage({
+          channel,
+          text: `Caption conversion failed: ${name}`,
+          blocks: [
+            {
+              type: 'section',
+              text: { type: 'mrkdwn', text: `:warning: Couldn't convert \`${d.path}\` — ${err.message}` },
+            },
+          ],
+        })
+        .catch(() => {})
+    }
+    throw err
+  }
+
+  console.log(`[dropbox-watcher] captions generated from ${d.path} (${result.cueCount} cues)`)
+
+  const channel = await resolveProjectChannelBySafeName(d.safeName)
+  if (!channel) return
+  const siblings = result.generated.map((p) => `\`${p.split('/').pop()}\``).join(', ')
+  await app.client.chat
+    .postMessage({
+      channel,
+      text: `Captions generated from ${name}`,
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text:
+              `:speech_balloon: *Captions generated* from \`${name}\` (${result.cueCount} cues)\n` +
+              `${siblings} dropped in the same folder.`,
+          },
+        },
+      ],
+    })
+    .catch((e) => console.warn(`[dropbox-watcher] caption note post failed: ${e?.message}`))
+}
+
+/** Project's Slack channel id from its Dropbox safe name, or null. */
+async function resolveProjectChannelBySafeName(safeName: string): Promise<string | null> {
+  const sb = createAdminClient()
+  const { data } = await sb
+    .from('projects')
+    .select('external_links')
+    .filter('external_ids->>dropbox_safe_name', 'eq', safeName)
+    .maybeSingle()
+  return data?.external_links?.slack_id || data?.external_links?.slack_channel_id || null
 }
 
 async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
@@ -298,6 +454,25 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
   const tempLinkResp = await dbxPost('/files/get_temporary_link', { path: d.path })
   const sourceUrl: string = tempLinkResp.link
   if (!sourceUrl) throw new Error('Dropbox did not return a temporary link')
+
+  // ── Idempotency: skip if this file was already mirrored ──
+  // Dropbox can replay the same delta (duplicate webhooks, a reprocessed
+  // batch). If a file with this name already exists in the target folder,
+  // don't upload a second copy. Fail open: on a lookup error, proceed with
+  // the upload rather than risk dropping a real delivery.
+  try {
+    const existingFileId = await findChildFile(acct, targetFolderId, fileName)
+    if (existingFileId) {
+      console.log(
+        `[dropbox-watcher] ${fileName} already in ${project.name} / ${d.subfolder} (file ${existingFileId}); skipping re-upload`,
+      )
+      return
+    }
+  } catch (err: any) {
+    console.warn(
+      `[dropbox-watcher] existing-file check failed for ${fileName} (continuing): ${err.message}`,
+    )
+  }
 
   // ── Hand it to Frame.io remote_upload ───────────────────
   // Frame.io v4 remote_upload accepts a source_url and pulls async.
@@ -595,6 +770,20 @@ async function findChildFolder(
   for (const c of children) {
     const t = c.type || c.resource_type
     if (t === 'folder' && c.name === name) return c.id
+  }
+  return null
+}
+
+async function findChildFile(
+  acct: string,
+  parentId: string,
+  name: string,
+): Promise<string | null> {
+  const r = await frameioGet(`/accounts/${acct}/folders/${parentId}/children`)
+  const children = Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []
+  for (const c of children) {
+    const t = c.type || c.resource_type
+    if (t === 'file' && c.name === name) return c.id
   }
   return null
 }

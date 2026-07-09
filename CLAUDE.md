@@ -33,66 +33,40 @@ Kit uses a domain-expert agent system. Each integration has its own agent that k
 
 ## Current State & What Needs Doing
 
-### 1. Git Push (BLOCKED — Auth Issue)
-The latest commit is local but not pushed. The remote is `https://github.com/steve-rangerandfox/Kit.git` but local git is authenticated as `stevepanicara`.
+### 1. Deployment topology (CURRENT)
+- **Railway** runs the Bolt app (Socket Mode bot + node-cron jobs: 5pm/10pm
+  check-ins, 9am missing-time scan, hourly scavenger DM dispatch) from `main`
+  via `bolt/Dockerfile` (config: repo-root `railway.toml`, health probe at
+  `/health`).
+- **Vercel** runs the Next.js app + ALL Inngest cron functions
+  (`src/app/api/inngest/route.ts`): pre-meeting briefings, delivery scans,
+  Plaud, studio-knowledge, brain. Deploys from `main`. Inngest must stay
+  synced (Vercel integration) or every cron silently stops.
+- **Supabase** project `ozsxrcgrezpffnpwlrnq` ("Kit"). Migrations under
+  `supabase/migrations/` are applied via the Supabase MCP `apply_migration`.
+- Env manifests: `bolt/.env.example` (Railway side), root `.env.example`
+  (Vercel side). Several credentials must be set in BOTH dashboards.
 
-**Fix options:**
-- Create a GitHub PAT for `steve-rangerandfox` and set the remote URL with it
-- Or add `stevepanicara` as a collaborator on the repo
-
-**Also:** An embedded git repo was accidentally staged. Clean it up:
-```bash
-git rm --cached .claude/worktrees/gracious-darwin-f9a5b7
-echo ".claude/worktrees/" >> .gitignore
-```
-
-Then amend the commit and push:
-```bash
-git add .gitignore
-git commit --amend --no-edit
-git push origin main
-```
-
-**Unpushed commit**: `Migrate Frame.io from v2 to v4 API (Adobe IMS OAuth)`
-Files changed:
-- `src/lib/frameio/client.ts` — migrated all endpoints from v2 to v4
-- `src/lib/frameio/auth.ts` — NEW, Adobe IMS OAuth refresh token flow
-- `src/lib/inngest/agents/frameio.ts` — migrated to v4 endpoints
-- `src/lib/provisioner/services/frameio.ts` — migrated to v4 endpoints
-- `bolt/.env.example` — updated Frame.io env var names
-
-### 2. Frame.io v4 API — Test After Deploy
-The Frame.io integration was just migrated from v2 to v4. Auth is confirmed working (tested `GET /v4/me` and `GET /v4/accounts` successfully). The code has been rewritten but not yet tested end-to-end.
+### 2. Frame.io v4 API — LIVE
+Migrated to v4 (Adobe IMS OAuth) and confirmed working in production. The
+rotated refresh token is persisted in `frameio_token_state` (Supabase), so
+restarts no longer lose the rotation. Old v2 vars (`FRAMEIO_TOKEN`,
+`FRAMEIO_ROOT_PROJECT_ID`) can be removed from Railway.
 
 **v4 API key differences from v2:**
 - Base URL: `https://api.frame.io/v4` (was `/v2`)
 - All paths prefixed with `/accounts/{account_id}/`
 - "teams" → "workspaces", "assets" → "files/folders", "review_links" → "shares"
-- Request bodies wrapped in `{ data: { ... } }`
-- Responses wrapped in `{ data: ... }`
-- Create project: `POST /accounts/{acct}/workspaces/{ws}/projects`
-- Create folder: `POST /accounts/{acct}/folders/{parent_id}/folders`
-- List children: `GET /accounts/{acct}/folders/{folder_id}/children`
+- Request bodies wrapped in `{ data: { ... } }`, responses in `{ data: ... }`
 
-**Env vars on Railway (all set — values redacted):**
-```
-FRAMEIO_ADOBE_CLIENT_ID=<adobe oauth web app client id>
-FRAMEIO_ADOBE_CLIENT_SECRET=<adobe oauth web app client secret>
-FRAMEIO_ADOBE_REFRESH_TOKEN=<rotates on each use>
-FRAMEIO_ACCOUNT_ID=<frame.io account uuid>
-FRAMEIO_WORKSPACE_ID=<frame.io workspace uuid>
-```
-Actual values live in Railway's env var dashboard. Never commit them.
-
-**Old v2 vars still on Railway (can be removed):**
-- `FRAMEIO_TOKEN` — old static developer token (fallback in auth.ts, not needed)
-- `FRAMEIO_ROOT_PROJECT_ID` — not used in v4 code
-
-### 3. Railway Deployment
-- Railway deploys from GitHub on push to `main`
-- Dockerfile at `bolt/Dockerfile` — build context is repo root
-- Config at `bolt/railway.toml` — always-on, single replica, no sleep
-- Once git push works, Railway will auto-deploy
+### 3. Dormant features awaiting data/setup (not code)
+- **Time tracking** (5pm check-in, missing-time monitor, ad-hoc logging):
+  requires `staff.harvest_user_id` — run `/kit sync-staff` (admin) after
+  adding people to Harvest.
+- **Briefing "Last meeting" recap**: requires Plaud transcripts flowing
+  (`PLAUD_INGEST_ENABLED`).
+- **Delivery pipeline**: requires the render worker (kit-render-worker/)
+  installed on at least one studio PC.
 
 ### 4. Slack App Configuration
 Verify these are set in the Slack app settings (api.slack.com):
@@ -129,13 +103,11 @@ src/lib/frameio/
 src/lib/provisioner/
 ├── types.ts              — ProjectIntakeForm, ServiceResult
 ├── folder-structure.json — Standard folder templates per service
-├── retry.ts              — withRetry() utility
-└── services/
-    ├── frameio.ts        — Frame.io project + folder creation (v4)
-    ├── dropbox.ts        — Dropbox folder creation
-    ├── harvest.ts        — Harvest project + task creation
-    └── slack.ts          — Slack channel creation
+├── modal.ts              — project intake modal definition
+└── retry.ts              — withRetry() utility
 ```
+(Per-service provisioning lives on each agent in src/lib/inngest/agents/ —
+the old provisioner/services/ directory is gone.)
 
 ### Dropbox Integration
 ```
@@ -298,7 +270,7 @@ Everything below was designed and built across two Cowork sessions (May 2026). T
 36. **Pluggable backend (`RENDER_BACKEND`)**: default `kit-worker` (our fleet). Set `RENDER_BACKEND=deadline` to submit to an existing Thinkbox/AWS **Deadline** farm instead — no per-box worker needed. Migration `034` adds `render_backend` + `deadline_jobs` to `render_jobs`; `submitAeRenderFromProject` skips `ae_inspect` for the Deadline path. The `kit-deadline-relay/` app (one studio box with `deadlinecommand` + After Effects) claims the parent, reads the render queue, submits one Deadline AE job per queued comp (`deadlinecommand -SubmitJob`; image seq → `ChunkSize` split, movie → whole), and polls `-GetJob` to roll status back to `/kit render status`. Files live on the production SAN `\\thewire\production\<year>\<jobcode>\...` (same as C4D, in an AE folder) — **not Dropbox**. `/kit render` takes the SAN path (`\\thewire\production\...` or `Z:\...`); the relay passes it straight to Deadline `SceneFile` and writes output to `<projectDir>\render\<comp>\`. `DEADLINE_PATH_MAP` only normalizes drive letters to UNC (`Z:=>\\thewire\production`) for headless Workers. Studio farm is `\\thewire\deadline` (Deadline 10.2.1.1, pools none/c4d/test, groups none/c4d_render). **The C4D setup is production-critical and must NOT be altered — the AE integration is strictly additive and the relay is submit-only (never runs admin/config commands).** AE jobs target a dedicated group (`DEADLINE_GROUP=kit_ae`) and plugin (`DEADLINE_PLUGIN=KitAfterEffects`). Studio runs **AE 2026 (v26)**; the stock `AfterEffects.py` builds the exe key dynamically (`RenderExecutable26_0`), so v26 works once that entry exists — add it via a `KitAfterEffects` custom plugin overlay (`custom/plugins/`, zero-touch to stock/C4D) and submit `AE_VERSION=26.0`. Every AE render node needs AE 2026 installed.
 
 ### Known Issues & Gotchas
-- **Adobe IMS rotates refresh tokens** on each use. The auth module handles this in-memory, but if Railway restarts and the env var token has been rotated, you'll need to re-authorize. Consider persisting the latest refresh token to Supabase in a future iteration.
+- **Adobe IMS rotates refresh tokens** on each use. The auth module persists the rotation to Supabase (`frameio_token_state`) and refreshes single-flight, so restarts are safe. The env var is bootstrap-only.
 - **Frame.io v4 API is relatively new** — response shapes may vary from what's documented. The code defensively checks `resp.data || resp` everywhere.
 - **The v4 endpoint for project root folder** may return `root_folder_id` or `root_asset_id` — the code checks both.
 - **PowerShell `curl` is aliased** to `Invoke-WebRequest` — use `Invoke-RestMethod` for API calls on Windows.

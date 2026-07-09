@@ -6,9 +6,13 @@
 import type { App } from '@slack/bolt'
 import { submitJob, createProfile } from '../../../src/lib/delivery/storage'
 import { submitAeRenderFromProject } from '../../../src/lib/delivery/ae-storage'
-import { SELECT_PROFILE_CALLBACK_ID } from './select-profile-modal'
+import { SELECT_PROFILE_CALLBACK_ID, buildSelectProfileModal } from './select-profile-modal'
 import { CREATE_PROFILE_CALLBACK_ID } from './create-profile-modal'
 import { AE_RENDER_CALLBACK_ID } from './render-modal'
+import { PICK_SPEC_ACTION, PROVIDE_SPECS_ACTION } from '../../../src/lib/delivery/specs-watcher'
+import { runSpecExtraction } from './spec-intake'
+
+const SPEC_TEXT_CALLBACK_ID = 'kit_delivery_spec_text'
 
 export function registerDeliveryViewHandlers(app: App) {
   // AE render modal → read the project's render queue and dispatch chunks
@@ -17,7 +21,7 @@ export function registerDeliveryViewHandlers(app: App) {
     if (!projectPath) {
       await ack({
         response_action: 'errors',
-        errors: { aep_block: 'Enter the Dropbox path to the .aep' },
+        errors: { aep_block: 'Enter the path to the .aep on the render share' },
       })
       return
     }
@@ -76,13 +80,17 @@ export function registerDeliveryViewHandlers(app: App) {
       if (value) namingFields[key] = String(value).trim()
     }
 
-    const sourceFiles = metadata.sourcePath
-      ? [{
-          path: metadata.sourcePath,
-          type: 'video',
-          size_bytes: metadata.sourceSizeBytes || 0,
-        }]
-      : []
+    // Prefer the paired video+audio sources from the specs prompt; fall back
+    // to the legacy single sourcePath (manual `/kit deliver <path>`).
+    const sourceFiles = Array.isArray(metadata.sources) && metadata.sources.length > 0
+      ? metadata.sources.map((s: any) => ({
+          path: s.path,
+          type: s.type === 'audio' ? 'audio' : 'video',
+          size_bytes: s.size_bytes || 0,
+        }))
+      : metadata.sourcePath
+        ? [{ path: metadata.sourcePath, type: 'video', size_bytes: metadata.sourceSizeBytes || 0 }]
+        : []
 
     if (sourceFiles.length === 0) {
       // No file attached (manual /kit deliver from a command). Open a follow-up
@@ -173,6 +181,88 @@ export function registerDeliveryViewHandlers(app: App) {
         channel: userId,
         text: `:x: Couldn't create profile: ${err.message || err}`,
       })
+    }
+  })
+
+  // "Pick delivery spec" button (from the specs-folder channel prompt) → open
+  // the profile picker pre-loaded with the paired video+audio sources.
+  app.action(PICK_SPEC_ACTION, async ({ ack, body, client }) => {
+    await ack()
+    let sources: any[] = []
+    try {
+      sources = JSON.parse((body as any).actions?.[0]?.value || '{}').sources || []
+    } catch {
+      /* ignore — opens an empty picker */
+    }
+    const channelId = (body as any).channel?.id || (body as any).container?.channel_id
+    try {
+      await client.views.open({
+        trigger_id: (body as any).trigger_id,
+        view: (await buildSelectProfileModal({ sources, channelId })) as any,
+      })
+    } catch (err: any) {
+      console.error('[Bolt] pick-spec modal open failed:', err.data?.error || err.message)
+    }
+  })
+
+  // "Provide specs" button → modal to paste this event's spec as text.
+  app.action(PROVIDE_SPECS_ACTION, async ({ ack, body, client }) => {
+    await ack()
+    const value = (body as any).actions?.[0]?.value || '{}'
+    const channelId = (body as any).channel?.id || (body as any).container?.channel_id || ''
+    try {
+      await client.views.open({
+        trigger_id: (body as any).trigger_id,
+        view: {
+          type: 'modal',
+          callback_id: SPEC_TEXT_CALLBACK_ID,
+          private_metadata: JSON.stringify({ ...JSON.parse(value), channelId }),
+          title: { type: 'plain_text', text: 'Delivery spec' },
+          submit: { type: 'plain_text', text: 'Extract & render' },
+          close: { type: 'plain_text', text: 'Cancel' },
+          blocks: [
+            {
+              type: 'input',
+              block_id: 'spec_text',
+              label: { type: 'plain_text', text: "Paste this event's delivery spec" },
+              element: {
+                type: 'plain_text_input',
+                action_id: 'v',
+                multiline: true,
+                placeholder: {
+                  type: 'plain_text',
+                  text: 'e.g. ProRes 422 HQ, 1920x1080, 29.97fps, PCM 24-bit stereo @48k, -24 LUFS / -2 dBTP, .mov',
+                },
+              },
+            },
+          ],
+        } as any,
+      })
+    } catch (err: any) {
+      console.error('[Bolt] provide-specs modal open failed:', err.data?.error || err.message)
+    }
+  })
+
+  // Spec-text modal submit → extract → create a profile → submit the render.
+  app.view(SPEC_TEXT_CALLBACK_ID, async ({ ack, body, view, client }) => {
+    const meta = (() => {
+      try { return JSON.parse(view.private_metadata || '{}') } catch { return {} }
+    })()
+    const text = view.state.values['spec_text']?.['v']?.value?.trim()
+    if (!text) {
+      await ack({ response_action: 'errors', errors: { spec_text: 'Paste the spec to extract.' } })
+      return
+    }
+    await ack()
+    const userId = body.user.id
+    const channel = meta.channelId || userId
+    const sources = Array.isArray(meta.sources) ? meta.sources : []
+
+    try {
+      const text2 = await runSpecExtraction({ input: { text }, sources, userId, channel })
+      await client.chat.postMessage({ channel, text: text2 })
+    } catch (err: any) {
+      await client.chat.postMessage({ channel, text: `:x: Couldn't extract/submit the spec: ${err.message || err}` })
     }
   })
 }

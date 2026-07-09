@@ -3094,53 +3094,6 @@ export type Database = {
           },
         ]
       }
-      shot_lists: {
-        Row: {
-          canvas_url: string | null
-          created_at: string | null
-          id: string
-          last_rendered_at: string | null
-          project_id: string | null
-          shots_json: Json
-          slack_canvas_id: string
-          slack_channel_id: string
-          thumbnail_permalinks: Json
-          updated_at: string | null
-        }
-        Insert: {
-          canvas_url?: string | null
-          created_at?: string | null
-          id?: string
-          last_rendered_at?: string | null
-          project_id?: string | null
-          shots_json?: Json
-          slack_canvas_id: string
-          slack_channel_id: string
-          thumbnail_permalinks?: Json
-          updated_at?: string | null
-        }
-        Update: {
-          canvas_url?: string | null
-          created_at?: string | null
-          id?: string
-          last_rendered_at?: string | null
-          project_id?: string | null
-          shots_json?: Json
-          slack_canvas_id?: string
-          slack_channel_id?: string
-          thumbnail_permalinks?: Json
-          updated_at?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "shot_lists_project_id_fkey"
-            columns: ["project_id"]
-            isOneToOne: false
-            referencedRelation: "projects"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       staff: {
         Row: {
           created_at: string

@@ -18,7 +18,6 @@ import { dispatch } from '../../../src/lib/inngest/agents/registry'
 import { buildNewProjectCard } from './newproject-card'
 import { buildOnboardModal } from '../onboarding/modal'
 import { canOnboard } from '../onboarding/permissions'
-import { handleShotListMessage } from '../shotlist/handler'
 import { handleNoteMessage } from '../notes/handler'
 import { buildSelectProfileModal } from '../delivery/select-profile-modal'
 import { buildCreateProfileModal } from '../delivery/create-profile-modal'
@@ -143,27 +142,6 @@ export function registerCommandHandlers(app: App) {
           await respond({
             response_type: 'ephemeral',
             text: `Error looking up status: ${err.message}`,
-          })
-        }
-        break
-      }
-
-      // ── Shot List ───────────────────────────────────────────
-      case 'shotlist':
-      case 'shots': {
-        await ack()
-        try {
-          await handleShotListMessage({
-            app: { client } as any,
-            channelId: command.channel_id,
-            userId: command.user_id,
-            text: args || 'create a new empty shot list',
-          })
-        } catch (err: any) {
-          console.error('[Bolt] /kit shotlist failed:', err.data?.error || err.message)
-          await respond({
-            response_type: 'ephemeral',
-            text: `Shot list failed: ${err.data?.error || err.message}`,
           })
         }
         break
@@ -522,6 +500,149 @@ export function registerCommandHandlers(app: App) {
       }
 
       // ── Notes ───────────────────────────────────────────────
+      // ── Staff ↔ Harvest sync (admin) ────────────────────────
+      // Backfills staff.harvest_user_id by email/alias match against active
+      // Harvest users — the data prerequisite for the whole time-tracking
+      // suite (5pm check-in, missing-time monitor, ad-hoc logging).
+      case 'sync-staff':
+      case 'syncstaff': {
+        await ack()
+        const workspaceId = process.env.KIT_DEFAULT_WORKSPACE_ID
+        if (!workspaceId) {
+          await respond({ response_type: 'ephemeral', text: ':warning: `KIT_DEFAULT_WORKSPACE_ID` is not set.' })
+          break
+        }
+        const caller = await resolveCommandUser(client, workspaceId, command.user_id)
+        if (caller.tier !== 'admin') {
+          await respond({ response_type: 'ephemeral', text: ':lock: Only admins can run the staff sync.' })
+          break
+        }
+        try {
+          const { syncStaffHarvestIds } = await import('../../../src/lib/staff/sync')
+          const res = await syncStaffHarvestIds()
+          const lines: string[] = [':card_index_dividers: *Staff ↔ Harvest sync*']
+          if (res.updated.length > 0) {
+            lines.push(
+              `*Mapped ${res.updated.length}:*`,
+              ...res.updated.map((u) => `• ${u.name} (${u.email}) → Harvest #${u.harvestId}`),
+            )
+          }
+          if (res.alreadyMapped > 0) lines.push(`Already mapped: ${res.alreadyMapped}`)
+          if (res.unmatched.length > 0) {
+            lines.push(
+              `*No Harvest match (check their Harvest email or add an alias):*`,
+              ...res.unmatched.map((u) => `• ${u.name} (${u.email})`),
+            )
+          }
+          if (res.updated.length === 0 && res.unmatched.length === 0) {
+            lines.push('Everyone active is already mapped. :white_check_mark:')
+          }
+
+          // Ensure the whole team is assigned to every active Harvest
+          // project (studio policy — assignment friction blocks time entry).
+          try {
+            const { ensureAllUserAssignments } = await import('../../../src/lib/harvest/client')
+            const ass = await ensureAllUserAssignments()
+            lines.push(
+              ass.assigned > 0
+                ? `Harvest assignments: added ${ass.assigned} across ${ass.projects} active projects.`
+                : `Harvest assignments: everyone already on all ${ass.projects} active projects. :white_check_mark:`,
+            )
+          } catch (assErr: any) {
+            lines.push(`:warning: Harvest assignment sweep failed: ${assErr?.message || assErr}`)
+          }
+
+          // Refresh everyone's timezone from their Slack profile while we're
+          // here — check-in timing and date resolution are per-person.
+          try {
+            const { resolveUserTimezone } = await import('../checkins/user-tz')
+            const sbAdmin = (await import('../../../src/lib/supabase/admin')).createAdminClient()
+            const { data: allStaff } = await sbAdmin
+              .from('staff')
+              .select('slack_user_id')
+              .eq('is_active', true)
+              .not('slack_user_id', 'is', null)
+            const tzs = new Map<string, number>()
+            for (const s of allStaff || []) {
+              const tz = await resolveUserTimezone({ app: { client } as any, slackUserId: s.slack_user_id })
+              tzs.set(tz, (tzs.get(tz) || 0) + 1)
+            }
+            if (tzs.size > 0) {
+              lines.push(
+                `Timezones refreshed: ${[...tzs.entries()].map(([tz, n]) => `${tz} ×${n}`).join(', ')}`,
+              )
+            }
+          } catch (tzErr: any) {
+            console.warn('[Bolt] sync-staff tz refresh failed:', tzErr?.message || tzErr)
+          }
+
+          await respond({ response_type: 'ephemeral', text: lines.join('\n') })
+        } catch (err: any) {
+          console.error('[Bolt] /kit sync-staff failed:', err?.message || err)
+          await respond({
+            response_type: 'ephemeral',
+            text: `Sync failed: ${err?.message || err}`,
+          })
+        }
+        break
+      }
+
+      case 'backfill-time':
+      case 'backfilltime': {
+        await ack()
+        const workspaceId = process.env.KIT_DEFAULT_WORKSPACE_ID
+        if (!workspaceId) {
+          await respond({ response_type: 'ephemeral', text: ':warning: `KIT_DEFAULT_WORKSPACE_ID` is not set.' })
+          break
+        }
+        const caller = await resolveCommandUser(client, workspaceId, command.user_id)
+        if (caller.tier !== 'admin') {
+          await respond({ response_type: 'ephemeral', text: ':lock: Only admins can run the time backfill.' })
+          break
+        }
+        // Default is a safe PREVIEW. `run` (or `confirm`) actually writes.
+        const doWrite = /\b(run|confirm|write|go)\b/i.test(args || '')
+        try {
+          const { backfillCheckins } = await import('../checkins/backfill')
+          const res = await backfillCheckins({ dryRun: !doWrite })
+          const lines: string[] = [
+            doWrite
+              ? ':white_check_mark: *Time backfill — logged to Harvest*'
+              : ':mag: *Time backfill preview* (nothing written — run `/kit backfill-time run` to log)',
+          ]
+          const shown = doWrite ? res.logged.map((l) => ({ ...l.plan, entryId: l.entryId })) : res.planned
+          if (shown.length > 0) {
+            lines.push(
+              `*Entries (${shown.length}):*`,
+              ...shown.map(
+                (p: any) =>
+                  `• ${p.staffName} — ${p.hours}h ${p.projectName} on ${p.date}${p.entryId ? ` → Harvest #${p.entryId}` : ''}`,
+              ),
+            )
+          } else {
+            lines.push('No confirmable back-times found.')
+          }
+          if (res.duplicatesCollapsed > 0) lines.push(`Duplicate rows collapsed: ${res.duplicatesCollapsed}`)
+          if (res.skippedRows.length > 0) {
+            lines.push(
+              `*Skipped (can't auto-log):*`,
+              ...res.skippedRows.map((s) => `• ${s.staffName} ${s.date} — ${s.reason}`),
+            )
+          }
+          if (res.failures.length > 0) {
+            lines.push(
+              `*Failed:*`,
+              ...res.failures.map((f) => `• ${f.plan.staffName} ${f.plan.hours}h ${f.plan.projectName} — ${f.error}`),
+            )
+          }
+          await respond({ response_type: 'ephemeral', text: lines.join('\n') })
+        } catch (err: any) {
+          console.error('[Bolt] /kit backfill-time failed:', err?.message || err)
+          await respond({ response_type: 'ephemeral', text: `Backfill failed: ${err?.message || err}` })
+        }
+        break
+      }
+
       case 'note': {
         await ack()
         // Treat the entire `args` string as the note body, optionally with
@@ -566,7 +687,6 @@ export function registerCommandHandlers(app: App) {
             '`/kit newproject` — Post the new-project card (pick services, fill in details)\n' +
             '`/kit onboard` — Onboard a freelancer to a project (Slack/Dropbox/Frame.io/Harvest)\n' +
             '`/kit status <name>` — Quick project lookup\n' +
-            '`/kit shotlist <script>` — Build a shot list canvas in this channel\n' +
             '`/kit note [project | body]` — Save a freeform note to a project (or current channel\'s project)\n' +
             '`/storyboard` — Turn a script into a Boords storyboard\n' +
             '`/kit deliver [path]` — Submit a transcode job (or run `/kit deliver status` for queue)\n' +
@@ -578,6 +698,8 @@ export function registerCommandHandlers(app: App) {
             '`/kit brain why <claim>` — Show the sources behind a fact in the brain\n' +
             '`/kit brain visibility team|producers_only` — Producer toggle for whether the channel canvas is created\n' +
             '`/kit role @user producer|artist|admin|freelancer` — Admin only: assign a role\n' +
+            '`/kit sync-staff` — Admin only: map staff to Harvest users by email (activates hours check-ins)\n' +
+            '`/kit backfill-time` — Admin only: preview confirmable back-dated check-ins; `run` to log them to Harvest\n' +
             '`/kit help` — Show this message\n\n' +
             'You can also DM me and type *new project* or *new storyboard* to get the same cards. Or @mention me to ask about projects, budgets, files, reviews, or to log time.',
         })

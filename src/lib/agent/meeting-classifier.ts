@@ -96,5 +96,13 @@ Respond with JSON only.`
   if (typeof parsed.confidence !== 'number') parsed.confidence = 0
   if (!parsed.project_id) parsed.project_id = null
   if (!parsed.reasoning) parsed.reasoning = ''
+  // Guard against a hallucinated id: only accept a project_id that's actually
+  // in the candidate set, else we'd schedule a briefing for a nonexistent
+  // project.
+  if (parsed.project_id && !activeProjects.some((p) => p.id === parsed.project_id)) {
+    parsed.reasoning = `dropped unknown project_id ${parsed.project_id}: ${parsed.reasoning}`
+    parsed.project_id = null
+    parsed.confidence = 0
+  }
   return parsed
 }

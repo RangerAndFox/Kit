@@ -88,8 +88,7 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
     }
 
     // Duplicate canvases from the template channel (header canvas + standalones)
-    let canvasResult: { channelCanvasId: string | null; standaloneCanvasIds: string[] } = {
-      channelCanvasId: null,
+    let canvasResult: { standaloneCanvasIds: string[] } = {
       standaloneCanvasIds: [],
     }
     try {
@@ -108,8 +107,7 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
     } catch (e: any) {
       console.warn('[SlackAgent] Template canvas copy failed (non-fatal):', e.message)
     }
-    const totalCanvases =
-      (canvasResult.channelCanvasId ? 1 : 0) + canvasResult.standaloneCanvasIds.length
+    const totalCanvases = canvasResult.standaloneCanvasIds.length
 
     return {
       agent: 'slack',
@@ -120,7 +118,6 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       message: `Created #${channel.channelName}${totalCanvases ? ` with ${totalCanvases} canvas${totalCanvases === 1 ? '' : 'es'}` : ''}`,
       data: {
         channelName: channel.channelName,
-        channelCanvasId: canvasResult.channelCanvasId,
         standaloneCanvasIds: canvasResult.standaloneCanvasIds,
       },
     }

@@ -14,7 +14,7 @@
 import { anthropic, SPECIALIST_MODEL } from './client'
 import { buildSpecialistTools } from './tools'
 import { dispatch } from '../../../src/lib/inngest/agents/registry'
-import { enforceAccess, failsafeArtistContext, type UserContext } from '../../../src/lib/inngest/access-control'
+import { checkGateway, enforceAccess, failsafeArtistContext, type UserContext } from '../../../src/lib/inngest/access-control'
 
 import { HARVEST_SYSTEM_PROMPT } from './prompts/harvest-system'
 import { DROPBOX_SYSTEM_PROMPT } from './prompts/dropbox-system'
@@ -22,6 +22,8 @@ import { FRAMEIO_SYSTEM_PROMPT } from './prompts/frameio-system'
 import { SLACK_SYSTEM_PROMPT } from './prompts/slack-system'
 import { BOORDS_SYSTEM_PROMPT } from './prompts/boords-system'
 import { STUDIO_KNOWLEDGE_SYSTEM_PROMPT } from './prompts/studio-knowledge-system'
+import { DELIVERY_SYSTEM_PROMPT } from './prompts/delivery-system'
+import { BRAIN_SYSTEM_PROMPT } from './prompts/brain-system'
 
 const SYSTEM_PROMPTS: Record<string, string> = {
   harvest: HARVEST_SYSTEM_PROMPT,
@@ -30,6 +32,8 @@ const SYSTEM_PROMPTS: Record<string, string> = {
   slack: SLACK_SYSTEM_PROMPT,
   boords: BOORDS_SYSTEM_PROMPT,
   studio_knowledge: STUDIO_KNOWLEDGE_SYSTEM_PROMPT,
+  delivery: DELIVERY_SYSTEM_PROMPT,
+  brain: BRAIN_SYSTEM_PROMPT,
 }
 
 const MAX_TURNS = 4 // safety cap on tool_use loop
@@ -103,8 +107,21 @@ export async function runSpecialist(
             (payload.workspaceId as string) || process.env.KIT_DEFAULT_WORKSPACE_ID || '',
             (payload.slackUserId as string) || 'unknown',
           )
-        const dispatchResult = await dispatch(agentId, action, payload)
-        result = await enforceAccess(effectiveUser, agentId, action, payload, dispatchResult)
+        // Gate BEFORE dispatch so a restricted *mutation* never runs its side
+        // effect for an under-privileged user. (enforceAccess re-checks the
+        // gateway and additionally field-filters successful results.)
+        const gate = checkGateway(
+          effectiveUser,
+          agentId,
+          action,
+          payload.projectId as string | undefined,
+        )
+        if (!gate.allowed) {
+          result = { success: false, error: gate.reason }
+        } else {
+          const dispatchResult = await dispatch(agentId, action, payload)
+          result = await enforceAccess(effectiveUser, agentId, action, payload, dispatchResult)
+        }
       } catch (err: any) {
         result = { success: false, error: err?.message || String(err) }
       }

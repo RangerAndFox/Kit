@@ -20,7 +20,9 @@ import type { App } from '@slack/bolt'
 import {
   getPendingForBrain,
   getCandidate,
-  markCandidateDecided,
+  claimCandidate,
+  releaseCandidate,
+  markCandidatesDmSent,
   type PendingCandidateRow,
 } from '../../../src/lib/brain/scavenger'
 import { applyPatches, getBrainById, setCanvasHandle } from '../../../src/lib/brain/store'
@@ -143,13 +145,6 @@ async function applyCandidate(app: App, candidate: PendingCandidateRow, approver
     author: approverSlackId,
   })
 
-  await markCandidateDecided({
-    id: candidate.id,
-    status: 'approved',
-    approver: approverSlackId,
-    appliedSection: section,
-  })
-
   // Refresh canvas + post in-channel notice so the team sees the update.
   if (loaded.row.slack_channel) {
     try {
@@ -175,14 +170,6 @@ async function applyCandidate(app: App, candidate: PendingCandidateRow, approver
   }
 }
 
-async function rejectCandidate(candidate: PendingCandidateRow, approverSlackId: string): Promise<void> {
-  await markCandidateDecided({
-    id: candidate.id,
-    status: 'rejected',
-    approver: approverSlackId,
-  })
-}
-
 // ─── Bolt action handlers ──────────────────────────────────────────────────
 
 export function registerBrainApprovalHandlers(app: App): void {
@@ -197,12 +184,27 @@ export function registerBrainApprovalHandlers(app: App): void {
         await respond({ replace_original: false, response_type: 'ephemeral', text: 'That candidate is no longer pending.' })
         return
       }
-      await applyCandidate(app, candidate, userId)
+      // Claim BEFORE applying: a double click / approve-after-reject used to
+      // re-apply the patch (duplicate bullets in the brain). Losing the
+      // claim means someone already decided it.
+      const section = candidate.applied_section || 'Open decisions'
+      const claimed = await claimCandidate({ id, status: 'approved', approver: userId, appliedSection: section })
+      if (!claimed) {
+        await respond({ replace_original: false, response_type: 'ephemeral', text: 'That candidate is no longer pending.' })
+        return
+      }
+      try {
+        await applyCandidate(app, candidate, userId)
+      } catch (applyErr) {
+        // Apply failed after the claim — release so it can be retried.
+        await releaseCandidate(id)
+        throw applyErr
+      }
       await updateDmBlocks({
         client,
         body: body as any,
         candidateId: id,
-        replacement: { type: 'context', elements: [{ type: 'mrkdwn', text: `:white_check_mark: Approved by <@${userId}> — folded into § ${candidate.applied_section || 'Open decisions'}.` }] },
+        replacement: { type: 'context', elements: [{ type: 'mrkdwn', text: `:white_check_mark: Approved by <@${userId}> — folded into § ${section}.` }] },
       })
     } catch (err: any) {
       console.error('[brain.approvals] approve handler failed:', err?.message || err)
@@ -216,12 +218,11 @@ export function registerBrainApprovalHandlers(app: App): void {
     const userId = (body as any).user?.id
     if (!Number.isFinite(id) || !userId) return
     try {
-      const candidate = await getCandidate(id)
-      if (!candidate) {
+      const claimed = await claimCandidate({ id, status: 'rejected', approver: userId })
+      if (!claimed) {
         await respond({ replace_original: false, response_type: 'ephemeral', text: 'That candidate is no longer pending.' })
         return
       }
-      await rejectCandidate(candidate, userId)
       await updateDmBlocks({
         client,
         body: body as any,
@@ -271,9 +272,17 @@ function truncate(text: string, max: number): string {
   return text.slice(0, max - 1).trimEnd() + '…'
 }
 
+/** Re-remind about still-pending candidates after this many days. */
+const DM_REMIND_AFTER_DAYS = 7
+
 /**
  * Convenience entry-point for the cron — given a workspace, walk every
  * brain with pending candidates and dispatch approval DMs.
+ *
+ * Idempotent per candidate: each is DM'd once (dm_sent_at stamp), with a
+ * single re-remind after DM_REMIND_AFTER_DAYS. Safe to run hourly — the old
+ * once-daily version re-sent identical DMs every day AND silently skipped a
+ * day whenever the scan finished after the dispatch window.
  */
 export async function dispatchAllPendingApprovals(opts: { app: App; workspaceId: string }): Promise<{ dms_sent: number; brains_with_pending: number; missing_creator: number }> {
   const { createAdminClient } = await import('../../../src/lib/supabase/admin')
@@ -282,12 +291,15 @@ export async function dispatchAllPendingApprovals(opts: { app: App; workspaceId:
     .from('brains')
     .select('id, slack_channel')
     .eq('workspace_id', opts.workspaceId)
+  const remindCutoff = new Date(
+    Date.now() - DM_REMIND_AFTER_DAYS * 24 * 60 * 60 * 1000,
+  ).toISOString()
   let dmsSent = 0
   let brainsWithPending = 0
   let missingCreator = 0
   for (const row of brains || []) {
     if (!row.slack_channel) continue
-    const pending = await getPendingForBrain(row.id)
+    const pending = await getPendingForBrain(row.id, { needingDmBefore: remindCutoff })
     if (pending.length === 0) continue
     brainsWithPending++
     const creator = await resolveChannelCreator(opts.app, row.slack_channel)
@@ -301,7 +313,10 @@ export async function dispatchAllPendingApprovals(opts: { app: App; workspaceId:
       approverSlackId: creator,
       candidates: pending,
     })
-    if (res.posted) dmsSent++
+    if (res.posted) {
+      dmsSent++
+      await markCandidatesDmSent(pending.map((c) => c.id))
+    }
   }
   return { dms_sent: dmsSent, brains_with_pending: brainsWithPending, missing_creator: missingCreator }
 }

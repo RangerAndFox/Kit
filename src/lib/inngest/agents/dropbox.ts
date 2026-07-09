@@ -27,6 +27,26 @@ async function dropboxPost(endpoint: string, body: Record<string, unknown>): Pro
   )
 }
 
+/**
+ * Ensure the delivery watch folders exist under a project:
+ *   <projectPath>/specs/video  and  <projectPath>/specs/audio
+ * Idempotent — tolerates "already exists" conflicts. Creates `specs` first so
+ * the subfolders always have a parent.
+ */
+export async function ensureSpecsFolders(projectPath: string): Promise<void> {
+  for (const sub of ['specs', 'specs/video', 'specs/audio']) {
+    try {
+      await dropboxPost('/files/create_folder_v2', {
+        path: `${projectPath}/${sub}`,
+        autorename: false,
+      })
+    } catch (err: any) {
+      // path/conflict/folder → already there; anything else is a real failure.
+      if (!/conflict/i.test(err?.message || '')) throw err
+    }
+  }
+}
+
 // ─── Action Handlers ───────────────────────────────────────
 
 async function provision(payload: Record<string, unknown>): Promise<AgentResult> {
@@ -61,11 +81,25 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
   const destPath = `/production/${year}/${safeName}`
 
   try {
-    await dropboxPost('/files/copy_v2', {
-      from_path: templatePath,
-      to_path: destPath,
-      allow_ownership_transfer: false,
-    })
+    try {
+      await dropboxPost('/files/copy_v2', {
+        from_path: templatePath,
+        to_path: destPath,
+        allow_ownership_transfer: false,
+      })
+    } catch (err: any) {
+      // copy_v2 is retried by withRetry but isn't idempotent: a timeout whose
+      // first attempt actually landed makes the retry hit a to_path conflict
+      // — the folder exists, which is the outcome we wanted. Treat the
+      // conflict as success and continue provisioning.
+      if (!/conflict/i.test(err?.message || '')) throw err
+      console.warn(`[dropbox:provision] ${destPath} already exists — continuing`)
+    }
+
+    // Delivery watch folders — drop a picture in specs/video and its mix in
+    // specs/audio and Kit prompts for the spec + renders. Created explicitly so
+    // they exist even if the Dropbox template doesn't carry them.
+    await ensureSpecsFolders(destPath)
 
     const linkRes = await dropboxPost('/sharing/create_shared_link_with_settings', {
       path: destPath,
@@ -124,7 +158,9 @@ async function searchFiles(payload: Record<string, unknown>): Promise<AgentResul
 
 async function listFolder(payload: Record<string, unknown>): Promise<AgentResult> {
   try {
-    const path = (payload.path as string) || '/Ranger & Fox/Production'
+    // Same namespace note as provision: the bot's Dropbox home is the team
+    // folder root, so the canonical path is /production (no /Ranger & Fox/ prefix).
+    const path = (payload.path as string) || '/production'
     const data = await dropboxPost('/files/list_folder', {
       path,
       limit: 50,
@@ -196,7 +232,7 @@ async function getProjectFolder(payload: Record<string, unknown>): Promise<Agent
   try {
     const projectQuery = (payload.project as string) || ''
     const year = (payload.year as number) || new Date().getFullYear()
-    const basePath = `/Ranger & Fox/Production/${year}`
+    const basePath = `/production/${year}`
 
     // List the year folder and find matching projects
     const data = await dropboxPost('/files/list_folder', {
@@ -250,7 +286,7 @@ export const dropboxAgent: AgentDefinition = {
     {
       action: 'list_folder',
       description: 'List contents of a folder. Defaults to the Production root.',
-      inputDescription: 'path (folder path, defaults to /Ranger & Fox/Production)',
+      inputDescription: 'path (folder path, defaults to /production)',
       mutates: false,
     },
     {

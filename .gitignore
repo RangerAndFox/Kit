@@ -48,8 +48,10 @@ next-env.d.ts
 
 .env*.local
 
-# claude code session state (worktrees, local config)
-.claude/
+# claude code session state (worktrees, local config) — but keep
+# shareable project skills so remote/web sessions load them too
+.claude/*
+!.claude/skills/
 
 # Brainstorm session files from superpowers/brainstorming skill
 .superpowers/

@@ -2,11 +2,21 @@ import { describe, it, expect } from 'vitest'
 import PizZip from 'pizzip'
 
 import {
-  fillNdaTemplate,
+  loadNdaPdf,
+  fillCompanyNdaDocx,
   formatNdaDateParts,
-  NDA_TEMPLATE_PATH,
+  NDA_PDF_PATH,
+  NDA_COMPANY_TEMPLATE_PATH,
 } from '../src/onboarding/nda/template'
 import { buildMimeMessage } from '../src/onboarding/nda/mailer'
+import {
+  buildNdaCardBlocks,
+  buildNdaModalView,
+  parseNdaContext,
+  parseNdaModalSubmission,
+  NDA_REVIEW_ACTION,
+  NDA_SEND_CALLBACK,
+} from '../src/onboarding/nda/card'
 import {
   hasPaperworkOnFile,
   normalizeEmail,
@@ -15,11 +25,35 @@ import {
 import {
   ndaCcList,
   composeNdaEmailBody,
-  sendNdaIfFirstTimer,
+  postNdaCardIfFirstTimer,
 } from '../src/onboarding/nda/send'
 
+describe('loadNdaPdf', () => {
+  it('loads the committed NDA PDF with a pdf content type', () => {
+    const { buffer, filename, contentType } = loadNdaPdf({ recipientName: 'Jane Doe' })
+    expect(buffer.length).toBeGreaterThan(1000)
+    // Real PDF bytes begin with "%PDF".
+    expect(buffer.subarray(0, 4).toString('latin1')).toBe('%PDF')
+    expect(contentType).toBe('application/pdf')
+    expect(filename).toBe('NDA_RangerFox_Jane_Doe.pdf')
+  })
+
+  it('sanitizes the recipient name into a safe filename', () => {
+    const { filename } = loadNdaPdf({ recipientName: 'José Q. Filmmaker / Co.' })
+    expect(filename).toMatch(/^NDA_RangerFox_[\w]+\.pdf$/)
+  })
+
+  it('falls back to a generic filename when no recipient name is given', () => {
+    expect(loadNdaPdf().filename).toBe('NDA_RangerFox.pdf')
+  })
+
+  it('reads the committed individual NDA path', () => {
+    expect(NDA_PDF_PATH).toContain('assets/nda/RF_One_Way_Individual_NDA.pdf')
+  })
+})
+
 describe('formatNdaDateParts', () => {
-  it('formats day with ordinal, full month, and year', () => {
+  it('formats day with ordinal, full month, and year in the studio tz', () => {
     const d = new Date('2026-06-15T20:00:00Z') // afternoon in LA
     expect(formatNdaDateParts(d, 'America/Los_Angeles')).toEqual({
       day: '15th',
@@ -28,9 +62,8 @@ describe('formatNdaDateParts', () => {
     })
   })
 
-  it('uses the studio timezone (does not roll past midnight UTC)', () => {
-    // 02:30 UTC on the 16th is still 19:30 on the 15th in LA.
-    const d = new Date('2026-06-16T02:30:00Z')
+  it('does not roll past midnight UTC (uses the studio tz)', () => {
+    const d = new Date('2026-06-16T02:30:00Z') // still the 15th in LA
     expect(formatNdaDateParts(d, 'America/Los_Angeles').day).toBe('15th')
   })
 
@@ -43,39 +76,93 @@ describe('formatNdaDateParts', () => {
   })
 })
 
-describe('fillNdaTemplate', () => {
-  it('merges company + date into the docx, preserves the letterhead logo', () => {
-    const { buffer, filename, contentType } = fillNdaTemplate({
-      companyName: 'Jane Doe Creative LLC',
+describe('fillCompanyNdaDocx', () => {
+  it('fills [company]/[day]/[month]/[year] and leaves no bracket tags', () => {
+    const { buffer, filename, contentType } = fillCompanyNdaDocx({
+      company: 'Jane Doe Creative LLC',
       date: new Date('2026-06-15T20:00:00Z'),
     })
     expect(buffer.length).toBeGreaterThan(1000)
     expect(filename).toBe('NDA_RangerFox_Jane_Doe_Creative_LLC.docx')
     expect(contentType).toContain('wordprocessingml')
 
-    const zip = new PizZip(buffer)
-    // Collapse the XML to plain text (run boundaries become whitespace).
-    const xml = zip
+    const xml = new PizZip(buffer)
       .file('word/document.xml')!
       .asText()
       .replace(/<[^>]*>/g, ' ')
       .replace(/\s+/g, ' ')
     expect(xml).toContain('Jane Doe Creative LLC')
     expect(xml).toContain('made as of this 15th day of June 2026')
-    // No unfilled merge tags or original blanks remain.
-    expect(xml).not.toContain('{company_name}')
-    expect(xml).not.toContain('2021')
-    // Letterhead image survives the merge.
-    expect(zip.file('word/media/image1.png')).toBeTruthy()
+    // No unfilled placeholders remain.
+    for (const tag of ['[company]', '[Company]', '[day]', '[month]', '[year]']) {
+      expect(xml).not.toContain(tag)
+    }
   })
 
-  it('sanitizes the company name into a safe filename', () => {
-    const { filename } = fillNdaTemplate({ companyName: 'José & Co. / Films' })
-    expect(filename).toMatch(/^NDA_RangerFox_[\w]+\.docx$/)
+  it('reads the committed company template path', () => {
+    expect(NDA_COMPANY_TEMPLATE_PATH).toContain(
+      'assets/nda/RF_One_Way_Company_NDA.template.docx',
+    )
+  })
+})
+
+describe('NDA card + modal', () => {
+  const ctx = {
+    artistEmail: 'jane@artist.com',
+    artistName: 'Jane Doe',
+    legalName: 'Jane Doe Creative LLC',
+    onboardingId: 'ob-123',
+    channel: 'U999',
+  }
+
+  it('card button carries the context as JSON and the review action id', () => {
+    const blocks = buildNdaCardBlocks(ctx)
+    const btn = blocks.find((b: any) => b.type === 'actions')!.elements[0]
+    expect(btn.action_id).toBe(NDA_REVIEW_ACTION)
+    expect(parseNdaContext(btn.value)).toEqual(ctx)
   })
 
-  it('reads the committed template path', () => {
-    expect(NDA_TEMPLATE_PATH).toContain('assets/nda/RF_One_Way_Company_NDA.template.docx')
+  it('modal defaults to Company when a legal name is present and prefills it', () => {
+    const view = buildNdaModalView(ctx, { today: new Date('2026-06-25T20:00:00Z') })
+    expect(view.callback_id).toBe(NDA_SEND_CALLBACK)
+    expect(parseNdaContext(view.private_metadata)).toEqual(ctx)
+    const typeBlock: any = view.blocks.find((b: any) => b.block_id === 'nda_type')
+    expect(typeBlock.element.initial_option.value).toBe('company')
+    const companyBlock: any = view.blocks.find((b: any) => b.block_id === 'nda_company')
+    expect(companyBlock.element.initial_value).toBe('Jane Doe Creative LLC')
+    const dateBlock: any = view.blocks.find((b: any) => b.block_id === 'nda_date')
+    expect(dateBlock.element.initial_date).toBe('2026-06-25')
+  })
+
+  it('modal defaults to Individual when no legal name is present', () => {
+    const view = buildNdaModalView({ ...ctx, legalName: null })
+    const typeBlock: any = view.blocks.find((b: any) => b.block_id === 'nda_type')
+    expect(typeBlock.element.initial_option.value).toBe('individual')
+  })
+
+  it('parses a modal submission into ndaType/company/date', () => {
+    const submission = {
+      state: {
+        values: {
+          nda_type: { v: { selected_option: { value: 'company' } } },
+          nda_company: { v: { value: '  Acme Films LLC ' } },
+          nda_date: { v: { selected_date: '2026-06-25' } },
+        },
+      },
+    }
+    const parsed = parseNdaModalSubmission(submission)
+    expect(parsed.ndaType).toBe('company')
+    expect(parsed.company).toBe('Acme Films LLC')
+    expect(formatNdaDateParts(parsed.date, 'UTC')).toEqual({
+      day: '25th',
+      month: 'June',
+      year: '2026',
+    })
+  })
+
+  it('parseNdaContext rejects malformed / empty metadata', () => {
+    expect(parseNdaContext('not json')).toBeNull()
+    expect(parseNdaContext('{}')).toBeNull()
   })
 })
 
@@ -165,16 +252,21 @@ describe('NDA send config + gating', () => {
     else process.env.ONBOARDING_NDA_CC = prev
   })
 
-  it('composeNdaEmailBody greets by first name and names the company', () => {
-    const body = composeNdaEmailBody({ firstName: 'Jane', companyName: 'Jane Doe LLC' })
+  it('composeNdaEmailBody greets by first name and asks them to sign', () => {
+    const body = composeNdaEmailBody({ firstName: 'Jane' })
     expect(body).toContain('Hi Jane,')
-    expect(body).toContain('Jane Doe LLC')
+    expect(body).toMatch(/sign/i)
   })
 
   it('skips when the feature flag is off (no DB/network touched)', async () => {
     const prev = process.env.FREELANCER_PAPERWORK_ENABLED
     delete process.env.FREELANCER_PAPERWORK_ENABLED
-    const r = await sendNdaIfFirstTimer({ artistEmail: 'a@b.com', artistName: 'A B' })
+    const r = await postNdaCardIfFirstTimer({
+      app: {} as any,
+      channel: 'U1',
+      artistEmail: 'a@b.com',
+      artistName: 'A B',
+    })
     expect(r.status).toBe('skipped')
     expect(r.message).toMatch(/disabled/i)
     if (prev !== undefined) process.env.FREELANCER_PAPERWORK_ENABLED = prev
@@ -185,7 +277,12 @@ describe('NDA send config + gating', () => {
     const prevFrom = process.env.ONBOARDING_FROM_EMAIL
     process.env.FREELANCER_PAPERWORK_ENABLED = 'true'
     delete process.env.ONBOARDING_FROM_EMAIL
-    const r = await sendNdaIfFirstTimer({ artistEmail: 'a@b.com', artistName: 'A B' })
+    const r = await postNdaCardIfFirstTimer({
+      app: {} as any,
+      channel: 'U1',
+      artistEmail: 'a@b.com',
+      artistName: 'A B',
+    })
     expect(r.status).toBe('skipped')
     expect(r.message).toMatch(/ONBOARDING_FROM_EMAIL/)
     if (prevFlag === undefined) delete process.env.FREELANCER_PAPERWORK_ENABLED

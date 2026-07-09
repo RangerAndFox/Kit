@@ -57,9 +57,9 @@ export function buildNewProjectModal(
         type: 'input',
         block_id: 'budget',
         optional: true,
-        label: { type: 'plain_text', text: 'Budget (USD)' },
-        hint: { type: 'plain_text', text: 'Harvest budget cannot be set after the project is created — enter it now if known.' },
-        element: { type: 'plain_text_input', action_id: 'val', placeholder: { type: 'plain_text', text: 'e.g. 25000' } },
+        label: { type: 'plain_text', text: 'Budget (hours)' },
+        hint: { type: 'plain_text', text: 'Total project hours. Harvest budgets by hours and can\'t be changed after the project is created — enter it now if known.' },
+        element: { type: 'plain_text_input', action_id: 'val', placeholder: { type: 'plain_text', text: 'e.g. 120' } },
       },
       {
         type: 'input',

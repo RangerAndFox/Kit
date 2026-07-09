@@ -18,8 +18,19 @@
 
 import { inngest } from './client'
 import { createAdminClient } from '../supabase/admin'
-import { scanDeliveryQueue, markFileNotified } from '../delivery/dropbox-watcher'
+import { scanDeliveryQueue, markFileNotified, resolveDeliveryChannel } from '../delivery/dropbox-watcher'
+import { isSrtFile } from '../delivery/subtitle-convert'
+import { processSrtFile } from '../delivery/subtitle-watcher'
+import {
+  scanProjectSpecs,
+  markSpecsNotified,
+  resolveProjectChannel,
+  buildSpecsPromptBlocks,
+} from '../delivery/specs-watcher'
+import { pairSpecsFiles } from '../delivery/pairing'
+import { progressBar } from '../delivery/progress-bar'
 import { resetStaleJobs } from '../delivery/storage'
+import { recordSpecIntake } from '../delivery/spec-intake-store'
 
 const SLACK_API = 'https://slack.com/api'
 const DEFAULT_NOTIFY_CHANNEL = process.env.DELIVERY_NOTIFY_CHANNEL_ID || ''
@@ -44,6 +55,25 @@ async function slackPost(channel: string, text: string, blocks?: any[], threadTs
   return json.ok ? json.ts : null
 }
 
+async function slackUpdate(channel: string, ts: string, text: string, blocks?: any[]): Promise<boolean> {
+  const token = process.env.SLACK_BOT_TOKEN
+  if (!token || !channel || !ts) return false
+  const body: any = { channel, ts, text, mrkdwn: true }
+  if (blocks) body.blocks = blocks
+  const res = await fetch(`${SLACK_API}/chat.update`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json; charset=utf-8',
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(8_000),
+  }).catch(() => null)
+  if (!res) return false
+  const json = await res.json().catch(() => ({}))
+  return !!json.ok
+}
+
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
@@ -64,22 +94,96 @@ export const deliveryDropboxScan = inngest.createFunction(
     if (!process.env.DROPBOX_ACCESS_TOKEN && !process.env.DROPBOX_REFRESH_TOKEN) {
       return { skipped: 'no_dropbox_token' }
     }
-    if (!DEFAULT_NOTIFY_CHANNEL) {
-      return { skipped: 'no_DELIVERY_NOTIFY_CHANNEL_ID' }
-    }
 
     const newFiles = await step.run('scan', () => scanDeliveryQueue())
     if (newFiles.length === 0) return { scanned: 0 }
 
+    let notified = 0
+    let converted = 0
     for (const f of newFiles) {
       const name = f.path.split(/[\\/]/).pop() || f.path
+
+      // Deliveries are per-project (operator direction): the folder under
+      // /Delivery-Queue/ maps to the project's own Slack channel.
+      // DELIVERY_NOTIFY_CHANNEL_ID is an optional catch-all fallback.
+      const resolved = await resolveDeliveryChannel(f.path)
+      const channel = resolved.channelId || DEFAULT_NOTIFY_CHANNEL
+
+      // Generated caption siblings (.ttml/.vtt/.txt) — ours or hand-dropped.
+      // Consume silently: a "pick a profile" prompt for a caption file is
+      // noise, and our own uploads must never re-trigger the scanner.
+      if (/\.(ttml|vtt|txt)$/i.test(name)) {
+        await markFileNotified(f.dropbox_id)
+        continue
+      }
+
+      // SRT drop → generate TTML/VTT/TXT next to it (same basename)
+      // instead of prompting for a transcode profile. Conversion happens
+      // regardless of whether a channel resolved — the files ARE the point.
+      if (isSrtFile(name)) {
+        const result = await step.run(`convert-srt-${f.dropbox_id}`, async () => {
+          await markFileNotified(f.dropbox_id) // never retry-loop a bad SRT
+          try {
+            const r = await processSrtFile({ path: f.path, sizeBytes: f.size_bytes })
+            return { ok: true as const, generated: r.generated, cueCount: r.cueCount }
+          } catch (err: any) {
+            return { ok: false as const, error: err.message }
+          }
+        })
+        if (result.ok) {
+          converted++
+          const siblings = result.generated
+            .map((p: string) => `\`${p.split(/[\\/]/).pop()}\``)
+            .join(', ')
+          await slackPost(
+            channel,
+            `Captions generated from ${name}`,
+            [
+              {
+                type: 'section',
+                text: {
+                  type: 'mrkdwn',
+                  text:
+                    `:speech_balloon: *Captions generated* from \`${name}\` (${result.cueCount} cues)\n` +
+                    `${siblings} dropped in the same folder.`,
+                },
+              },
+            ],
+          )
+        } else {
+          await slackPost(
+            channel,
+            `Caption conversion failed: ${name}`,
+            [
+              {
+                type: 'section',
+                text: {
+                  type: 'mrkdwn',
+                  text: `:warning: Couldn't convert \`${f.path}\` — ${result.error}`,
+                },
+              },
+            ],
+          )
+        }
+        continue
+      }
+
+      if (!channel) {
+        // Nowhere to post. Do NOT mark notified — leave the file to prompt
+        // once its project channel is linked (or the fallback env is set).
+        console.warn(
+          `[delivery-scan] no Slack channel for ${f.path} — will retry (link the project channel or set DELIVERY_NOTIFY_CHANNEL_ID)`,
+        )
+        continue
+      }
+
       const blocks = [
         {
           type: 'section',
           text: {
             type: 'mrkdwn',
             text:
-              `:inbox_tray: *New file in /Delivery-Queue/*\n` +
+              `:inbox_tray: *New delivery file${resolved.projectName ? ` — ${resolved.projectName}` : ''}*\n` +
               `:paperclip: \`${f.path}\` (${fmtBytes(f.size_bytes)})\n` +
               `Run \`/kit deliver ${f.path}\` to pick a delivery profile and start a transcode.`,
           },
@@ -90,10 +194,92 @@ export const deliveryDropboxScan = inngest.createFunction(
       // where Slack post fails after the mark — operator will see the file
       // wasn't notified and can `/kit deliver <path>` manually.
       await markFileNotified(f.dropbox_id)
-      await slackPost(DEFAULT_NOTIFY_CHANNEL, `New file: ${name}`, blocks)
+      await slackPost(channel, `New file: ${name}`, blocks)
+      notified++
     }
 
-    return { notified: newFiles.length }
+    return { notified, converted }
+  },
+)
+
+// ─── Per-project specs/ folder poller ──────────────────────
+
+export const deliverySpecsScan = inngest.createFunction(
+  {
+    id: 'delivery-specs-scan',
+    name: 'Delivery — Per-project specs/ folder scan',
+    retries: 1,
+    triggers: [{ cron: '*/1 * * * *' }],
+  },
+  async ({ step }) => {
+    if (!process.env.DROPBOX_ACCESS_TOKEN && !process.env.DROPBOX_REFRESH_TOKEN) {
+      return { skipped: 'no_dropbox_token' }
+    }
+
+    const drops = await step.run('scan-specs', () => scanProjectSpecs())
+    if (drops.length === 0) return { scanned: 0 }
+
+    let posted = 0
+    // Dedupe by the files a posted prompt actually COVERED — not blindly by
+    // project. The pair prompt covers exactly its video+audio; a second,
+    // unrelated video dropped the same tick must keep its own prompt (a
+    // project-level consume used to strand it as notified-but-never-posted).
+    const coveredThisTick = new Set<string>()
+    for (const drop of drops) {
+      if (coveredThisTick.has(drop.trigger.dropbox_id)) {
+        // This file was part of a pair already prompted this tick — consume.
+        await markSpecsNotified(drop.trigger.dropbox_id)
+        continue
+      }
+      const project = await resolveProjectChannel(drop.safeName)
+      const channel = project?.channelId || DEFAULT_NOTIFY_CHANNEL
+      if (!channel) {
+        // Nowhere to post. Do NOT mark notified — that would strand the file
+        // permanently; leave it to retry once a channel is configured.
+        console.warn(
+          `[delivery-specs] no Slack channel for ${drop.safeName} — will retry (set DELIVERY_NOTIFY_CHANNEL_ID or link the project channel)`,
+        )
+        continue
+      }
+      const pair = pairSpecsFiles({
+        trigger: drop.trigger,
+        videoFiles: drop.videoFiles,
+        audioFiles: drop.audioFiles,
+      })
+      const blocks = buildSpecsPromptBlocks({ projectName: project?.name || drop.safeName, pair })
+
+      // Mark before posting so a Slack failure doesn't re-loop (operator can
+      // re-drop or use /kit deliver). markSpecsNotified THROWS on a failed
+      // write — if we can't record the claim, we don't post (retry next tick)
+      // rather than prompting every minute forever.
+      await markSpecsNotified(drop.trigger.dropbox_id)
+      coveredThisTick.add(drop.trigger.dropbox_id)
+      const ts = await slackPost(channel, `New delivery source in ${drop.safeName}`, blocks)
+      if (ts) {
+        posted++
+        // Record the prompt thread so a spec reply (text/PDF/screenshot) ties
+        // back to this video+audio pair.
+        if (pair.ok && pair.video) {
+          // The prompt covers the whole pair — mark both halves notified so
+          // the partner file can't fire its own prompt on a later tick.
+          const pairIds = [pair.video.dropbox_id, pair.audio?.dropbox_id].filter(Boolean) as string[]
+          for (const id of pairIds) {
+            coveredThisTick.add(id)
+            if (id !== drop.trigger.dropbox_id) {
+              await markSpecsNotified(id).catch((err) =>
+                console.warn(`[delivery-specs] pair-partner mark failed: ${err?.message}`),
+              )
+            }
+          }
+          const sources = [
+            { path: pair.video.path, type: 'video', size_bytes: pair.video.size_bytes },
+            ...(pair.audio ? [{ path: pair.audio.path, type: 'audio', size_bytes: pair.audio.size_bytes }] : []),
+          ]
+          await recordSpecIntake({ channelId: channel, threadTs: ts, sources }).catch(() => {})
+        }
+      }
+    }
+    return { drops: drops.length, posted }
   },
 )
 
@@ -123,21 +309,35 @@ export const deliveryJobNotifier = inngest.createFunction(
     let posted = 0
     for (const job of rows || []) {
       if (!job.slack_channel) continue
-      if (job.slack_notified_status === job.status) continue // already announced this status
+
+      // Terminal states announce once. 'processing' keeps updating in place so
+      // the progress bar advances; 'claimed' refreshes to processing too.
+      const terminal = job.status === 'complete' || job.status === 'failed'
+      if (terminal && job.slack_notified_status === job.status) continue
 
       const text = renderJobMessage(job)
-      const ts = await slackPost(job.slack_channel, text, undefined, job.slack_thread_ts || undefined)
-      if (!ts) continue
 
-      const patch: any = {
-        slack_notified_at: new Date().toISOString(),
-        slack_notified_status: job.status,
+      if (!job.slack_message_ts) {
+        // First message for this job — post it and remember its ts.
+        const ts = await slackPost(job.slack_channel, text, undefined, job.slack_thread_ts || undefined)
+        if (!ts) continue
+        await sb
+          .from('render_jobs')
+          .update({
+            slack_message_ts: ts,
+            slack_notified_status: job.status,
+            slack_notified_at: new Date().toISOString(),
+          })
+          .eq('id', job.id)
+      } else {
+        // Update the same message in place (live progress bar).
+        const ok = await slackUpdate(job.slack_channel, job.slack_message_ts, text)
+        if (!ok) continue
+        await sb
+          .from('render_jobs')
+          .update({ slack_notified_status: job.status, slack_notified_at: new Date().toISOString() })
+          .eq('id', job.id)
       }
-      // Save the message ts only on the very first notification so future
-      // status announcements thread under the same root if desired.
-      if (!job.slack_message_ts) patch.slack_message_ts = ts
-
-      await sb.from('render_jobs').update(patch).eq('id', job.id)
       posted++
     }
 
@@ -153,20 +353,34 @@ function renderJobMessage(job: any): string {
       return `:wrench: *${job.claimed_by}* picked up the job for \`${filename}\` — starting...`
     case 'processing':
       return (
-        `:gear: *${job.claimed_by}* — *${profileName}* on \`${filename}\`\n` +
-        `Progress: ${job.progress_percent ?? 0}% — ${job.progress_message || 'working...'}`
+        `:gear: *${profileName}* on \`${filename}\` — ${job.claimed_by}\n` +
+        `\`${progressBar(job.progress_percent ?? 0)}\`\n` +
+        `${job.progress_message || 'working...'}`
       )
     case 'complete': {
       const size = job.output_size_bytes ? ` (${fmtBytes(job.output_size_bytes)})` : ''
       const duration = job.duration_seconds ? ` — ${Math.round(job.duration_seconds)}s` : ''
+
+      // Auto-QC results (worker ffprobed the output vs the profile).
+      const autoQc = (job.qc_checklist_status || []) as { text: string; checked: boolean }[]
+      let qcBlock = ''
+      if (autoQc.length > 0) {
+        const failed = autoQc.filter((c) => !c.checked)
+        qcBlock = failed.length === 0
+          ? '\n\n:white_check_mark: *QC passed* — output matches the spec.'
+          : '\n\n:warning: *QC flagged:*\n' + failed.map((c) => `:x: ${c.text}`).join('\n')
+      }
+
+      // Manual QC checklist from the profile (operator verifies before sending).
       const qcList = (job.profile_snapshot?.qc_checklist || []) as string[]
-      const qcLines = qcList.length > 0
-        ? '\n\n*QC Checklist — verify before submission:*\n' + qcList.map((q) => `:black_square_button: ${q}`).join('\n')
+      const manualBlock = qcList.length > 0
+        ? '\n\n*Manual QC — verify before submission:*\n' + qcList.map((q) => `:black_square_button: ${q}`).join('\n')
         : ''
+
       return (
         `:white_check_mark: *Transcode complete*\n` +
         `Output: \`${filename}\`${size}${duration}\n` +
-        `Worker: ${job.claimed_by || '?'}${qcLines}`
+        `Worker: ${job.claimed_by || '?'}${qcBlock}${manualBlock}`
       )
     }
     case 'failed':

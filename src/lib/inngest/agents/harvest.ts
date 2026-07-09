@@ -10,6 +10,7 @@
 import {
   findOrCreateClient,
   createHarvestProject,
+  assignAllUsersToProject,
   listProjects,
   searchProjects,
   listProjectTasks,
@@ -17,7 +18,10 @@ import {
   createTimeEntry,
   listUsers,
   listAccountTasks,
+  getProjectBudgetReport,
 } from '@/lib/harvest/client'
+import { studioToday, studioDateMinusDays } from '@/lib/time/studio-date'
+import { staffProfile } from '@/lib/staff/timezone'
 import type { AgentDefinition, AgentResult } from './types'
 
 // ─── Action Handlers ───────────────────────────────────────
@@ -36,18 +40,29 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       notes: (payload.briefSummary as string) || undefined,
     })
 
+    // Studio policy: everyone is assigned to every project, so time entry
+    // never hits Harvest's must-be-assigned rule. Non-fatal — the
+    // createTimeEntry self-heal covers any user this misses.
+    let teamAssigned = 0
+    try {
+      teamAssigned = (await assignAllUsersToProject(project.id)).assigned
+    } catch (err: any) {
+      console.warn(`[harvest] team assignment for new project ${project.id} failed: ${err.message}`)
+    }
+
     return {
       agent: 'harvest',
       action: 'provision',
       success: true,
       url: `https://rangerandfox.harvestapp.com/projects/${project.id}`,
       id: String(project.id),
-      message: `Created Harvest project "${project.name}" with ${project.task_assignments.length} tasks`,
+      message: `Created Harvest project "${project.name}" with ${project.task_assignments.length} tasks; assigned ${teamAssigned} team members`,
       data: {
         clientName: harvestClient.name,
         clientId: harvestClient.id,
         taskCount: project.task_assignments.length,
         tasks: project.task_assignments.map((ta: any) => ta.task.name),
+        teamAssigned,
       },
     }
   } catch (err: any) {
@@ -61,7 +76,19 @@ async function logTime(payload: Record<string, unknown>): Promise<AgentResult> {
     const hours = payload.hours as number
     const notes = (payload.notes as string) || ''
     const taskName = (payload.task as string) || ''
-    const date = (payload.date as string) || new Date().toISOString().split('T')[0]
+    // Anchor everything to the LOGGER's timezone (staff.timezone, cached
+    // from their Slack profile; studio default when unknown) — a UTC
+    // "today" is already tomorrow by 5pm PT, which put evening entries on
+    // the next day. The specialist LLM isn't told the current date, so
+    // relative words are resolved here and non-dates / future dates fall
+    // back to today.
+    const { timezone: tz, harvestUserId } = await staffProfile(payload.slackUserId as string)
+    const rawDate = String(payload.date || '').trim().toLowerCase()
+    const today = studioToday(new Date(), tz)
+    let date: string
+    if (rawDate === 'yesterday') date = studioDateMinusDays(1, new Date(), tz)
+    else if (/^\d{4}-\d{2}-\d{2}$/.test(rawDate) && rawDate <= today) date = rawDate
+    else date = today
 
     // Find the project
     const projects = await searchProjects(projectQuery)
@@ -96,12 +123,15 @@ async function logTime(payload: Record<string, unknown>): Promise<AgentResult> {
       taskId = defaultTask.id
     }
 
+    // Attribute to the LOGGER — without user_id Harvest books the entry
+    // to the API token owner, i.e. someone else's timesheet.
     const entry = await createTimeEntry({
       projectId: project.id,
       taskId,
       hours,
       spentDate: date,
       notes,
+      userId: harvestUserId || undefined,
     })
 
     return {
@@ -136,20 +166,48 @@ async function getProjectBudget(payload: Record<string, unknown>): Promise<Agent
       }
     }
 
-    // Return all matching projects with their status
-    const results = projects.map((p) => ({
-      id: p.id,
-      name: p.name,
-      code: p.code,
-      client: p.client?.name,
-      isActive: p.is_active,
-    }))
+    // Pull real budget vs. spent from Harvest's project budget report and join
+    // it onto the matches. Non-fatal: if the report fails we still return the
+    // matches (without budget numbers) rather than erroring.
+    let byId = new Map<number, any>()
+    try {
+      const report = await getProjectBudgetReport()
+      byId = new Map(report.map((r) => [r.projectId, r]))
+    } catch (e: any) {
+      console.warn('[harvest] project budget report failed:', e.message)
+    }
+
+    const results = projects.map((p) => {
+      const b = byId.get(p.id)
+      return {
+        id: p.id,
+        name: p.name,
+        code: p.code,
+        client: p.client?.name,
+        isActive: p.is_active,
+        budget: b?.budget ?? null,
+        spent: b?.budgetSpent ?? null,
+        remaining: b?.budgetRemaining ?? null,
+        budgetBy: b?.budgetBy ?? null,
+      }
+    })
+
+    // Human-readable headline for the best match. Units follow budget_by:
+    // money for the *_cost/*_fees variants, otherwise hours.
+    const top = results[0]
+    const isMoney = !!top.budgetBy && /(cost|fees)/i.test(top.budgetBy)
+    const unit = isMoney ? 'USD' : 'hours'
+    const message =
+      top.budget != null
+        ? `${top.name}: ${top.spent ?? 0}/${top.budget} ${unit} spent` +
+          (top.remaining != null ? ` (${top.remaining} ${unit} remaining)` : '')
+        : `${top.name}: no budget set in Harvest`
 
     return {
       agent: 'harvest',
       action: 'get_budget',
       success: true,
-      message: `Found ${results.length} project(s) matching "${projectQuery}"`,
+      message,
       data: { projects: results },
     }
   } catch (err: any) {
@@ -256,7 +314,8 @@ export const harvestAgent: AgentDefinition = {
     {
       action: 'log_time',
       description: 'Log a time entry for a team member on a project. Supports natural project names ("NRG", "Nike campaign") and auto-resolves the right task.',
-      inputDescription: 'project (name/code), hours, task (optional), notes (optional), date (optional, defaults to today)',
+      inputDescription:
+        'project (name/code), hours, task (optional), notes (optional), date (optional: YYYY-MM-DD or the word "yesterday" — omit for today; resolved in the studio timezone)',
       mutates: true,
     },
     {

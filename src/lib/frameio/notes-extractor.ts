@@ -93,37 +93,36 @@ export async function extractFrameIoNotes(url: string): Promise<ExtractionResult
     return a.timestamp - b.timestamp
   })
 
-  // Fetch thumbnails in parallel (with concurrency limit)
-  const notes: NoteRow[] = await Promise.all(
-    comments.map(async (comment, i) => {
-      let thumbnailBuffer: Buffer | null = null
+  // Frame.io v4 doesn't expose per-timecode frame extraction — every
+  // "thumbnail" is the asset's poster frame. Fetch it ONCE and reuse it:
+  // the old per-comment loop issued N identical asset fetches + N identical
+  // image downloads for an 80-comment review, and reported them as N
+  // distinct timecode captures.
+  let posterBuffer: Buffer | null = null
+  try {
+    const frame = await getFrameAtTimecode(videoAsset.id, 0)
+    if (frame?.url) {
+      posterBuffer = await downloadImage(frame.url)
+    }
+  } catch {
+    // Poster fetch failed — continue without thumbnails
+  }
 
-      if (comment.timestamp !== null) {
-        try {
-          const frame = await getFrameAtTimecode(videoAsset.id, comment.timestamp)
-          if (frame?.url) {
-            thumbnailBuffer = await downloadImage(frame.url)
-          }
-        } catch {
-          // Thumbnail fetch failed — continue without it
-        }
-      }
+  const notes: NoteRow[] = comments.map((comment, i) => ({
+    index: i + 1,
+    timecode: comment.timestamp !== null ? formatTimecode(comment.timestamp) : 'General',
+    timecodeSeconds: comment.timestamp,
+    note: comment.text,
+    author: comment.ownerName,
+    authorEmail: comment.ownerEmail,
+    date: comment.createdAt ? new Date(comment.createdAt).toLocaleDateString() : '',
+    completed: comment.completed,
+    thumbnailBuffer: comment.timestamp !== null ? posterBuffer : null,
+  }))
 
-      return {
-        index: i + 1,
-        timecode: comment.timestamp !== null ? formatTimecode(comment.timestamp) : 'General',
-        timecodeSeconds: comment.timestamp,
-        note: comment.text,
-        author: comment.ownerName,
-        authorEmail: comment.ownerEmail,
-        date: comment.createdAt ? new Date(comment.createdAt).toLocaleDateString() : '',
-        completed: comment.completed,
-        thumbnailBuffer,
-      }
-    })
-  )
-
-  const thumbnailsFound = notes.filter(n => n.thumbnailBuffer !== null).length
+  // Honest accounting: this is ONE poster frame reused across rows, not
+  // per-timecode captures.
+  const thumbnailsFound = posterBuffer ? 1 : 0
 
   // Build the xlsx
   const xlsxBuffer = await buildNotesXlsx(videoAsset.name, notes)

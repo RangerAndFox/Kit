@@ -15,6 +15,10 @@
  * Requires an actual Slack user mention (<@U…>) so we always have a stable
  * target id. Name-only references ("make Allyson a producer") are left to
  * the orchestrator, which will ask for an @mention.
+ *
+ * Matching is deliberately structural (verb → mention → role in sequence),
+ * not bag-of-words: the old any-order matcher rewrote a user's tier from
+ * messages like "make sure @Allyson the artist gets the final files".
  */
 
 export interface RoleIntent {
@@ -24,9 +28,27 @@ export interface RoleIntent {
   isQuery: boolean
 }
 
-const MENTION_RE = /<@([UW][A-Z0-9]+)(?:\|[^>]+)?>/i
-const ROLE_WORD_RE = /\b(producer|artist|admin|owner|founder|freelancer)\b/i
-const INTENT_RE = /\b(role|tier|access|permission|permissions|make|set|promote|demote|change|assign|give)\b/i
+const MENTION = '<@([UW][A-Z0-9]+)(?:\\|[^>]+)?>'
+const ROLE = '(producer|artist|admin|owner|founder|freelancer)'
+
+// Each pattern captures (targetSlackId, roleWord) from ONE structured phrase.
+const SET_PATTERNS: RegExp[] = [
+  // "make @X a producer" / "set @X's role to producer" / "promote @X to admin"
+  new RegExp(
+    `\\b(?:make|set|promote|demote|change|assign)\\s+${MENTION}(?:['’]s)?\\s*(?:\\b(?:role|tier|access)\\b\\s*)?(?:\\b(?:to|as|a|an)\\b\\s+)?${ROLE}\\b`,
+    'i',
+  ),
+  // "give @X admin (access|role)" / "give @X producer permissions"
+  new RegExp(
+    `\\bgive\\s+${MENTION}\\s+(?:a\\s+|an\\s+)?${ROLE}\\b(?:\\s+(?:access|role|tier|permissions?))?`,
+    'i',
+  ),
+  // "/kit role @X producer" typed literally / "role @X producer"
+  new RegExp(`\\brole\\s+${MENTION}\\s+${ROLE}\\b`, 'i'),
+]
+
+const MENTION_RE = new RegExp(MENTION, 'i')
+const ROLE_WORD_RE = new RegExp(`\\b${ROLE}\\b`, 'i')
 const QUERY_RE = /\brole\b/i
 
 function normalize(raw: string): string | null {
@@ -38,21 +60,19 @@ function normalize(raw: string): string | null {
 
 export function parseRoleIntent(text: string): RoleIntent | null {
   if (!text) return null
-  const mention = text.match(MENTION_RE)
-  if (!mention) return null
-  const targetSlackId = mention[1]
 
-  const roleWord = text.match(ROLE_WORD_RE)
-  const hasIntent = INTENT_RE.test(text)
-
-  if (roleWord && hasIntent) {
-    const role = normalize(roleWord[1])
-    if (role) return { targetSlackId, role, isQuery: false }
+  for (const pattern of SET_PATTERNS) {
+    const m = text.match(pattern)
+    if (m) {
+      const role = normalize(m[2])
+      if (role) return { targetSlackId: m[1], role, isQuery: false }
+    }
   }
 
   // "@Allyson role" / "what is @Allyson's role" with no role word → query
-  if (!roleWord && QUERY_RE.test(text)) {
-    return { targetSlackId, role: null, isQuery: true }
+  const mention = text.match(MENTION_RE)
+  if (mention && !ROLE_WORD_RE.test(text) && QUERY_RE.test(text)) {
+    return { targetSlackId: mention[1], role: null, isQuery: true }
   }
 
   return null

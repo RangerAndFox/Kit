@@ -1,13 +1,11 @@
 /**
- * NDA template fill.
+ * NDA documents.
  *
- * Loads the committed Ranger & Fox one-way NDA (.docx, letterhead preserved)
- * and merges in the artist's details via docxtemplater. The template carries
- * four single-brace merge tags authored into the original document:
- *   {company_name}  — the "Company" signing party
- *   {day} {month} {year} — the "made as of this ___ day of ___ ____" date
- *
- * Output is a filled .docx (the artist signs in Word / Google Docs / on paper).
+ * Two NDAs live in bolt/assets/nda:
+ *  - Individual — a static PDF (letterhead), signed/printed/dated by hand.
+ *    No fields to fill; loaded via loadNdaPdf().
+ *  - Company — a .docx with literal [day] [month] [year] [company] placeholders.
+ *    Filled via fillCompanyNdaDocx(), then converted to PDF before emailing.
  */
 
 import fs from 'node:fs'
@@ -18,26 +16,28 @@ import Docxtemplater from 'docxtemplater'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-// bolt/src/onboarding/nda/template.ts → bolt/assets/nda/<template>.docx
-export const NDA_TEMPLATE_PATH = path.resolve(
+// bolt/src/onboarding/nda/template.ts → bolt/assets/nda/<file>
+export const NDA_PDF_PATH = path.resolve(
+  __dirname,
+  '../../../assets/nda/RF_One_Way_Individual_NDA.pdf',
+)
+export const NDA_COMPANY_TEMPLATE_PATH = path.resolve(
   __dirname,
   '../../../assets/nda/RF_One_Way_Company_NDA.template.docx',
 )
 
+const PDF_CONTENT_TYPE = 'application/pdf'
 const DOCX_CONTENT_TYPE =
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 
-export interface NdaMergeData {
-  /** The "Company" party — legal entity name, or the artist's full name. */
-  companyName: string
-  /** Effective date of the agreement. Defaults to now. */
-  date?: Date
-}
-
-export interface FilledNda {
+export interface NdaDocument {
   buffer: Buffer
   filename: string
   contentType: string
+}
+
+function safeFilenamePart(s: string): string {
+  return s.replace(/[^\w]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60)
 }
 
 function ordinal(n: number): string {
@@ -47,8 +47,9 @@ function ordinal(n: number): string {
 }
 
 /**
- * Format a date into the NDA's day/month/year parts, in the studio's
- * timezone (so an evening send near midnight doesn't roll the date).
+ * Format a date into the Company NDA's day/month/year parts, in the studio's
+ * timezone (so an evening send near midnight doesn't roll the date). `day` is
+ * an ordinal ("25th") to read naturally in "made as of this 25th day of …".
  */
 export function formatNdaDateParts(
   date: Date,
@@ -62,33 +63,52 @@ export function formatNdaDateParts(
   return { day: ordinal(dayNum), month, year }
 }
 
-function safeFilenamePart(s: string): string {
-  return s.replace(/[^\w]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60) || 'Company'
+/**
+ * Load the static Individual NDA PDF. `recipientName` only flavors the
+ * attachment filename; the PDF bytes are identical for everyone.
+ */
+export function loadNdaPdf(
+  opts: { recipientName?: string; pdfPath?: string } = {},
+): NdaDocument {
+  const buffer = fs.readFileSync(opts.pdfPath || NDA_PDF_PATH)
+  const who = opts.recipientName ? safeFilenamePart(opts.recipientName) : ''
+  return {
+    buffer,
+    filename: who ? `NDA_RangerFox_${who}.pdf` : 'NDA_RangerFox.pdf',
+    contentType: PDF_CONTENT_TYPE,
+  }
 }
 
 /**
- * Produce a filled NDA .docx for one artist. Synchronous — the template is a
- * small local file. Throws if the template is missing or merge fails.
+ * Fill the Company NDA .docx. The template uses square-bracket placeholders
+ * ([day] [month] [year] [company]/[Company]); we set docxtemplater's delimiters
+ * to match. Returns a filled .docx — convert to PDF before emailing.
  */
-export function fillNdaTemplate(
-  data: NdaMergeData,
+export function fillCompanyNdaDocx(
+  data: { company: string; date?: Date },
   opts: { templatePath?: string } = {},
-): FilledNda {
-  const templatePath = opts.templatePath || NDA_TEMPLATE_PATH
+): NdaDocument {
+  const templatePath = opts.templatePath || NDA_COMPANY_TEMPLATE_PATH
   const content = fs.readFileSync(templatePath)
   const zip = new PizZip(content)
-  const doc = new Docxtemplater(zip, { paragraphLoop: true, linebreaks: true })
+  const doc = new Docxtemplater(zip, {
+    delimiters: { start: '[', end: ']' },
+    paragraphLoop: true,
+    linebreaks: true,
+    nullGetter: () => '',
+  })
   const parts = formatNdaDateParts(data.date || new Date())
   doc.render({
-    company_name: data.companyName,
     day: parts.day,
     month: parts.month,
     year: parts.year,
+    company: data.company,
+    Company: data.company,
   })
   const buffer = doc.getZip().generate({ type: 'nodebuffer' }) as Buffer
   return {
     buffer,
-    filename: `NDA_RangerFox_${safeFilenamePart(data.companyName)}.docx`,
+    filename: `NDA_RangerFox_${safeFilenamePart(data.company) || 'Company'}.docx`,
     contentType: DOCX_CONTENT_TYPE,
   }
 }

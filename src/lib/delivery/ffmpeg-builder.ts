@@ -90,6 +90,16 @@ export function buildFFmpegArgs(input: FFmpegBuildInput): string[] {
     args.push('-i', src.path)
   }
 
+  // Stream mapping. With a separate audio source file (the dropped mix from
+  // specs/audio), take video from the video input and audio from the audio
+  // input explicitly — otherwise FFmpeg's default selection could grab the
+  // picture's embedded scratch audio instead of the mix.
+  const audioInputIdx = sourceFiles.findIndex((s) => s.type === 'audio')
+  if (audioInputIdx >= 0) {
+    const videoInputIdx = Math.max(0, sourceFiles.findIndex((s) => s.type === 'video'))
+    args.push('-map', `${videoInputIdx}:v:0`, '-map', `${audioInputIdx}:a:0`)
+  }
+
   // Video encoder + flags
   args.push('-c:v', videoCodec.encoder)
   args.push(...videoCodec.flags)
@@ -97,8 +107,16 @@ export function buildFFmpegArgs(input: FFmpegBuildInput): string[] {
   if (profile.pixel_format && !videoCodec.flags.includes('-pix_fmt')) {
     args.push('-pix_fmt', profile.pixel_format)
   }
-  // Resolution
-  args.push('-s', `${profile.resolution_w}x${profile.resolution_h}`)
+  // Video filters: optional profile filters (360 via v360 / unique formats)
+  // first, then a high-quality lanczos scale to the target resolution. Using a
+  // scale filter (not -s) lets us pick the lanczos scaler — clean upres to
+  // bigger sizes — and chain projection conversions ahead of it.
+  const videoFilters: string[] = []
+  if (profile.video_filters && profile.video_filters.trim()) {
+    videoFilters.push(profile.video_filters.trim())
+  }
+  videoFilters.push(`scale=${profile.resolution_w}:${profile.resolution_h}:flags=lanczos`)
+  args.push('-vf', videoFilters.join(','))
   // Frame rate
   args.push('-r', profile.frame_rate)
   // Frame rate mode (cfr enforces constant frame rate)

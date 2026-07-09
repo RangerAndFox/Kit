@@ -16,7 +16,9 @@
  *     from this (channel, user) within the TTL — enables follow-ups
  *     without requiring re-@mention.
  *
- * All replies post in the main flow (no thread_ts).
+ * Reply threading: DM replies (the Assistant / AI-Apps pane) always thread to
+ * the conversation root so they stay inside the user's view; channel @mention
+ * replies post in the main flow so the whole channel sees them.
  */
 
 import type { App } from '@slack/bolt'
@@ -26,23 +28,58 @@ import { messageHasFrameIoLink, handleFrameIoLink } from '../../../src/lib/frame
 import { handleAdhocHoursEntry, looksLikeHoursIntent } from '../checkins/adhoc'
 import { handleOnboardKeyword, isOnboardTrigger } from '../onboarding/keyword'
 import { getPendingOnboarding } from '../onboarding/state'
-import { isShotListTrigger } from '../shotlist/keyword'
-import { handleShotListMessage } from '../shotlist/handler'
-import { handleShotListThumbnailUpload } from '../shotlist/thumbnails'
 import { isNoteTrigger } from '../notes/keyword'
 import { handleNoteMessage } from '../notes/handler'
 import { handleBrainIngestMessage } from '../brain/handler'
 import { handleRoleMessage } from '../roles/handler'
 import { handleFrameioToggleMessage } from '../delivery/frameio-toggle'
+import { handleSpecIntakeReply } from '../delivery/spec-intake'
+import { channelHasOpenSpecIntake } from '../../../src/lib/delivery/spec-intake-store'
+import { maybeParticipate } from '../participation/participant'
 
 import { runOrchestrator } from '../llm/orchestrator'
 import { hasPendingClarification } from '../llm/memory'
 import { setThinking, clearThinking } from '../llm/status'
-import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
 import { stashIntake } from '../../../src/lib/storyboard/stash'
 import { projectNameFromFilename } from '../../../src/lib/storyboard/parser'
 import { buildNewProjectCard } from './newproject-card'
-import { findOpenCheckin, handleCheckinReply } from '../checkins/reply'
+import {
+  findOpenCheckin,
+  handleCheckinReply,
+  handleParsedCheckinText,
+} from '../checkins/reply'
+
+/**
+ * The thread ts to reply into for a DM (Slack Assistant / "Agents & AI Apps"
+ * pane). Replies MUST be threaded to the conversation root to appear inside the
+ * user's assistant view — a non-threaded reply lands in the main DM flow (the
+ * "History" pane) and looks like it "randomly" left the thread.
+ *
+ * We can't gate on the `assistant_thread` block: Slack doesn't attach it to
+ * every message event, so gating on it lets some replies escape. In a DM we
+ * always thread to `thread_ts` (falling back to the message's own ts for the
+ * rare top-level event). Returns undefined outside DMs — channel @mentions
+ * post in the main flow by design so they're visible to the whole channel.
+ */
+function dmThreadTs(m: any): string | undefined {
+  if (m?.channel_type !== 'im') return undefined
+  return m.thread_ts || m.ts
+}
+
+// Kit's own bot user id, fetched lazily and cached for the process. Used to
+// distinguish "this message @mentions Kit" (app_mention will fire — skip
+// here) from "this message mentions someone else" (handle it here).
+let _botUserId: string | null = null
+async function getBotUserId(app: App): Promise<string | null> {
+  if (_botUserId) return _botUserId
+  try {
+    const auth = await app.client.auth.test()
+    _botUserId = (auth as any).user_id || null
+  } catch (err: any) {
+    console.warn('[Bolt] auth.test failed:', err?.message)
+  }
+  return _botUserId
+}
 
 export function registerMessageHandlers(app: App) {
   // ─── @mentions ────────────────────────────────────────────
@@ -88,10 +125,7 @@ export function registerMessageHandlers(app: App) {
     ) {
       const scriptFile = msgEvent.files.find(isStoryboardScriptFile)
       if (scriptFile) {
-        const assistantThreadTs =
-          msgEvent.assistant_thread && msgEvent.thread_ts
-            ? msgEvent.thread_ts
-            : undefined
+        const assistantThreadTs = dmThreadTs(msgEvent)
         await handleStoryboardFileDrop({
           app,
           file: scriptFile,
@@ -103,24 +137,30 @@ export function registerMessageHandlers(app: App) {
       }
     }
 
-    // ── Shot list thumbnail uploads ───────────────────────
-    // File shares in channels with images may be thumbnails for an
-    // active shot list canvas. Returns false silently if no active list.
+    // ── Delivery spec intake (reply in a specs-prompt thread) ──
+    // Runs BEFORE the subtype skip so file_share replies (PDF/screenshot)
+    // are caught too. Returns false (and we continue) when the thread isn't
+    // an open delivery prompt. channelHasOpenSpecIntake is a cached Set
+    // lookup — without it every threaded message in every channel paid a
+    // Supabase query.
     if (
-      msgEvent.subtype === 'file_share' &&
-      Array.isArray(msgEvent.files) &&
-      msgEvent.files.length > 0
+      msgEvent.thread_ts &&
+      msgEvent.channel &&
+      msgEvent.user &&
+      (await channelHasOpenSpecIntake(msgEvent.channel))
     ) {
       try {
-        const handled = await handleShotListThumbnailUpload({
+        const handled = await handleSpecIntakeReply({
           app,
           channelId: msgEvent.channel,
-          files: msgEvent.files,
+          threadTs: msgEvent.thread_ts,
+          userId: msgEvent.user,
+          text: msgEvent.text || '',
+          files: Array.isArray(msgEvent.files) ? msgEvent.files : [],
         })
         if (handled) return
       } catch (err: any) {
-        console.error('[Bolt] shot list thumbnail handler failed:', err.message || err)
-        // fall through
+        console.error('[Bolt] spec intake reply failed:', err.message || err)
       }
     }
 
@@ -147,6 +187,33 @@ export function registerMessageHandlers(app: App) {
         messageTs: msgEvent.ts,
         threadTs: msgEvent.thread_ts,
       }).catch((err) => console.error('[Bolt] brain ingest failed:', err.message || err))
+
+      // ── Channel participation (unprompted, high-precision) ──
+      // Kit answers channel questions it can ground in the knowledge base,
+      // shares project assets, or routes to the right teammate — without
+      // being @mentioned. Heavily gated (prefilter → retrieval → confidence
+      // floors → cooldowns) so it stays quiet unless it's sure. Skipped when
+      // this message is about to be handled conversationally anyway.
+      if (
+        !hasPendingClarification(teamId, channelId, userId) &&
+        !getPendingOnboarding(channelId, userId)
+      ) {
+        resolveWorkspaceId(teamId)
+          .then((wsId) =>
+            wsId
+              ? maybeParticipate({
+                  app,
+                  workspaceId: wsId,
+                  channelId,
+                  userId,
+                  messageText: msgEvent.text || '',
+                  messageTs: msgEvent.ts,
+                  threadTs: msgEvent.thread_ts,
+                })
+              : undefined,
+          )
+          .catch((err) => console.warn('[Bolt] participation failed:', err?.message || err))
+      }
     }
 
     // ── Storyboard keyword shortcut (DM only) ─────────────
@@ -154,10 +221,7 @@ export function registerMessageHandlers(app: App) {
     // intent, not just any mention of the word. The orchestrator handles
     // looser phrasings conversationally.
     if (isDM && isStoryboardTrigger((msgEvent.text || '').trim())) {
-      const assistantThreadTs =
-        msgEvent.assistant_thread && msgEvent.thread_ts
-          ? msgEvent.thread_ts
-          : undefined
+      const assistantThreadTs = dmThreadTs(msgEvent)
       await handleStoryboardKeyword({
         app,
         channelId,
@@ -169,10 +233,7 @@ export function registerMessageHandlers(app: App) {
 
     // ── New-project keyword shortcut (DM only) ────────────
     if (isDM && isNewProjectTrigger((msgEvent.text || '').trim())) {
-      const assistantThreadTs =
-        msgEvent.assistant_thread && msgEvent.thread_ts
-          ? msgEvent.thread_ts
-          : undefined
+      const assistantThreadTs = dmThreadTs(msgEvent)
       await app.client.chat.postMessage(
         buildNewProjectCard(channelId, assistantThreadTs),
       )
@@ -190,16 +251,20 @@ export function registerMessageHandlers(app: App) {
         return
     }
 
-    // (App_mention event handles the @mention path; ignore mentions here to avoid double-fire)
-    if ((msgEvent.text || '').includes('<@') && !isDM) return
+    // (app_mention handles the @Kit path; ignore only messages that mention
+    // KIT here to avoid double-fire. A clarification answer that mentions
+    // someone ELSE — "it's <@UJARED>'s project" — must still be handled,
+    // since app_mention never fires for it.)
+    if (!isDM && (msgEvent.text || '').includes('<@')) {
+      const botId = await getBotUserId(app)
+      if (!botId || (msgEvent.text || '').includes(`<@${botId}>`)) return
+    }
 
-    // For DMs in a Slack Assistant thread (Agents & AI Apps), Slack
-    // populates `thread_ts` AND attaches an `assistant_thread` block.
-    // Replies must be threaded so they appear inside the user's view.
-    const assistantThreadTs =
-      isDM && msgEvent.assistant_thread && msgEvent.thread_ts
-        ? msgEvent.thread_ts
-        : undefined
+    // For DMs (the Slack Assistant / Agents & AI Apps pane) always thread the
+    // reply to the conversation root so it appears inside the user's view.
+    // We deliberately don't gate on the `assistant_thread` block — Slack omits
+    // it on some events, which used to drop replies into the main DM flow.
+    const assistantThreadTs = dmThreadTs(msgEvent)
 
     await handleConversationalMessage({
       app,
@@ -285,30 +350,33 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
       })
       if (handled) return
     }
+
+    // Parsed check-in awaiting confirmation: a typed "yes"/"redo" completes
+    // it — the buttons' click events travel a Slack path that has proven
+    // unreliable, so the flow can't depend on them.
+    console.log(
+      `[checkin] DM from ${userId} (channelType=${channelType}, hasAssistantThread=${!!assistantThreadTs}) text="${messageText.slice(0, 24)}" — checking parsed-confirm`,
+    )
+    const confirmed = await handleParsedCheckinText({
+      app,
+      slackUserId: userId,
+      replyText: messageText,
+    })
+    if (confirmed) return
   }
 
-  // Resolve workspace + user context
+  // Resolve workspace + user context. Workspace id and the user's email are
+  // effectively constant — cached with a TTL so every message doesn't pay a
+  // Supabase query + a Slack users.info round-trip before any routing.
   const workspaceId = await resolveWorkspaceId(teamId)
+  const userEmail = await lookupUserEmail(app, userId)
 
-  // Look up the Slack user's email so resolveUserContext can apply the
-  // hardcoded-admin override (founder access works before team_members is seeded).
-  let userEmail: string | undefined
-  try {
-    const info = await app.client.users.info({ user: userId })
-    userEmail = info.user?.profile?.email || undefined
-  } catch (err) {
-    console.warn('[Bolt] users.info lookup failed:', (err as any)?.message)
-  }
-
-  const user = workspaceId
-    ? await resolveUserContext(workspaceId, userId, userEmail)
-    : null
-
-  // Resolve project from channel (if this is a project channel)
-  // and inject as context so Kit knows what "this project" means.
-  const channelProject = workspaceId
-    ? await resolveProjectFromChannel(workspaceId, channelId)
-    : null
+  // User context + channel→project resolution are independent — run them in
+  // parallel instead of serially.
+  const [user, channelProject] = await Promise.all([
+    workspaceId ? resolveUserContext(workspaceId, userId, userEmail) : Promise.resolve(null),
+    workspaceId ? resolveProjectFromChannel(workspaceId, channelId) : Promise.resolve(null),
+  ])
 
   // ── Fast path 1: Frame.io link ──────────────────────────
   if (messageHasFrameIoLink(messageText)) {
@@ -403,26 +471,7 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
     console.error('[Bolt] frame.io toggle handler failed:', err.message || err)
   }
 
-  // ── Fast path 4: Shot list ──────────────────────────────
-  if (isShotListTrigger(messageText)) {
-    try {
-      const handled = await handleShotListMessage({
-        app,
-        channelId,
-        userId,
-        text: messageText,
-      })
-      if (handled) {
-        await clearThinking(app, channelId, replyThreadTs || threadTs)
-        return
-      }
-    } catch (err: any) {
-      console.error('[Bolt] shot list handler failed:', err.message || err)
-      // fall through to orchestrator
-    }
-  }
-
-  // ── Fast path 5: Notes capture ───────────────────────────
+  // ── Fast path 4: Notes capture ───────────────────────────
   if (isNoteTrigger(messageText)) {
     try {
       const handled = await handleNoteMessage({
@@ -464,14 +513,16 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
           `. When the user says "this project" or omits a project, they mean this one.]`,
       )
     }
-    const augmentedMessage = `${contextLines.join('\n')}\n\n${messageText}`
-
+    // Preamble travels separately: it's injected into the current API call
+    // only, so conversation memory stores clean turns (it used to bake one
+    // copy of this header into every stored message).
     const { reply } = await runOrchestrator({
       teamId,
       channel: channelId,
       userId,
       user,
-      message: augmentedMessage,
+      message: messageText,
+      contextPreamble: contextLines.join('\n'),
     })
 
     await postReply(reply)
@@ -754,8 +805,16 @@ async function handleStoryboardKeyword(opts: {
   })
 }
 
+// Workspace ids never change at runtime and there's exactly one workspace in
+// practice — cache per team so the hot path skips a Supabase query per
+// message. (1h TTL just so a manually-added workspace is picked up.)
+const WORKSPACE_CACHE_TTL_MS = 60 * 60 * 1000
+const workspaceCache = new Map<string, { id: string; at: number }>()
+
 async function resolveWorkspaceId(teamId: string): Promise<string> {
   if (!teamId) return ''
+  const hit = workspaceCache.get(teamId)
+  if (hit && Date.now() - hit.at < WORKSPACE_CACHE_TTL_MS) return hit.id
   try {
     const supabase = createAdminClient()
     const { data } = await supabase
@@ -765,16 +824,38 @@ async function resolveWorkspaceId(teamId: string): Promise<string> {
       .limit(1)
       .single()
 
-    if (data?.id) return data.id
-
-    const { data: first } = await supabase
-      .from('workspaces')
-      .select('id')
-      .limit(1)
-      .single()
-
-    return first?.id || ''
+    let id = data?.id || ''
+    if (!id) {
+      const { data: first } = await supabase
+        .from('workspaces')
+        .select('id')
+        .limit(1)
+        .single()
+      id = first?.id || ''
+    }
+    if (id) workspaceCache.set(teamId, { id, at: Date.now() })
+    return id
   } catch {
     return ''
   }
+}
+
+// Slack emails effectively never change mid-session — cache per user so the
+// hot path skips a users.info round-trip per message. Failures are cached
+// briefly too (missing users.read scope shouldn't hammer the API).
+const EMAIL_CACHE_TTL_MS = 6 * 60 * 60 * 1000
+const emailCache = new Map<string, { email: string | undefined; at: number }>()
+
+async function lookupUserEmail(app: App, userId: string): Promise<string | undefined> {
+  const hit = emailCache.get(userId)
+  if (hit && Date.now() - hit.at < EMAIL_CACHE_TTL_MS) return hit.email
+  let email: string | undefined
+  try {
+    const info = await app.client.users.info({ user: userId })
+    email = info.user?.profile?.email || undefined
+  } catch (err) {
+    console.warn('[Bolt] users.info lookup failed:', (err as any)?.message)
+  }
+  emailCache.set(userId, { email, at: Date.now() })
+  return email
 }

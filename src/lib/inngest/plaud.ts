@@ -15,7 +15,7 @@
 
 import { inngest } from './client'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { fetchPlaudFile, fetchPlaudTranscript } from '@/lib/integrations/plaud'
+import { fetchPlaudFile, fetchPlaudTranscript, buildIngestedFields } from '@/lib/integrations/plaud'
 import { routeWebhook } from '@/lib/managed-agents/webhook-router'
 import { embedTranscript } from '@/lib/studio-knowledge/transcript'
 
@@ -136,12 +136,13 @@ export const plaudTranscriptionReady = inngest.createFunction(
     )
 
     await step.run('mark-ingested', async () => {
+      // Persist the full hydrated metadata (participants + duration), not just
+      // the transcript text — embedTranscript builds the RAG title from
+      // participants, and the row should carry the recording duration.
       const { error } = await sb
         .from('call_transcripts' as any)
         .update({
-          transcript: transcript.text,
-          start_time: file.created_at,
-          ingest_status: 'ingested',
+          ...buildIngestedFields(transcript, file),
           updated_at: new Date().toISOString(),
         })
         .eq('external_recording_id', data.transcription_id)

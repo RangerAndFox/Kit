@@ -18,6 +18,8 @@ const CALLBACK_ID = 'kit_delivery_select_profile'
 export async function buildSelectProfileModal(opts: {
   sourcePath?: string
   sourceSizeBytes?: number
+  /** Paired source files (video + optional audio) from the specs folders. */
+  sources?: { path: string; type: 'video' | 'audio'; size_bytes?: number }[]
   defaultProfileId?: string
   channelId?: string
 }) {
@@ -48,7 +50,18 @@ export async function buildSelectProfileModal(opts: {
 
   const blocks: any[] = []
 
-  if (opts.sourcePath) {
+  if (opts.sources && opts.sources.length > 0) {
+    const lines = opts.sources.map((s) => {
+      const icon = s.type === 'audio' ? ':musical_note:' : ':film_frames:'
+      const size = s.size_bytes ? ` (${formatBytes(s.size_bytes)})` : ''
+      return `${icon} *${s.type}* — \`${s.path}\`${size}`
+    })
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*Source files:*\n${lines.join('\n')}` },
+    })
+    blocks.push({ type: 'divider' })
+  } else if (opts.sourcePath) {
     blocks.push({
       type: 'section',
       text: {
@@ -106,8 +119,9 @@ export async function buildSelectProfileModal(opts: {
     }
   }
 
-  // Hidden private_metadata: source path + channel id so submit handler can pick them up.
+  // Hidden private_metadata: source files + channel id so submit handler can pick them up.
   const metadata = JSON.stringify({
+    sources: opts.sources || null,
     sourcePath: opts.sourcePath || null,
     sourceSizeBytes: opts.sourceSizeBytes || null,
     channelId: opts.channelId || null,

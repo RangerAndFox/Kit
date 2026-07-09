@@ -13,6 +13,8 @@
  *   "half hour on the pitch deck"
  */
 
+import { studioToday, studioDateMinusDays } from '../time/studio-date'
+
 export interface ParsedTimeEntry {
   hours: number
   projectHint: string | null  // whatever text we think is the project name
@@ -116,12 +118,10 @@ function cleanProjectHint(hint: string): string {
 }
 
 /**
- * Resolve "today" / "yesterday" / null to YYYY-MM-DD.
+ * Resolve "today" / "yesterday" / null to YYYY-MM-DD in the studio
+ * timezone — a UTC-derived date is already tomorrow by 5pm Pacific.
  */
 export function resolveDate(dateHint: string | null): string {
-  const now = new Date()
-  if (dateHint === 'yesterday') {
-    now.setDate(now.getDate() - 1)
-  }
-  return now.toISOString().split('T')[0]
+  if (dateHint === 'yesterday') return studioDateMinusDays(1)
+  return studioToday()
 }

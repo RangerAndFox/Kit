@@ -7,6 +7,9 @@
  *   HARVEST_ACCOUNT_ID    — your Harvest account ID
  */
 
+import { rankProjects } from './search'
+import { studioToday } from '../time/studio-date'
+
 const BASE_URL = 'https://api.harvestapp.com/v2'
 
 function headers() {
@@ -37,6 +40,29 @@ async function harvestGet(path: string, params?: Record<string, string>): Promis
     throw new Error(`Harvest GET ${path}: ${res.status} ${body}`)
   }
   return res.json()
+}
+
+/**
+ * Fetch every page of a Harvest list endpoint, concatenating `key` arrays.
+ * Harvest caps per_page at 100 and reports `next_page` — a single-page fetch
+ * silently truncates once the studio passes 100 clients/projects/users
+ * (which had findOrCreateClient creating duplicate clients).
+ */
+async function harvestGetAll(
+  path: string,
+  key: string,
+  params: Record<string, string> = {},
+): Promise<any[]> {
+  const out: any[] = []
+  let page = 1
+  const MAX_PAGES = 20 // 2,000 rows — far above studio scale; loop safety cap
+  while (page <= MAX_PAGES) {
+    const data = await harvestGet(path, { ...params, per_page: '100', page: String(page) })
+    out.push(...(data[key] || []))
+    if (!data.next_page) break
+    page = data.next_page
+  }
+  return out
 }
 
 async function harvestPost(path: string, body: Record<string, unknown>): Promise<any> {
@@ -105,8 +131,8 @@ export interface HarvestClient {
  * List all clients.
  */
 export async function listClients(): Promise<HarvestClient[]> {
-  const data = await harvestGet('/clients', { is_active: 'true', per_page: '100' })
-  return (data.clients || []).map((c: any) => ({
+  const clients = await harvestGetAll('/clients', 'clients', { is_active: 'true' })
+  return clients.map((c: any) => ({
     id: c.id,
     name: c.name,
     is_active: c.is_active,
@@ -131,10 +157,10 @@ export async function findOrCreateClient(name: string): Promise<HarvestClient> {
  * List all active projects.
  */
 export async function listProjects(activeOnly = true): Promise<HarvestProject[]> {
-  const params: Record<string, string> = { per_page: '100' }
+  const params: Record<string, string> = {}
   if (activeOnly) params.is_active = 'true'
-  const data = await harvestGet('/projects', params)
-  return (data.projects || []).map((p: any) => ({
+  const projects = await harvestGetAll('/projects', 'projects', params)
+  return projects.map((p: any) => ({
     id: p.id,
     name: p.name,
     code: p.code || '',
@@ -144,17 +170,14 @@ export async function listProjects(activeOnly = true): Promise<HarvestProject[]>
 }
 
 /**
- * Search projects by name (case-insensitive partial match).
+ * Search projects by code, client, name, or keywords — fuzzy and
+ * separator-insensitive ("2611", "crunchy roll", "magic quadrant" all
+ * resolve). Returns a single project when one clearly wins, otherwise the
+ * plausible candidates best-first (see harvest/search.ts).
  */
 export async function searchProjects(query: string): Promise<HarvestProject[]> {
   const all = await listProjects(true)
-  const q = query.toLowerCase()
-  return all.filter(
-    (p) =>
-      p.name.toLowerCase().includes(q) ||
-      p.code.toLowerCase().includes(q) ||
-      p.client?.name.toLowerCase().includes(q)
-  )
+  return rankProjects(query, all)
 }
 
 /**
@@ -271,6 +294,49 @@ async function assignDefaultTasks(projectId: number): Promise<HarvestProjectTask
     .map((r) => r.value)
 }
 
+// ─── Budget reporting ───────────────────────────────────────
+
+export interface ProjectBudgetRow {
+  projectId: number
+  budget: number | null
+  budgetSpent: number | null
+  budgetRemaining: number | null
+  /**
+   * Harvest's budget_by. Units of budget/spent/remaining follow it: hours for
+   * 'project' / 'task' / 'person', money for the '*_cost' / '*_fees' variants.
+   */
+  budgetBy: string | null
+  isActive: boolean
+}
+
+/**
+ * Harvest's Project Budget report — budget vs. spent for every active project,
+ * in one place. Paginated; we walk all pages (a studio fits in one).
+ */
+export async function getProjectBudgetReport(): Promise<ProjectBudgetRow[]> {
+  const rows: ProjectBudgetRow[] = []
+  let page = 1
+  for (let guard = 0; guard < 20; guard++) {
+    const data = await harvestGet('/reports/project_budget', {
+      page: String(page),
+      per_page: '2000',
+    })
+    for (const r of data.results || []) {
+      rows.push({
+        projectId: r.project_id,
+        budget: r.budget ?? null,
+        budgetSpent: r.budget_spent ?? null,
+        budgetRemaining: r.budget_remaining ?? null,
+        budgetBy: r.budget_by ?? null,
+        isActive: r.is_active,
+      })
+    }
+    if (!data.next_page) break
+    page = data.next_page
+  }
+  return rows
+}
+
 // ─── Tasks ──────────────────────────────────────────────────
 
 /**
@@ -316,7 +382,7 @@ export async function createTimeEntry(opts: {
   projectId: number
   taskId: number
   hours: number
-  spentDate?: string // YYYY-MM-DD, defaults to today
+  spentDate?: string // YYYY-MM-DD, defaults to today in the studio timezone
   notes?: string
   userId?: number // if attributing to a specific user
 }): Promise<HarvestTimeEntry> {
@@ -324,13 +390,13 @@ export async function createTimeEntry(opts: {
     project_id: opts.projectId,
     task_id: opts.taskId,
     hours: opts.hours,
-    spent_date: opts.spentDate || new Date().toISOString().split('T')[0],
+    // Studio-tz default: UTC "today" is already tomorrow by 5pm Pacific.
+    spent_date: opts.spentDate || studioToday(),
   }
   if (opts.notes) body.notes = opts.notes
   if (opts.userId) body.user_id = opts.userId
 
-  const data = await harvestPost('/time_entries', body)
-  return {
+  const mapEntry = (data: any): HarvestTimeEntry => ({
     id: data.id,
     project: { id: data.project.id, name: data.project.name },
     task: { id: data.task.id, name: data.task.name },
@@ -338,6 +404,19 @@ export async function createTimeEntry(opts: {
     hours: data.hours,
     spent_date: data.spent_date,
     notes: data.notes || '',
+  })
+
+  try {
+    return mapEntry(await harvestPost('/time_entries', body))
+  } catch (err: any) {
+    // Harvest rejects entries for users not assigned to the project.
+    // Self-heal: assign and retry once, so time logging never has
+    // assignment friction (studio policy: everyone on every project).
+    if (!/assign/i.test(err?.message || '')) throw err
+    const userId = opts.userId ?? (await harvestGet('/users/me'))?.id
+    if (!userId) throw err
+    await assignUserToProject({ projectId: opts.projectId, userId })
+    return mapEntry(await harvestPost('/time_entries', body))
   }
 }
 
@@ -373,8 +452,8 @@ export async function listTimeEntriesForUser(opts: {
  * List all active users.
  */
 export async function listUsers(): Promise<HarvestUser[]> {
-  const data = await harvestGet('/users', { is_active: 'true', per_page: '100' })
-  return (data.users || []).map((u: any) => ({
+  const users = await harvestGetAll('/users', 'users', { is_active: 'true' })
+  return users.map((u: any) => ({
     id: u.id,
     first_name: u.first_name,
     last_name: u.last_name,
@@ -442,4 +521,56 @@ export async function assignUserToProject(opts: {
   if (opts.hourlyRate != null) body.hourly_rate = opts.hourlyRate
   const data = await harvestPost(`/projects/${opts.projectId}/user_assignments`, body)
   return { id: data.id, user_id: data.user.id, project_id: opts.projectId }
+}
+
+/**
+ * Assign every active Harvest user to a project (skips existing
+ * assignments). Studio policy: the whole team is on every project so time
+ * entry never hits Harvest's must-be-assigned rule.
+ */
+export async function assignAllUsersToProject(
+  projectId: number,
+): Promise<{ assigned: number; already: number }> {
+  const users = await listUsers()
+  const existing = await harvestGet(`/projects/${projectId}/user_assignments`, {
+    is_active: 'true',
+    per_page: '100',
+  })
+  const have = new Set(
+    (existing.user_assignments || []).map((ua: any) => ua.user?.id).filter(Boolean),
+  )
+  let assigned = 0
+  let already = 0
+  for (const u of users) {
+    if (have.has(u.id)) {
+      already++
+      continue
+    }
+    try {
+      await harvestPost(`/projects/${projectId}/user_assignments`, { user_id: u.id })
+      assigned++
+    } catch (err: any) {
+      console.warn(
+        `[harvest] assign user ${u.id} to project ${projectId} failed: ${err.message}`,
+      )
+    }
+  }
+  return { assigned, already }
+}
+
+/**
+ * Backfill: assign every active user to every active project. Idempotent —
+ * run any time (wired into /kit sync-staff).
+ */
+export async function ensureAllUserAssignments(): Promise<{
+  projects: number
+  assigned: number
+}> {
+  const projects = await listProjects(true)
+  let assigned = 0
+  for (const p of projects) {
+    const r = await assignAllUsersToProject(p.id)
+    assigned += r.assigned
+  }
+  return { projects: projects.length, assigned }
 }

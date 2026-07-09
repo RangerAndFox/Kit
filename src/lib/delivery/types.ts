@@ -36,6 +36,12 @@ export interface DeliveryProfile {
   scan_mode: 'progressive' | 'interlaced'
   pixel_format: string | null
   color_space: string | null
+  /**
+   * Extra FFmpeg video filters, prepended to the scale step. Enables 360
+   * (e.g. "v360=e:c3x2") and other unique-format conversions. Plain argv (no
+   * shell), so a bad value just fails the render.
+   */
+  video_filters: string | null
 
   // Audio
   audio_codec: string

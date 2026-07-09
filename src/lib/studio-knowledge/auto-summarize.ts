@@ -173,10 +173,54 @@ export async function regenerateAllProjectSummaries(workspaceId: string, opts: {
     .limit(opts.limit ?? 200)
   if (error) throw new Error(`regenerateAllProjectSummaries: ${error.message}`)
 
+  // Skip-unchanged: one query over the (small) document corpus gives us, per
+  // project, when its summary was last written and when its newest source
+  // material (note/transcript) landed. Only projects with newer material (or
+  // a newer projects-row update, or no summary at all) pay the nightly
+  // Haiku + embedding cost — this used to re-run for ALL ~200 projects
+  // regardless of change.
+  const { data: docRows } = await sb
+    .from('project_documents')
+    .select('project_id, doc_type, created_at, indexed_at')
+    .eq('workspace_id', workspaceId)
+    .in('doc_type', ['project_summary', 'note', 'call_transcript'])
+  const summaryAt = new Map<string, number>()
+  const newestSourceAt = new Map<string, number>()
+  for (const d of docRows || []) {
+    if (!d.project_id) continue
+    const ts = Date.parse(d.indexed_at || d.created_at || '') || 0
+    if (d.doc_type === 'project_summary') {
+      summaryAt.set(d.project_id, Math.max(summaryAt.get(d.project_id) || 0, ts))
+    } else {
+      newestSourceAt.set(d.project_id, Math.max(newestSourceAt.get(d.project_id) || 0, ts))
+    }
+  }
+
+  // Open action items feed the summary too — without this, a project whose
+  // only change is a new kit_action was skipped until something else moved.
+  const { data: actionRows } = await sb
+    .from('kit_actions')
+    .select('project_id, created_at')
+    .in('status', ['suggested', 'pending', 'approved'])
+  for (const a of actionRows || []) {
+    if (!a.project_id) continue
+    const ts = Date.parse(a.created_at || '') || 0
+    newestSourceAt.set(a.project_id, Math.max(newestSourceAt.get(a.project_id) || 0, ts))
+  }
+
   let updated = 0
   let failed = 0
   let skipped = 0
   for (const p of projects || []) {
+    const existing = summaryAt.get(p.id) || 0
+    const newestInput = Math.max(
+      newestSourceAt.get(p.id) || 0,
+      Date.parse(p.updated_at || '') || 0,
+    )
+    if (existing > 0 && newestInput <= existing) {
+      skipped++
+      continue
+    }
     try {
       await regenerateProjectSummary(workspaceId, p.id)
       updated++

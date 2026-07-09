@@ -26,7 +26,7 @@ import { zodToJsonSchema, parseInput } from './helpers'
 // ─── Tool registry ───────────────────────────────────────────
 
 import { getWorkspaceContext } from './tools/workspace'
-import { listProjects, getProject, createProject, updateProject } from './tools/projects'
+import { listProjects, getProject, updateProject } from './tools/projects'
 import { createDeliverables, updateDeliverable } from './tools/deliverables'
 import { createMilestones, updateMilestone } from './tools/milestones'
 import { listTeam, assignProjectAccess } from './tools/team'
@@ -35,7 +35,6 @@ import { createAction, listPendingActions, createActionBreakdown } from './tools
 import { saveWorkbackSchedule } from './tools/workback'
 import { logFeedback, logTimeEntry } from './tools/feedback'
 import { syncHarvestProjects, linkHarvestProject } from './tools/harvest'
-import { provisionProject } from './tools/provisioner'
 import { listAgents, askAgent } from './tools/agents'
 
 const tools: KitTool[] = [
@@ -44,7 +43,6 @@ const tools: KitTool[] = [
   // Projects
   listProjects,
   getProject,
-  createProject,
   updateProject,
   // Project entities
   createDeliverables,
@@ -69,8 +67,6 @@ const tools: KitTool[] = [
   // Harvest
   syncHarvestProjects,
   linkHarvestProject,
-  // Provisioner
-  provisionProject,
   // Agent system
   listAgents,
   askAgent,

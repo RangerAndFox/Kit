@@ -49,12 +49,15 @@ function getCalendarIds(): string[] {
 
 function getCalendarClient() {
   const creds = getServiceAccountCreds()
-  const auth = new google.auth.JWT(
-    creds.client_email,
-    undefined,
-    creds.private_key,
-    ['https://www.googleapis.com/auth/calendar.readonly'],
-  )
+  // Options-object form. The positional JWT(email, keyFile, key, scopes)
+  // constructor was removed in google-auth-library v10 — passing the key
+  // positionally silently yields "No key or keyFile set", so requests go out
+  // unauthenticated and Google returns 403 "unregistered callers".
+  const auth = new google.auth.JWT({
+    email: creds.client_email,
+    key: creds.private_key,
+    scopes: ['https://www.googleapis.com/auth/calendar.readonly'],
+  })
   return google.calendar({ version: 'v3', auth })
 }
 
@@ -77,37 +80,65 @@ export async function fetchUpcomingEvents(
     return []
   }
 
+  // Calendars fetch in parallel; each calendar follows nextPageToken so a
+  // busy shared calendar (recurring events explode under singleEvents:true)
+  // can't silently truncate — a missed event here means no briefing, ever.
+  const perCalendar = await Promise.all(
+    calendarIds.map(async (calendarId) => {
+      const events: CalendarEvent[] = []
+      let pageToken: string | undefined
+      let safety = 10 // 500 events per calendar per window — loop safety cap
+      do {
+        const res = await calendar.events.list({
+          calendarId,
+          timeMin: fromIso,
+          timeMax: toIso,
+          singleEvents: true,
+          orderBy: 'startTime',
+          maxResults: 50,
+          pageToken,
+        })
+        for (const ev of res.data.items || []) {
+          if (!ev.id || !ev.start?.dateTime) continue
+          events.push({
+            // Bare Google event id (STABLE across attendee-calendar copies):
+            // when personal calendars are watched, the same meeting appears
+            // on every attendee's calendar — a calendar-prefixed id treated
+            // those copies as distinct events and would brief N times.
+            // (Legacy rows use `${calendarId}:${id}`; ids never collide
+            // across the formats, so old rows stay inert.)
+            event_id: ev.id,
+            calendar_id: calendarId,
+            summary: ev.summary || '',
+            description: ev.description || undefined,
+            start_time: ev.start.dateTime,
+            end_time: ev.end?.dateTime || ev.start.dateTime,
+            attendees: (ev.attendees || []).map((a) => ({
+              email: a.email || '',
+              displayName: a.displayName || undefined,
+              responseStatus: a.responseStatus || undefined,
+            })),
+            organizer: ev.organizer
+              ? { email: ev.organizer.email || '', displayName: ev.organizer.displayName || undefined }
+              : undefined,
+            hangoutLink: ev.hangoutLink || undefined,
+          })
+        }
+        pageToken = res.data.nextPageToken || undefined
+      } while (pageToken && safety-- > 0)
+      return events
+    }),
+  )
+
+  // Dedupe across calendars: an event shows up on the organizer's calendar,
+  // every attendee's personal calendar, and any shared calendar it lives on.
+  // Keep the first sighting (GOOGLE_CALENDAR_IDS order = priority).
+  const seen = new Set<string>()
   const out: CalendarEvent[] = []
-  for (const calendarId of calendarIds) {
-    const res = await calendar.events.list({
-      calendarId,
-      timeMin: fromIso,
-      timeMax: toIso,
-      singleEvents: true,
-      orderBy: 'startTime',
-      maxResults: 50,
-    })
-    const items = res.data.items || []
-    for (const ev of items) {
-      if (!ev.id || !ev.start?.dateTime) continue
-      out.push({
-        event_id: `${calendarId}:${ev.id}`,
-        calendar_id: calendarId,
-        summary: ev.summary || '',
-        description: ev.description || undefined,
-        start_time: ev.start.dateTime,
-        end_time: ev.end?.dateTime || ev.start.dateTime,
-        attendees: (ev.attendees || []).map((a) => ({
-          email: a.email || '',
-          displayName: a.displayName || undefined,
-          responseStatus: a.responseStatus || undefined,
-        })),
-        organizer: ev.organizer
-          ? { email: ev.organizer.email || '', displayName: ev.organizer.displayName || undefined }
-          : undefined,
-        hangoutLink: ev.hangoutLink || undefined,
-      })
-    }
+  for (const ev of perCalendar.flat()) {
+    if (seen.has(ev.event_id)) continue
+    seen.add(ev.event_id)
+    out.push(ev)
   }
   return out
 }

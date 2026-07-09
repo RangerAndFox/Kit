@@ -59,9 +59,9 @@ async function loadStaff(staffId: string): Promise<StaffRow | null> {
 }
 
 /**
- * Replace the confirmation card with a result message, keeping the
- * conversation tidy. Uses chat.update via the response_url if available,
- * otherwise posts a new threaded message.
+ * Post the result message flat in the DM — check-in messages never thread.
+ * People reply in the main chat, so a threaded result hides behind a
+ * "1 reply" link they'll never open (operator-reported).
  */
 async function postResult(opts: {
   app: App
@@ -69,10 +69,9 @@ async function postResult(opts: {
   threadTs: string | null
   text: string
 }) {
-  const { app, channelId, threadTs, text } = opts
+  const { app, channelId, text } = opts
   await app.client.chat.postMessage({
     channel: channelId,
-    thread_ts: threadTs || undefined,
     text,
   })
 }
@@ -85,14 +84,49 @@ export async function handleCheckinConfirm(opts: {
 }): Promise<void> {
   const { app, checkinId } = opts
   const checkin = await loadCheckin(checkinId)
-  if (!checkin) return
-  if (checkin.status === 'logged') return // idempotent
+  if (!checkin) {
+    console.warn(`[checkin-confirm] checkin ${checkinId} not found`)
+    return
+  }
+  console.log(`[checkin-confirm] confirming ${checkinId} (status=${checkin.status})`)
 
   const entries = Array.isArray(checkin.parsed_entries) ? checkin.parsed_entries : []
   if (entries.length === 0) return
 
+  const sb = createAdminClient()
+
+  // Claim the row (compare-and-set) BEFORE writing to Harvest. A plain
+  // status check is a TOCTOU: two quick clicks (or a Slack action retry)
+  // both pass it and every entry gets logged twice. Losing the claim means
+  // another click is already mid-flight — bail silently. A claim ERROR is
+  // different and must be loud: a status-constraint mismatch silently
+  // killed every confirm for days.
+  const { data: claimed, error: claimError } = await sb
+    .from('daily_hours_checkins')
+    .update({ status: 'logging', updated_at: new Date().toISOString() })
+    .eq('id', checkin.id)
+    .eq('status', 'parsed')
+    .select('id')
+  if (claimError) {
+    console.error(`[checkin-confirm] claim write failed: ${claimError.message}`)
+    await postResult({
+      app,
+      channelId: checkin.dm_channel_id || '',
+      threadTs: checkin.dm_ts,
+      text: `:warning: Couldn't start logging (internal error: ${claimError.message}). Ping an admin.`,
+    })
+    return
+  }
+  if (!claimed || claimed.length === 0) return
+
   const staff = await loadStaff(checkin.staff_id)
   if (!staff?.harvest_user_id) {
+    // Release the claim so a fixed mapping can be confirmed later.
+    await sb
+      .from('daily_hours_checkins')
+      .update({ status: 'parsed', updated_at: new Date().toISOString() })
+      .eq('id', checkin.id)
+      .eq('status', 'logging')
     await postResult({
       app,
       channelId: checkin.dm_channel_id || '',
@@ -101,9 +135,6 @@ export async function handleCheckinConfirm(opts: {
     })
     return
   }
-
-  const spentDate = checkin.check_in_date
-  const sb = createAdminClient()
   const logged: HarvestTimeEntry[] = []
   const failures: string[] = []
 
@@ -122,7 +153,8 @@ export async function handleCheckinConfirm(opts: {
         projectId: entry.harvest_project_id,
         taskId: task.id,
         hours: entry.hours,
-        spentDate,
+        // Per-entry day ("yesterday" etc.), falling back to the check-in day.
+        spentDate: entry.spentDate || checkin.check_in_date,
         notes: entry.notes || undefined,
         userId: staff.harvest_user_id,
       })
@@ -135,24 +167,32 @@ export async function handleCheckinConfirm(opts: {
     }
   }
 
-  // Update row
+  const entryIds = logged.map((e) => e.id)
+  console.log(
+    `[checkin-confirm] ${checkin.id}: created ${logged.length} Harvest entr(ies) [${entryIds.join(', ')}], ${failures.length} failure(s)`,
+  )
+
+  // Update row — store the real Harvest entry ids so a "logged" status is
+  // verifiable (and any hand-entered duplicate is traceable back to these).
   await sb
     .from('daily_hours_checkins')
     .update({
       status: failures.length === 0 ? 'logged' : 'failed',
       logged_at: new Date().toISOString(),
+      harvest_entry_ids: entryIds.length ? entryIds : null,
       error_message: failures.length ? failures.join('; ') : null,
       updated_at: new Date().toISOString(),
     })
     .eq('id', checkin.id)
 
-  // Reply with the result
+  // Reply with the result — cite the Harvest entry id per line so the write
+  // is verifiable in Harvest (heads off "did it actually log?" re-entry).
   const summary = logged
-    .map((e) => `• *${e.hours}h* — ${e.project.name} (${e.task.name})`)
+    .map((e) => `• *${e.hours}h* — ${e.project.name} (${e.task.name}) — Harvest #${e.id}`)
     .join('\n')
   let text: string
   if (failures.length === 0) {
-    text = `:white_check_mark: Logged to Harvest:\n${summary}`
+    text = `:white_check_mark: *Logged to Harvest* — you're all set, no need to enter these manually.\n${summary}`
   } else if (logged.length === 0) {
     text = `:x: Couldn't log any entries:\n• ${failures.join('\n• ')}`
   } else {
