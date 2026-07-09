@@ -37,21 +37,31 @@ setup:
 
 ## Adding AE 2026 without touching C4D
 
-Your repo's stock AfterEffects plugin (dated 2022) only knows up to CC 2022, so
-AE 2026 (internal **v26**) needs a render-executable entry. Two safe, C4D-neutral
-options:
+Good news from the stock `AfterEffects.py`: it builds the executable config key
+dynamically — `RenderExecutable<major>_0` from the submitted `Version` — so v26 is
+NOT blocked by any version whitelist. It just needs a `RenderExecutable26_0` entry
+(the 2022 `.param` only defines fields up to `22_0`). Add it via a **custom plugin
+overlay** so nothing stock or C4D is touched:
 
-- **A. Add the 2026 executable to the AE plugin config** (Deadline Monitor →
-  Tools → Configure Plugins → After Effects → set the 2026 `aerender.exe` path).
-  This edits only the AfterEffects plugin config, is reversible, and doesn't touch
-  C4D. Keep `DEADLINE_PLUGIN=AfterEffects`.
-- **B. Ship a custom plugin overlay** — copy the AfterEffects plugin to
-  `[repo]\custom\plugins\KitAfterEffects\`, add a `RenderExecutable26_0` entry for
-  AE 2026, and set `DEADLINE_PLUGIN=KitAfterEffects`. Deadline's `custom` overlay
-  never modifies stock files. Zero risk to the AE *or* C4D stock plugins.
+1. Copy `[repo]\plugins\AfterEffects` → `[repo]\custom\plugins\KitAfterEffects`
+2. Rename the 4 files `AfterEffects.*` → `KitAfterEffects.*`
+3. Add to `KitAfterEffects.param`:
+   ```ini
+   [RenderExecutable26_0]
+   Type=multilinemultifilename
+   Label=After Effects 2026 Render Executable
+   Category=Render Executables
+   CategoryOrder=0
+   Index=14
+   Default=C:\Program Files\Adobe\Adobe After Effects 2026\Support Files\aerender.exe
+   Description=Path to the AE 2026 aerender executable.
+   ```
+4. Set `DEADLINE_PLUGIN=KitAfterEffects` and `AE_VERSION=26.0`.
 
-Either way, every AE render node needs **After Effects 2026** (or its Render
-Engine) installed locally, and the job's `AE_VERSION=26.0`.
+(The `custom/plugins` overlay never modifies stock files. Editing the stock
+`AfterEffects.param` instead would also work and is AE-only, but the overlay keeps
+it fully isolated.) Every AE render node needs **After Effects 2026** (or its
+Render Engine) installed locally.
 
 ## Requirements (on this relay box)
 
@@ -81,12 +91,13 @@ the same pattern).
 
 ## Configuration
 
-All via `.env` — see `.env.example`. The two that always need your values:
+All via `.env` — see `.env.example`. Key values:
 
-- **`DEADLINE_PATH_MAP`** — how a Kit Dropbox path maps to the farm share, e.g.
-  `/Projects=>\\thewire\projects;/Delivery-Queue=>\\thewire\delivery`.
-- **`AE_VERSION`** — the Deadline AE plugin "Version" (e.g. `2022`, `2024`). Must
-  match a render executable the plugin knows on the nodes.
+- **`DEADLINE_PATH_MAP`** — normalizes drive letters to UNC so headless Workers
+  resolve the SAN, e.g. `Z:=>\\thewire\production`. UNC input passes through.
+- **`AE_VERSION`** — `26.0` for AE 2026 (internal v26).
+- **`DEADLINE_PLUGIN`** — `KitAfterEffects` (the AE 2026 overlay) or `AfterEffects`.
+- **`DEADLINE_GROUP`** — a dedicated AE group (e.g. `kit_ae`), never a C4D group.
 
 ## Switching Kit to this backend
 

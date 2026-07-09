@@ -42,9 +42,10 @@ $afterfxPrompt = if ($afterfxGuess) { "AfterFX.exe path (Enter for detected: $af
 $afterfx = Read-Host $afterfxPrompt; if ([string]::IsNullOrWhiteSpace($afterfx)) { $afterfx = $afterfxGuess }
 
 Write-Host ""
-Write-Host "Path map: how a Dropbox path maps to the farm share."
-Write-Host "  Format: /Projects=>\\server\projects;/Delivery-Queue=>\\server\delivery"
-$pathMap = Read-Host "DEADLINE_PATH_MAP"
+Write-Host "Path map: normalize drive letters to UNC so headless Workers resolve the SAN."
+Write-Host "  Format: Z:=>\\thewire\production   (UNC input passes through unchanged)"
+$pathMap = Read-Host "DEADLINE_PATH_MAP (default: Z:=>\\thewire\production)"
+if ([string]::IsNullOrWhiteSpace($pathMap)) { $pathMap = "Z:=>\\thewire\production" }
 
 $envFile = Join-Path $PSScriptRoot ".env"
 @"

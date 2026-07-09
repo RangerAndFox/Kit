@@ -219,8 +219,12 @@ relay polls deadlinecommand -GetJob ─── rolls status → Supabase → /kit
 - **Settings honored** the same way: submission sets `Comp`, `Version`, and an
   `Output` redirected to `<projectDir>/render/<comp>/`; Deadline frame-splits via
   the job's `Frames` + `ChunkSize`.
-- **Path mapping**: `DEADLINE_PATH_MAP` converts Kit's Dropbox paths to the farm
-  share (e.g. `/Projects=>\\thewire\projects`) before submission.
+- **SAN-native paths**: projects live on the production SAN
+  (`\\thewire\production\...`), same as C4D. `/kit render` takes that path (or a
+  `Z:\...` drive path); the relay passes it straight to Deadline as `SceneFile`
+  and writes output to `<projectDir>\render\<comp>\`. `DEADLINE_PATH_MAP` only
+  normalizes drive letters to UNC (`Z:=>\\thewire\production`) so headless Workers
+  resolve it. No Dropbox in the Deadline path.
 
 **Isolation from a production C4D farm (hard requirement).** This integration is
 strictly additive and must never alter an existing C4D Deadline setup:
@@ -232,11 +236,12 @@ strictly additive and must never alter an existing C4D Deadline setup:
   live in a **custom plugin overlay** (`custom/plugins/KitAfterEffects`) that never
   touches the stock AfterEffects or C4D plugins.
 
-**AE 2026 note.** AE 2026 is internal **v26**; a Deadline AE plugin from 2022 only
-knows up to CC 2022. Add a `RenderExecutable26_0` entry either via the AfterEffects
-plugin config (AE-scoped, reversible) or a `KitAfterEffects` custom overlay, and
-submit `AE_VERSION=26.0`. Every AE render node needs After Effects 2026 (or its
-Render Engine) installed locally.
+**AE 2026 note.** The stock `AfterEffects.py` builds the executable config key
+dynamically (`RenderExecutable<major>_0` from the submitted `Version`), so v26 is
+not blocked — it just needs a `RenderExecutable26_0` entry (the 2022 `.param` only
+defines up to `22_0`). Add it via a `KitAfterEffects` custom overlay
+(`custom/plugins/`, zero-touch to stock/C4D), set `DEADLINE_PLUGIN=KitAfterEffects`
+and `AE_VERSION=26.0`. Every AE render node needs After Effects 2026 installed.
 
 ## Edge cases & gotchas
 

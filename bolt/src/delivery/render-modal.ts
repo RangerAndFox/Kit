@@ -38,11 +38,11 @@ export function buildRenderModal(opts: { projectPath?: string; channelId?: strin
           type: 'plain_text_input',
           action_id: 'aep_path',
           initial_value: opts.projectPath || '',
-          placeholder: { type: 'plain_text', text: '/Projects/Acme/Acme.aep' },
+          placeholder: { type: 'plain_text', text: '\\\\thewire\\production\\2026\\2607_Job\\...\\comp.aep' },
         },
         hint: {
           type: 'plain_text',
-          text: 'Dropbox path to the .aep (it must be synced on the render machines). Queue your comps in After Effects first.',
+          text: 'Full path to the .aep on the render share (\\\\thewire\\production\\... or Z:\\...). Queue your comps in After Effects first.',
         },
       },
     ],

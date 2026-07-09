@@ -1,9 +1,11 @@
 // @ts-nocheck
 /**
- * Translate a Kit Dropbox path (e.g. "/Projects/Acme/Acme.aep") to the path the
- * Deadline render nodes actually read (a UNC share or mapped drive), using the
- * DEADLINE_PATH_MAP rules ("dropboxPrefix=>farmPrefix;..."). Longest matching
- * prefix wins. Forward slashes become backslashes for the Windows farm.
+ * Normalize an incoming .aep path to the exact path the Deadline render nodes
+ * read. Files live on the production SAN (e.g. \\thewire\production\...), which
+ * some machines mount as a drive letter (Z:\...). DEADLINE_PATH_MAP rules
+ * ("from=>to;...") map those to a UNC path every headless Worker resolves
+ * (e.g. "Z:=>\\thewire\production"). UNC input with no matching rule passes
+ * through unchanged. Longest matching prefix wins.
  */
 
 import { config } from './config'
@@ -53,9 +55,16 @@ export function isMapped(dropboxPath: string): boolean {
   })
 }
 
-/** Dirname of a Dropbox path (posix semantics). */
-export function dropboxDirname(p: string): string {
-  const t = p.replace(/\/+$/, '')
-  const i = t.lastIndexOf('/')
-  return i <= 0 ? '' : t.slice(0, i)
+/** Dirname of a Windows/UNC path (handles both \ and /). */
+export function farmDirname(p: string): string {
+  const t = p.replace(/[\\/]+$/, '')
+  const i = Math.max(t.lastIndexOf('\\'), t.lastIndexOf('/'))
+  return i < 0 ? '' : t.slice(0, i)
+}
+
+/** Basename of a Windows/UNC path. */
+export function farmBasename(p: string): string {
+  const t = p.replace(/[\\/]+$/, '')
+  const i = Math.max(t.lastIndexOf('\\'), t.lastIndexOf('/'))
+  return i < 0 ? t : t.slice(i + 1)
 }
