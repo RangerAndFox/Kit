@@ -21,6 +21,7 @@ import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { dropboxHeaders } from '../../../src/lib/dropbox/client'
 import { frameioHeaders } from '../../../src/lib/frameio/auth'
 import { isFrameioUploadEnabled } from '../../../src/lib/projects/settings'
+import { processSrtFile } from '../../../src/lib/delivery/subtitle-watcher'
 
 const DROPBOX_API = 'https://api.dropboxapi.com/2'
 const FRAMEIO_API = 'https://api.frame.io/v4'
@@ -30,6 +31,21 @@ const WATCH_ROOT = '/production'
 // Match `/production/<year>/<safeName>/09_Outgoing/(01_Client Progress|02_Delivery)/<filename>`
 // path_display preserves the original casing.
 const PATH_RE = /^\/production\/(\d{4})\/([^/]+)\/09_Outgoing\/(01_Client Progress|02_Delivery)\/(.+)$/i
+
+// An .srt landing in any accessibility folder inside a project tree
+// ("02_Accessibility Files" and similar) → generate TTML/VTT/TXT siblings.
+// The .srt's immediate parent folder must contain "accessibility".
+const ACCESSIBILITY_SRT_RE =
+  /^\/production\/\d{4}\/([^/]+)\/(?:.*\/)?[^/]*accessibility[^/]*\/[^/]+\.srt$/i
+
+/**
+ * If the path is a project-tree accessibility SRT, return its safeName;
+ * else null. Pure — exported for tests.
+ */
+export function matchAccessibilitySrt(path: string): string | null {
+  const m = path.match(ACCESSIBILITY_SRT_RE)
+  return m ? m[1] : null
+}
 
 // File extensions to skip when mirroring deliveries to Frame.io — e.g. audio
 // sidecars / proxies dropped next to the actual video deliverable. Override
@@ -201,6 +217,26 @@ async function processDeltasOnce(app: App): Promise<void> {
   let failed = 0
   for (const entry of entries) {
     if (entry.tag !== 'file') continue
+
+    // Accessibility SRT → generate TTML/VTT/TXT siblings in the same folder.
+    // Checked before PATH_RE (captions live in an accessibility folder, not
+    // 09_Outgoing). Our own .ttml/.vtt/.txt uploads don't re-match (not .srt).
+    const accSafeName = matchAccessibilitySrt(entry.path_display)
+    if (accSafeName) {
+      matched++
+      try {
+        await handleAccessibilitySrt(app, {
+          path: entry.path_display,
+          safeName: accSafeName,
+          sizeBytes: entry.size || 0,
+        })
+      } catch (err: any) {
+        failed++
+        console.error(`[dropbox-watcher] accessibility SRT failed for ${entry.path_display}: ${err.message}`)
+      }
+      continue
+    }
+
     const m = entry.path_display.match(PATH_RE)
     if (!m) continue
     const [, year, safeName, subfolder, filename] = m
@@ -257,6 +293,74 @@ interface Delivery {
   safeName: string
   subfolder: string // "01_Client Progress" | "02_Delivery"
   year: string
+}
+
+/**
+ * An .srt landed in a project's accessibility folder: generate the TTML,
+ * VTT, and TXT siblings next to it (same basename) and post a note to the
+ * project channel. Conversion is the deliverable — it runs even when the
+ * project or its channel can't be resolved.
+ */
+async function handleAccessibilitySrt(
+  app: App,
+  d: { path: string; safeName: string; sizeBytes: number },
+): Promise<void> {
+  const name = d.path.split('/').pop() || d.path
+  let result: { generated: string[]; cueCount: number }
+  try {
+    result = await processSrtFile({ path: d.path, sizeBytes: d.sizeBytes })
+  } catch (err: any) {
+    const channel = await resolveProjectChannelBySafeName(d.safeName)
+    if (channel) {
+      await app.client.chat
+        .postMessage({
+          channel,
+          text: `Caption conversion failed: ${name}`,
+          blocks: [
+            {
+              type: 'section',
+              text: { type: 'mrkdwn', text: `:warning: Couldn't convert \`${d.path}\` — ${err.message}` },
+            },
+          ],
+        })
+        .catch(() => {})
+    }
+    throw err
+  }
+
+  console.log(`[dropbox-watcher] captions generated from ${d.path} (${result.cueCount} cues)`)
+
+  const channel = await resolveProjectChannelBySafeName(d.safeName)
+  if (!channel) return
+  const siblings = result.generated.map((p) => `\`${p.split('/').pop()}\``).join(', ')
+  await app.client.chat
+    .postMessage({
+      channel,
+      text: `Captions generated from ${name}`,
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text:
+              `:speech_balloon: *Captions generated* from \`${name}\` (${result.cueCount} cues)\n` +
+              `${siblings} dropped in the same folder.`,
+          },
+        },
+      ],
+    })
+    .catch((e) => console.warn(`[dropbox-watcher] caption note post failed: ${e?.message}`))
+}
+
+/** Project's Slack channel id from its Dropbox safe name, or null. */
+async function resolveProjectChannelBySafeName(safeName: string): Promise<string | null> {
+  const sb = createAdminClient()
+  const { data } = await sb
+    .from('projects')
+    .select('external_links')
+    .filter('external_ids->>dropbox_safe_name', 'eq', safeName)
+    .maybeSingle()
+  return data?.external_links?.slack_id || data?.external_links?.slack_channel_id || null
 }
 
 async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
