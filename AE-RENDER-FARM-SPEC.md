@@ -222,10 +222,21 @@ relay polls deadlinecommand -GetJob ─── rolls status → Supabase → /kit
 - **Path mapping**: `DEADLINE_PATH_MAP` converts Kit's Dropbox paths to the farm
   share (e.g. `/Projects=>\\thewire\projects`) before submission.
 
-**Deadline setup notes:** every render node needs After Effects (or the AE Render
-Engine) + the Deadline AfterEffects plugin; make an AE-only pool/group so renders
-only target capable nodes; and confirm the plugin knows your AE version (older
-Deadline AE plugins top out at CC 2022 — update the plugin for AE 2023+).
+**Isolation from a production C4D farm (hard requirement).** This integration is
+strictly additive and must never alter an existing C4D Deadline setup:
+- The relay is **submit-only** — it runs no admin/config commands, so it cannot
+  change pools, groups, plugins, or repository settings.
+- AE jobs target a **dedicated AE group** (`DEADLINE_GROUP`, e.g. `kit_ae`) on
+  nodes you designate; creating/assigning a group doesn't affect `c4d_render`.
+- The submit **plugin is configurable** (`DEADLINE_PLUGIN`) so AE 2026 support can
+  live in a **custom plugin overlay** (`custom/plugins/KitAfterEffects`) that never
+  touches the stock AfterEffects or C4D plugins.
+
+**AE 2026 note.** AE 2026 is internal **v26**; a Deadline AE plugin from 2022 only
+knows up to CC 2022. Add a `RenderExecutable26_0` entry either via the AfterEffects
+plugin config (AE-scoped, reversible) or a `KitAfterEffects` custom overlay, and
+submit `AE_VERSION=26.0`. Every AE render node needs After Effects 2026 (or its
+Render Engine) installed locally.
 
 ## Edge cases & gotchas
 

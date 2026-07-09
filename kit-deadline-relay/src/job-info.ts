@@ -44,7 +44,7 @@ export function writeInfoFiles(spec: AeJobSpec): { jobInfoPath: string; pluginIn
   const chunkSize = spec.isMovie ? Math.max(1, total) : Math.max(1, config.chunkSize)
 
   const jobInfo = kv({
-    Plugin: 'AfterEffects',
+    Plugin: config.plugin,
     Name: spec.jobName,
     BatchName: spec.batchName || '',
     Comment: 'Submitted by Kit',

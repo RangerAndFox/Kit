@@ -34,10 +34,15 @@ export const config = {
   supabaseServiceRoleKey: need('SUPABASE_SERVICE_ROLE_KEY'),
 
   deadlineCommand: resolveDeadlineCommand(),
+  // Which Deadline plugin to submit AE jobs to. Keep this ISOLATED from the
+  // production C4D setup: use a dedicated AE group (and optionally a custom
+  // plugin like 'KitAfterEffects') so nothing here touches C4D pools/groups.
+  plugin: optional('DEADLINE_PLUGIN', 'AfterEffects'),
   pool: optional('DEADLINE_POOL', 'none'),
   group: optional('DEADLINE_GROUP', 'none'),
   priority: num('DEADLINE_PRIORITY', 50),
-  aeVersion: optional('AE_VERSION', '2022'),
+  // The AE version the plugin renders with. AE 2026 = internal version 26.
+  aeVersion: optional('AE_VERSION', '26.0'),
   chunkSize: num('DEADLINE_CHUNK_SIZE', 10),
 
   pathMap: optional('DEADLINE_PATH_MAP', ''),

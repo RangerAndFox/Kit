@@ -31,10 +31,11 @@ $supabaseUrl = Read-Host "SUPABASE_URL"
 $supabaseKey = Read-Host "SUPABASE_SERVICE_ROLE_KEY" -AsSecureString
 $supabaseKeyPlain = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($supabaseKey))
 
+$plugin = Read-Host "Deadline plugin (default: AfterEffects; use KitAfterEffects for a custom AE 2026 overlay)"; if ([string]::IsNullOrWhiteSpace($plugin)) { $plugin = "AfterEffects" }
 $pool = Read-Host "Deadline pool (default: none)"; if ([string]::IsNullOrWhiteSpace($pool)) { $pool = "none" }
-$group = Read-Host "Deadline group for AE nodes (default: none)"; if ([string]::IsNullOrWhiteSpace($group)) { $group = "none" }
+$group = Read-Host "Dedicated AE group (default: kit_ae) — must NOT be a C4D group"; if ([string]::IsNullOrWhiteSpace($group)) { $group = "kit_ae" }
 $priority = Read-Host "Priority 0-100 (default: 50)"; if ([string]::IsNullOrWhiteSpace($priority)) { $priority = "50" }
-$aeVer = Read-Host "AE version for Deadline (e.g. 2022, 2024)"; if ([string]::IsNullOrWhiteSpace($aeVer)) { $aeVer = "2022" }
+$aeVer = Read-Host "AE version for Deadline (AE 2026 = 26.0)"; if ([string]::IsNullOrWhiteSpace($aeVer)) { $aeVer = "26.0" }
 $chunk = Read-Host "Frames per Deadline task for sequences (default: 10)"; if ([string]::IsNullOrWhiteSpace($chunk)) { $chunk = "10" }
 
 $afterfxPrompt = if ($afterfxGuess) { "AfterFX.exe path (Enter for detected: $afterfxGuess)" } else { "AfterFX.exe path" }
@@ -50,6 +51,7 @@ $envFile = Join-Path $PSScriptRoot ".env"
 SUPABASE_URL=$supabaseUrl
 SUPABASE_SERVICE_ROLE_KEY=$supabaseKeyPlain
 DEADLINECOMMAND_PATH=$dc
+DEADLINE_PLUGIN=$plugin
 DEADLINE_POOL=$pool
 DEADLINE_GROUP=$group
 DEADLINE_PRIORITY=$priority

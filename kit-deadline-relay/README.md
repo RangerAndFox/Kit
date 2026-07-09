@@ -22,6 +22,37 @@ The project's render settings + output module (what the artist queued) are used
 as-is; only the output *destination* is redirected to `<projectDir>/render/<comp>/`
 so it resolves on every node.
 
+## Isolation from the production C4D farm
+
+This integration is **strictly additive** and must not alter the existing C4D
+setup:
+
+- **The relay only *submits* jobs.** It never runs any Deadline admin/config
+  command — it can't change pools, groups, plugins, or repository settings.
+- **AE jobs target a dedicated group** (`DEADLINE_GROUP`, e.g. `kit_ae`) so they
+  only run on nodes you designate and never displace C4D work. Creating/assigning
+  a group is additive; it doesn't touch `c4d_render`.
+- **AE 2026 support is added in isolation** (see below) — the stock C4D plugin and
+  config are never modified.
+
+## Adding AE 2026 without touching C4D
+
+Your repo's stock AfterEffects plugin (dated 2022) only knows up to CC 2022, so
+AE 2026 (internal **v26**) needs a render-executable entry. Two safe, C4D-neutral
+options:
+
+- **A. Add the 2026 executable to the AE plugin config** (Deadline Monitor →
+  Tools → Configure Plugins → After Effects → set the 2026 `aerender.exe` path).
+  This edits only the AfterEffects plugin config, is reversible, and doesn't touch
+  C4D. Keep `DEADLINE_PLUGIN=AfterEffects`.
+- **B. Ship a custom plugin overlay** — copy the AfterEffects plugin to
+  `[repo]\custom\plugins\KitAfterEffects\`, add a `RenderExecutable26_0` entry for
+  AE 2026, and set `DEADLINE_PLUGIN=KitAfterEffects`. Deadline's `custom` overlay
+  never modifies stock files. Zero risk to the AE *or* C4D stock plugins.
+
+Either way, every AE render node needs **After Effects 2026** (or its Render
+Engine) installed locally, and the job's `AE_VERSION=26.0`.
+
 ## Requirements (on this relay box)
 
 - **Node.js 18+**
