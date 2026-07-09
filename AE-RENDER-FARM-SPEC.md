@@ -243,6 +243,31 @@ defines up to `22_0`). Add it via a `KitAfterEffects` custom overlay
 (`custom/plugins/`, zero-touch to stock/C4D), set `DEADLINE_PLUGIN=KitAfterEffects`
 and `AE_VERSION=26.0`. Every AE render node needs After Effects 2026 installed.
 
+## Watch folder: 08_AE/04_RenderFarm (auto-submit)
+
+Every project gets an `08_AE/04_RenderFarm/` folder. Any `.aep` that lands there
+(as soon as Dropbox syncs it) is auto-submitted to the render farm — no Slack
+command needed. Output goes to the standard `<projectDir>\render\<comp>\`.
+
+Implementation (extends the existing `/production` Dropbox webhook watcher in
+`bolt/src/watchers/dropbox.ts`):
+
+- Match `/production/<year>/<safeName>/08_AE/04_RenderFarm/<file>.aep` on the
+  webhook cursor delta → translate to the SAN path
+  (`AE_FARM_UNC_ROOT`, default `\\thewire\production`) → `submitAeRenderFromProject`.
+- **Dedupe on Dropbox `id@rev`** (via the `seen_dropbox_files` ledger, keys
+  prefixed `aefarm:`): each saved revision renders exactly once. Re-saving the
+  file re-renders it; webhook replays don't. Conflicted-copy files are skipped.
+- Posts ":clapper: Render farm — <file> dropped" to the project's Slack channel
+  when one is linked.
+- **Completion notifier** (`src/lib/delivery/ae-notify.ts`, every-minute cron in
+  the Bolt app): announces complete/failed in the render's Slack channel,
+  idempotent via `slack_notified_status` (migration 020's columns).
+
+Requirement: the render queue must be saved *in* the dropped project — the farm
+renders the queued items, so an .aep with an empty queue fails with a clear
+message in the channel.
+
 ## Edge cases & gotchas
 
 - **Temporal-dependency effects** (motion blur, frame blending, particle sims with
