@@ -130,8 +130,3 @@ export async function ingestLongDocument(opts: IngestOptions): Promise<IngestRes
   return (data || []).map((r) => ({ documentId: r.id }))
 }
 
-export async function deleteDocument(documentId: string): Promise<void> {
-  const sb = createAdminClient()
-  const { error } = await sb.from('project_documents').delete().eq('id', documentId)
-  if (error) throw new Error(`deleteDocument failed: ${error.message}`)
-}

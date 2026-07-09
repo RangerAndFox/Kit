@@ -463,36 +463,6 @@ export async function listUsers(): Promise<HarvestUser[]> {
 }
 
 /**
- * Find an existing Harvest user by email, or create one.
- * Used by freelancer onboarding.
- */
-export async function findOrCreateUser(opts: {
-  email: string
-  firstName: string
-  lastName: string
-  isContractor?: boolean
-}): Promise<HarvestUser> {
-  const all = await listUsers()
-  const match = all.find((u) => u.email.toLowerCase() === opts.email.toLowerCase())
-  if (match) return match
-
-  const body: Record<string, unknown> = {
-    first_name: opts.firstName,
-    last_name: opts.lastName,
-    email: opts.email,
-    is_contractor: opts.isContractor ?? true,
-  }
-  const data = await harvestPost('/users', body)
-  return {
-    id: data.id,
-    first_name: data.first_name,
-    last_name: data.last_name,
-    email: data.email,
-    is_active: data.is_active,
-  }
-}
-
-/**
  * Assign a Harvest user to a project (creates a user_assignment).
  * Idempotent — returns the existing assignment if one already exists.
  */

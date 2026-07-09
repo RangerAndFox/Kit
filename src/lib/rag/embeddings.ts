@@ -106,8 +106,6 @@ export async function generateEmbeddings(texts: string[]): Promise<number[][]> {
   return out
 }
 
-export const EMBEDDING_DIMENSIONS = EMBED_DIMENSIONS
-export const EMBEDDING_MODEL = OPENAI_EMBED_MODEL
 
 /**
  * The Database types generate pgvector columns and RPC args as `string`, but

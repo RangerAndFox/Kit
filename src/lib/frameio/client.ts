@@ -71,34 +71,6 @@ export interface FrameIoAsset {
 
 // ─── User / Account ────────────────────────────────────────
 
-/**
- * Get current authenticated user info.
- * GET /v4/me
- */
-export async function getMe(): Promise<any> {
-  const resp = await frameioGet('/me')
-  return resp.data || resp
-}
-
-/**
- * List accounts the authenticated user belongs to.
- * GET /v4/accounts
- */
-export async function listAccounts(): Promise<any[]> {
-  const resp = await frameioGet('/accounts')
-  return resp.data || resp
-}
-
-/**
- * List workspaces (formerly "teams") in an account.
- * GET /v4/accounts/{account_id}/workspaces
- */
-export async function listWorkspaces(accountId?: string): Promise<any[]> {
-  const acct = accountId || getAccountId()
-  const resp = await frameioGet(`/accounts/${acct}/workspaces`)
-  return resp.data || resp
-}
-
 // ─── Review Link / Share Resolution ─────────────────────────
 
 /**
