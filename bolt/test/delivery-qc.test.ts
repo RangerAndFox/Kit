@@ -4,8 +4,7 @@ import {
   parseProbeJson,
   compareToProfile,
   videoCodecFamily,
-  formatQCReport,
-} from '../../src/lib/delivery/qc'
+} from '../../kit-render-worker/src/ffmpeg/qc'
 
 const profile: any = {
   video_codec: 'prores_422_hq',
@@ -76,18 +75,5 @@ describe('compareToProfile', () => {
     })
     const report = compareToProfile(probe, profile)
     expect(report.checks.find((c) => c.name === 'Frame rate')!.pass).toBe(false)
-  })
-})
-
-describe('formatQCReport', () => {
-  it('is a one-liner when passing', () => {
-    const report = compareToProfile(parseProbeJson(goodProbe), profile)
-    expect(formatQCReport(report)).toMatch(/QC passed/)
-  })
-  it('lists failing checks when flagged', () => {
-    const report = { pass: false, checks: [{ name: 'Resolution', expected: '1920x1080', actual: '1280x720', pass: false }] }
-    const out = formatQCReport(report as any)
-    expect(out).toMatch(/QC flagged/)
-    expect(out).toMatch(/Resolution: expected 1920x1080, got 1280x720/)
   })
 })

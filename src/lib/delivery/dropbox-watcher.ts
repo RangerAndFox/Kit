@@ -11,10 +11,9 @@
  */
 
 import { createAdminClient } from '../supabase/admin'
-import { dropboxHeaders } from '../dropbox/client'
+import { dropboxRpc } from '../dropbox/client'
 import { getSeenRowsByIds, insertFirstSightings } from './seen-files'
 
-const DROPBOX_API = 'https://api.dropboxapi.com/2'
 const WATCH_PATH = '/Delivery-Queue'
 
 interface DropboxFileMetadata {
@@ -27,19 +26,6 @@ interface DropboxFileMetadata {
   is_downloadable?: boolean
 }
 
-async function dropboxPost(endpoint: string, body: Record<string, unknown>): Promise<any> {
-  const res = await fetch(`${DROPBOX_API}${endpoint}`, {
-    method: 'POST',
-    headers: await dropboxHeaders(),
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(15_000),
-  })
-  if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`Dropbox ${endpoint} ${res.status}: ${text}`)
-  }
-  return res.json()
-}
 
 /**
  * Recursively list all files under WATCH_PATH. Returns only `.tag === 'file'`
@@ -51,7 +37,7 @@ async function listDeliveryQueueFiles(): Promise<DropboxFileMetadata[]> {
   let response: any
 
   // Initial call
-  response = await dropboxPost('/files/list_folder', {
+  response = await dropboxRpc('/files/list_folder', {
     path: WATCH_PATH,
     recursive: true,
     include_deleted: false,
@@ -62,7 +48,7 @@ async function listDeliveryQueueFiles(): Promise<DropboxFileMetadata[]> {
 
   // Pagination
   while (cursor) {
-    response = await dropboxPost('/files/list_folder/continue', { cursor })
+    response = await dropboxRpc('/files/list_folder/continue', { cursor })
     collectEntries(response, out)
     cursor = response.has_more ? response.cursor : undefined
   }

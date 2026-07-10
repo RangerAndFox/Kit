@@ -116,6 +116,31 @@ export async function dropboxHeaders(): Promise<Record<string, string>> {
   }
 }
 
+/** Base URL for Dropbox RPC-style endpoints (list_folder, etc.). */
+const DROPBOX_RPC_API = 'https://api.dropboxapi.com/2'
+
+/**
+ * POST to a Dropbox RPC endpoint with auth headers, JSON body, and a
+ * timeout. Shared by the delivery watchers (was duplicated verbatim in
+ * dropbox-watcher.ts and specs-watcher.ts).
+ */
+export async function dropboxRpc(
+  endpoint: string,
+  body: Record<string, unknown>,
+  timeoutMs = 15_000,
+): Promise<any> {
+  const res = await fetch(`${DROPBOX_RPC_API}${endpoint}`, {
+    method: 'POST',
+    headers: await dropboxHeaders(),
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
+  })
+  if (!res.ok) {
+    throw new Error(`Dropbox ${endpoint} ${res.status}: ${await res.text().catch(() => '')}`)
+  }
+  return res.json()
+}
+
 /** Reset token cache — used in tests */
 export function _resetDropboxTokenCacheForTest(): void {
   cached = null

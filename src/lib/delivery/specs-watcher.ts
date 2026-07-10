@@ -12,11 +12,10 @@
  */
 
 import { createAdminClient } from '../supabase/admin'
-import { dropboxHeaders } from '../dropbox/client'
+import { dropboxRpc } from '../dropbox/client'
 import { getSeenRowsByIds, insertFirstSightings } from './seen-files'
 import { pairSpecsFiles, type SpecsFile, type SpecsKind, type PairResult } from './pairing'
 
-const DROPBOX_API = 'https://api.dropboxapi.com/2'
 const WATCH_ROOT = '/production'
 const SPECS_RE = /^\/production\/(\d{4})\/([^/]+)\/specs\/(video|audio)\/([^/]+)$/i
 
@@ -45,22 +44,10 @@ export interface SpecsDrop {
   audioFiles: ParsedSpecsFile[]
 }
 
-async function dropboxPost(endpoint: string, body: Record<string, unknown>): Promise<any> {
-  const res = await fetch(`${DROPBOX_API}${endpoint}`, {
-    method: 'POST',
-    headers: await dropboxHeaders(),
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(15_000),
-  })
-  if (!res.ok) {
-    throw new Error(`Dropbox ${endpoint} ${res.status}: ${await res.text().catch(() => '')}`)
-  }
-  return res.json()
-}
 
 async function listProductionFiles(): Promise<DbxFile[]> {
   const out: DbxFile[] = []
-  let response = await dropboxPost('/files/list_folder', {
+  let response = await dropboxRpc('/files/list_folder', {
     path: WATCH_ROOT,
     recursive: true,
     include_deleted: false,
@@ -74,7 +61,7 @@ async function listProductionFiles(): Promise<DbxFile[]> {
   collect(response)
   let cursor = response.has_more ? response.cursor : undefined
   while (cursor) {
-    response = await dropboxPost('/files/list_folder/continue', { cursor })
+    response = await dropboxRpc('/files/list_folder/continue', { cursor })
     collect(response)
     cursor = response.has_more ? response.cursor : undefined
   }
