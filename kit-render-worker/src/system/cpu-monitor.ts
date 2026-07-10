@@ -3,14 +3,11 @@
  * Reads CPU / memory / disk usage. Returns a snapshot used by heartbeat and
  * fallback-worker pre-claim checks.
  *
- * Uses `node-os-utils` which provides cross-platform CPU + memory readings.
- * Disk free reads via `os` + `fs.statfs` (Node 18.15+).
+ * CPU + memory read from stdlib `os`; disk free via `fs.statfs` (Node 18.15+).
  */
 
 import * as os from 'os'
 import * as fs from 'fs'
-// @ts-ignore — node-os-utils has no types
-import osu from 'node-os-utils'
 import { config } from '../config'
 
 export interface SystemSnapshot {
@@ -19,10 +16,32 @@ export interface SystemSnapshot {
   diskFreeGb: number
 }
 
+/** Aggregate idle + total CPU ticks across all cores. */
+function cpuTicks(): { idle: number; total: number } {
+  let idle = 0
+  let total = 0
+  for (const c of os.cpus()) {
+    for (const t of Object.values(c.times)) total += t
+    idle += c.times.idle
+  }
+  return { idle, total }
+}
+
+/** System-wide CPU utilization % over a sample window (stdlib, cross-platform). */
+async function cpuUsagePercent(sampleMs = 500): Promise<number> {
+  const a = cpuTicks()
+  await new Promise((r) => setTimeout(r, sampleMs))
+  const b = cpuTicks()
+  const idleDelta = b.idle - a.idle
+  const totalDelta = b.total - a.total
+  if (totalDelta <= 0) return 0
+  return Math.max(0, Math.min(100, (1 - idleDelta / totalDelta) * 100))
+}
+
 export async function readSystemSnapshot(): Promise<SystemSnapshot> {
   let cpu = 0
   try {
-    cpu = await osu.cpu.usage(500) // 500ms sample window
+    cpu = await cpuUsagePercent(500) // 500ms sample window
   } catch {
     cpu = 0
   }
