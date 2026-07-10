@@ -54,10 +54,8 @@ async function handle(action: string, payload: Record<string, unknown>): Promise
         const query = String(payload.query || payload.code || payload.name || '').trim()
         if (!query) return { agent: 'studio_knowledge', action, success: false, error: 'query/code/name required' }
         const sb = createAdminClient()
-        // Try exact project_code match first, then an internal nickname/alias,
-        // then ilike on name/client/code. Aliases (e.g. "marshmallow man") are
-        // stored lowercased, so a codename resolves even though it appears
-        // nowhere in the project's name.
+        // Try exact project_code, then ilike on name/client/code among the
+        // provisioned (Supabase) projects.
         const { data: exact } = await sb
           .from('projects')
           .select('*')
@@ -65,21 +63,35 @@ async function handle(action: string, payload: Record<string, unknown>): Promise
           .maybeSingle()
         if (exact) return { agent: 'studio_knowledge', action, success: true, data: { matches: [exact] } }
 
-        const { data: aliasHit } = await sb
-          .from('projects')
-          .select('*')
-          .contains('aliases', [query.toLowerCase()])
-          .limit(1)
-        if (aliasHit && aliasHit.length) {
-          return { agent: 'studio_knowledge', action, success: true, data: { matches: [aliasHit[0]] } }
-        }
-
         const { data: fuzzy } = await sb
           .from('projects')
           .select('*')
           .or(`name.ilike.%${query}%,client.ilike.%${query}%,project_code.ilike.%${query}%`)
           .limit(10)
-        return { agent: 'studio_knowledge', action, success: true, data: { matches: fuzzy || [] } }
+        if (fuzzy && fuzzy.length) {
+          return { agent: 'studio_knowledge', action, success: true, data: { matches: fuzzy } }
+        }
+
+        // Fall back to the full Harvest project list. Internal projects (e.g.
+        // "2630A_Internal_Marshmallow_Man") aren't provisioned into Supabase,
+        // but the fuzzy scorer resolves them from a natural keyword like
+        // "marshmallow" that appears in the project name.
+        try {
+          const { searchProjects } = await import('../../harvest/client')
+          const harvest = await searchProjects(query)
+          const matches = harvest.map((h: any) => ({
+            name: h.name,
+            client: h.client?.name || null,
+            project_code: h.code || null,
+            harvest_project_id: h.id,
+            status: h.is_active ? 'active' : 'inactive',
+            source: 'harvest',
+          }))
+          return { agent: 'studio_knowledge', action, success: true, data: { matches } }
+        } catch (err: any) {
+          console.warn(`[studio-knowledge] harvest fallback failed: ${err?.message || err}`)
+          return { agent: 'studio_knowledge', action, success: true, data: { matches: [] } }
+        }
       }
       case 'recent_projects': {
         const limit = Number(payload.limit) || 15
@@ -204,7 +216,7 @@ export const studioKnowledgeAgent: AgentDefinition = {
     },
     {
       action: 'lookup_project',
-      description: 'Structured lookup of a project by project_code, exact name, internal nickname/codename (e.g. "Marshmallow Man"), or fuzzy text match on name/client/code.',
+      description: 'Structured lookup of a project by project_code, name, client, or natural keyword (e.g. "marshmallow" → 2630A_Internal_Marshmallow_Man). Searches provisioned projects, then falls back to the full Harvest list so internal projects resolve too.',
       inputDescription: 'query OR code OR name (string)',
       mutates: false,
     },

@@ -49,6 +49,21 @@ describe('rankProjects', () => {
     ])
   })
 
+  it('resolves an internal project from a natural keyword ("marshmallow")', () => {
+    // Internal projects carry the keyword in their name. The orchestrator
+    // passes the extracted reference ("marshmallow" / "marshmallow man"), and
+    // both — plus the bare code — resolve to the one project.
+    const withInternal = [
+      ...PROJECTS,
+      { name: '2630A_Internal_Marshmallow_Man', code: '2630A', client: { id: 5, name: 'Internal' } },
+    ]
+    for (const q of ['marshmallow', 'marshmallow man', '2630A']) {
+      expect(rankProjects(q, withInternal).map((p) => p.name)).toEqual([
+        '2630A_Internal_Marshmallow_Man',
+      ])
+    }
+  })
+
   it('returns multiple candidates when no project dominates', () => {
     const withTwin = [...PROJECTS, { name: 'Ignite Keynote', code: '2650-Microsoft', client: { id: 1, name: 'Microsoft' } }]
     const results = rankProjects('ignite', withTwin).map((p) => p.name)
