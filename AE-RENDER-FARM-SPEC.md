@@ -226,6 +226,30 @@ relay polls deadlinecommand -GetJob ─── rolls status → Supabase → /kit
   normalizes drive letters to UNC (`Z:=>\\thewire\production`) so headless Workers
   resolve it. No Dropbox in the Deadline path.
 
+### Prepare + assemble (sequence-first pipeline)
+
+Deadline frame-splits only image sequences, but artists queue their comps with
+the real deliverable OM (ProRes 422, H.264, ...). The relay therefore renders
+sequence-first and assembles afterwards:
+
+1. **Prepare** (AfterFX script on the relay box): per QUEUED item, capture the
+   original OM (filename + `getSettings()` blob for codec sniffing), override
+   the OM to a **PNG sequence**, duplicate the item with a **WAV** OM when the
+   comp has audio, save `<name>__kitfarm.aep` next to the original (the artist's
+   file is never modified; `aerender -comp` renders the *first* queued instance,
+   so the audio duplicate is invisible to the farm job).
+2. **Deadline** renders the farm copy's PNG sequence to
+   `render\<comp>\frames\`, ChunkSize-split across `kit_ae`.
+3. **Audio pass** renders locally on the relay (`aerender -rqindex <dup>`) →
+   `render\<comp>\<comp>_audio.wav`.
+4. **Assemble** (FFmpeg on the relay, when the Deadline job completes): frames
+   at the comp's fps → the sniffed original format (ProRes 422/LT/HQ/Proxy/4444
+   via `prores_ks`, H.264 via `libx264`; default ProRes 422 .mov), audio muxed
+   with `-shortest`, written to `render\<comp>\<original filename>`. Frames are
+   deleted on success (`AE_KEEP_FRAMES=true` to keep).
+5. If the OM can't be overridden to a sequence, the comp falls back to a
+   whole-movie render in the artist's own OM (no split, no assemble).
+
 **Isolation from a production C4D farm (hard requirement).** This integration is
 strictly additive and must never alter an existing C4D Deadline setup:
 - The relay is **submit-only** — it runs no admin/config commands, so it cannot
@@ -242,6 +266,54 @@ not blocked — it just needs a `RenderExecutable26_0` entry (the 2022 `.param` 
 defines up to `22_0`). Add it via a `KitAfterEffects` custom overlay
 (`custom/plugins/`, zero-touch to stock/C4D), set `DEADLINE_PLUGIN=KitAfterEffects`
 and `AE_VERSION=26.0`. Every AE render node needs After Effects 2026 installed.
+
+## Watch folder: 08_AE/04_RenderFarm (auto-submit)
+
+Every project gets an `08_AE/04_RenderFarm/` folder. Any `.aep` that lands there
+(as soon as Dropbox syncs it) is auto-submitted to the render farm — no Slack
+command needed. Output goes to the standard `<projectDir>\render\<comp>\`.
+
+Implementation (extends the existing `/production` Dropbox webhook watcher in
+`bolt/src/watchers/dropbox.ts`):
+
+- Match `/production/<year>/<safeName>/08_AE/04_RenderFarm/<file>.aep` on the
+  webhook cursor delta → translate to the SAN path
+  (`AE_FARM_UNC_ROOT`, default `\\thewire\production`) → `submitAeRenderFromProject`.
+- **Dedupe on Dropbox `id@rev`** (via the `seen_dropbox_files` ledger, keys
+  prefixed `aefarm:`): each saved revision renders exactly once. Re-saving the
+  file re-renders it; webhook replays don't. Conflicted-copy files are skipped.
+- Posts ":clapper: Render farm — <file> dropped" to the project's Slack channel
+  when one is linked.
+- **Completion notifier** (`src/lib/delivery/ae-notify.ts`, every-minute cron in
+  the Bolt app): announces complete/failed in the render's Slack channel,
+  idempotent via `slack_notified_status` (migration 020's columns).
+
+Requirement: the render queue must be saved *in* the dropped project — the farm
+renders the queued items, so an .aep with an empty queue fails with a clear
+message in the channel.
+
+## Spec follow-up: chaining into the delivery pipeline
+
+The render-complete Slack notice carries an **Add delivery specs** button. The
+flow reuses the existing spec-intake machinery end-to-end:
+
+1. Button click → Kit opens a spec-intake thread on the notice
+   (`delivery_spec_intake` row whose sources are the assembled render(s),
+   UNC→Dropbox-translated) and asks for the spec.
+2. Operator replies in-thread with the spec — text, PDF, or screenshot. Extra
+   files beyond the render (e.g. 4-channel audio splits) join via
+   `audio: /production/.../splits.wav` lines (bare `/production/...wav` paths are
+   also picked up).
+3. The extractor identifies codec/resolution/fps/audio layout/loudness, flags
+   anything it had to default, saves the spec as a delivery profile, and submits
+   a transcode job with the render (+ extra audio) as sources.
+4. The transcode worker delivers **next to the source video**
+   (`render/<comp>/`, via `delivery_spec_intake.output_dir` →
+   `render_jobs.ae_output_dir`, migration 035) rather than the default
+   `/delivery` subfolder.
+
+Prerequisite: at least one `kit-render-worker` running with `DROPBOX_SYNC_PATH`
+covering `/production` (the transcode side of the farm is Dropbox-resolved).
 
 ## Edge cases & gotchas
 

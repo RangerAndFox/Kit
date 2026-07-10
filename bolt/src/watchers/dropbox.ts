@@ -38,6 +38,28 @@ const PATH_RE = /^\/production\/(\d{4})\/([^/]+)\/09_Outgoing\/(01_Client Progre
 const ACCESSIBILITY_SRT_RE =
   /^\/production\/\d{4}\/([^/]+)\/(?:.*\/)?[^/]*accessibility[^/]*\/[^/]+\.srt$/i
 
+// An .aep landing in a project's AE render-farm watch folder → auto-submit to
+// the Deadline render farm (renders the project's own render queue).
+// Match `/production/<year>/<safeName>/08_AE/04_RenderFarm/<file>.aep`
+const AE_RENDERFARM_RE =
+  /^\/production\/(\d{4})\/([^/]+)\/08_AE\/04_RenderFarm\/([^/]+\.aep)$/i
+
+// The same production tree as the farm nodes see it. The Dropbox path
+// /production/<rest> maps to `${AE_FARM_UNC_ROOT}\<rest>`.
+const AE_FARM_UNC_ROOT = process.env.AE_FARM_UNC_ROOT || '\\\\thewire\\production'
+
+/** If the path is a render-farm .aep drop, return its parts; else null. */
+export function matchAeRenderFarmDrop(
+  path: string,
+): { year: string; safeName: string; filename: string } | null {
+  const m = path.match(AE_RENDERFARM_RE)
+  if (!m) return null
+  // The relay saves prepared farm copies (<name>__kitfarm.aep) back into the
+  // watch folder — those are outputs of a submission, never triggers.
+  if (/__kitfarm\.aep$/i.test(m[3])) return null
+  return { year: m[1], safeName: m[2], filename: m[3] }
+}
+
 /**
  * If the path is a project-tree accessibility SRT, return its safeName;
  * else null. Pure — exported for tests.
@@ -152,6 +174,8 @@ interface DropEntry {
   name: string
   tag: string
   size?: number
+  id?: string   // Dropbox file id — stable across renames/edits
+  rev?: string  // revision — changes on every content update
 }
 
 async function fetchDeltas(initial: string): Promise<{ entries: DropEntry[]; newCursor: string }> {
@@ -167,6 +191,8 @@ async function fetchDeltas(initial: string): Promise<{ entries: DropEntry[]; new
         name: e.name,
         tag: e['.tag'],
         size: e.size,
+        id: e.id,
+        rev: e.rev,
       })
     }
     cursor = r.cursor
@@ -233,6 +259,24 @@ async function processDeltasOnce(app: App): Promise<void> {
       } catch (err: any) {
         failed++
         console.error(`[dropbox-watcher] accessibility SRT failed for ${entry.path_display}: ${err.message}`)
+      }
+      continue
+    }
+
+    // AE render-farm watch folder: an .aep in 08_AE/04_RenderFarm → submit to
+    // the Deadline farm. Checked before PATH_RE (different subtree).
+    const aeDrop = matchAeRenderFarmDrop(entry.path_display)
+    if (aeDrop) {
+      matched++
+      try {
+        await handleAeRenderFarmDrop(app, {
+          ...aeDrop,
+          dropboxId: entry.id || entry.path_lower,
+          rev: entry.rev || '',
+        })
+      } catch (err: any) {
+        failed++
+        console.error(`[dropbox-watcher] AE render drop failed for ${entry.path_display}: ${err.message}`)
       }
       continue
     }
@@ -353,6 +397,75 @@ async function handleAccessibilitySrt(
 }
 
 /** Project's Slack channel id from its Dropbox safe name, or null. */
+/**
+ * An .aep landed in a project's 08_AE/04_RenderFarm watch folder: submit it to
+ * the Deadline render farm (the relay reads the project's own render queue and
+ * renders every queued item). Dedupe on Dropbox id@rev so each saved revision
+ * renders exactly once — re-saving the file re-renders it; webhook replays of
+ * the same revision don't.
+ */
+async function handleAeRenderFarmDrop(
+  app: App,
+  d: { year: string; safeName: string; filename: string; dropboxId: string; rev: string },
+): Promise<void> {
+  // Dropbox conflict artifacts ("foo (conflicted copy).aep") are never renders.
+  if (/conflicted copy/i.test(d.filename)) {
+    console.log(`[dropbox-watcher] skipping conflicted copy: ${d.filename}`)
+    return
+  }
+
+  // Dedupe: one render per (file id, revision), via the seen_dropbox_files
+  // ledger (text pk — key on id@rev so a new revision is a fresh sighting).
+  const sb = createAdminClient()
+  const seenKey = `aefarm:${d.dropboxId}@${d.rev}`
+  const { data: inserted } = await sb
+    .from('seen_dropbox_files')
+    .upsert(
+      {
+        dropbox_id: seenKey,
+        path: `/production/${d.year}/${d.safeName}/08_AE/04_RenderFarm/${d.filename}`,
+        size_bytes: 0,
+        stable_check_count: 1,
+        notified_at: new Date().toISOString(),
+      },
+      { onConflict: 'dropbox_id', ignoreDuplicates: true },
+    )
+    .select('dropbox_id')
+  if (!inserted || inserted.length === 0) {
+    console.log(`[dropbox-watcher] AE drop already rendered: ${seenKey}`)
+    return
+  }
+
+  // Translate to the SAN path the relay + Deadline nodes read.
+  const uncPath = `${AE_FARM_UNC_ROOT}\\${d.year}\\${d.safeName}\\08_AE\\04_RenderFarm\\${d.filename}`
+
+  const channel = await resolveProjectChannelBySafeName(d.safeName)
+
+  const { submitAeRenderFromProject } = await import('../../../src/lib/delivery/ae-storage')
+  try {
+    await submitAeRenderFromProject({
+      projectPath: uncPath,
+      requestedBy: 'dropbox-watcher',
+      slackChannel: channel || undefined,
+    })
+  } catch (err) {
+    // Release the id@rev claim so the cursor-retry can submit this revision.
+    await sb.from('seen_dropbox_files').delete().eq('dropbox_id', seenKey)
+    throw err
+  }
+
+  console.log(`[dropbox-watcher] AE render submitted: ${uncPath}`)
+  if (channel) {
+    await app.client.chat.postMessage({
+      channel,
+      text:
+        `:clapper: *Render farm* — \`${d.filename}\` dropped in 04_RenderFarm.\n` +
+        `Reading its After Effects render queue and sending the queued comps to Deadline. ` +
+        `Track with \`/kit render status\`.`,
+    })
+  }
+}
+
 async function resolveProjectChannelBySafeName(safeName: string): Promise<string | null> {
   const sb = createAdminClient()
   const { data } = await sb

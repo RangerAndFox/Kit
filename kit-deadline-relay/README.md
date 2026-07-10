@@ -10,17 +10,25 @@ do the rendering.
 On a loop, for Deadline-backed renders (`render_backend='deadline'`):
 
 1. **Claims** an `ae_render` request from Supabase.
-2. **Reads the project's After Effects render queue** by scripting AfterFX.exe on
-   this box (`-noui -r inspect.jsx`).
+2. **Prepares the project** by scripting AfterFX.exe on this box: captures each
+   QUEUED item's real output module (the deliverable — e.g. ProRes 422 .mov),
+   overrides it to a **PNG sequence** (Deadline can only frame-split sequences),
+   queues a **WAV duplicate** for audible comps, and saves a farm copy
+   (`<name>__kitfarm.aep`) next to the original. The artist's file is untouched.
 3. **Submits one Deadline job per queued comp** via `deadlinecommand -SubmitJob`
-   — image sequences are frame-split across the farm (`ChunkSize`), single-movie
-   outputs render whole.
-4. **Polls** those Deadline jobs and rolls their status back to Supabase, so
-   `/kit render status` in Slack reflects the farm.
+   — the PNG sequence renders into `<projectDir>\render\<comp>\frames\`,
+   frame-split across the farm (`ChunkSize`).
+4. **Renders the audio pass locally** (aerender, audio can't be frame-split) →
+   `<comp>_audio.wav`.
+5. **Polls** the Deadline jobs; when a comp's frames finish, **assembles** them
+   with FFmpeg into the artist's original format at the comp's frame rate,
+   muxing the audio — the final deliverable (e.g. `MainComp.mov` in ProRes 422)
+   appears in `<projectDir>\render\<comp>\`, frames are cleaned up, and status
+   rolls back to Supabase → Slack.
 
-The project's render settings + output module (what the artist queued) are used
-as-is; only the output *destination* is redirected to `<projectDir>/render/<comp>/`
-so it resolves on every node.
+So: queue a comp in AE with the output set to ProRes 422, save into
+`08_AE\04_RenderFarm\` → the farm renders it in parallel → a ProRes 422 with
+audio appears in the render folder.
 
 ## Isolation from the production C4D farm
 

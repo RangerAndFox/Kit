@@ -47,6 +47,12 @@ export const config = {
 
   pathMap: optional('DEADLINE_PATH_MAP', ''),
   afterfxPath: optional('AFTERFX_PATH', ''),
+  // aerender for the local audio pass; derived next to AfterFX.exe if unset.
+  aerenderPath: optional('AERENDER_PATH', ''),
+  // FFmpeg for the assemble step (frames + audio → deliverable).
+  ffmpegPath: optional('FFMPEG_PATH', 'ffmpeg'),
+  // Keep the PNG frames after a successful assemble (default: delete).
+  keepFrames: process.env.AE_KEEP_FRAMES === 'true',
 
   hostname: optional('RELAY_HOSTNAME', os.hostname()),
   pollIntervalMs: num('POLL_INTERVAL_MS', 10000),

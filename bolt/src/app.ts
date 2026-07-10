@@ -301,6 +301,24 @@ cron.schedule(
   { timezone: 'UTC' },
 )
 
+// ─── Cron: AE render-farm completion notifier ──────────────
+// The Deadline relay / worker fleet only write render status to Supabase;
+// this announces terminal states (complete/failed) in the render's Slack
+// channel. Idempotent via slack_notified_status, so every-minute is safe.
+
+cron.schedule(
+  '* * * * *',
+  () => {
+    import('../../src/lib/delivery/ae-notify')
+      .then(({ notifyAeRenderCompletions }) => notifyAeRenderCompletions(app.client))
+      .then((res) => {
+        if (res.announced > 0) console.log('[cron] ae-render-notify:', res)
+      })
+      .catch((err) => console.error('[cron] ae-render-notify failed:', err))
+  },
+  { timezone: 'UTC' },
+)
+
 // ─── Start ─────────────────────────────────────────────────
 
 ;(async () => {

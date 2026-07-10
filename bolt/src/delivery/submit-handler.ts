@@ -184,6 +184,67 @@ export function registerDeliveryViewHandlers(app: App) {
     }
   })
 
+  // "Add delivery specs" button on an AE render-complete notice → open a
+  // spec-intake thread on that message. The operator replies with the spec
+  // (text/PDF/screenshot) + paths to any extra files (audio splits etc.);
+  // handleSpecIntakeReply extracts it and submits the transcode with the
+  // assembled render as the source, output next to it.
+  app.action('kit_ae_add_specs', async ({ ack, body, client }) => {
+    await ack()
+    const channelId = (body as any).channel?.id || (body as any).container?.channel_id
+    const messageTs = (body as any).message?.ts || (body as any).container?.message_ts
+    if (!channelId || !messageTs) return
+
+    let parentId = ''
+    try { parentId = JSON.parse((body as any).actions?.[0]?.value || '{}').parentId || '' } catch {}
+
+    try {
+      const { getAeRenderStatus, uncToDropboxPath } = await import('../../../src/lib/delivery/ae-storage')
+      const { recordSpecIntake } = await import('../../../src/lib/delivery/spec-intake-store')
+
+      const status = parentId ? await getAeRenderStatus(parentId) : null
+      const jobs = (status?.parent?.deadline_jobs as any[]) || []
+      const sources = jobs
+        .filter((j) => j.final_output)
+        .map((j) => {
+          const dropbox = uncToDropboxPath(j.final_output)
+          return dropbox ? { path: dropbox, type: 'video', size_bytes: 0 } : null
+        })
+        .filter(Boolean)
+
+      if (sources.length === 0) {
+        await client.chat.postMessage({
+          channel: channelId,
+          thread_ts: messageTs,
+          text: ":warning: Couldn't locate the rendered file(s) for this render — submit manually with `/kit deliver <path>`.",
+        })
+        return
+      }
+
+      // Deliver next to the rendered source (render/<comp>/), not a /delivery
+      // subfolder.
+      const outputDir = (sources[0] as any).path.replace(/\/[^/]+$/, '')
+      await recordSpecIntake({ channelId, threadTs: messageTs, sources, outputDir })
+      await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: messageTs,
+        text:
+          `:memo: *Reply in this thread with the delivery spec* — paste it as text, a PDF, or a screenshot.\n` +
+          `I'll pull out codec, resolution, frame rate, audio layout, and loudness.\n` +
+          `Need extra files beyond the render (e.g. 4-channel audio splits)? Include their paths in your reply, ` +
+          `like \`audio: /production/2026/2607_Job/.../splits.wav\` — I'll bring them into the mix.\n` +
+          `The delivery lands next to the render:\n${sources.map((s: any) => `• \`${s.path}\``).join('\n')}`,
+      })
+    } catch (err: any) {
+      console.error('[Bolt] kit_ae_add_specs failed:', err.message)
+      await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: messageTs,
+        text: `:x: Couldn't start spec intake: ${err.message || err}`,
+      })
+    }
+  })
+
   // "Pick delivery spec" button (from the specs-folder channel prompt) → open
   // the profile picker pre-loaded with the paired video+audio sources.
   app.action(PICK_SPEC_ACTION, async ({ ack, body, client }) => {

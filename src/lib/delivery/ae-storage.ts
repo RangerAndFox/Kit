@@ -221,6 +221,20 @@ export async function claimDeadlineParent(relayHost: string): Promise<any | null
   return claimed || null
 }
 
+/**
+ * Convert a farm UNC path (\\thewire\production\...) back to its Dropbox path
+ * (/production/...) — the production tree syncs to Dropbox, and the transcode
+ * workers resolve sources by Dropbox path. Returns null if the path isn't
+ * under the farm root.
+ */
+export function uncToDropboxPath(uncPath: string): string | null {
+  const root = (process.env.AE_FARM_UNC_ROOT || '\\\\thewire\\production').replace(/[\\/]+$/, '')
+  const norm = (uncPath || '').replace(/\//g, '\\')
+  if (!norm.toLowerCase().startsWith(root.toLowerCase())) return null
+  const rest = norm.slice(root.length).replace(/\\/g, '/')
+  return `/production${rest.startsWith('/') ? rest : `/${rest}`}`
+}
+
 export interface AeRenderStatus {
   parent: any
   chunks: any[]
