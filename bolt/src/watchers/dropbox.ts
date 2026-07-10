@@ -350,7 +350,7 @@ async function handleAccessibilitySrt(
   d: { path: string; safeName: string; sizeBytes: number },
 ): Promise<void> {
   const name = d.path.split('/').pop() || d.path
-  let result: { generated: string[]; cueCount: number }
+  let result: { generated: string[]; cueCount: number; srtText: string }
   try {
     result = await processSrtFile({ path: d.path, sizeBytes: d.sizeBytes })
   } catch (err: any) {
@@ -394,6 +394,26 @@ async function handleAccessibilitySrt(
       ],
     })
     .catch((e) => console.warn(`[dropbox-watcher] caption note post failed: ${e?.message}`))
+
+  // ── Proofread QC ──────────────────────────────────────────
+  // Proofread the SRT and post a pass/fail report in the same channel.
+  // Non-fatal: a QC failure must never block the caption deliverable.
+  try {
+    const { proofreadSrt, buildQcBlocks } = await import('../delivery/srt-qc')
+    const report = await proofreadSrt(result.srtText)
+    const blocks = buildQcBlocks(report, name)
+    if (blocks) {
+      await app.client.chat
+        .postMessage({
+          channel,
+          text: report.clean ? `Caption QC passed: ${name}` : `Caption QC found issues: ${name}`,
+          blocks,
+        })
+        .catch((e) => console.warn(`[dropbox-watcher] QC post failed: ${e?.message}`))
+    }
+  } catch (err: any) {
+    console.warn(`[dropbox-watcher] SRT QC failed for ${d.path}: ${err?.message || err}`)
+  }
 }
 
 /** Project's Slack channel id from its Dropbox safe name, or null. */

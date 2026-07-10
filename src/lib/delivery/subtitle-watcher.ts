@@ -53,6 +53,7 @@ export interface SrtProcessResult {
   srtPath: string
   generated: string[] // paths written
   cueCount: number
+  srtText: string // raw SRT, so callers can QC without re-downloading
 }
 
 /**
@@ -79,5 +80,6 @@ export async function processSrtFile(opts: {
     srtPath: opts.path,
     generated: [targets.ttml, targets.vtt, targets.txt],
     cueCount: converted.cueCount,
+    srtText,
   }
 }
