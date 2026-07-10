@@ -643,6 +643,60 @@ export function registerCommandHandlers(app: App) {
         break
       }
 
+      case 'sync-projects':
+      case 'syncprojects': {
+        await ack()
+        const workspaceId = process.env.KIT_DEFAULT_WORKSPACE_ID
+        if (!workspaceId) {
+          await respond({ response_type: 'ephemeral', text: ':warning: `KIT_DEFAULT_WORKSPACE_ID` is not set.' })
+          break
+        }
+        const caller = await resolveCommandUser(client, workspaceId, command.user_id)
+        if (caller.tier !== 'admin') {
+          await respond({ response_type: 'ephemeral', text: ':lock: Only admins can run the project sync.' })
+          break
+        }
+        // Default is a safe PREVIEW. `run` (or `confirm`) actually writes.
+        const doWrite = /\b(run|confirm|write|go)\b/i.test(args || '')
+        try {
+          const { syncProjectsFromHarvest } = await import('../../../src/lib/studio-knowledge/project-sync')
+          const res = await syncProjectsFromHarvest({ dryRun: !doWrite })
+          const lines: string[] = [
+            doWrite
+              ? ':card_index_dividers: *Project sync — applied*'
+              : ':mag: *Project sync preview* (nothing written — run `/kit sync-projects run` to apply)',
+            `_Insert ${res.toInsert.length} · link ${res.toLink.length} · already linked ${res.alreadyLinked} · ambiguous ${res.ambiguous.length}_`,
+          ]
+          if (res.toInsert.length > 0) {
+            lines.push(
+              `*New projects (in Harvest, missing from Supabase):*`,
+              ...res.toInsert.slice(0, 20).map((p) => `• ${p.code || '—'} — ${p.name}${p.client ? ` (${p.client})` : ''}`),
+            )
+            if (res.toInsert.length > 20) lines.push(`…and ${res.toInsert.length - 20} more`)
+          }
+          if (res.toLink.length > 0) {
+            lines.push(
+              `*Linking existing rows (backfilling harvest_project_id):*`,
+              ...res.toLink.slice(0, 15).map((p) => `• ${p.code || '—'} — ${p.name}`),
+            )
+            if (res.toLink.length > 15) lines.push(`…and ${res.toLink.length - 15} more`)
+          }
+          if (res.ambiguous.length > 0) {
+            lines.push(
+              `*Skipped (ambiguous — reconcile by hand):*`,
+              ...res.ambiguous.slice(0, 15).map((a) => `• ${a.harvest} — ${a.reason}`),
+            )
+            if (res.ambiguous.length > 15) lines.push(`…and ${res.ambiguous.length - 15} more`)
+          }
+          if (doWrite) lines.push(`:white_check_mark: Done: ${res.inserted} inserted, ${res.linked} linked.`)
+          await respond({ response_type: 'ephemeral', text: lines.join('\n') })
+        } catch (err: any) {
+          console.error('[Bolt] /kit sync-projects failed:', err?.message || err)
+          await respond({ response_type: 'ephemeral', text: `Project sync failed: ${err?.message || err}` })
+        }
+        break
+      }
+
       case 'note': {
         await ack()
         // Treat the entire `args` string as the note body, optionally with
@@ -699,6 +753,7 @@ export function registerCommandHandlers(app: App) {
             '`/kit brain visibility team|producers_only` — Producer toggle for whether the channel canvas is created\n' +
             '`/kit role @user producer|artist|admin|freelancer` — Admin only: assign a role\n' +
             '`/kit sync-staff` — Admin only: map staff to Harvest users by email (activates hours check-ins)\n' +
+            '`/kit sync-projects` — Admin only: preview Harvest→Supabase project reconciliation; `run` to apply\n' +
             '`/kit backfill-time` — Admin only: preview confirmable back-dated check-ins; `run` to log them to Harvest\n' +
             '`/kit help` — Show this message\n\n' +
             'You can also DM me and type *new project* or *new storyboard* to get the same cards. Or @mention me to ask about projects, budgets, files, reviews, or to log time.',
