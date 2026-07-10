@@ -319,6 +319,26 @@ cron.schedule(
   { timezone: 'UTC' },
 )
 
+// ─── Cron: weekly timesheet meme ───────────────────────────
+// Monday 9am local — a meme about filling out timesheets, posted to the
+// full-team channel with an @channel mention. A different template each week.
+// Requires KIT_TEAM_CHANNEL_ID; IMGFLIP_USERNAME/PASSWORD enable rendered
+// images (otherwise a text meme is posted).
+
+cron.schedule(
+  '0 9 * * 1',
+  () => {
+    if (!process.env.KIT_TEAM_CHANNEL_ID) return
+    import('./memes/timesheet-meme')
+      .then(({ postWeeklyTimesheetMeme, weekIndexFromMs }) =>
+        postWeeklyTimesheetMeme(app, weekIndexFromMs(Date.now())),
+      )
+      .then((res) => console.log('[cron] timesheet-meme:', res))
+      .catch((err) => console.error('[cron] timesheet-meme failed:', err))
+  },
+  { timezone: CHECKIN_TZ },
+)
+
 // ─── Start ─────────────────────────────────────────────────
 
 ;(async () => {
