@@ -54,6 +54,9 @@ export function matchAeRenderFarmDrop(
 ): { year: string; safeName: string; filename: string } | null {
   const m = path.match(AE_RENDERFARM_RE)
   if (!m) return null
+  // The relay saves prepared farm copies (<name>__kitfarm.aep) back into the
+  // watch folder — those are outputs of a submission, never triggers.
+  if (/__kitfarm\.aep$/i.test(m[3])) return null
   return { year: m[1], safeName: m[2], filename: m[3] }
 }
 

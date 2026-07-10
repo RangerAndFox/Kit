@@ -31,17 +31,16 @@ export async function notifyAeRenderCompletions(slackClient: any): Promise<AeNot
     if (p.slack_notified_status === p.status) continue
 
     const projectFile = (p.ae_project_path || '').split(/[\\/]/).pop() || 'project'
-    const comps = Array.isArray(p.deadline_jobs)
-      ? p.deadline_jobs.map((j: any) => j.comp).filter(Boolean)
-      : []
-    const compLine = comps.length ? `Comps: ${comps.map((c: string) => `*${c}*`).join(', ')}\n` : ''
+    const jobs = Array.isArray(p.deadline_jobs) ? p.deadline_jobs : []
+    const outputs = jobs
+      .filter((j: any) => j.final_output || j.comp)
+      .map((j: any) => (j.final_output ? `• *${j.comp}* → \`${j.final_output}\`` : `• *${j.comp}*`))
+    const compLines = outputs.length ? `${outputs.join('\n')}\n` : ''
 
     const text = p.status === 'complete'
-      ? `:white_check_mark: *Render complete* — \`${projectFile}\`\n` +
-        compLine +
-        `Output: \`<projectDir>\\render\\<comp>\\\``
+      ? `:white_check_mark: *Render complete* — \`${projectFile}\`\n` + compLines
       : `:x: *Render failed* — \`${projectFile}\`\n` +
-        compLine +
+        compLines +
         `${p.error_message || 'Unknown error'}\n` +
         `Fix the project (or check Deadline Monitor) and drop it in 04_RenderFarm again.`
 

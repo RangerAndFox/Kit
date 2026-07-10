@@ -226,6 +226,30 @@ relay polls deadlinecommand -GetJob ─── rolls status → Supabase → /kit
   normalizes drive letters to UNC (`Z:=>\\thewire\production`) so headless Workers
   resolve it. No Dropbox in the Deadline path.
 
+### Prepare + assemble (sequence-first pipeline)
+
+Deadline frame-splits only image sequences, but artists queue their comps with
+the real deliverable OM (ProRes 422, H.264, ...). The relay therefore renders
+sequence-first and assembles afterwards:
+
+1. **Prepare** (AfterFX script on the relay box): per QUEUED item, capture the
+   original OM (filename + `getSettings()` blob for codec sniffing), override
+   the OM to a **PNG sequence**, duplicate the item with a **WAV** OM when the
+   comp has audio, save `<name>__kitfarm.aep` next to the original (the artist's
+   file is never modified; `aerender -comp` renders the *first* queued instance,
+   so the audio duplicate is invisible to the farm job).
+2. **Deadline** renders the farm copy's PNG sequence to
+   `render\<comp>\frames\`, ChunkSize-split across `kit_ae`.
+3. **Audio pass** renders locally on the relay (`aerender -rqindex <dup>`) →
+   `render\<comp>\<comp>_audio.wav`.
+4. **Assemble** (FFmpeg on the relay, when the Deadline job completes): frames
+   at the comp's fps → the sniffed original format (ProRes 422/LT/HQ/Proxy/4444
+   via `prores_ks`, H.264 via `libx264`; default ProRes 422 .mov), audio muxed
+   with `-shortest`, written to `render\<comp>\<original filename>`. Frames are
+   deleted on success (`AE_KEEP_FRAMES=true` to keep).
+5. If the OM can't be overridden to a sequence, the comp falls back to a
+   whole-movie render in the artist's own OM (no split, no assemble).
+
 **Isolation from a production C4D farm (hard requirement).** This integration is
 strictly additive and must never alter an existing C4D Deadline setup:
 - The relay is **submit-only** — it runs no admin/config commands, so it cannot
