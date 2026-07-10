@@ -54,13 +54,25 @@ async function handle(action: string, payload: Record<string, unknown>): Promise
         const query = String(payload.query || payload.code || payload.name || '').trim()
         if (!query) return { agent: 'studio_knowledge', action, success: false, error: 'query/code/name required' }
         const sb = createAdminClient()
-        // Try exact project_code match first, then ilike on name/client/code
+        // Try exact project_code match first, then an internal nickname/alias,
+        // then ilike on name/client/code. Aliases (e.g. "marshmallow man") are
+        // stored lowercased, so a codename resolves even though it appears
+        // nowhere in the project's name.
         const { data: exact } = await sb
           .from('projects')
           .select('*')
           .eq('project_code', query)
           .maybeSingle()
         if (exact) return { agent: 'studio_knowledge', action, success: true, data: { matches: [exact] } }
+
+        const { data: aliasHit } = await sb
+          .from('projects')
+          .select('*')
+          .contains('aliases', [query.toLowerCase()])
+          .limit(1)
+        if (aliasHit && aliasHit.length) {
+          return { agent: 'studio_knowledge', action, success: true, data: { matches: [aliasHit[0]] } }
+        }
 
         const { data: fuzzy } = await sb
           .from('projects')
@@ -192,7 +204,7 @@ export const studioKnowledgeAgent: AgentDefinition = {
     },
     {
       action: 'lookup_project',
-      description: 'Structured lookup of a project by project_code, exact name, or fuzzy text match on name/client/code.',
+      description: 'Structured lookup of a project by project_code, exact name, internal nickname/codename (e.g. "Marshmallow Man"), or fuzzy text match on name/client/code.',
       inputDescription: 'query OR code OR name (string)',
       mutates: false,
     },

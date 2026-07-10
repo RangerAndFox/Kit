@@ -92,8 +92,12 @@ export function registerMessageHandlers(app: App) {
     const userId = ev.user
     const teamId = ev.team || ''
 
-    // Channel @mentions reply in main channel flow (no thread_ts)
-    // even if Slack tagged them with an assistant_thread.
+    // A top-level @mention replies in the main channel flow (visible to
+    // everyone). But an @mention made INSIDE an existing thread must stay in
+    // that thread — otherwise Kit's answer jumps out to the channel root and
+    // looks like it "left the thread". thread_ts is set (and differs from the
+    // message's own ts) only for messages that live inside a thread.
+    const inThread = Boolean(ev.thread_ts && ev.thread_ts !== ev.ts)
     await handleConversationalMessage({
       app,
       channelId,
@@ -103,6 +107,7 @@ export function registerMessageHandlers(app: App) {
       messageTs: ev.ts,
       threadTs: ev.thread_ts || ev.ts,
       isDirectMention: true,
+      assistantThreadTs: inThread ? ev.thread_ts : undefined,
     })
   })
 
@@ -264,7 +269,13 @@ export function registerMessageHandlers(app: App) {
     // reply to the conversation root so it appears inside the user's view.
     // We deliberately don't gate on the `assistant_thread` block — Slack omits
     // it on some events, which used to drop replies into the main DM flow.
-    const assistantThreadTs = dmThreadTs(msgEvent)
+    // In a channel, a message that arrived inside a thread (clarification /
+    // onboarding answer) must be answered in that same thread, not the root.
+    const assistantThreadTs =
+      dmThreadTs(msgEvent) ||
+      (msgEvent.thread_ts && msgEvent.thread_ts !== msgEvent.ts
+        ? msgEvent.thread_ts
+        : undefined)
 
     await handleConversationalMessage({
       app,
@@ -314,11 +325,11 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
     assistantThreadTs,
   } = args
 
-  // Determine where the reply should land:
-  //  - In an Assistant thread (DM with AI Apps): thread the reply so it
-  //    appears inside the user's assistant conversation.
-  //  - In any shared channel @mention: post in main flow (no thread_ts)
-  //    so it's visible to the channel, not buried in a thread.
+  // Determine where the reply should land (set by the caller):
+  //  - DM / Assistant thread: thread to the conversation root.
+  //  - Channel message already inside a thread: stay in that thread.
+  //  - Top-level channel @mention: assistantThreadTs is undefined → post in
+  //    the main flow so the answer is visible to the whole channel.
   const replyThreadTs = assistantThreadTs
 
   const postReply = async (text: string) => {

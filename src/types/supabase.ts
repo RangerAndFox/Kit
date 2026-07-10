@@ -2777,6 +2777,7 @@ export type Database = {
       }
       projects: {
         Row: {
+          aliases: string[]
           brief_summary: string | null
           budget_alert_threshold: number | null
           budget_spent: number | null
@@ -2807,6 +2808,7 @@ export type Database = {
           workspace_id: string
         }
         Insert: {
+          aliases?: string[]
           brief_summary?: string | null
           budget_alert_threshold?: number | null
           budget_spent?: number | null
@@ -2837,6 +2839,7 @@ export type Database = {
           workspace_id: string
         }
         Update: {
+          aliases?: string[]
           brief_summary?: string | null
           budget_alert_threshold?: number | null
           budget_spent?: number | null
