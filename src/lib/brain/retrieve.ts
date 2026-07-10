@@ -10,7 +10,7 @@
  * Spec: KIT-BRAIN-SPEC.md §3.4
  */
 
-import { searchDocuments, type SearchResult } from '@/lib/rag/query'
+import { searchDocuments, buildContext, type SearchResult } from '@/lib/rag/query'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { parseBrain, type BrainBullet, type BrainProvenance } from './format'
 
@@ -206,20 +206,9 @@ export interface SourcedContext {
  * is meant for the answer's bottom margin.
  */
 export function buildSourcedContext(input: BrainFirstResult, opts: SourcedContextOpts = {}): SourcedContext {
-  const maxChars = opts.maxChars ?? 16_000
-  const parts: string[] = []
-  let used = 0
-  for (const r of input.results) {
-    const block = `[${r.title}${r.docType ? ` · ${r.docType}` : ''}${r.similarity ? ` · ${r.similarity.toFixed(2)}` : ''}]\n${r.content}\n\n`
-    if (used + block.length > maxChars) {
-      const remaining = maxChars - used
-      if (remaining > 200) parts.push(block.slice(0, remaining))
-      break
-    }
-    parts.push(block)
-    used += block.length
-  }
-  const context = parts.join('')
+  // Same [title · doc_type · similarity] packing as the RAG context builder —
+  // reuse it rather than re-implement the char-budget loop.
+  const context = buildContext(input.results, opts.maxChars ?? 16_000)
   const sourcesLine = formatSourcesLine(input.provenances)
   return { context, sourcesLine, provenances: input.provenances }
 }
