@@ -16,7 +16,7 @@ import { supabase } from './supabase'
 import { config } from './config'
 import { setCurrentJob } from './heartbeat'
 import type { ClaimedJob } from './job-claimer'
-import { resolveDropboxPath, ensureOutputDir } from './dropbox/file-resolver'
+import { resolveDropboxPath, resolveDropboxDir, ensureOutputDir } from './dropbox/file-resolver'
 import { runFFmpeg, probeDurationSeconds } from './ffmpeg/runner'
 import { runLoudnessAnalysis } from './ffmpeg/loudness'
 import { buildFFmpegArgs, argsToShellCommand } from './ffmpeg/command-builder'
@@ -77,7 +77,10 @@ async function processTranscodeJob(job: ClaimedJob): Promise<void> {
       ? buildOutputFilename(profile.naming_template, job.naming_fields, profile.container || 'mov')
       : path.basename(resolvedVideo.localPath)
     const sourceDir = path.dirname(resolvedVideo.localPath)
-    const outputDir = path.join(sourceDir, 'delivery')
+    // ae_output_dir (a Dropbox dir) overrides the default /delivery subfolder —
+    // spec-intake transcodes of farm renders deliver next to their source.
+    const outputDir = (job.ae_output_dir && resolveDropboxDir(job.ae_output_dir)) ||
+      path.join(sourceDir, 'delivery')
     const outputPath = path.join(outputDir, outputFilename)
     ensureOutputDir(outputPath)
 

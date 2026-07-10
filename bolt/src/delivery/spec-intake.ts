@@ -28,12 +28,28 @@ async function downloadSlackFile(file: any): Promise<Buffer> {
  * Extract a spec from the given input, save it as a profile, and submit a
  * render job for the paired sources. Returns the confirmation text.
  */
+/**
+ * Pull extra source-file paths out of a spec reply — e.g.
+ * "audio: /production/2026/2607_Job/.../4ch_splits.wav" or a bare
+ * /production/...wav path. These become additional audio inputs on the job.
+ */
+export function extractAudioPathsFromText(text: string | undefined): string[] {
+  if (!text) return []
+  const found = new Set<string>()
+  const tagged = text.matchAll(/audio:\s*([^\s|]+)/gi)
+  for (const m of tagged) found.add(m[1])
+  const bare = text.matchAll(/(?:^|[\s|(<])(\/production\/[^\s|>)]+\.(?:wav|aiff?|mp3|flac))/gi)
+  for (const m of bare) found.add(m[1])
+  return [...found]
+}
+
 export async function runSpecExtraction(opts: {
   input: { text?: string; image?: { base64: string; mediaType: string }; pdf?: { base64: string } }
   sources: any[]
   userId: string
   channel: string
   threadTs?: string
+  outputDir?: string   // deliver here instead of <sourceDir>/delivery
 }): Promise<string> {
   const { spec, missing, warnings } = await extractAndNormalize(opts.input)
   const profile = await createProfile({ ...spec, created_by: opts.userId })
@@ -50,6 +66,7 @@ export async function runSpecExtraction(opts: {
     requestedBy: opts.userId,
     slackChannel: opts.channel,
     slackThreadTs: opts.threadTs,
+    outputDir: opts.outputDir,
   })
 
   const flags = [
@@ -112,13 +129,21 @@ export async function handleSpecIntakeReply(opts: {
     text: ':hourglass_flowing_sand: Reading the spec...',
   })
 
+  // Extra files named in the reply (audio splits etc.) join the job's sources.
+  const extraAudio = extractAudioPathsFromText(opts.text)
+  const sources = [
+    ...intake.sources,
+    ...extraAudio.map((p) => ({ path: p, type: 'audio', size_bytes: 0 })),
+  ]
+
   try {
     const text = await runSpecExtraction({
       input,
-      sources: intake.sources,
+      sources,
       userId: opts.userId,
       channel: opts.channelId,
       threadTs: opts.threadTs,
+      outputDir: intake.output_dir || undefined,
     })
     await consumeSpecIntake(intake.id)
     await opts.app.client.chat.postMessage({ channel: opts.channelId, thread_ts: opts.threadTs, text })

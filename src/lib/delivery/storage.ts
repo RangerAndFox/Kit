@@ -59,6 +59,7 @@ export async function submitJob(input: {
   requestedBy: string
   slackChannel?: string
   slackThreadTs?: string
+  outputDir?: string   // Dropbox dir override; default is <sourceDir>/delivery
 }): Promise<RenderJobRow | null> {
   const sb = createAdminClient()
   const profile = await getProfile(input.profileId)
@@ -74,6 +75,7 @@ export async function submitJob(input: {
       requested_by: input.requestedBy,
       slack_channel: input.slackChannel ?? null,
       slack_thread_ts: input.slackThreadTs ?? null,
+      ae_output_dir: input.outputDir ?? null,
       status: 'pending',
     } as unknown as TablesInsert<'render_jobs'>)
     .select('*')

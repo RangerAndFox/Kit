@@ -292,6 +292,29 @@ Requirement: the render queue must be saved *in* the dropped project — the far
 renders the queued items, so an .aep with an empty queue fails with a clear
 message in the channel.
 
+## Spec follow-up: chaining into the delivery pipeline
+
+The render-complete Slack notice carries an **Add delivery specs** button. The
+flow reuses the existing spec-intake machinery end-to-end:
+
+1. Button click → Kit opens a spec-intake thread on the notice
+   (`delivery_spec_intake` row whose sources are the assembled render(s),
+   UNC→Dropbox-translated) and asks for the spec.
+2. Operator replies in-thread with the spec — text, PDF, or screenshot. Extra
+   files beyond the render (e.g. 4-channel audio splits) join via
+   `audio: /production/.../splits.wav` lines (bare `/production/...wav` paths are
+   also picked up).
+3. The extractor identifies codec/resolution/fps/audio layout/loudness, flags
+   anything it had to default, saves the spec as a delivery profile, and submits
+   a transcode job with the render (+ extra audio) as sources.
+4. The transcode worker delivers **next to the source video**
+   (`render/<comp>/`, via `delivery_spec_intake.output_dir` →
+   `render_jobs.ae_output_dir`, migration 035) rather than the default
+   `/delivery` subfolder.
+
+Prerequisite: at least one `kit-render-worker` running with `DROPBOX_SYNC_PATH`
+covering `/production` (the transcode side of the farm is Dropbox-resolved).
+
 ## Edge cases & gotchas
 
 - **Temporal-dependency effects** (motion blur, frame blending, particle sims with

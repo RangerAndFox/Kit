@@ -44,8 +44,27 @@ export async function notifyAeRenderCompletions(slackClient: any): Promise<AeNot
         `${p.error_message || 'Unknown error'}\n` +
         `Fix the project (or check Deadline Monitor) and drop it in 04_RenderFarm again.`
 
+    // Completed renders offer the delivery-spec follow-up: clicking the button
+    // opens a spec-intake thread on this message (handled in submit-handler.ts).
+    const blocks = p.status === 'complete'
+      ? [
+          { type: 'section', text: { type: 'mrkdwn', text } },
+          {
+            type: 'actions',
+            elements: [
+              {
+                type: 'button',
+                text: { type: 'plain_text', text: 'Add delivery specs' },
+                action_id: 'kit_ae_add_specs',
+                value: JSON.stringify({ parentId: p.id }),
+              },
+            ],
+          },
+        ]
+      : undefined
+
     try {
-      await slackClient.chat.postMessage({ channel: p.slack_channel, text })
+      await slackClient.chat.postMessage({ channel: p.slack_channel, text, ...(blocks ? { blocks } : {}) })
       await sb
         .from('render_jobs')
         .update({

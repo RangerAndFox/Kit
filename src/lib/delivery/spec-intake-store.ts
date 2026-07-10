@@ -16,6 +16,7 @@ export interface SpecIntakeRow {
   thread_ts: string
   sources: SourceFile[]
   status: string
+  output_dir?: string | null
 }
 
 /** Record a posted delivery prompt so a later thread reply can be tied back. */
@@ -23,6 +24,7 @@ export async function recordSpecIntake(opts: {
   channelId: string
   threadTs: string
   sources: SourceFile[]
+  outputDir?: string   // deliver here instead of <sourceDir>/delivery (AE renders)
 }): Promise<void> {
   const sb = createAdminClient()
   await sb.from('delivery_spec_intake').upsert(
@@ -31,6 +33,7 @@ export async function recordSpecIntake(opts: {
       thread_ts: opts.threadTs,
       sources: opts.sources,
       status: 'open',
+      output_dir: opts.outputDir ?? null,
     },
     { onConflict: 'channel_id,thread_ts' },
   )
@@ -45,7 +48,7 @@ export async function getOpenSpecIntake(
   const sb = createAdminClient()
   const { data } = await sb
     .from('delivery_spec_intake')
-    .select('id, channel_id, thread_ts, sources, status')
+    .select('id, channel_id, thread_ts, sources, status, output_dir')
     .eq('channel_id', channelId)
     .eq('thread_ts', threadTs)
     .eq('status', 'open')
