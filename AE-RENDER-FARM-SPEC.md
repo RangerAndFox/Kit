@@ -267,16 +267,16 @@ defines up to `22_0`). Add it via a `KitAfterEffects` custom overlay
 (`custom/plugins/`, zero-touch to stock/C4D), set `DEADLINE_PLUGIN=KitAfterEffects`
 and `AE_VERSION=26.0`. Every AE render node needs After Effects 2026 installed.
 
-## Watch folder: 08_AE/04_RenderFarm (auto-submit)
+## Watch folder: 08_AE/03_RenderFarm (auto-submit)
 
-Every project gets an `08_AE/04_RenderFarm/` folder. Any `.aep` that lands there
+Every project gets an `08_AE/03_RenderFarm/` folder. Any `.aep` that lands there
 (as soon as Dropbox syncs it) is auto-submitted to the render farm — no Slack
 command needed. Output goes to the standard `<projectDir>\render\<comp>\`.
 
 Implementation (extends the existing `/production` Dropbox webhook watcher in
 `bolt/src/watchers/dropbox.ts`):
 
-- Match `/production/<year>/<safeName>/08_AE/04_RenderFarm/<file>.aep` on the
+- Match `/production/<year>/<safeName>/08_AE/03_RenderFarm/<file>.aep` on the
   webhook cursor delta → translate to the SAN path
   (`AE_FARM_UNC_ROOT`, default `\\thewire\production`) → `submitAeRenderFromProject`.
 - **Dedupe on Dropbox `id@rev`** (via the `seen_dropbox_files` ledger, keys

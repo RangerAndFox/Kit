@@ -42,7 +42,7 @@ export async function notifyAeRenderCompletions(slackClient: any): Promise<AeNot
       : `:x: *Render failed* — \`${projectFile}\`\n` +
         compLines +
         `${p.error_message || 'Unknown error'}\n` +
-        `Fix the project (or check Deadline Monitor) and drop it in 04_RenderFarm again.`
+        `Fix the project (or check Deadline Monitor) and drop it in 03_RenderFarm again.`
 
     // Completed renders offer the delivery-spec follow-up: clicking the button
     // opens a spec-intake thread on this message (handled in submit-handler.ts).
