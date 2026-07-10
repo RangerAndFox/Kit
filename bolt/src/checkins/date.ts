@@ -72,6 +72,98 @@ export function formatShortDate(ymd: string, tz: string = checkinTimezone()): st
   }).format(new Date(`${ymd}T12:00:00Z`))
 }
 
+const WEEKDAYS: Record<string, number> = {
+  sunday: 0, sun: 0,
+  monday: 1, mon: 1,
+  tuesday: 2, tue: 2, tues: 2,
+  wednesday: 3, wed: 3, weds: 3,
+  thursday: 4, thu: 4, thur: 4, thurs: 4,
+  friday: 5, fri: 5,
+  saturday: 6, sat: 6,
+}
+
+const MONTHS: Record<string, number> = {
+  january: 1, jan: 1,
+  february: 2, feb: 2,
+  march: 3, mar: 3,
+  april: 4, apr: 4,
+  may: 5,
+  june: 6, jun: 6,
+  july: 7, jul: 7,
+  august: 8, aug: 8,
+  september: 9, sep: 9, sept: 9,
+  october: 10, oct: 10,
+  november: 11, nov: 11,
+  december: 12, dec: 12,
+}
+
+/** Pick the year (this or last) that puts month/day on-or-before the anchor. */
+function resolveMonthDay(month1: number, day: number, anchorYmd: string): string | null {
+  if (month1 < 1 || month1 > 12 || day < 1 || day > 31) return null
+  const anchorMs = Date.parse(`${anchorYmd}T12:00:00Z`)
+  const anchorYear = Number(anchorYmd.slice(0, 4))
+  for (const y of [anchorYear, anchorYear - 1]) {
+    const cand = `${y}-${String(month1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+    const ms = Date.parse(`${cand}T12:00:00Z`)
+    // Reject invalid calendar dates (Date.parse normalizes, so re-check).
+    if (Number.isNaN(ms) || cand !== toYmd(new Date(ms))) continue
+    if (ms <= anchorMs) return cand
+  }
+  return null
+}
+
+/**
+ * Resolve a human day reference to a YYYY-MM-DD relative to the anchor day,
+ * deterministically (NOT via the LLM — models are unreliable at "what date
+ * was Monday?"). Handles: ISO dates, today/yesterday, "N days ago", weekday
+ * names ("monday", "last tuesday" → the most recent past occurrence), and
+ * month/day ("june 20", "6/20"). Returns null for anything unrecognized, so
+ * the caller falls back to the anchor day. Backfilling only reaches back a
+ * few days in practice; resolveSpentDate() still guards the final value.
+ */
+export function resolveDayPhrase(
+  phrase: string | null | undefined,
+  anchorYmd: string,
+): string | null {
+  if (!phrase) return null
+  const s = String(phrase).trim().toLowerCase().replace(/[.,]/g, '').trim()
+  if (!s) return null
+  if (YMD_RE.test(s)) return s
+
+  if (s === 'today' || s === 'tonight' || s === 'tod') return anchorYmd
+  if (s === 'yesterday' || s === 'yday' || s === 'yest') return ymdAddDays(anchorYmd, -1)
+  if (s === 'day before yesterday' || s === 'the day before yesterday') {
+    return ymdAddDays(anchorYmd, -2)
+  }
+
+  const ago = s.match(/^(\d+)\s+days?\s+ago$/)
+  if (ago) return ymdAddDays(anchorYmd, -Number(ago[1]))
+
+  // Weekday, optionally prefixed by on/last/this/past. "last <weekday>" that
+  // lands on the anchor's own weekday means the prior week.
+  const hadLast = /\blast\b/.test(s)
+  const wdKey = s.replace(/^(?:on\s+|last\s+|this\s+|past\s+)+/, '').replace(/\s+/g, '')
+  if (wdKey in WEEKDAYS) {
+    const anchorDow = ymdDate(anchorYmd).getUTCDay()
+    let delta = (anchorDow - WEEKDAYS[wdKey] + 7) % 7
+    if (delta === 0 && hadLast) delta = 7
+    return ymdAddDays(anchorYmd, -delta)
+  }
+
+  // Month + day in either order: "june 20" / "20 june".
+  const cleaned = s.replace(/^on\s+/, '').replace(/(\d+)(?:st|nd|rd|th)\b/, '$1')
+  let m = cleaned.match(/^([a-z]+)\s+(\d{1,2})$/)
+  if (m && m[1] in MONTHS) return resolveMonthDay(MONTHS[m[1]], Number(m[2]), anchorYmd)
+  m = cleaned.match(/^(\d{1,2})\s+([a-z]+)$/)
+  if (m && m[2] in MONTHS) return resolveMonthDay(MONTHS[m[2]], Number(m[1]), anchorYmd)
+
+  // Numeric month/day: "6/20" or "6-20" (no year).
+  m = cleaned.match(/^(\d{1,2})[\/\-](\d{1,2})$/)
+  if (m) return resolveMonthDay(Number(m[1]), Number(m[2]), anchorYmd)
+
+  return null
+}
+
 /** Shift a YYYY-MM-DD by N calendar days (negative = back). */
 export function ymdAddDays(ymd: string, n: number): string {
   const base = new Date(`${ymd}T12:00:00Z`)

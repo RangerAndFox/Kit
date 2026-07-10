@@ -5,6 +5,7 @@ import {
   checkinDateMinusDays,
   checkinTimezone,
   resolveSpentDate,
+  resolveDayPhrase,
   formatShortDate,
   studioHolidays,
   isWorkday,
@@ -71,6 +72,55 @@ describe('resolveSpentDate', () => {
     expect(resolveSpentDate('2026-06-10', anchor)).toBe(anchor)
     // exactly 14 days back is still allowed
     expect(resolveSpentDate('2026-06-11', anchor)).toBe('2026-06-11')
+  })
+})
+
+describe('resolveDayPhrase', () => {
+  // 2026-07-09 is a Thursday.
+  const anchor = '2026-07-09'
+
+  it('resolves weekday names to the most recent past occurrence (incl. today)', () => {
+    expect(resolveDayPhrase('monday', anchor)).toBe('2026-07-06')
+    expect(resolveDayPhrase('tuesday', anchor)).toBe('2026-07-07')
+    expect(resolveDayPhrase('wednesday', anchor)).toBe('2026-07-08')
+    expect(resolveDayPhrase('thursday', anchor)).toBe('2026-07-09') // today
+    expect(resolveDayPhrase('friday', anchor)).toBe('2026-07-03') // last week's Fri
+  })
+
+  it('handles abbreviations, "on"/"last" prefixes, and casing', () => {
+    expect(resolveDayPhrase('Mon', anchor)).toBe('2026-07-06')
+    expect(resolveDayPhrase('on Tuesday', anchor)).toBe('2026-07-07')
+    expect(resolveDayPhrase('tues', anchor)).toBe('2026-07-07')
+    // "last thursday" is the prior week, not today
+    expect(resolveDayPhrase('last thursday', anchor)).toBe('2026-07-02')
+  })
+
+  it('handles relative phrases', () => {
+    expect(resolveDayPhrase('today', anchor)).toBe('2026-07-09')
+    expect(resolveDayPhrase('yesterday', anchor)).toBe('2026-07-08')
+    expect(resolveDayPhrase('2 days ago', anchor)).toBe('2026-07-07')
+  })
+
+  it('handles month/day in words and numbers, picking the past occurrence', () => {
+    expect(resolveDayPhrase('July 6', anchor)).toBe('2026-07-06')
+    expect(resolveDayPhrase('6 July', anchor)).toBe('2026-07-06')
+    expect(resolveDayPhrase('7/6', anchor)).toBe('2026-07-06')
+    // A month/day later in the year resolves to last year, not the future.
+    expect(resolveDayPhrase('December 25', anchor)).toBe('2025-12-25')
+  })
+
+  it('passes ISO dates through and returns null for anything unrecognized', () => {
+    expect(resolveDayPhrase('2026-07-06', anchor)).toBe('2026-07-06')
+    expect(resolveDayPhrase(null, anchor)).toBeNull()
+    expect(resolveDayPhrase('', anchor)).toBeNull()
+    expect(resolveDayPhrase('whenever', anchor)).toBeNull()
+  })
+
+  it('chains with resolveSpentDate for the full guard (multi-day backfill)', () => {
+    // Thu anchor, "monday" 3 days back — within the 14-day window, kept.
+    expect(resolveSpentDate(resolveDayPhrase('monday', anchor), anchor)).toBe('2026-07-06')
+    // Unrecognized phrase → null → falls back to the anchor day.
+    expect(resolveSpentDate(resolveDayPhrase('whenever', anchor), anchor)).toBe(anchor)
   })
 })
 

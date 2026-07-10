@@ -18,7 +18,7 @@ import {
   buildConfirmBlocks,
   type ParsedEntry,
 } from './reply'
-import { checkinToday, resolveSpentDate } from './date'
+import { checkinToday, resolveSpentDate, resolveDayPhrase } from './date'
 
 /**
  * Cheap pre-filter: does the message even mention hours? Avoids burning
@@ -127,7 +127,7 @@ export async function handleAdhocHoursEntry(opts: {
         projectQuery: e.projectQuery,
         hours: Number(e.hours),
         notes: e.notes || undefined,
-        spentDate: resolveSpentDate(e.date, today),
+        spentDate: resolveSpentDate(resolveDayPhrase(e.date, today), today),
         resolution: r.resolution,
         harvest_project_id: r.project?.id,
         harvest_project_name: r.project?.name,

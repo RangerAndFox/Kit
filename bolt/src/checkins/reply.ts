@@ -19,7 +19,13 @@ import {
   type HarvestProject,
 } from '../../../src/lib/harvest/client'
 import { anthropic, SPECIALIST_MODEL } from '../llm/client'
-import { checkinToday, checkinDateMinusDays, resolveSpentDate, formatShortDate } from './date'
+import {
+  checkinToday,
+  checkinDateMinusDays,
+  resolveSpentDate,
+  resolveDayPhrase,
+  formatShortDate,
+} from './date'
 import { handleCheckinConfirm, handleCheckinRedo } from './confirm'
 
 interface OpenCheckin {
@@ -200,7 +206,8 @@ Rules:
 - "projectQuery" should be the project name as the user said it (no normalization needed — we'll fuzzy-match it ourselves).
 - "hours" must be a number (parse "4h" → 4, "2.5 hours" → 2.5, "30 min" → 0.5).
 - "notes" is anything they added after the hours (or null).
-- "date": if the user names a day for an entry ("yesterday", "Monday", "June 20"), resolve it to an absolute YYYY-MM-DD relative to today's date above. If no day is mentioned, use null (we'll default it to today). Never use a future date.
+- "date": if the user names a day for an entry ("yesterday", "Monday", "last Tuesday", "June 20"), copy that day reference VERBATIM as a short lowercase string (e.g. "monday", "yesterday", "june 20"). Do NOT convert it to a calendar date — we resolve the real date ourselves. If no day is mentioned, use null.
+- Each entry keeps its OWN day. A message can span several days, e.g. "8h ProjectA monday, 6h ProjectB tuesday" → two entries, date "monday" and "tuesday".
 - If the user just gives bare numbers in order matching the candidate list, map them positionally.
 
 The user was offered these candidate projects (in order):
@@ -434,7 +441,7 @@ export async function handleCheckinReply(opts: {
         projectQuery: e.projectQuery,
         hours: Number(e.hours),
         notes: e.notes || undefined,
-        spentDate: resolveSpentDate(e.date, open.check_in_date),
+        spentDate: resolveSpentDate(resolveDayPhrase(e.date, open.check_in_date), open.check_in_date),
         resolution: r.resolution,
         harvest_project_id: r.project?.id,
         harvest_project_name: r.project?.name,
