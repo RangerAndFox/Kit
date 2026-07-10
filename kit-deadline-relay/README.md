@@ -27,7 +27,7 @@ On a loop, for Deadline-backed renders (`render_backend='deadline'`):
    rolls back to Supabase → Slack.
 
 So: queue a comp in AE with the output set to ProRes 422, save into
-`08_AE\04_RenderFarm\` → the farm renders it in parallel → a ProRes 422 with
+`08_AE\03_RenderFarm\` → the farm renders it in parallel → a ProRes 422 with
 audio appears in the render folder.
 
 ## Isolation from the production C4D farm

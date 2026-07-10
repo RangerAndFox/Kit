@@ -40,9 +40,9 @@ const ACCESSIBILITY_SRT_RE =
 
 // An .aep landing in a project's AE render-farm watch folder → auto-submit to
 // the Deadline render farm (renders the project's own render queue).
-// Match `/production/<year>/<safeName>/08_AE/04_RenderFarm/<file>.aep`
+// Match `/production/<year>/<safeName>/08_AE/03_RenderFarm/<file>.aep`
 const AE_RENDERFARM_RE =
-  /^\/production\/(\d{4})\/([^/]+)\/08_AE\/04_RenderFarm\/([^/]+\.aep)$/i
+  /^\/production\/(\d{4})\/([^/]+)\/08_AE\/03_RenderFarm\/([^/]+\.aep)$/i
 
 // The same production tree as the farm nodes see it. The Dropbox path
 // /production/<rest> maps to `${AE_FARM_UNC_ROOT}\<rest>`.
@@ -263,7 +263,7 @@ async function processDeltasOnce(app: App): Promise<void> {
       continue
     }
 
-    // AE render-farm watch folder: an .aep in 08_AE/04_RenderFarm → submit to
+    // AE render-farm watch folder: an .aep in 08_AE/03_RenderFarm → submit to
     // the Deadline farm. Checked before PATH_RE (different subtree).
     const aeDrop = matchAeRenderFarmDrop(entry.path_display)
     if (aeDrop) {
@@ -398,7 +398,7 @@ async function handleAccessibilitySrt(
 
 /** Project's Slack channel id from its Dropbox safe name, or null. */
 /**
- * An .aep landed in a project's 08_AE/04_RenderFarm watch folder: submit it to
+ * An .aep landed in a project's 08_AE/03_RenderFarm watch folder: submit it to
  * the Deadline render farm (the relay reads the project's own render queue and
  * renders every queued item). Dedupe on Dropbox id@rev so each saved revision
  * renders exactly once — re-saving the file re-renders it; webhook replays of
@@ -423,7 +423,7 @@ async function handleAeRenderFarmDrop(
     .upsert(
       {
         dropbox_id: seenKey,
-        path: `/production/${d.year}/${d.safeName}/08_AE/04_RenderFarm/${d.filename}`,
+        path: `/production/${d.year}/${d.safeName}/08_AE/03_RenderFarm/${d.filename}`,
         size_bytes: 0,
         stable_check_count: 1,
         notified_at: new Date().toISOString(),
@@ -437,7 +437,7 @@ async function handleAeRenderFarmDrop(
   }
 
   // Translate to the SAN path the relay + Deadline nodes read.
-  const uncPath = `${AE_FARM_UNC_ROOT}\\${d.year}\\${d.safeName}\\08_AE\\04_RenderFarm\\${d.filename}`
+  const uncPath = `${AE_FARM_UNC_ROOT}\\${d.year}\\${d.safeName}\\08_AE\\03_RenderFarm\\${d.filename}`
 
   const channel = await resolveProjectChannelBySafeName(d.safeName)
 
@@ -459,7 +459,7 @@ async function handleAeRenderFarmDrop(
     await app.client.chat.postMessage({
       channel,
       text:
-        `:clapper: *Render farm* — \`${d.filename}\` dropped in 04_RenderFarm.\n` +
+        `:clapper: *Render farm* — \`${d.filename}\` dropped in 03_RenderFarm.\n` +
         `Reading its After Effects render queue and sending the queued comps to Deadline. ` +
         `Track with \`/kit render status\`.`,
     })
