@@ -458,6 +458,7 @@ export type Database = {
           brain_id: string
           created_at: string | null
           decided_at: string | null
+          dm_sent_at: string | null
           id: number
           similarity: number | null
           source_doc_id: string | null
@@ -474,6 +475,7 @@ export type Database = {
           brain_id: string
           created_at?: string | null
           decided_at?: string | null
+          dm_sent_at?: string | null
           id?: number
           similarity?: number | null
           source_doc_id?: string | null
@@ -490,6 +492,7 @@ export type Database = {
           brain_id?: string
           created_at?: string | null
           decided_at?: string | null
+          dm_sent_at?: string | null
           id?: number
           similarity?: number | null
           source_doc_id?: string | null
@@ -651,6 +654,7 @@ export type Database = {
           ingest_status: string
           participants: Json | null
           project_id: string | null
+          project_match_attempted_at: string | null
           source: string
           start_time: string | null
           transcript: string | null
@@ -668,6 +672,7 @@ export type Database = {
           ingest_status?: string
           participants?: Json | null
           project_id?: string | null
+          project_match_attempted_at?: string | null
           source?: string
           start_time?: string | null
           transcript?: string | null
@@ -685,6 +690,7 @@ export type Database = {
           ingest_status?: string
           participants?: Json | null
           project_id?: string | null
+          project_match_attempted_at?: string | null
           source?: string
           start_time?: string | null
           transcript?: string | null
@@ -820,6 +826,24 @@ export type Database = {
           },
         ]
       }
+      conversation_state: {
+        Row: {
+          key: string
+          state: Json
+          updated_at: string
+        }
+        Insert: {
+          key: string
+          state: Json
+          updated_at?: string
+        }
+        Update: {
+          key?: string
+          state?: Json
+          updated_at?: string
+        }
+        Relationships: []
+      }
       daily_hours_checkins: {
         Row: {
           candidate_projects: Json | null
@@ -828,6 +852,7 @@ export type Database = {
           dm_channel_id: string | null
           dm_ts: string | null
           error_message: string | null
+          harvest_entry_ids: Json | null
           id: string
           logged_at: string | null
           nudged_at: string | null
@@ -846,6 +871,7 @@ export type Database = {
           dm_channel_id?: string | null
           dm_ts?: string | null
           error_message?: string | null
+          harvest_entry_ids?: Json | null
           id?: string
           logged_at?: string | null
           nudged_at?: string | null
@@ -864,6 +890,7 @@ export type Database = {
           dm_channel_id?: string | null
           dm_ts?: string | null
           error_message?: string | null
+          harvest_entry_ids?: Json | null
           id?: string
           logged_at?: string | null
           nudged_at?: string | null
@@ -1044,6 +1071,7 @@ export type Database = {
           updated_at: string
           video_bitrate: string | null
           video_codec: string
+          video_filters: string | null
         }
         Insert: {
           archived?: boolean
@@ -1079,6 +1107,7 @@ export type Database = {
           updated_at?: string
           video_bitrate?: string | null
           video_codec?: string
+          video_filters?: string | null
         }
         Update: {
           archived?: boolean
@@ -1114,6 +1143,40 @@ export type Database = {
           updated_at?: string
           video_bitrate?: string | null
           video_codec?: string
+          video_filters?: string | null
+        }
+        Relationships: []
+      }
+      delivery_spec_intake: {
+        Row: {
+          channel_id: string
+          consumed_at: string | null
+          created_at: string
+          id: string
+          output_dir: string | null
+          sources: Json
+          status: string
+          thread_ts: string
+        }
+        Insert: {
+          channel_id: string
+          consumed_at?: string | null
+          created_at?: string
+          id?: string
+          output_dir?: string | null
+          sources?: Json
+          status?: string
+          thread_ts: string
+        }
+        Update: {
+          channel_id?: string
+          consumed_at?: string | null
+          created_at?: string
+          id?: string
+          output_dir?: string | null
+          sources?: Json
+          status?: string
+          thread_ts?: string
         }
         Relationships: []
       }
@@ -1187,35 +1250,6 @@ export type Database = {
           updated_at?: string
         }
         Relationships: []
-      }
-      project_settings: {
-        Row: {
-          frameio_upload_enabled: boolean
-          project_id: string
-          updated_at: string
-          updated_by: string | null
-        }
-        Insert: {
-          frameio_upload_enabled?: boolean
-          project_id: string
-          updated_at?: string
-          updated_by?: string | null
-        }
-        Update: {
-          frameio_upload_enabled?: boolean
-          project_id?: string
-          updated_at?: string
-          updated_by?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "project_settings_project_id_fkey"
-            columns: ["project_id"]
-            isOneToOne: true
-            referencedRelation: "projects"
-            referencedColumns: ["id"]
-          },
-        ]
       }
       edit_decisions: {
         Row: {
@@ -1529,6 +1563,7 @@ export type Database = {
       freelancer_onboardings: {
         Row: {
           artist_email: string
+          artist_legal_name: string | null
           artist_name: string | null
           artist_slack_user_id: string | null
           artist_staff_id: string | null
@@ -1540,6 +1575,9 @@ export type Database = {
           harvest_error: string | null
           harvest_status: string | null
           id: string
+          nda_error: string | null
+          nda_sent_at: string | null
+          nda_status: string | null
           project_id: string | null
           requested_by_slack_user_id: string
           slack_error: string | null
@@ -1550,6 +1588,7 @@ export type Database = {
         }
         Insert: {
           artist_email: string
+          artist_legal_name?: string | null
           artist_name?: string | null
           artist_slack_user_id?: string | null
           artist_staff_id?: string | null
@@ -1561,6 +1600,9 @@ export type Database = {
           harvest_error?: string | null
           harvest_status?: string | null
           id?: string
+          nda_error?: string | null
+          nda_sent_at?: string | null
+          nda_status?: string | null
           project_id?: string | null
           requested_by_slack_user_id: string
           slack_error?: string | null
@@ -1571,6 +1613,7 @@ export type Database = {
         }
         Update: {
           artist_email?: string
+          artist_legal_name?: string | null
           artist_name?: string | null
           artist_slack_user_id?: string | null
           artist_staff_id?: string | null
@@ -1582,6 +1625,9 @@ export type Database = {
           harvest_error?: string | null
           harvest_status?: string | null
           id?: string
+          nda_error?: string | null
+          nda_sent_at?: string | null
+          nda_status?: string | null
           project_id?: string | null
           requested_by_slack_user_id?: string
           slack_error?: string | null
@@ -1606,6 +1652,42 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      freelancer_paperwork: {
+        Row: {
+          created_at: string
+          email: string
+          last_onboarding_id: string | null
+          legal_name: string | null
+          nda_completed_at: string | null
+          nda_completed_by: string | null
+          nda_sent_at: string | null
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          email: string
+          last_onboarding_id?: string | null
+          legal_name?: string | null
+          nda_completed_at?: string | null
+          nda_completed_by?: string | null
+          nda_sent_at?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          email?: string
+          last_onboarding_id?: string | null
+          legal_name?: string | null
+          nda_completed_at?: string | null
+          nda_completed_by?: string | null
+          nda_sent_at?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Relationships: []
       }
       gates: {
         Row: {
@@ -1836,6 +1918,53 @@ export type Database = {
             columns: ["workspace_id"]
             isOneToOne: false
             referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      hours_missing_alerts: {
+        Row: {
+          alert_channel_id: string | null
+          alert_ts: string | null
+          created_at: string
+          id: string
+          last_logged_date: string | null
+          missing_dates: Json
+          slack_user_id: string | null
+          staff_id: string
+          streak_days: number
+          streak_start_date: string
+        }
+        Insert: {
+          alert_channel_id?: string | null
+          alert_ts?: string | null
+          created_at?: string
+          id?: string
+          last_logged_date?: string | null
+          missing_dates?: Json
+          slack_user_id?: string | null
+          staff_id: string
+          streak_days: number
+          streak_start_date: string
+        }
+        Update: {
+          alert_channel_id?: string | null
+          alert_ts?: string | null
+          created_at?: string
+          id?: string
+          last_logged_date?: string | null
+          missing_dates?: Json
+          slack_user_id?: string | null
+          staff_id?: string
+          streak_days?: number
+          streak_start_date?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "hours_missing_alerts_staff_id_fkey"
+            columns: ["staff_id"]
+            isOneToOne: false
+            referencedRelation: "staff"
             referencedColumns: ["id"]
           },
         ]
@@ -2091,6 +2220,8 @@ export type Database = {
           id: string
           meeting_start_time: string | null
           meeting_title: string | null
+          meeting_type: string
+          notified_user_ids: Json | null
           producer_dm_ts: string | null
           project_id: string | null
           slack_channel_id: string | null
@@ -2109,6 +2240,8 @@ export type Database = {
           id?: string
           meeting_start_time?: string | null
           meeting_title?: string | null
+          meeting_type?: string
+          notified_user_ids?: Json | null
           producer_dm_ts?: string | null
           project_id?: string | null
           slack_channel_id?: string | null
@@ -2127,6 +2260,8 @@ export type Database = {
           id?: string
           meeting_start_time?: string | null
           meeting_title?: string | null
+          meeting_type?: string
+          notified_user_ids?: Json | null
           producer_dm_ts?: string | null
           project_id?: string | null
           slack_channel_id?: string | null
@@ -2611,6 +2746,35 @@ export type Database = {
           },
         ]
       }
+      project_settings: {
+        Row: {
+          frameio_upload_enabled: boolean
+          project_id: string
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          frameio_upload_enabled?: boolean
+          project_id: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          frameio_upload_enabled?: boolean
+          project_id?: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "project_settings_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: true
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       projects: {
         Row: {
           brief_summary: string | null
@@ -2714,25 +2878,45 @@ export type Database = {
       }
       render_jobs: {
         Row: {
+          ae_comp: string | null
+          ae_is_movie: boolean
+          ae_output_dir: string | null
+          ae_output_module_template: string | null
+          ae_output_pattern: string | null
+          ae_project_path: string | null
+          ae_render_settings_template: string | null
+          ae_rqindex: number | null
+          aerender_command: string | null
+          chunk_count: number | null
+          chunk_index: number | null
           claimed_at: string | null
           claimed_by: string | null
           completed_at: string | null
           created_at: string
+          deadline_jobs: Json | null
+          delivery_profile_id: string | null
           duration_seconds: number | null
           error_message: string | null
           ffmpeg_command: string | null
+          frame_end: number | null
+          frame_rate: string | null
+          frame_start: number | null
           id: string
+          job_type: string
           max_retries: number
           naming_fields: Json | null
           output_filename: string | null
           output_path: string | null
           output_size_bytes: number | null
+          parent_job_id: string | null
           processing_started_at: string | null
           profile_id: string | null
           profile_snapshot: Json | null
           progress_message: string | null
           progress_percent: number | null
           qc_checklist_status: Json | null
+          render_backend: string
+          render_queue: Json | null
           requested_by: string
           retry_count: number
           slack_channel: string | null
@@ -2742,28 +2926,49 @@ export type Database = {
           slack_thread_ts: string | null
           source_files: Json
           status: string
+          total_frames: number | null
           updated_at: string
         }
         Insert: {
+          ae_comp?: string | null
+          ae_is_movie?: boolean
+          ae_output_dir?: string | null
+          ae_output_module_template?: string | null
+          ae_output_pattern?: string | null
+          ae_project_path?: string | null
+          ae_render_settings_template?: string | null
+          ae_rqindex?: number | null
+          aerender_command?: string | null
+          chunk_count?: number | null
+          chunk_index?: number | null
           claimed_at?: string | null
           claimed_by?: string | null
           completed_at?: string | null
           created_at?: string
+          deadline_jobs?: Json | null
+          delivery_profile_id?: string | null
           duration_seconds?: number | null
           error_message?: string | null
           ffmpeg_command?: string | null
+          frame_end?: number | null
+          frame_rate?: string | null
+          frame_start?: number | null
           id?: string
+          job_type?: string
           max_retries?: number
           naming_fields?: Json | null
           output_filename?: string | null
           output_path?: string | null
           output_size_bytes?: number | null
+          parent_job_id?: string | null
           processing_started_at?: string | null
           profile_id?: string | null
           profile_snapshot?: Json | null
           progress_message?: string | null
           progress_percent?: number | null
           qc_checklist_status?: Json | null
+          render_backend?: string
+          render_queue?: Json | null
           requested_by: string
           retry_count?: number
           slack_channel?: string | null
@@ -2773,28 +2978,49 @@ export type Database = {
           slack_thread_ts?: string | null
           source_files: Json
           status?: string
+          total_frames?: number | null
           updated_at?: string
         }
         Update: {
+          ae_comp?: string | null
+          ae_is_movie?: boolean
+          ae_output_dir?: string | null
+          ae_output_module_template?: string | null
+          ae_output_pattern?: string | null
+          ae_project_path?: string | null
+          ae_render_settings_template?: string | null
+          ae_rqindex?: number | null
+          aerender_command?: string | null
+          chunk_count?: number | null
+          chunk_index?: number | null
           claimed_at?: string | null
           claimed_by?: string | null
           completed_at?: string | null
           created_at?: string
+          deadline_jobs?: Json | null
+          delivery_profile_id?: string | null
           duration_seconds?: number | null
           error_message?: string | null
           ffmpeg_command?: string | null
+          frame_end?: number | null
+          frame_rate?: string | null
+          frame_start?: number | null
           id?: string
+          job_type?: string
           max_retries?: number
           naming_fields?: Json | null
           output_filename?: string | null
           output_path?: string | null
           output_size_bytes?: number | null
+          parent_job_id?: string | null
           processing_started_at?: string | null
           profile_id?: string | null
           profile_snapshot?: Json | null
           progress_message?: string | null
           progress_percent?: number | null
           qc_checklist_status?: Json | null
+          render_backend?: string
+          render_queue?: Json | null
           requested_by?: string
           retry_count?: number
           slack_channel?: string | null
@@ -2804,9 +3030,24 @@ export type Database = {
           slack_thread_ts?: string | null
           source_files?: Json
           status?: string
+          total_frames?: number | null
           updated_at?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "render_jobs_delivery_profile_id_fkey"
+            columns: ["delivery_profile_id"]
+            isOneToOne: false
+            referencedRelation: "delivery_profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "render_jobs_parent_job_id_fkey"
+            columns: ["parent_job_id"]
+            isOneToOne: false
+            referencedRelation: "render_jobs"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "render_jobs_profile_id_fkey"
             columns: ["profile_id"]
@@ -2818,6 +3059,9 @@ export type Database = {
       }
       render_workers: {
         Row: {
+          ae_capable: boolean
+          ae_version: string | null
+          aerender_path: string | null
           cpu_threshold: number
           cpu_usage_percent: number | null
           current_job_id: string | null
@@ -2841,6 +3085,9 @@ export type Database = {
           status: string
         }
         Insert: {
+          ae_capable?: boolean
+          ae_version?: string | null
+          aerender_path?: string | null
           cpu_threshold?: number
           cpu_usage_percent?: number | null
           current_job_id?: string | null
@@ -2864,6 +3111,9 @@ export type Database = {
           status?: string
         }
         Update: {
+          ae_capable?: boolean
+          ae_version?: string | null
+          aerender_path?: string | null
           cpu_threshold?: number
           cpu_usage_percent?: number | null
           current_job_id?: string | null
@@ -3096,8 +3346,11 @@ export type Database = {
       }
       staff: {
         Row: {
+          briefing_channel_id: string | null
           created_at: string
+          daily_checkin: boolean
           email: string | null
+          email_aliases: string[]
           employment_type: string | null
           frameio_user_id: string | null
           full_name: string | null
@@ -3106,11 +3359,15 @@ export type Database = {
           is_active: boolean
           role: string | null
           slack_user_id: string
+          timezone: string | null
           updated_at: string
         }
         Insert: {
+          briefing_channel_id?: string | null
           created_at?: string
+          daily_checkin?: boolean
           email?: string | null
+          email_aliases?: string[]
           employment_type?: string | null
           frameio_user_id?: string | null
           full_name?: string | null
@@ -3119,11 +3376,15 @@ export type Database = {
           is_active?: boolean
           role?: string | null
           slack_user_id: string
+          timezone?: string | null
           updated_at?: string
         }
         Update: {
+          briefing_channel_id?: string | null
           created_at?: string
+          daily_checkin?: boolean
           email?: string | null
+          email_aliases?: string[]
           employment_type?: string | null
           frameio_user_id?: string | null
           full_name?: string | null
@@ -3132,6 +3393,7 @@ export type Database = {
           is_active?: boolean
           role?: string | null
           slack_user_id?: string
+          timezone?: string | null
           updated_at?: string
         }
         Relationships: []
