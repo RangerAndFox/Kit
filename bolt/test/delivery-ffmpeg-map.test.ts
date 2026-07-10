@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 
-import { buildFFmpegArgs } from '../../src/lib/delivery/ffmpeg-builder'
+import { buildFFmpegArgs } from '../../kit-render-worker/src/ffmpeg/command-builder'
 
 // Minimal profile: stereo, no loudnorm, so we only exercise the mapping logic.
 const baseProfile: any = {

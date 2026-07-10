@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 
-import { parseFFmpegProgress } from '../../src/lib/delivery/progress-parser'
-import { parseLoudnessJson } from '../../src/lib/delivery/loudness-parser'
+import { parseFFmpegProgress } from '../../kit-render-worker/src/ffmpeg/progress-parser'
+import { parseLoudnessJson } from '../../kit-render-worker/src/ffmpeg/loudness-parser'
 
 describe('parseFFmpegProgress', () => {
   const line =
