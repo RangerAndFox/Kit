@@ -320,13 +320,13 @@ cron.schedule(
 )
 
 // ─── Cron: weekly timesheet meme ───────────────────────────
-// Monday 9am local — a meme about filling out timesheets, posted to the
+// Friday 9am local — a meme about filling out timesheets, posted to the
 // full-team channel with an @channel mention. A different template each week.
 // Requires KIT_TEAM_CHANNEL_ID; IMGFLIP_USERNAME/PASSWORD enable rendered
 // images (otherwise a text meme is posted).
 
 cron.schedule(
-  '0 9 * * 1',
+  '0 9 * * 5',
   () => {
     if (!process.env.KIT_TEAM_CHANNEL_ID) return
     import('./memes/timesheet-meme')
