@@ -1,130 +1,73 @@
-# Kit — Session Handoff (2026-07-09)
+# Kit — Session Handoff (current)
 
-Pick-up notes for continuing this work in another session. Everything below
-was built/merged this session on branch `claude/laughing-ride-htu0dx`
-(each PR merged to `main`, branch reset onto `main` after each).
+Pick-up notes reflecting the current state of Kit. Supersedes the earlier
+time-tracking-only handoff (that work is all done + merged). For the AE render
+farm specifically, see `AE-RENDER-FARM-HANDOFF.md`.
 
----
-
-## TL;DR — what to do next
-
-1. **Deploy settle**: Railway (bolt) + Vercel (Inngest) auto-deploy from `main`.
-   Latest merge is PR #81. Give ~2 min after any merge.
-2. **Run the time backfill** (admin, in Slack):
-   - `/kit backfill-time` → preview (writes nothing)
-   - `/kit backfill-time run` → logs confirmable back-times to Harvest, reports entry #s
-3. **Decisions still open** (see "Open decisions" below):
-   - Brown's **7/6**: Ignite (2609) vs Meera (2611)? Backfill currently logs **Ignite**.
-   - Ted's **internal** time (7/6, 7/7): create an "Internal" Harvest project, then re-run backfill.
-4. **Clear the slate**: after backfill + internal fix, ask to wipe remaining stale
-   `parsed`/`sent` check-in rows so everyone starts clean.
+Work is on branch `claude/laughing-ride-htu0dx`, PR'd → squash-merged to `main`
+(deploys: Railway = bolt, Vercel = Inngest). Supabase project `ozsxrcgrezpffnpwlrnq`.
 
 ---
 
-## Time-tracking (Harvest) — current state
+## What's LIVE and verified
 
-**The full loop works now, verified end-to-end.** Steve's 7/8 check-in logged for
-real: Harvest entries **#2965170441** (1h Magic Quadrant) + **#2965170442**
-(0.5h Azure Gov).
+- **Time tracking** — daily per-person-timezone check-ins, multi-day replies,
+  ad-hoc logging, missing-time monitor. 6/8 active staff mapped + on check-ins
+  (2 intentionally off). `/kit backfill-time` and `/kit sync-staff` exist.
+- **Meeting transcripts** — Google Drive ingest (Zapier drops Plaud transcripts;
+  Kit ingests every 15 min). ~25 flowing. The dead Plaud-API path was removed.
+- **Conversational Q&A** — @mention/DM orchestrator; project/codename resolution
+  (keyword → project, incl. Harvest-only internal projects); Frame.io links;
+  in-thread replies stay in-thread.
+- **Provisioning** — `/kit newproject` fans out to Slack/Dropbox/Harvest/Frame.io.
+- **Caption QC** — SRTs in the accessibility folder auto-generate TTML/VTT/TXT
+  **and** get a proofread report (✅/❌) in the project channel.
+- **Weekly timesheet meme** — Friday 9am, @channel, rotating templates (imgflip).
+- **Founder DM access** — Steve + Jared have `team_members` rows (`role='admin'`)
+  → admin tier → full knowledge base (budgets, all projects) in their DMs.
+- Both `src` and `bolt` typecheck clean; bolt suite green.
 
-### What was broken and fixed this session
-- **Silent confirm failure (root cause)**: the confirm handler claims the row with
-  `status='logging'`, but that value was never in the `daily_hours_checkins` status
-  CHECK constraint. Postgres rejected the claim; code mistook it for a lost race and
-  returned silently. **Every** confirm (button + typed yes) died there. Fixed:
-  migration `048_checkin_logging_status.sql` (applied to prod). Claim errors are now
-  loud (logged + user-visible).
-- **Wrong-day entries**: ad-hoc logging defaulted `spent_date` to UTC "today" → at
-  5pm PT that's already tomorrow. Fixed: `src/lib/time/studio-date.ts` +
-  per-person timezone (below).
-- **Ad-hoc misattribution**: `logTime` never passed `user_id` → entries booked to the
-  API-token owner. Fixed: logger's `harvest_user_id` now rides along (`staffProfile`).
-- **Fuzzy project matching**: `searchProjects` required the whole query as a literal
-  substring, so "Crunchy roll", "2611_MSFT_AI-in-Meetings", "2611" failed. Rewritten
-  in `src/lib/harvest/search.ts` (scores code/client/name, separator-insensitive,
-  single dominant winner auto-selects else candidates).
-- **Assignment friction**: Harvest rejects entries for users not assigned to a project.
-  Now: provisioning assigns whole team; `/kit sync-staff` backfills all active projects;
-  `createTimeEntry` self-heals (assign + retry) on the not-assigned error.
-- **Confirmation is verifiable**: success message cites the Harvest entry id
-  ("… — Harvest #12345"); ids stored on the row (migration `049_checkin_harvest_entry_ids`).
-- **Buttons vs typed**: Slack block_actions were unreliable during churn; typed
-  `yes`/`redo` is the reliable path (buttons remain wired). Check-in card posts FLAT
-  in the DM (not threaded).
+## SET UP but not yet exercised
 
-### Ted & Brown — record as of handoff (NONE logged to Harvest yet)
+- **AE render farm** — runs on the studio Deadline farm (`RENDER_BACKEND=deadline`;
+  `kit-deadline-relay` on AC-Slater; group `kit_ae`; KitAfterEffects plugin).
+  `render_jobs` is still empty — no live render yet. Test procedure + the
+  unverified bits (OM settings shape in AE 2026, Deadline status parsing) are in
+  `AE-RENDER-FARM-HANDOFF.md`.
 
-Ted (harvest_user_id 5688485):
-| Date | Hours | Said | Resolves | Status | Loggable? |
-|------|-------|------|----------|--------|-----------|
-| 7/2 | 8h | "AI in meetings" | AI in Meetings (Meera) 2611 | parsed | ✅ via backfill |
-| 7/6 | 8h | "internal" | — no project | parsed | ❌ needs Internal project |
-| 7/7 | 8h | "internal" | — no project | parsed | ❌ needs Internal project |
-| 7/8 | — | (no reply) | — | sent | — |
+## NOT yet installed (blocks these)
 
-Brown (harvest_user_id 5688483):
-| Date | Hours | Said | Resolves | Status | Loggable? |
-|------|-------|------|----------|--------|-----------|
-| 7/2 | — | (no reply) | — | sent | — |
-| 7/6 | 8h | "Ignite Video Updates" | Ignite 2609 | parsed | ⚠️ conflict (see below) |
-| 7/6 | 8h | "2611_MSFT_AI-in-Meetings" | Meera 2611 | parsed | ⚠️ conflict |
-| 7/7 | 8h | "meera" ×2 (dupe) | AI in Meetings (Meera) 2611 | parsed | ✅ backfill dedupes to 1 |
-| 7/8 | — | (no reply) | — | sent | — |
+- **`kit-render-worker`** isn't installed anywhere. Blocks the delivery/transcode
+  pipeline AND the AE "Add delivery specs" follow-up transcodes. Install on
+  AC-Slater (`install.ps1`, `DROPBOX_SYNC_PATH` = local `/production` root).
+  (AE *rendering* works via Deadline without it; *transcodes* need it.)
 
-`/kit backfill-time` logs only **fully-matched** rows, **dedupes** by
-(staff, date, project, hours), and is **idempotent** (only touches `parsed`).
+## Config flags to flip when wanted
 
----
+- **Brain scavenger** → `KIT_BRAIN_SCAVENGER_ENABLED=true` on **both** Railway
+  (dispatch) and Vercel (scan).
+- **Timesheet meme images** → `IMGFLIP_USERNAME`/`PASSWORD` + `KIT_TEAM_CHANNEL_ID`
+  (all set — meme is live).
 
-## Open decisions
+## Admin commands
 
-1. **Brown 7/6** — Ignite (2609) or Meera (2611)? Backfill as written logs the matched
-   Ignite row. If Meera is correct, fix before/after running.
-2. **Ted internal** — create "Internal" project in Harvest (under a "Ranger & Fox"
-   client). Then "internal" fuzzy-matches and a re-run of `/kit backfill-time run`
-   logs 7/6 + 7/7.
-3. **Clear the slate** — after the above, wipe remaining stale `parsed`/`sent` rows.
+`/kit sync-staff` · `/kit sync-projects` (Harvest→Supabase reconcile, preview →
+`run`) · `/kit backfill-time` · `/kit meme` · `/kit render` (+ `status`).
 
----
+## Open decisions / follow-ups
 
-## Everything else shipped this session (all merged)
+- **`creative_director` role** maps to `artist` tier (no budget visibility) —
+  probably should be `producer` for a studio. Awaiting a call.
+- **Inngest/Vercel** — confirm the cloud-side crons (briefings, delivery scans,
+  brain jobs, transcript ingest, studio-knowledge) are registered + firing; if
+  the Inngest↔Vercel sync ever breaks, they silently stop.
+- Data cleanup done this session: 232 projects (test junk + dupes removed),
+  transcript flow healthy.
 
-- **Per-person timezones** (PR #70): check-ins fire at 5pm in each person's Slack-profile
-  timezone (team spans PT/CT/ET); dates resolve on their local day. `staff.timezone`
-  (migration 047), hourly cron sweep, `/kit sync-staff` refreshes tz.
-- **Drive/Plaud transcripts** (PR #65): Zapier drops Plaud transcripts in a Google Drive
-  folder; `driveTranscriptScan` cron ingests → classify → embed. Live (Drive API had to
-  be enabled in GCP project `rf-kit-500717`; folder shared with
-  `kit-373@rf-kit-500717.iam.gserviceaccount.com`).
-- **Content-aware transcript→project matching** (PR #66): `matchTranscriptToProject`
-  reads transcript body; multi-project weeklies stay workspace-level. `<br>` sanitized.
-- **SRT → captions** (PRs #76, #78, #79): an `.srt` in `/Delivery-Queue/` OR a project
-  accessibility folder (`02_Accessibility Files`, any "accessibility" folder under
-  `/production/`) auto-generates TTML/VTT/TXT siblings, same basename. An `SRT` token in
-  the filename is rewritten to the format (`Spot_SRT.srt` → `Spot_TTML.ttml`).
-- **Per-project delivery routing** (PR #77): Delivery-Queue notifications post to the
-  project's own Slack channel (folder name → project). `DELIVERY_NOTIFY_CHANNEL_ID` is now
-  an optional fallback, not required.
-- **Caveman skill** (PR #73): `.claude/skills/caveman/SKILL.md` — response compression.
-  `.gitignore` narrowed to track `.claude/skills/`.
+## Notable this-session history
 
----
-
-## Deploy / ops facts
-
-- **Railway** runs bolt (Socket Mode + node-cron) from `main` via `bolt/Dockerfile`.
-- **Vercel** runs Next.js + all Inngest crons (`src/app/api/inngest/route.ts`).
-- **Supabase** project `ozsxrcgrezpffnpwlrnq` ("Kit"). Migrations 037–049 applied.
-- No Harvest/Supabase creds in the Cowork/remote env — Harvest writes must run on
-  Railway (i.e. via Slack commands), not from a session shell.
-- Workflow: develop on `claude/laughing-ride-htu0dx`, PR → squash-merge → reset branch
-  onto `main`. Commit trailer: `Co-Authored-By: Claude Opus 4.8` + `Claude-Session:` URL.
-- Tests: `cd bolt && npx vitest run` (267 passing) + `npx tsc --noEmit` in bolt and root.
-
----
-
-## Diagnostic logging left on (turn down later)
-
-Added `console.log` on the typed-confirm path (`[checkin]`, `[checkin-confirm]`) to
-diagnose the stuck confirm. Harmless but noisy in Railway — fold a removal into the
-next real change.
+Audit cleanup (~5,300 lines + 7 deps removed, root tsc 6→0 via regenerated
+Supabase types), multi-day check-ins, threading fix, project-codename/keyword
+resolution + `/kit sync-projects`, caption QC, timesheet meme, founder DM access
+hardening (`role='admin'` → admin tier), dead Plaud-API removal, and the
+project-table cleanup. All merged (PRs up through #99).

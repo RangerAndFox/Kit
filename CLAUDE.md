@@ -62,12 +62,19 @@ restarts no longer lose the rotation. Old v2 vars (`FRAMEIO_TOKEN`,
 ### 3. Dormant features awaiting data/setup (not code)
 - **Time tracking** (5pm check-in, missing-time monitor, ad-hoc logging):
   requires `staff.harvest_user_id` — run `/kit sync-staff` (admin) after
-  adding people to Harvest.
-- **Briefing "Last meeting" recap**: requires meeting transcripts flowing — a
-  Zapier zap drops Plaud transcripts into a Google Drive folder that Kit ingests
-  (`DRIVE_TRANSCRIPTS_ENABLED` + `DRIVE_TRANSCRIPTS_FOLDER_ID`). Plaud has no API.
-- **Delivery pipeline**: requires the render worker (kit-render-worker/)
-  installed on at least one studio PC.
+  adding people to Harvest. (LIVE — active staff are mapped + on check-ins.)
+- **Meeting transcripts**: LIVE. A Zapier zap drops Plaud transcripts into a
+  Google Drive folder Kit ingests every 15 min (`DRIVE_TRANSCRIPTS_ENABLED` +
+  `DRIVE_TRANSCRIPTS_FOLDER_ID` + `GOOGLE_SERVICE_ACCOUNT_JSON`, on Vercel).
+  Plaud has no API — the old Plaud-webhook code was removed.
+- **AE render farm**: SET UP on the studio's Deadline farm
+  (`RENDER_BACKEND=deadline`; `kit-deadline-relay` running on AC-Slater; group
+  `kit_ae` on all 8 nodes; KitAfterEffects plugin). Not yet fired a live render
+  — see `AE-RENDER-FARM-HANDOFF.md` for the test procedure + unverified bits.
+- **Delivery / transcode pipeline** (and the AE "Add delivery specs"
+  follow-up transcodes): still need `kit-render-worker/` installed on a studio
+  PC (AC-Slater; `install.ps1`, `DROPBOX_SYNC_PATH` = local `/production` root).
+  AE *rendering* works via Deadline without it; *transcodes* don't.
 
 ### 4. Slack App Configuration
 Verify these are set in the Slack app settings (api.slack.com):
