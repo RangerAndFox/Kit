@@ -104,10 +104,17 @@ describe('checkGateway — harvest', () => {
     assert.equal(checkGateway(artist(), 'harvest', 'get_team').allowed, false)
   })
 
-  it('budget requires producer + per-project financial flag', () => {
-    assert.equal(checkGateway(producer(), 'harvest', 'get_budget', 'proj-x').allowed, false)
+  it('budget: producer open at tier floor; per-project grants restrict only when configured', () => {
+    // Grants are an opt-in restriction layer. No grants configured → the
+    // producer tier floor governs (open). This matches checkGateway's
+    // documented semantics after the audit (the old flag was a silent no-op).
+    assert.equal(checkGateway(producer(), 'harvest', 'get_budget', 'proj-x').allowed, true)
+    // Grants configured → must include this project.
     assert.equal(checkGateway(producer(['proj-x']), 'harvest', 'get_budget', 'proj-x').allowed, true)
+    assert.equal(checkGateway(producer(['other-proj']), 'harvest', 'get_budget', 'proj-x').allowed, false)
+    // Admin always allowed; artist never.
     assert.equal(checkGateway(admin(), 'harvest', 'get_budget', 'proj-x').allowed, true)
+    assert.equal(checkGateway(artist(), 'harvest', 'get_budget', 'proj-x').allowed, false)
   })
 })
 

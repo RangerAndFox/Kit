@@ -46,6 +46,8 @@ export interface AccessCheck {
 
 const ROLE_TO_TIER: Record<string, AccessTier> = {
   founder: 'admin',
+  admin: 'admin',
+  owner: 'admin',
   producer: 'producer',
   artist: 'artist',
   freelancer: 'artist',
