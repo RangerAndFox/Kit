@@ -63,8 +63,9 @@ restarts no longer lose the rotation. Old v2 vars (`FRAMEIO_TOKEN`,
 - **Time tracking** (5pm check-in, missing-time monitor, ad-hoc logging):
   requires `staff.harvest_user_id` — run `/kit sync-staff` (admin) after
   adding people to Harvest.
-- **Briefing "Last meeting" recap**: requires Plaud transcripts flowing
-  (`PLAUD_INGEST_ENABLED`).
+- **Briefing "Last meeting" recap**: requires meeting transcripts flowing — a
+  Zapier zap drops Plaud transcripts into a Google Drive folder that Kit ingests
+  (`DRIVE_TRANSCRIPTS_ENABLED` + `DRIVE_TRANSCRIPTS_FOLDER_ID`). Plaud has no API.
 - **Delivery pipeline**: requires the render worker (kit-render-worker/)
   installed on at least one studio PC.
 

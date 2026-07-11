@@ -31,17 +31,14 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 
 ## Integrations
 
-### Plaud — meeting transcription
+### Meeting transcripts (Google Drive)
 
-Plaud (https://plaud.ai) sends transcription events to `POST /api/webhooks/plaud`. Setup:
+Plaud has no ingestion API. Instead, a Zapier zap drops each Plaud meeting transcript into a shared Google Drive folder, and Kit's `driveTranscriptScan` Inngest function ingests new files every 15 minutes (classify → embed → match to a project). Setup:
 
-1. Create a dev app in the Plaud developer console.
-2. Copy the webhook signing secret into `PLAUD_WEBHOOK_SECRET`.
-3. Copy the API token into `PLAUD_API_KEY`.
-4. Leave `PLAUD_INGEST_ENABLED=false` until you've verified a real recording produces a skeleton row in `call_transcripts`.
-5. Once verified, set `KIT_DEFAULT_WORKSPACE_ID` to a real Supabase `workspaces.id` value (this attributes Plaud-derived sessions to the right workspace; the function throws loudly if unset), then flip `PLAUD_INGEST_ENABLED=true` to enable transcript fetch + RAG ingest. Backfill any pending skeleton rows by re-firing their `transcription.completed` events from the Plaud console.
-
-Docs: https://docs.plaud.ai/
+1. Create a Google Cloud service account and put its JSON in `GOOGLE_SERVICE_ACCOUNT_JSON`.
+2. Share the watched Drive folder with the service account's email, and put the folder id in `DRIVE_TRANSCRIPTS_FOLDER_ID`.
+3. Set `KIT_DEFAULT_WORKSPACE_ID` to a real Supabase `workspaces.id`.
+4. Flip `DRIVE_TRANSCRIPTS_ENABLED=true`.
 
 ### Pre-meeting briefings (Google Calendar)
 
