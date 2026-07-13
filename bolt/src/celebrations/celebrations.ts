@@ -66,33 +66,34 @@ export function nextOccurrence(mm: number, dd: number, today: string): string {
 
 // ─── DB + post ─────────────────────────────────────────────────
 
-export async function setStaffBirthday(slackUserId: string, mmdd: string): Promise<boolean> {
+/** Set/replace a team member's birthday. Any Slack user — not staff-gated. */
+export async function setBirthday(slackUserId: string, mmdd: string, fullName?: string, createdBy?: string): Promise<boolean> {
   const { error } = await createAdminClient()
-    .from('staff')
-    .update({ birthday: mmdd })
-    .eq('slack_user_id', slackUserId)
-  if (error) { console.warn(`[celebrations] setStaffBirthday: ${error.message}`); return false }
+    .from('birthdays')
+    .upsert(
+      { slack_user_id: slackUserId, month_day: mmdd, full_name: fullName || null, created_by: createdBy || null },
+      { onConflict: 'slack_user_id' },
+    )
+  if (error) { console.warn(`[celebrations] setBirthday: ${error.message}`); return false }
   return true
 }
 
-/** Post a birthday meme for each active staffer whose birthday is today. */
+/** Post a birthday meme for each team member whose birthday is today. */
 export async function postBirthdayMemes(app: App): Promise<number> {
   const channel = teamChannel()
   if (!channel) return 0
   const todayMd = monthDay(checkinToday())
   const { data } = await createAdminClient()
-    .from('staff')
-    .select('slack_user_id, full_name, birthday, is_active')
-    .eq('is_active', true)
-    .not('birthday', 'is', null)
+    .from('birthdays')
+    .select('slack_user_id, full_name, month_day')
   let posted = 0
-  for (const s of data || []) {
-    if (!birthdayIsToday(s.birthday, todayMd)) continue
-    const who = s.slack_user_id ? `<@${s.slack_user_id}>` : s.full_name || 'a teammate'
+  for (const b of data || []) {
+    if (!birthdayIsToday(b.month_day, todayMd)) continue
+    const who = b.slack_user_id ? `<@${b.slack_user_id}>` : b.full_name || 'a teammate'
     await postMeme(app, {
       channel,
       headline: `:birthday: *Happy birthday, ${who}!*`,
-      briefing: `It's ${s.full_name || 'a teammate'}'s birthday today at the studio.`,
+      briefing: `It's ${b.full_name || 'a teammate'}'s birthday today at the studio.`,
       altText: 'birthday meme',
     }).catch((e) => console.warn(`[celebrations] birthday post failed: ${e?.message || e}`))
     posted++

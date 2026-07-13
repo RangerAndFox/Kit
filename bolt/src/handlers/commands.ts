@@ -343,19 +343,27 @@ export function registerCommandHandlers(app: App) {
         await ack()
         const raw = (args || '').trim()
         const mention = raw.match(/<@([A-Z0-9]+)(?:\|[^>]+)?>/)
-        const { parseBirthday, setStaffBirthday } = await import('../celebrations/celebrations')
+        const { parseBirthday, setBirthday } = await import('../celebrations/celebrations')
         const dateTok = raw.replace(/<@[^>]+>/, '').trim().split(/\s+/).find((t) => /^\d{1,2}[-/]\d{1,2}$/.test(t))
         const mmdd = dateTok ? parseBirthday(dateTok) : null
         if (!mention || !mmdd) {
-          await respond({ response_type: 'ephemeral', text: 'Usage: `/kit birthday @person 03-14` (month-day).' })
+          await respond({
+            response_type: 'ephemeral',
+            text: 'Usage: `/kit birthday @person 03-14` (month-day). Pick the person from autocomplete so it becomes a blue @mention.',
+          })
           break
         }
-        const ok = await setStaffBirthday(mention[1], mmdd)
+        let fullName: string | undefined
+        try {
+          const info = await client.users.info({ user: mention[1] })
+          fullName = info.user?.real_name || info.user?.profile?.real_name || info.user?.name || undefined
+        } catch { /* name is best-effort */ }
+        const ok = await setBirthday(mention[1], mmdd, fullName, command.user_id)
         await respond({
           response_type: 'ephemeral',
           text: ok
-            ? `:birthday: Saved <@${mention[1]}>'s birthday as ${mmdd}. Kit will post a meme on the day.`
-            : `:warning: Couldn't save — is <@${mention[1]}> in the staff directory? (try \`/kit sync-staff\`)`,
+            ? `:birthday: Saved <@${mention[1]}>'s birthday as ${mmdd}. Kit posts a meme in the team channel on the day.`
+            : ":warning: Couldn't save that birthday — try again in a moment.",
         })
         break
       }
