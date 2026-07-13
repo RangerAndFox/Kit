@@ -25,7 +25,7 @@ import { checkinToday, resolveSpentDate, resolveDayPhrase } from './date'
  * an LLM call on every DM. Matches "4h", "2.5 hrs", "3 hours", "half hour".
  */
 const HOURS_RE =
-  /\b(?:\d+(?:\.\d+)?\s*(?:h|hr|hrs|hour|hours)|half\s*(?:an?\s+)?(?:hour|hr)|quarter\s*(?:of\s+an?\s+)?(?:hour|hr))\b/i
+  /\b(?:\d+(?:\.\d+)?\s*(?:h|hr|hrs|hour|hours|m|min|mins|minute|minutes)|half\s*(?:an?\s+)?(?:hour|hr)|quarter\s*(?:of\s+an?\s+)?(?:hour|hr))\b/i
 
 export function looksLikeHoursIntent(text: string): boolean {
   return HOURS_RE.test(text)

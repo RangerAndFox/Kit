@@ -24,6 +24,7 @@ import { BOORDS_SYSTEM_PROMPT } from './prompts/boords-system'
 import { STUDIO_KNOWLEDGE_SYSTEM_PROMPT } from './prompts/studio-knowledge-system'
 import { DELIVERY_SYSTEM_PROMPT } from './prompts/delivery-system'
 import { BRAIN_SYSTEM_PROMPT } from './prompts/brain-system'
+import { currentDateLine } from './date-context'
 
 const SYSTEM_PROMPTS: Record<string, string> = {
   harvest: HARVEST_SYSTEM_PROMPT,
@@ -69,6 +70,8 @@ export async function runSpecialist(
           text: systemPrompt,
           cache_control: { type: 'ephemeral' },
         },
+        // Uncached (changes daily) so the static prompt above stays cacheable.
+        { type: 'text', text: currentDateLine() },
       ],
       tools: tools as any,
       messages: messages as any,

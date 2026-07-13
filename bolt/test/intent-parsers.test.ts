@@ -2,6 +2,26 @@ import { describe, it, expect } from 'vitest'
 
 import { parseRoleIntent } from '../src/roles/keyword'
 import { parseFrameioToggleIntent } from '../src/delivery/frameio-toggle'
+import { looksLikeHoursIntent } from '../src/checkins/adhoc'
+
+describe('looksLikeHoursIntent (ad-hoc hours pre-filter)', () => {
+  it('matches hour phrasings', () => {
+    for (const t of ['log 4h on Rayfin', '2.5 hours on IQ', 'half an hour on X', 'quarter hour on Y']) {
+      expect(looksLikeHoursIntent(t)).toBe(true)
+    }
+  })
+
+  it('matches minute phrasings (regression: "30 mins" used to fall through)', () => {
+    for (const t of ['Log 30 mins to 2626 last Thursday', 'spent 45 min on Acme', 'log 15 minutes on X', '90m on Y']) {
+      expect(looksLikeHoursIntent(t)).toBe(true)
+    }
+  })
+
+  it('does not false-match a bare "m" inside a word', () => {
+    expect(looksLikeHoursIntent('5 monkeys walked in')).toBe(false)
+    expect(looksLikeHoursIntent('what is the frame.io link')).toBe(false)
+  })
+})
 
 describe('parseRoleIntent (structural matching)', () => {
   it('matches explicit role-set phrasings', () => {

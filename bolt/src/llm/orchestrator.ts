@@ -17,6 +17,7 @@ import { anthropic, ORCHESTRATOR_MODEL } from './client'
 import { buildOrchestratorTools } from './tools'
 import { runSpecialist } from './specialist'
 import { KIT_SYSTEM_PROMPT } from './prompts/kit-system'
+import { currentDateLine } from './date-context'
 import {
   loadConversation,
   appendUserTurn,
@@ -80,6 +81,8 @@ export async function runOrchestrator(
           text: KIT_SYSTEM_PROMPT,
           cache_control: { type: 'ephemeral' },
         },
+        // Uncached (changes daily) so the static prompt above stays cacheable.
+        { type: 'text', text: currentDateLine() },
       ],
       tools: tools as any,
       messages: messages as any,

@@ -48,7 +48,10 @@ describe('loadNdaPdf', () => {
   })
 
   it('reads the committed individual NDA path', () => {
-    expect(NDA_PDF_PATH).toContain('assets/nda/RF_One_Way_Individual_NDA.pdf')
+    // Normalize separators so the assertion holds on Windows too.
+    expect(NDA_PDF_PATH.replace(/\\/g, '/')).toContain(
+      'assets/nda/RF_One_Way_Individual_NDA.pdf',
+    )
   })
 })
 
@@ -100,7 +103,8 @@ describe('fillCompanyNdaDocx', () => {
   })
 
   it('reads the committed company template path', () => {
-    expect(NDA_COMPANY_TEMPLATE_PATH).toContain(
+    // Normalize separators so the assertion holds on Windows too.
+    expect(NDA_COMPANY_TEMPLATE_PATH.replace(/\\/g, '/')).toContain(
       'assets/nda/RF_One_Way_Company_NDA.template.docx',
     )
   })
