@@ -27,6 +27,7 @@ import {
 } from '@/lib/integrations/drive-transcripts'
 import { matchTranscriptToProject } from '@/lib/agent/call-classifier'
 import { embedTranscript } from '@/lib/studio-knowledge/transcript'
+import { recordCronSuccess } from '@/lib/health/state'
 
 const MAX_PER_RUN = 10
 
@@ -38,6 +39,10 @@ export const driveTranscriptScan = inngest.createFunction(
     triggers: [{ cron: '*/15 * * * *' }],
   },
   async ({ step }) => {
+    await step.run('heartbeat', async () => {
+      try { await recordCronSuccess('drive-transcript-scan') } catch {}
+      return true
+    })
     if (!driveTranscriptsEnabled()) {
       return { skipped: true, reason: 'DRIVE_TRANSCRIPTS_ENABLED is false' }
     }

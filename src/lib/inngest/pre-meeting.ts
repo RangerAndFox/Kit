@@ -20,6 +20,7 @@ import { classifyMeeting } from '@/lib/agent/meeting-classifier'
 import { composeBriefing } from '@/lib/agent/briefing-composer'
 import { composeBizdevBriefing, hasBizdevAttendee } from '@/lib/agent/bizdev-briefing'
 import { resolvePersonalBriefingChannel } from '@/lib/agent/briefing-channel'
+import { recordCronSuccess } from '@/lib/health/state'
 
 const SLACK_API = 'https://slack.com/api'
 
@@ -82,6 +83,10 @@ export const preMeetingScan = inngest.createFunction(
     triggers: [{ cron: '*/15 * * * *' }],
   },
   async ({ step, logger }) => {
+    await step.run('heartbeat', async () => {
+      try { await recordCronSuccess('pre-meeting-scan') } catch {}
+      return true
+    })
     if (!ingestEnabled()) {
       return { skipped: true, reason: 'GOOGLE_CALENDAR_INGEST_ENABLED is false' }
     }

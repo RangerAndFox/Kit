@@ -31,6 +31,7 @@ import { pairSpecsFiles } from '../delivery/pairing'
 import { progressBar } from '../delivery/progress-bar'
 import { resetStaleJobs } from '../delivery/storage'
 import { recordSpecIntake } from '../delivery/spec-intake-store'
+import { recordCronSuccess } from '../health/state'
 
 const SLACK_API = 'https://slack.com/api'
 const DEFAULT_NOTIFY_CHANNEL = process.env.DELIVERY_NOTIFY_CHANNEL_ID || ''
@@ -91,6 +92,10 @@ export const deliveryDropboxScan = inngest.createFunction(
     triggers: [{ cron: '*/1 * * * *' }], // every minute (Inngest min granularity)
   },
   async ({ step, logger }) => {
+    await step.run('heartbeat', async () => {
+      try { await recordCronSuccess('delivery-dropbox-scan') } catch {}
+      return true
+    })
     if (!process.env.DROPBOX_ACCESS_TOKEN && !process.env.DROPBOX_REFRESH_TOKEN) {
       return { skipped: 'no_dropbox_token' }
     }
@@ -212,6 +217,10 @@ export const deliverySpecsScan = inngest.createFunction(
     triggers: [{ cron: '*/1 * * * *' }],
   },
   async ({ step }) => {
+    await step.run('heartbeat', async () => {
+      try { await recordCronSuccess('delivery-specs-scan') } catch {}
+      return true
+    })
     if (!process.env.DROPBOX_ACCESS_TOKEN && !process.env.DROPBOX_REFRESH_TOKEN) {
       return { skipped: 'no_dropbox_token' }
     }
