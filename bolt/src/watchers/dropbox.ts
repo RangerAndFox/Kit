@@ -299,6 +299,16 @@ async function processDeltasOnce(app: App): Promise<void> {
         subfolder,
         year,
       })
+      // Celebrate a real delivery (02_Delivery only) with a meme in the team
+      // channel — one per project per day (deduped downstream). Fire-and-forget
+      // so it can never slow or break the delivery mirror.
+      if (/02_Delivery/i.test(subfolder)) {
+        const projectName =
+          safeName.replace(/^\d+[A-Za-z]?[_-]/, '').replace(/[_-]+/g, ' ').trim() || safeName
+        import('../celebrations/celebrations')
+          .then(({ postDeliveryCelebration }) => postDeliveryCelebration(app, projectName))
+          .catch((e) => console.warn(`[dropbox-watcher] delivery celebration failed: ${e?.message || e}`))
+      }
     } catch (err: any) {
       failed++
       console.error(`[dropbox-watcher] failed for ${entry.path_display}: ${err.message}`)

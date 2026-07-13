@@ -309,6 +309,57 @@ export function registerCommandHandlers(app: App) {
         break
       }
 
+      // ── Celebrations ────────────────────────────────────────
+      case 'celebrate': {
+        await ack()
+        if (!process.env.KIT_TEAM_CHANNEL_ID) {
+          await respond({ response_type: 'ephemeral', text: ":warning: `KIT_TEAM_CHANNEL_ID` isn't set — set it in Railway first." })
+          break
+        }
+        if (!args.trim()) {
+          await respond({
+            response_type: 'ephemeral',
+            text: 'Usage: `/kit celebrate we landed the Nike pitch` (posts a meme now), or `/kit celebrate 12-20 Studio anniversary` (schedules it for that date).',
+          })
+          break
+        }
+        const { parseCelebrateArgs, celebrateNow, scheduleCelebration } = await import('../celebrations/celebrations')
+        const { fireDate, label } = parseCelebrateArgs(args)
+        if (!label) {
+          await respond({ response_type: 'ephemeral', text: 'What are we celebrating? e.g. `/kit celebrate we wrapped the shoot`' })
+          break
+        }
+        if (fireDate) {
+          await scheduleCelebration(label, fireDate, command.user_id)
+          await respond({ response_type: 'ephemeral', text: `:calendar: Scheduled a meme for *${label}* on ${fireDate}.` })
+        } else {
+          await celebrateNow(app, label)
+          await respond({ response_type: 'ephemeral', text: ':confetti_ball: Posted to the team channel!' })
+        }
+        break
+      }
+
+      case 'birthday': {
+        await ack()
+        const raw = (args || '').trim()
+        const mention = raw.match(/<@([A-Z0-9]+)(?:\|[^>]+)?>/)
+        const { parseBirthday, setStaffBirthday } = await import('../celebrations/celebrations')
+        const dateTok = raw.replace(/<@[^>]+>/, '').trim().split(/\s+/).find((t) => /^\d{1,2}[-/]\d{1,2}$/.test(t))
+        const mmdd = dateTok ? parseBirthday(dateTok) : null
+        if (!mention || !mmdd) {
+          await respond({ response_type: 'ephemeral', text: 'Usage: `/kit birthday @person 03-14` (month-day).' })
+          break
+        }
+        const ok = await setStaffBirthday(mention[1], mmdd)
+        await respond({
+          response_type: 'ephemeral',
+          text: ok
+            ? `:birthday: Saved <@${mention[1]}>'s birthday as ${mmdd}. Kit will post a meme on the day.`
+            : `:warning: Couldn't save — is <@${mention[1]}> in the staff directory? (try \`/kit sync-staff\`)`,
+        })
+        break
+      }
+
       // ── Brain ───────────────────────────────────────────────
       case 'brain': {
         await ack()

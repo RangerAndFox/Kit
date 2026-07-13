@@ -37,12 +37,20 @@ async function listDeliveryQueueFiles(): Promise<DropboxFileMetadata[]> {
   let response: any
 
   // Initial call
-  response = await dropboxRpc('/files/list_folder', {
-    path: WATCH_PATH,
-    recursive: true,
-    include_deleted: false,
-    include_non_downloadable_files: false,
-  })
+  try {
+    response = await dropboxRpc('/files/list_folder', {
+      path: WATCH_PATH,
+      recursive: true,
+      include_deleted: false,
+      include_non_downloadable_files: false,
+    })
+  } catch (err: any) {
+    // The queue folder may not exist yet (e.g. no render worker installed to
+    // create it). A missing watch folder means "nothing to scan" — return
+    // empty instead of throwing a path/not_found every cycle.
+    if (/not_found/i.test(String(err?.message))) return []
+    throw err
+  }
   collectEntries(response, out)
   cursor = response.has_more ? response.cursor : undefined
 

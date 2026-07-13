@@ -16,14 +16,11 @@
 
 import type { App } from '@slack/bolt'
 import { anthropic, ORCHESTRATOR_MODEL } from '../llm/client'
+import { renderMemeImage, normalizeBoxes, textMeme, type MemeTemplate } from './meme-engine'
 
-export interface MemeTemplate {
-  id: string // Imgflip template id
-  name: string
-  boxes: number
-  /** What each text box represents + the timesheet angle, for the caption model. */
-  layout: string
-}
+// Re-exported so existing importers (and tests) keep resolving them here.
+export { normalizeBoxes }
+export type { MemeTemplate }
 
 /** Rotation of well-known meme formats. A different one fires each week. */
 export const TEMPLATES: MemeTemplate[] = [
@@ -50,14 +47,6 @@ export function pickWeeklyTemplate(weekIndex: number, templates: MemeTemplate[] 
 /** Weeks since the Unix epoch — a stable, incrementing weekly counter. */
 export function weekIndexFromMs(ms: number): number {
   return Math.floor(ms / (7 * 24 * 60 * 60 * 1000))
-}
-
-/** Normalize the model's boxes to exactly the template's box count. Pure. */
-export function normalizeBoxes(raw: unknown, count: number): string[] {
-  const arr = Array.isArray(raw) ? raw.map((s) => String(s ?? '').trim()) : []
-  const out = arr.slice(0, count)
-  while (out.length < count) out.push('')
-  return out
 }
 
 /** Ask the model for the week's timesheet caption for this template. */
@@ -91,44 +80,6 @@ Rules:
     /* fall through to normalizeBoxes → empty boxes → caller handles */
   }
   return normalizeBoxes(parsed?.boxes, template.boxes)
-}
-
-/**
- * Render the meme via Imgflip. Returns the image URL, or null when Imgflip
- * isn't configured or the call fails (caller falls back to a text meme).
- */
-export async function renderMemeImage(template: MemeTemplate, boxes: string[]): Promise<string | null> {
-  const username = process.env.IMGFLIP_USERNAME
-  const password = process.env.IMGFLIP_PASSWORD
-  if (!username || !password) return null
-
-  const params = new URLSearchParams()
-  params.set('template_id', template.id)
-  params.set('username', username)
-  params.set('password', password)
-  boxes.forEach((text, i) => params.set(`boxes[${i}][text]`, text))
-
-  try {
-    const res = await fetch('https://api.imgflip.com/caption_image', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: params.toString(),
-      signal: AbortSignal.timeout(15_000),
-    })
-    const data = await res.json()
-    if (data?.success && data?.data?.url) return data.data.url as string
-    console.warn(`[timesheet-meme] imgflip: ${data?.error_message || 'no url returned'}`)
-    return null
-  } catch (err: any) {
-    console.warn(`[timesheet-meme] imgflip request failed: ${err?.message || err}`)
-    return null
-  }
-}
-
-/** Text-meme fallback when there's no rendered image. */
-function textMeme(template: MemeTemplate, boxes: string[]): string {
-  const body = boxes.filter(Boolean).map((b) => `> ${b}`).join('\n')
-  return `_${template.name}_\n${body}`
 }
 
 /**

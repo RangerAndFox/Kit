@@ -9,6 +9,52 @@ Work is on branch `claude/laughing-ride-htu0dx`, PR'd → squash-merged to `main
 
 ---
 
+## 2026-07-13 session — outages fixed + health monitor
+
+- **Dropbox was dead on Vercel (~3 months)** — the delivery/specs crons 401'd on
+  `invalid_access_token` because Vercel had only a stale static `DROPBOX_ACCESS_TOKEN`
+  and none of the refresh trio. Fixed: added `DROPBOX_APP_KEY/_APP_SECRET/_REFRESH_TOKEN`
+  (copied from Railway), removed the static token. Live-verified green.
+- **Frame.io was down on Vercel** — `FRAMEIO_ADOBE_REFRESH_TOKEN` was missing (only
+  CLIENT_ID/SECRET present since May). The new health monitor caught it on first run;
+  adding the token fixed it. Green.
+- **Date-awareness fix (PR #101)** — the orchestrator + specialists ran with no notion
+  of "now", so relative dates ("last Thursday") made Kit ask the user the date. Now a
+  current-date system block is injected every LLM turn; ad-hoc hours pre-filter also
+  matches minutes. Live-verified.
+- **Ponytail cleanup finished (PR #101)** — deleted the two dead files the earlier
+  audit batches missed (`new_project_service_module_code/`, `layout-shell.tsx`, −3,071
+  lines). nda tests made Windows-safe.
+- **Health monitor (PR #102) — LIVE.** `/status` page + `/api/status` (200/503) +
+  `health-watchdog` cron (every 10m) posting to `KIT_HEALTH_CHANNEL_ID` only on a
+  down/recover flip. Probes Dropbox/Frame.io/Harvest/Supabase/Google + cron freshness
+  (delivery scans, transcript scan, pre-meeting scan heartbeat on each fire).
+  Migration 052 applied. Field guide links to `/status`.
+- **Briefings — calendar access now working.** Root cause was never the sharing alone:
+  `GOOGLE_CALENDAR_INGEST_ENABLED` was off, and `GOOGLE_CALENDAR_IDS` pointed at personal
+  emails (404) instead of the shared studio calendars (General, Events, …). Fixed: flag
+  on, IDs swapped to the studio calendars, calendars shared with the service account
+  `kit-373@rf-kit-500717.iam.gserviceaccount.com`. `pre-meeting-scan` completes clean,
+  `fetch-events` succeeds, 0 events only when none are imminent. Full classify→DM path
+  not yet seen fire (needs a real meeting within ~30 min, or the smoke test below).
+
+### New issues surfaced today (not yet fixed)
+- **`/Delivery-Queue` 409 `path/not_found`** — Dropbox auth is fixed, but the delivery
+  scan now errors because the queue folder path doesn't resolve. Likely the folder
+  doesn't exist at the Dropbox root, or the watcher's path is off. Low urgency.
+- **Preview deployments receiving cron traffic** — Inngest is firing crons at `main`
+  AND preview branch deployments (`kit-agent-packaging`, `laughing-ride`), causing
+  duplicate/erroring runs. The Inngest↔Vercel sync should target production only.
+
+### Open / optional
+- **Briefings smoke test** — drop a throwaway event on General ~25 min out with an R&F
+  attendee to watch a real briefing fire (`scanned: 1, scheduled: 1` → DM).
+- **`GOOGLE_CALENDAR_IDS`** currently the studio calendars only — widen if meetings live
+  elsewhere. Briefing recipients still require the R&F person to be an **attendee** on
+  the event (matched to `staff` by email).
+
+---
+
 ## What's LIVE and verified
 
 - **Time tracking** — daily per-person-timezone check-ins, multi-day replies,

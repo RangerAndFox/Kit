@@ -339,6 +339,23 @@ cron.schedule(
   { timezone: CHECKIN_TZ },
 )
 
+// ─── Cron: daily celebrations ──────────────────────────────
+// 9am local — birthday memes for anyone whose day it is, a holiday meme on
+// studio holidays, and any scheduled occasions due today. Posts to the
+// full-team channel via the shared meme engine. Requires KIT_TEAM_CHANNEL_ID.
+
+cron.schedule(
+  '0 9 * * *',
+  () => {
+    if (!process.env.KIT_TEAM_CHANNEL_ID) return
+    import('./celebrations/celebrations')
+      .then(({ runDailyCelebrations }) => runDailyCelebrations(app))
+      .then((res) => console.log('[cron] celebrations:', res))
+      .catch((err) => console.error('[cron] celebrations failed:', err))
+  },
+  { timezone: CHECKIN_TZ },
+)
+
 // ─── Start ─────────────────────────────────────────────────
 
 ;(async () => {
