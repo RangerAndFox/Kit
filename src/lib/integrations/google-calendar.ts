@@ -47,7 +47,22 @@ function getCalendarIds(): string[] {
   return raw.split(',').map((s) => s.trim()).filter(Boolean)
 }
 
-function getCalendarClient() {
+/**
+ * Which Workspace user to impersonate (Domain-Wide Delegation) for a calendar.
+ * A user's primary calendar (their email) → impersonate them, so we read full
+ * event details even though the service account is external to the domain and
+ * can only be *shared* free/busy. A shared group calendar (or fallback) →
+ * GOOGLE_IMPERSONATE_SUBJECT (a user who can see it).
+ */
+function subjectFor(calendarId: string): string | undefined {
+  if (calendarId.includes('@group.calendar.google.com')) {
+    return process.env.GOOGLE_IMPERSONATE_SUBJECT || undefined
+  }
+  if (calendarId.includes('@')) return calendarId
+  return process.env.GOOGLE_IMPERSONATE_SUBJECT || undefined
+}
+
+function getCalendarClient(subject?: string) {
   const creds = getServiceAccountCreds()
   // Options-object form. The positional JWT(email, keyFile, key, scopes)
   // constructor was removed in google-auth-library v10 — passing the key
@@ -57,6 +72,10 @@ function getCalendarClient() {
     email: creds.client_email,
     key: creds.private_key,
     scopes: ['https://www.googleapis.com/auth/calendar.readonly'],
+    // Domain-Wide Delegation: act AS this user so the external-sharing
+    // free/busy cap doesn't apply. Requires the SA client id authorized for
+    // calendar.readonly in Admin console → Domain-wide Delegation.
+    subject,
   })
   return google.calendar({ version: 'v3', auth })
 }
@@ -74,7 +93,6 @@ export async function fetchUpcomingEvents(
   if (!ingestEnabled()) {
     throw new Error('GOOGLE_CALENDAR_INGEST_ENABLED is false — calendar fetch is disabled')
   }
-  const calendar = getCalendarClient()
   const calendarIds = getCalendarIds()
   if (calendarIds.length === 0) {
     return []
@@ -85,6 +103,8 @@ export async function fetchUpcomingEvents(
   // can't silently truncate — a missed event here means no briefing, ever.
   const perCalendar = await Promise.all(
     calendarIds.map(async (calendarId) => {
+      // Impersonate the calendar's owner (DWD) to get full event details.
+      const calendar = getCalendarClient(subjectFor(calendarId))
       const events: CalendarEvent[] = []
       let pageToken: string | undefined
       let safety = 10 // 500 events per calendar per window — loop safety cap
