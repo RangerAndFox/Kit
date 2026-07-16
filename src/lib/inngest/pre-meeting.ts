@@ -19,7 +19,7 @@ import { fetchUpcomingEvents } from '@/lib/integrations/google-calendar'
 import { classifyMeeting } from '@/lib/agent/meeting-classifier'
 import { composeBriefing } from '@/lib/agent/briefing-composer'
 import { composeBizdevBriefing, hasBizdevAttendee } from '@/lib/agent/bizdev-briefing'
-import { resolvePersonalBriefingChannel } from '@/lib/agent/briefing-channel'
+import { deliverBriefingToRecipient, occurrenceSummaryStatus } from '@/lib/agent/briefing-delivery'
 import { recordCronSuccess } from '@/lib/health/state'
 
 const SLACK_API = 'https://slack.com/api'
@@ -54,23 +54,6 @@ async function postSlack(channel: string, text: string): Promise<string> {
   const json = await res.json().catch(() => ({}))
   if (!json.ok) throw new Error(`chat.postMessage failed: ${json.error || res.status}`)
   return json.ts
-}
-
-/**
- * Post a briefing to a recipient's private 1:1 channel (just them + Kit),
- * creating it on first use. Replaces the old DM path: Kit is a Slack assistant
- * app, and proactive DMs to assistant apps land in the History tab instead of
- * notifying. A private channel notifies normally and stays private.
- */
-async function postToPersonalChannel(
-  slackUserId: string,
-  fullName: string | null,
-  text: string,
-): Promise<string> {
-  const token = process.env.SLACK_BOT_TOKEN
-  if (!token) throw new Error('SLACK_BOT_TOKEN not set')
-  const channel = await resolvePersonalBriefingChannel({ slackUserId, fullName, token })
-  return postSlack(channel, text)
 }
 
 // ─── Cron: scan for upcoming events ───────────────────────────
@@ -295,32 +278,48 @@ export const preMeetingDispatch = inngest.createFunction(
           : composeBriefing({ event: calendarEvent, projectId: project_id }),
       )
 
-      // PRIVACY: post the briefing to each R&F attendee's private 1:1 channel
-      // (just them + Kit) — the only delivery path by default. This notifies
-      // like a normal message (unlike an assistant-app DM, which lands in the
-      // History tab). One bad post doesn't fail the rest.
-      const notified = await step.run('notify-recipients', async () => {
-        const ok: string[] = []
-        for (const r of artifact.recipients) {
-          try {
-            await postToPersonalChannel(r.slack_user_id, r.name, artifact.channelText)
-            ok.push(r.slack_user_id)
-          } catch (e: any) {
-            console.warn(
-              `[pre-meeting] briefing to ${r.slack_user_id} failed: ${e?.message || e}`,
-            )
-          }
-        }
-        // Recipients existed but NOBODY was reached (revoked scope, channel
-        // failure, bad token) — that's a delivery failure, not a sent
-        // briefing. Throw so Inngest retries instead of marking 'sent'.
-        if (artifact.recipients.length > 0 && ok.length === 0) {
-          throw new Error(
-            `briefing delivery failed for all ${artifact.recipients.length} recipient(s)`,
-          )
-        }
-        return ok
+      // Canonical occurrence row id — the delivery ledger keys on this, not on
+      // event_id, so identity lives in one place (meeting_briefings).
+      const meetingBriefingId = await step.run('load-briefing-row', async () => {
+        const sb = createAdminClient()
+        const { data } = await sb
+          .from('meeting_briefings')
+          .select('id')
+          .eq('event_id', event_id)
+          .maybeSingle()
+        if (!data?.id) throw new Error(`no meeting_briefings row for event_id ${event_id}`)
+        return data.id
       })
+
+      const token = process.env.SLACK_BOT_TOKEN
+      if (!token) throw new Error('SLACK_BOT_TOKEN not set')
+
+      // PRIVACY: deliver to each R&F attendee's private 1:1 channel (just them +
+      // Kit) — the only delivery path by default. Each recipient is its OWN
+      // memoized Inngest step, so a confirmed send is cached and never re-posted
+      // when a sibling recipient's step retries (partial-failure safety). Each
+      // delivery is atomically claimed in meeting_briefing_deliveries and
+      // reconciled via Slack message metadata, so a retry after an ambiguous
+      // (timeout) send does not duplicate. This is the authoritative delivery
+      // state — notified_user_ids is no longer written.
+      const outcomes: any[] = []
+      for (const r of artifact.recipients) {
+        const outcome = await step.run(`notify-${r.staff_id}`, () =>
+          deliverBriefingToRecipient({
+            token,
+            meetingBriefingId,
+            recipient: r,
+            text: artifact.channelText,
+          }),
+        )
+        outcomes.push(outcome)
+      }
+      const delivered = outcomes.filter((o) => o?.status === 'sent').length
+      // Occurrence summary is 'sent' ONLY if every recipient reached ledger
+      // status 'sent'. A 'locked' recipient (another run holds the claim) leaves
+      // it 'pending' — the ledger stays the source of truth and the holder run
+      // completes it.
+      const summaryStatus = occurrenceSummaryStatus(outcomes, artifact.recipients.length)
 
       // Channel posting is OFF by default — it would expose the briefing to
       // everyone in the channel, not just the people on the call. Opt in only
@@ -332,6 +331,11 @@ export const preMeetingDispatch = inngest.createFunction(
           )
         : null
 
+      // Occurrence-level summary only; per-recipient truth lives in the ledger.
+      // A recipient whose delivery threw never reaches here (its step throws →
+      // the catch marks the occurrence 'failed'). A recipient that returned
+      // 'locked' DOES reach here without throwing, so we derive the summary from
+      // the outcomes rather than assuming 'sent'.
       const sb = createAdminClient()
       await sb
         .from('meeting_briefings')
@@ -339,13 +343,12 @@ export const preMeetingDispatch = inngest.createFunction(
           briefing_md: artifact.channelText,
           slack_channel_id: postChannel ? artifact.projectChannelId : null,
           slack_message_ts: channelTs,
-          notified_user_ids: notified,
-          status: 'sent',
+          status: summaryStatus,
           updated_at: new Date().toISOString(),
         })
         .eq('event_id', event_id)
 
-      return { sent: true, dmCount: notified.length, channelTs }
+      return { sent: summaryStatus === 'sent', status: summaryStatus, dmCount: delivered, channelTs }
     } catch (err: any) {
       // Mark briefing as failed but rethrow so Inngest retries fire.
       const sb = createAdminClient()
