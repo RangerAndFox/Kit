@@ -12,12 +12,40 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { searchDocuments } from '@/lib/rag/query'
 import type { CalendarEvent } from '@/lib/integrations/google-calendar'
 import { matchAttendeesToStaff, fmtTime, type BriefingRecipient } from './briefing-composer'
 
 export interface BizdevBriefingArtifact {
   channelText: string
   recipients: BriefingRecipient[]
+}
+
+// ─── Normalized evidence contract ─────────────────────────────
+//
+// Research NEVER returns raw prose to composition. It returns this normalized
+// object, and composition renders only its structured fields. This structurally
+// prevents a conversational model reply ("I'd be happy to help… I need a name")
+// from ever reaching a delivered briefing: non-JSON output fails to parse and
+// degrades to an `unresolved` result, not verbatim prose.
+
+export type IdentityStatus = 'resolved' | 'likely' | 'unresolved'
+
+export interface AttendeeEvidence {
+  identity: {
+    status: IdentityStatus
+    name: string | null
+    company: string | null
+    /** The signals that generated this identity guess (candidates, not proof). */
+    candidates: { value: string; from: string }[]
+  }
+  /** Corroborated facts, each ideally citing a source. */
+  facts: { claim: string; source_ref: string | null }[]
+  /** Reasonable inferences, explicitly labelled as such (not fact). */
+  inferences: { claim: string; basis: string | null }[]
+  /** Known-absent fields (drives the "missing" note, not a guess). */
+  missing: string[]
+  sources: { ref: string; kind: string }[]
 }
 
 /**
@@ -62,16 +90,181 @@ export function filterExternalAttendees(
   })
 }
 
+// ─── Identity resolution (candidate generation vs. verification) ──────────────
+
+const GENERIC_EMAIL_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com',
+  'msn.com', 'yahoo.com', 'ymail.com', 'icloud.com', 'me.com', 'mac.com',
+  'aol.com', 'proton.me', 'protonmail.com', 'pm.me', 'gmx.com', 'zoho.com',
+])
+
+function capitalize(s: string): string {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s
+}
+
 /**
- * Assemble the bizdev briefing markdown from already-fetched context. Pure —
- * unit-tested.
+ * Company CANDIDATE from an email domain — a hint for research, not a verified
+ * fact. Returns null for generic consumer providers (no company signal). Pure.
+ *   ryan@oshi.co        → "Oshi"
+ *   x@sub.acme.co.uk    → "Acme"
+ *   x@gmail.com         → null
+ */
+export function parseCompanyFromDomain(email: string): string | null {
+  const at = (email || '').trim().toLowerCase().split('@')
+  if (at.length !== 2 || !at[1]) return null
+  const domain = at[1]
+  if (GENERIC_EMAIL_DOMAINS.has(domain)) return null
+  const labels = domain.split('.').filter(Boolean)
+  if (labels.length < 2) return null
+  // Drop the TLD; drop a short second-level public suffix (co.uk, com.au).
+  labels.pop()
+  if (labels.length >= 2 && labels[labels.length - 1].length <= 3) labels.pop()
+  const reg = labels[labels.length - 1]
+  return reg ? capitalize(reg) : null
+}
+
+/**
+ * Person-name CANDIDATE from the meeting title, anchored on the email local
+ * part so we don't pick up the studio's own name ("R&F"). Pure.
+ *   ("R&F + Ryan Dolinsky (Oshi)", "ryan@oshi.co") → "Ryan Dolinsky"
+ */
+export function nameFromTitle(title: string, email: string): string | null {
+  const local = (email || '').split('@')[0] || ''
+  const first = local.split(/[._\-+]/)[0]
+  if (!first || !title) return null
+  const re = new RegExp(`\\b(${first}(?:\\s+[A-Z][A-Za-z'\\-]+){1,3})\\b`, 'i')
+  const m = title.match(re)
+  if (!m) return null
+  // Title-case the matched span so a lowercased first name reads as a name.
+  return m[1]
+    .split(/\s+/)
+    .map((w) => capitalize(w))
+    .join(' ')
+}
+
+/**
+ * Assemble every available identity signal into candidates. Title parsing and
+ * domain parsing are candidate GENERATION only — never treated as verified.
+ * Pure — unit-tested.
+ */
+export function buildAttendeeIdentityCandidates(opts: {
+  event: CalendarEvent
+  attendee: { email: string; displayName?: string }
+}): { name: string | null; company: string | null; candidates: { value: string; from: string }[] } {
+  const { event, attendee } = opts
+  const candidates: { value: string; from: string }[] = []
+
+  const titleName = nameFromTitle(event.summary || '', attendee.email)
+  const name = attendee.displayName || titleName || null
+  if (attendee.displayName) candidates.push({ value: attendee.displayName, from: 'calendar-displayName' })
+  if (titleName) candidates.push({ value: titleName, from: 'meeting-title' })
+
+  const company = parseCompanyFromDomain(attendee.email)
+  if (company) candidates.push({ value: company, from: 'email-domain' })
+
+  return { name, company, candidates }
+}
+
+/**
+ * Weighted resolution status. NOT a hard "two signals" rule:
+ *   - calendar-title name + company-domain email        → at least `likely`
+ *   - any corroborating public/internal source          → `resolved`
+ *   - a contradiction (public info disputes the guess)  → capped below resolved
+ * Pure — unit-tested.
+ */
+export function resolveIdentityStatus(opts: {
+  hasName: boolean
+  hasCompany: boolean
+  corroboratingSources: number
+  contradiction: boolean
+}): IdentityStatus {
+  const strength = (opts.hasName ? 1 : 0) + (opts.hasCompany ? 1 : 0)
+  if (opts.contradiction) return strength >= 2 ? 'likely' : 'unresolved'
+  if (opts.corroboratingSources >= 1 && strength >= 1) return 'resolved'
+  if (strength >= 2) return 'likely'
+  return 'unresolved'
+}
+
+/**
+ * Parse the model's response into normalized evidence. Returns null on ANY
+ * shape/parse failure — the caller degrades to `unresolved`, so conversational
+ * prose can never reach composition. Pure — unit-tested.
+ */
+export function parseAttendeeEvidence(rawText: string): {
+  identity: { status?: string; name?: string | null; company?: string | null }
+  facts: { claim: string; source_ref: string | null }[]
+  inferences: { claim: string; basis: string | null }[]
+  missing: string[]
+  sources: { ref: string; kind: string }[]
+  contradiction: boolean
+} | null {
+  const cleaned = (rawText || '')
+    .replace(/```(?:json)?\s*([\s\S]*?)\s*```/g, '$1')
+    .trim()
+  if (!cleaned) return null
+  let obj: any
+  try {
+    obj = JSON.parse(cleaned)
+  } catch {
+    return null
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null
+  const arr = (v: any) => (Array.isArray(v) ? v : [])
+  return {
+    identity: obj.identity && typeof obj.identity === 'object' ? obj.identity : {},
+    facts: arr(obj.facts)
+      .filter((f: any) => f && typeof f.claim === 'string')
+      .map((f: any) => ({ claim: f.claim, source_ref: f.source_ref || null })),
+    inferences: arr(obj.inferences)
+      .filter((f: any) => f && typeof f.claim === 'string')
+      .map((f: any) => ({ claim: f.claim, basis: f.basis || null })),
+    missing: arr(obj.missing).filter((s: any) => typeof s === 'string'),
+    sources: arr(obj.sources)
+      .filter((s: any) => s && typeof s.ref === 'string')
+      .map((s: any) => ({ ref: s.ref, kind: s.kind || 'public' })),
+    contradiction: obj.contradiction === true,
+  }
+}
+
+/**
+ * Render normalized evidence into Slack markdown lines. Consumes ONLY structured
+ * fields — never raw research prose. Pure — unit-tested.
+ */
+export function renderAttendeeEvidence(
+  ev: AttendeeEvidence,
+  attendee: { email: string; displayName?: string },
+): string[] {
+  const name = ev.identity.name || attendee.displayName || attendee.email
+  const lines: string[] = [`• *${name}* (${attendee.email})`]
+
+  if (ev.identity.status === 'unresolved') {
+    lines.push('  _No reliable public information found._')
+    if (ev.missing.length) lines.push(`  _Missing: ${ev.missing.join(', ')}_`)
+    return lines
+  }
+
+  const header: string[] = []
+  if (ev.identity.company) header.push(`Company: ${ev.identity.company}`)
+  header.push(`Confidence: ${ev.identity.status}`)
+  lines.push(`  ${header.join(' · ')}`)
+
+  for (const f of ev.facts.slice(0, 5)) lines.push(`  • ${f.claim}`)
+  for (const inf of ev.inferences.slice(0, 3)) lines.push(`  • ${inf.claim} _(inferred)_`)
+  if (ev.missing.length) lines.push(`  _Missing: ${ev.missing.join(', ')}_`)
+  return lines
+}
+
+/**
+ * Assemble the bizdev briefing markdown from normalized evidence. Pure —
+ * unit-tested. A null evidence slot (research crashed) renders a fixed
+ * fallback — never raw prose.
  */
 export function buildBizdevBriefingText(opts: {
   event: CalendarEvent
   externals: { email: string; displayName?: string }[]
-  bios: (string | null)[]
+  evidence: (AttendeeEvidence | null)[]
 }): string {
-  const { event, externals, bios } = opts
+  const { event, externals, evidence } = opts
   const lines: string[] = []
   lines.push(':wave: *Pre-meeting briefing (business development)*')
   lines.push(`*Meeting:* ${event.summary} — ${fmtTime(event.start_time)}`)
@@ -83,42 +276,242 @@ export function buildBizdevBriefingText(opts: {
 
   lines.push('', '*Attendees:*')
   externals.forEach((a, i) => {
-    lines.push(`• *${a.displayName || a.email}* (${a.email})`)
-    const bio = bios[i]
-    if (bio) {
-      for (const line of bio.split('\n')) lines.push(`  ${line}`)
-    } else {
-      lines.push('  _No reliable info found._')
+    const ev = evidence[i]
+    if (!ev) {
+      lines.push(`• *${a.displayName || a.email}* (${a.email})`, '  _No reliable info found._')
+      return
     }
+    for (const line of renderAttendeeEvidence(ev, a)) lines.push(line)
   })
 
   return lines.join('\n')
 }
 
+// ─── Internal history (authoritative R&F records) ─────────────────────────────
+//
+// The spec requires prior R&F contact/project history to be checked — internal
+// history is a first-class input, and public research SUPPLEMENTS it. We reuse
+// the canonical knowledge-search abstraction (rag/query.searchDocuments, the
+// pgvector match_documents RPC) for transcripts/notes/knowledge, and add two
+// authoritative structured lookups the semantic index does not cover: prior
+// briefings involving this attendee, and projects matching the company. Absence
+// is represented as empty history — never invented.
+
+export interface InternalHistory {
+  priorMeetings: { title: string; when: string | null }[]
+  projects: { name: string; client: string | null }[]
+  knowledge: { title: string; ref: string | null }[]
+}
+
 /**
- * Web-search a single external attendee and write a short bio + relevance to
- * R&F. Non-fatal: returns null on any failure (no API key, search/model
- * error) so one bad lookup doesn't block the rest of the briefing.
+ * Normalize internal history into evidence facts tagged `sources[].kind =
+ * "internal"`. Pure — unit-tested. Empty history yields no facts (no invention);
+ * `found` tells the caller whether to record a "missing prior history" note.
  */
-async function buildAttendeeBio(attendee: { email: string; displayName?: string }): Promise<string | null> {
+export function internalHistoryToEvidence(h: InternalHistory): {
+  facts: { claim: string; source_ref: string | null }[]
+  sources: { ref: string; kind: string }[]
+  found: boolean
+} {
+  const facts: { claim: string; source_ref: string | null }[] = []
+  const sources: { ref: string; kind: string }[] = []
+  for (const m of h.priorMeetings) {
+    facts.push({ claim: `Prior R&F meeting: ${m.title}${m.when ? ` (${m.when})` : ''}`, source_ref: 'internal:meeting_briefings' })
+  }
+  for (const p of h.projects) {
+    facts.push({ claim: `Related R&F project: ${p.name}${p.client ? ` — ${p.client}` : ''}`, source_ref: 'internal:projects' })
+  }
+  for (const k of h.knowledge) {
+    facts.push({ claim: `Internal note: ${k.title}`, source_ref: k.ref || 'internal:knowledge' })
+  }
+  if (h.priorMeetings.length) sources.push({ ref: 'meeting_briefings', kind: 'internal' })
+  if (h.projects.length) sources.push({ ref: 'projects', kind: 'internal' })
+  if (h.knowledge.length) sources.push({ ref: 'knowledge-base', kind: 'internal' })
+  return { facts, sources, found: facts.length > 0 }
+}
+
+/**
+ * Retrieve prior R&F history for an external attendee from the authoritative
+ * internal records. Each lookup is best-effort (a subsystem hiccup degrades to
+ * empty, never blocks the briefing). One bounded read per source — this runs per
+ * dispatch, not as a scan.
+ */
+export async function retrieveInternalHistory(opts: {
+  event: CalendarEvent
+  attendee: { email: string; displayName?: string }
+  company: string | null
+  workspaceId?: string | null
+}): Promise<InternalHistory> {
+  const email = (opts.attendee.email || '').trim().toLowerCase()
+  const out: InternalHistory = { priorMeetings: [], projects: [], knowledge: [] }
+  const sb = createAdminClient()
+
+  // 1. Prior meetings/briefings that had this attendee on the invite.
+  try {
+    const { data } = await sb
+      .from('meeting_briefings')
+      .select('meeting_title, meeting_start_time, attendees_json')
+      .contains('attendees_json', [{ email }])
+      .neq('event_id', opts.event.event_id)
+      .order('meeting_start_time', { ascending: false })
+      .limit(3)
+    for (const r of data || []) {
+      out.priorMeetings.push({ title: r.meeting_title || '(untitled meeting)', when: r.meeting_start_time || null })
+    }
+  } catch (e: any) {
+    console.warn('[bizdev-briefing] prior-meetings lookup failed:', e?.message || e)
+  }
+
+  // 2. Projects / inquiries matching the company (client name).
+  if (opts.company) {
+    try {
+      const { data } = await sb
+        .from('projects')
+        .select('name, client')
+        .ilike('client', `%${opts.company}%`)
+        .limit(3)
+      for (const p of data || []) out.projects.push({ name: p.name, client: p.client || null })
+    } catch (e: any) {
+      console.warn('[bizdev-briefing] projects lookup failed:', e?.message || e)
+    }
+  }
+
+  // 3. Canonical knowledge search (transcripts / notes / docs) — reuse the
+  //    shared retrieval layer rather than a bespoke per-subsystem search.
+  try {
+    const query = [opts.attendee.displayName, opts.company, email, opts.event.summary]
+      .filter(Boolean)
+      .join(' ')
+    const results = await searchDocuments(query, { workspaceId: opts.workspaceId ?? undefined, limit: 4 })
+    for (const r of results.slice(0, 3)) {
+      out.knowledge.push({ title: r.title, ref: r.sourceUrl || `doc:${r.documentId}` })
+    }
+  } catch (e: any) {
+    console.warn('[bizdev-briefing] knowledge search failed:', e?.message || e)
+  }
+
+  return out
+}
+
+/** Public-research portion of the evidence, before merge. */
+interface PublicEvidence {
+  name: string | null
+  company: string | null
+  facts: { claim: string; source_ref: string | null }[]
+  inferences: { claim: string; basis: string | null }[]
+  missing: string[]
+  sources: { ref: string; kind: string }[]
+  contradiction: boolean
+}
+
+/**
+ * Research one external attendee into normalized evidence. Internal R&F history
+ * is retrieved FIRST and always included; public web research SUPPLEMENTS it
+ * (never replaces it). Passes all identity signals (name from title/displayName,
+ * email, company from domain) plus known internal context to the model, forces a
+ * JSON evidence object, and applies deterministic weighting on top. Non-fatal:
+ * on any failure (no API key, model error, non-JSON output) it still returns the
+ * internal-history evidence, so prose never leaks and prior history still shows.
+ *
+ * `deps.getInternalHistory` is injectable for tests.
+ */
+export async function researchAttendee(
+  attendee: { email: string; displayName?: string },
+  event: CalendarEvent,
+  deps: { getInternalHistory?: (a: { email: string; displayName?: string }) => Promise<InternalHistory> } = {},
+): Promise<AttendeeEvidence> {
+  const cand = buildAttendeeIdentityCandidates({ event, attendee })
+  const workspaceId = process.env.KIT_DEFAULT_WORKSPACE_ID || null
+
+  let internal: InternalHistory
+  try {
+    internal = deps.getInternalHistory
+      ? await deps.getInternalHistory(attendee)
+      : await retrieveInternalHistory({ event, attendee, company: cand.company, workspaceId })
+  } catch {
+    internal = { priorMeetings: [], projects: [], knowledge: [] }
+  }
+  const internalEv = internalHistoryToEvidence(internal)
+
+  // Merge internal (always) + public (supplement) into normalized evidence, and
+  // weight the status from the COMBINED corroboration.
+  const merge = (pub: PublicEvidence): AttendeeEvidence => {
+    const facts = [...internalEv.facts, ...pub.facts]
+    const sources = [...internalEv.sources, ...pub.sources]
+    const corroboration = sources.length + facts.filter((f) => f.source_ref).length
+    const status = resolveIdentityStatus({
+      hasName: !!cand.name,
+      hasCompany: !!cand.company,
+      corroboratingSources: corroboration,
+      contradiction: pub.contradiction,
+    })
+    // Absence of internal history is represented explicitly — not invented.
+    const missing = new Set<string>(pub.missing)
+    if (!internalEv.found) missing.add('prior R&F history')
+    return {
+      identity: {
+        status,
+        name: pub.name || cand.name,
+        company: pub.company || cand.company,
+        candidates: cand.candidates,
+      },
+      facts,
+      inferences: pub.inferences,
+      missing: [...missing],
+      sources,
+    }
+  }
+
+  const emptyPublic: PublicEvidence = {
+    name: null,
+    company: null,
+    facts: [],
+    inferences: [],
+    missing: internalEv.found ? [] : ['public profile'],
+    sources: [],
+    contradiction: false,
+  }
+
   const apiKey = process.env.ANTHROPIC_API_KEY
-  if (!apiKey) return null
+  if (!apiKey) return merge(emptyPublic)
+
   try {
     const client = new Anthropic({ apiKey })
-    const who = attendee.displayName ? `${attendee.displayName} (${attendee.email})` : attendee.email
+    const internalContext = internalEv.found
+      ? `Known internal R&F history (already on file — do NOT repeat, only build on it):\n` +
+        internalEv.facts.map((f) => `- ${f.claim}`).join('\n') + '\n\n'
+      : 'No prior R&F history is on file for this contact.\n\n'
+    const prompt =
+      `Meeting title: ${JSON.stringify(event.summary || '')}\n` +
+      `Attendee email: ${attendee.email}\n` +
+      `Candidate name: ${JSON.stringify(cand.name)}\n` +
+      `Candidate company (from email domain): ${JSON.stringify(cand.company)}\n\n` +
+      internalContext +
+      `Search the web to corroborate or correct these candidates, then return the evidence JSON.`
 
     const res = await client.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 400,
+      max_tokens: 700,
       tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
       system:
-        'You research a meeting attendee ahead of a business-development call for Ranger & Fox, ' +
-        'a creative video production studio. Search the web for the person and write a 2-3 ' +
-        'sentence bio: who they are, their role/company, and anything relevant to R&F doing ' +
-        'business with them (industry overlap, notable work, potential project fit). If you ' +
-        'cannot find reliable public information, say so in one short sentence instead of ' +
-        'guessing.',
-      messages: [{ role: 'user', content: `Look up: ${who}` }],
+        'You research a business-development meeting attendee for Ranger & Fox, a creative video ' +
+        'production studio. You are given candidate identity signals (name from the meeting title, ' +
+        'company from the email domain) and any internal history already on file. Treat the ' +
+        'candidates as UNVERIFIED: search the web to corroborate or correct them. Distinguish ' +
+        'verified facts (with a source) from reasonable inferences. Never ask the user for more ' +
+        'context and never emit conversational text.\n\n' +
+        'Respond with ONLY this JSON (no prose, no code fence):\n' +
+        '{\n' +
+        '  "identity": { "status": "resolved|likely|unresolved", "name": string|null, "company": string|null },\n' +
+        '  "facts": [{ "claim": string, "source_ref": string|null }],\n' +
+        '  "inferences": [{ "claim": string, "basis": string }],\n' +
+        '  "missing": [string],\n' +
+        '  "sources": [{ "ref": string, "kind": "public|internal" }],\n' +
+        '  "contradiction": boolean\n' +
+        '}\n' +
+        'Set contradiction:true only if public info disputes a candidate. If you find nothing ' +
+        'reliable, return status:"unresolved" with empty facts — do NOT guess.',
+      messages: [{ role: 'user', content: prompt }],
     })
 
     const text = res.content
@@ -127,10 +520,21 @@ async function buildAttendeeBio(attendee: { email: string; displayName?: string 
       .join('\n')
       .trim()
 
-    return text || null
+    const parsed = parseAttendeeEvidence(text)
+    if (!parsed) return merge(emptyPublic)
+
+    return merge({
+      name: parsed.identity.name || null,
+      company: parsed.identity.company || null,
+      facts: parsed.facts,
+      inferences: parsed.inferences,
+      missing: parsed.missing,
+      sources: parsed.sources,
+      contradiction: parsed.contradiction,
+    })
   } catch (err: any) {
-    console.warn(`[bizdev-briefing] bio lookup failed for ${attendee.email}:`, err?.message || err)
-    return null
+    console.warn(`[bizdev-briefing] research failed for ${attendee.email}:`, err?.message || err)
+    return merge(emptyPublic)
   }
 }
 
@@ -140,7 +544,7 @@ export async function composeBizdevBriefing(ctx: { event: CalendarEvent }): Prom
 
   const { data: staffRows } = await sb
     .from('staff')
-    .select('email, email_aliases, slack_user_id, full_name, is_active')
+    .select('id, email, email_aliases, slack_user_id, full_name, is_active')
     .eq('is_active', true)
 
   // Recipients = the R&F people actually on the invite (same privacy rule as
@@ -152,9 +556,9 @@ export async function composeBizdevBriefing(ctx: { event: CalendarEvent }): Prom
   const internalEmails = buildStaffEmailSet(staffRows || [])
   const externals = filterExternalAttendees(event.attendees || [], internalEmails)
 
-  const bios = await Promise.all(externals.map((a) => buildAttendeeBio(a)))
+  const evidence = await Promise.all(externals.map((a) => researchAttendee(a, event)))
 
-  const channelText = buildBizdevBriefingText({ event, externals, bios })
+  const channelText = buildBizdevBriefingText({ event, externals, evidence })
 
   return { channelText, recipients }
 }

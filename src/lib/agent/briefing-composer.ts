@@ -22,6 +22,8 @@ export interface BriefingContext {
 }
 
 export interface BriefingRecipient {
+  /** Authoritative internal identity (staff.id) — the delivery-ledger key. */
+  staff_id: string
   slack_user_id: string
   email: string
   name: string | null
@@ -45,6 +47,7 @@ export interface BriefingArtifact {
 export function matchAttendeesToStaff(
   attendees: { email: string }[],
   staff: {
+    id: string
     email: string | null
     email_aliases?: string[] | null
     slack_user_id: string | null
@@ -52,10 +55,13 @@ export function matchAttendeesToStaff(
     is_active?: boolean
   }[],
 ): BriefingRecipient[] {
-  const byEmail = new Map<string, { slack_user_id: string; full_name: string | null }>()
+  const byEmail = new Map<
+    string,
+    { staff_id: string; slack_user_id: string; full_name: string | null }
+  >()
   for (const s of staff) {
-    if (!s.email || !s.slack_user_id || s.is_active === false) continue
-    const entry = { slack_user_id: s.slack_user_id, full_name: s.full_name }
+    if (!s.id || !s.email || !s.slack_user_id || s.is_active === false) continue
+    const entry = { staff_id: s.id, slack_user_id: s.slack_user_id, full_name: s.full_name }
     // Primary email plus any aliases (e.g. a Slack address that differs from
     // the calendar-invite address) so briefings match regardless of which
     // address the invite used.
@@ -70,9 +76,14 @@ export function matchAttendeesToStaff(
     const email = (a.email || '').trim().toLowerCase()
     if (!email) continue
     const match = byEmail.get(email)
-    if (!match || seen.has(match.slack_user_id)) continue
-    seen.add(match.slack_user_id)
-    out.push({ slack_user_id: match.slack_user_id, email, name: match.full_name })
+    if (!match || seen.has(match.staff_id)) continue
+    seen.add(match.staff_id)
+    out.push({
+      staff_id: match.staff_id,
+      slack_user_id: match.slack_user_id,
+      email,
+      name: match.full_name,
+    })
   }
   return out
 }
@@ -238,7 +249,7 @@ export async function composeBriefing(ctx: BriefingContext): Promise<BriefingArt
   // call. Match active staff (by email) against the event's attendees.
   const { data: staffRows } = await sb
     .from('staff')
-    .select('email, email_aliases, slack_user_id, full_name, is_active')
+    .select('id, email, email_aliases, slack_user_id, full_name, is_active')
     .eq('is_active', true)
   const recipients = matchAttendeesToStaff(event.attendees || [], staffRows || [])
 

@@ -488,7 +488,7 @@ Pulls project + open `kit_actions` (where `status IN ('pending','approved')`) + 
 
 **Inngest functions** (`src/lib/inngest/pre-meeting.ts`)
 - `preMeetingScan` (cron, every 15m) — fetches events from `[now, now + lead + 16min]`, classifies each, upserts `meeting_briefings` row with status (`pending`/`skipped`/`failed`), schedules a `pre-meeting/dispatch` event for `start - lead` (lead = `BRIEFING_LEAD_TIME_MINUTES`, default 30).
-- `preMeetingDispatch` (event-triggered, idempotency: `event.data.event_id`) — composes the briefing, DMs each matched R&F attendee privately (`matchAttendeesToStaff` — active staff with a Slack id whose email is on the invite; external attendees excluded), records the recipients in `meeting_briefings.notified_user_ids`, sets `status='sent'`. Channel posting is opt-in via `BRIEFING_POST_CHANNEL=true` (default off, for privacy).
+- `preMeetingDispatch` (event-triggered, idempotency: `event.data.event_id`) — composes the briefing and delivers to each matched R&F attendee privately (`matchAttendeesToStaff` — active staff with a Slack id whose email is on the invite; external attendees excluded). Each recipient is its own memoized Inngest step and an atomically-claimed row in `meeting_briefing_deliveries` (the authoritative per-recipient delivery state); a send that Slack accepted but timed out is reconciled via Slack message `metadata` on retry, so a briefing is never delivered twice. Sets `meeting_briefings.status='sent'` as an occurrence-level summary. Channel posting is opt-in via `BRIEFING_POST_CHANNEL=true` (default off, for privacy).
 
 **Multi-tenancy safety**
 The active-projects query in the scanner uses `KIT_DEFAULT_WORKSPACE_ID` to scope (warns if unset).
