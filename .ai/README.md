@@ -1,13 +1,21 @@
-# Atlas — Kit's AI engineering operating system
+# Kit Atlas Layer — AI Engineering Context
 
-Atlas is the durable, evidence-backed knowledge layer for Kit. It exists so
-that any Claude Code session (or human) can act correctly on this repository
-while reading as little as possible.
+This directory (`.ai/`) is Kit's repository-local **AI engineering context and
+workflow layer**. It exists so that any Claude Code session (or human) can act
+correctly on this repository while reading as little as possible.
 
-Atlas holds **durable operational knowledge**: what runs where, what must stay
-true, how to validate, and how to work. It is not a changelog, a feature list,
-or a build diary. Those already exist elsewhere in the repo (`README.md`,
-`FEATURES.md`, the `*-SPEC.md` / `*-HANDOFF.md` files).
+The canonical **Atlas OS** specification is maintained separately in the
+[`steve-rangerandfox/atlas-os`](https://github.com/steve-rangerandfox/atlas-os)
+repository. This directory is *aligned with* that specification but does **not**
+implement, redefine, or supersede it — it is simply where Kit keeps its own
+durable engineering knowledge. References to "Atlas" below are shorthand for
+this local layer.
+
+This layer holds **durable, evidence-backed operational knowledge**: what runs
+where, what must stay true, how to validate, and how to work. Its purpose is to
+reduce context cost. It is not a changelog, a feature list, or a build diary.
+Those already exist elsewhere in the repo (`README.md`, `FEATURES.md`, the
+`*-SPEC.md` / `*-HANDOFF.md` files).
 
 ## How to use Atlas
 

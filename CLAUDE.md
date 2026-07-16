@@ -29,7 +29,7 @@ read every `.ai/` document — select only the smallest reference the task needs
 | Refactor without behavior change | `.ai/workflows/refactor.md` |
 | Deploy or reason about a deploy | `.ai/workflows/deployment.md` |
 | Document a subsystem / write an audit | `.ai/templates/` |
-| Understand Atlas itself | `.ai/README.md` |
+| Understand Kit's Atlas layer | `.ai/README.md` |
 
 ## Operating rules
 
@@ -53,7 +53,7 @@ read every `.ai/` document — select only the smallest reference the task needs
    recurring work must scale with *new* activity, not total history.
 7. **Keep scope narrow.** No drive-by cleanup, unrelated dependency upgrades,
    or file moves. Database changes require a migration. Secrets never enter
-   source, logs, or Atlas.
+   source, logs, or the `.ai/` documentation.
 
 ## Validate narrow to broad
 
@@ -69,7 +69,7 @@ verification. There is no verified repo-wide test command — do not invent one.
   `/production` observation — see `.ai/audits/architecture.md`).
 - A fix would require a large refactor or change externally observable behavior.
 
-## Keep Atlas current
+## Keep Kit's Atlas layer current
 
 Update `.ai/` **only** when architecture, runtime ownership, invariants, or
 validation actually change — not for routine feature work. Do not turn Atlas
