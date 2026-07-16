@@ -25,6 +25,7 @@ import {
   buildStaffEmailSet,
   internalHistoryToEvidence,
   researchAttendee,
+  retrieveInternalHistory,
 } from './bizdev-briefing'
 import { matchAttendeesToStaff } from './briefing-composer'
 
@@ -219,6 +220,80 @@ describe('internal history (authoritative R&F records)', () => {
     } finally {
       if (saved !== undefined) process.env.ANTHROPIC_API_KEY = saved
     }
+  })
+})
+
+describe('retrieveInternalHistory workspace scoping', () => {
+  // Minimal chainable fake supabase client that records .eq() calls and applies
+  // the workspace filter to the returned rows.
+  function fakeSb(rowsByTable: Record<string, any[]>, capture: { eqs: [string, string, any][] }) {
+    const make = (table: string) => {
+      const state: Record<string, any> = {}
+      const q: any = {
+        select: () => q,
+        contains: () => q,
+        neq: () => q,
+        order: () => q,
+        ilike: () => q,
+        eq: (col: string, val: any) => {
+          state[col] = val
+          capture.eqs.push([table, col, val])
+          return q
+        },
+        limit: (n: number) => {
+          let rows = rowsByTable[table] || []
+          if (state.workspace_id !== undefined) rows = rows.filter((r) => r.workspace_id === state.workspace_id)
+          return Promise.resolve({ data: rows.slice(0, n), error: null })
+        },
+      }
+      return q
+    }
+    return { from: (table: string) => make(table) }
+  }
+
+  it('applies the workspace filter and excludes another workspace’s project', async () => {
+    const capture = { eqs: [] as [string, string, any][] }
+    const sb = fakeSb(
+      {
+        meeting_briefings: [],
+        projects: [
+          { name: 'Oshi sizzle', client: 'Oshi', workspace_id: 'ws-1' },
+          { name: 'Foreign Oshi', client: 'Oshi', workspace_id: 'ws-2' },
+        ],
+      },
+      capture,
+    )
+    const hist = await retrieveInternalHistory({
+      event: OSHI_EVENT as any,
+      attendee: { email: 'ryan@oshi.co' },
+      company: 'Oshi',
+      workspaceId: 'ws-1',
+      sb,
+      search: async () => [],
+    })
+    // Only the ws-1 project is present; the ws-2 project is excluded.
+    assert.equal(hist.projects.length, 1)
+    assert.equal(hist.projects[0].name, 'Oshi sizzle')
+    // The workspace filter was actually applied to the projects query.
+    assert.ok(capture.eqs.some(([t, c, v]) => t === 'projects' && c === 'workspace_id' && v === 'ws-1'))
+  })
+
+  it('skips the projects lookup entirely when no workspaceId is available (no unscoped leak)', async () => {
+    const capture = { eqs: [] as [string, string, any][] }
+    const sb = fakeSb(
+      { meeting_briefings: [], projects: [{ name: 'X', client: 'Oshi', workspace_id: 'ws-2' }] },
+      capture,
+    )
+    const hist = await retrieveInternalHistory({
+      event: OSHI_EVENT as any,
+      attendee: { email: 'ryan@oshi.co' },
+      company: 'Oshi',
+      workspaceId: null,
+      sb,
+      search: async () => [],
+    })
+    assert.equal(hist.projects.length, 0)
+    assert.ok(!capture.eqs.some(([t]) => t === 'projects'))
   })
 })
 

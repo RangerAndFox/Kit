@@ -19,7 +19,7 @@ import { fetchUpcomingEvents } from '@/lib/integrations/google-calendar'
 import { classifyMeeting } from '@/lib/agent/meeting-classifier'
 import { composeBriefing } from '@/lib/agent/briefing-composer'
 import { composeBizdevBriefing, hasBizdevAttendee } from '@/lib/agent/bizdev-briefing'
-import { deliverBriefingToRecipient } from '@/lib/agent/briefing-delivery'
+import { deliverBriefingToRecipient, occurrenceSummaryStatus } from '@/lib/agent/briefing-delivery'
 import { recordCronSuccess } from '@/lib/health/state'
 
 const SLACK_API = 'https://slack.com/api'
@@ -315,6 +315,11 @@ export const preMeetingDispatch = inngest.createFunction(
         outcomes.push(outcome)
       }
       const delivered = outcomes.filter((o) => o?.status === 'sent').length
+      // Occurrence summary is 'sent' ONLY if every recipient reached ledger
+      // status 'sent'. A 'locked' recipient (another run holds the claim) leaves
+      // it 'pending' — the ledger stays the source of truth and the holder run
+      // completes it.
+      const summaryStatus = occurrenceSummaryStatus(outcomes, artifact.recipients.length)
 
       // Channel posting is OFF by default — it would expose the briefing to
       // everyone in the channel, not just the people on the call. Opt in only
@@ -326,9 +331,11 @@ export const preMeetingDispatch = inngest.createFunction(
           )
         : null
 
-      // Occurrence-level summary only. Per-recipient truth lives in the ledger.
-      // We reach here only when every recipient step returned (all 'sent', or no
-      // recipients) — a non-sent recipient throws and is retried above.
+      // Occurrence-level summary only; per-recipient truth lives in the ledger.
+      // A recipient whose delivery threw never reaches here (its step throws →
+      // the catch marks the occurrence 'failed'). A recipient that returned
+      // 'locked' DOES reach here without throwing, so we derive the summary from
+      // the outcomes rather than assuming 'sent'.
       const sb = createAdminClient()
       await sb
         .from('meeting_briefings')
@@ -336,12 +343,12 @@ export const preMeetingDispatch = inngest.createFunction(
           briefing_md: artifact.channelText,
           slack_channel_id: postChannel ? artifact.projectChannelId : null,
           slack_message_ts: channelTs,
-          status: 'sent',
+          status: summaryStatus,
           updated_at: new Date().toISOString(),
         })
         .eq('event_id', event_id)
 
-      return { sent: true, dmCount: delivered, channelTs }
+      return { sent: summaryStatus === 'sent', status: summaryStatus, dmCount: delivered, channelTs }
     } catch (err: any) {
       // Mark briefing as failed but rethrow so Inngest retries fire.
       const sb = createAdminClient()

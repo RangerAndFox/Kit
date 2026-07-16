@@ -18,6 +18,7 @@ import {
   shouldReconcile,
   classifyPostOutcome,
   deliverBriefingToRecipient,
+  occurrenceSummaryStatus,
   type DeliveryDeps,
 } from './briefing-delivery'
 
@@ -138,6 +139,19 @@ describe('delivery pure helpers', () => {
     assert.equal(classifyPostOutcome({ ok: true, ts: 't' }).kind, 'ok')
     assert.equal(classifyPostOutcome({ ok: false, error: 'e' }).kind, 'failed')
     assert.equal(classifyPostOutcome({ ok: true, ts: null }).kind, 'failed')
+  })
+
+  it('occurrenceSummaryStatus is sent ONLY when every eligible recipient is sent', () => {
+    // all sent → sent
+    assert.equal(occurrenceSummaryStatus([{ status: 'sent' }, { status: 'sent' }], 2), 'sent')
+    // one locked → not sent
+    assert.equal(occurrenceSummaryStatus([{ status: 'sent' }, { status: 'locked' }], 2), 'pending')
+    // any non-sent outcome → not sent
+    assert.equal(occurrenceSummaryStatus([{ status: 'unconfirmed' }], 1), 'pending')
+    // missing outcome (fewer than recipients) → not sent
+    assert.equal(occurrenceSummaryStatus([{ status: 'sent' }], 2), 'pending')
+    // zero recipients → vacuously sent
+    assert.equal(occurrenceSummaryStatus([], 0), 'sent')
   })
 })
 

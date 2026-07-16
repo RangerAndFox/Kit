@@ -341,10 +341,14 @@ export async function retrieveInternalHistory(opts: {
   attendee: { email: string; displayName?: string }
   company: string | null
   workspaceId?: string | null
+  /** Injectable for tests; defaults to the real admin client / canonical search. */
+  sb?: any
+  search?: typeof searchDocuments
 }): Promise<InternalHistory> {
   const email = (opts.attendee.email || '').trim().toLowerCase()
   const out: InternalHistory = { priorMeetings: [], projects: [], knowledge: [] }
-  const sb = createAdminClient()
+  const sb = opts.sb || createAdminClient()
+  const search = opts.search || searchDocuments
 
   // 1. Prior meetings/briefings that had this attendee on the invite.
   try {
@@ -362,13 +366,18 @@ export async function retrieveInternalHistory(opts: {
     console.warn('[bizdev-briefing] prior-meetings lookup failed:', e?.message || e)
   }
 
-  // 2. Projects / inquiries matching the company (client name).
-  if (opts.company) {
+  // 2. Projects / inquiries matching the company (client name), scoped to the
+  //    workspace. MULTI-WORKSPACE INVARIANT: only run this when we can scope by
+  //    workspace_id — an unscoped client match could pull another workspace's
+  //    project into the briefing. Prefix match (not %company%) narrows false
+  //    positives ("Oshi" won't match "Foshion") without a new search subsystem.
+  if (opts.company && opts.workspaceId) {
     try {
       const { data } = await sb
         .from('projects')
         .select('name, client')
-        .ilike('client', `%${opts.company}%`)
+        .eq('workspace_id', opts.workspaceId)
+        .ilike('client', `${opts.company}%`)
         .limit(3)
       for (const p of data || []) out.projects.push({ name: p.name, client: p.client || null })
     } catch (e: any) {
@@ -382,7 +391,7 @@ export async function retrieveInternalHistory(opts: {
     const query = [opts.attendee.displayName, opts.company, email, opts.event.summary]
       .filter(Boolean)
       .join(' ')
-    const results = await searchDocuments(query, { workspaceId: opts.workspaceId ?? undefined, limit: 4 })
+    const results = await search(query, { workspaceId: opts.workspaceId ?? undefined, limit: 4 })
     for (const r of results.slice(0, 3)) {
       out.knowledge.push({ title: r.title, ref: r.sourceUrl || `doc:${r.documentId}` })
     }

@@ -287,6 +287,28 @@ export type DeliveryOutcome =
   | { status: 'sent'; ts: string; reconciled?: boolean; already?: boolean }
   | { status: 'locked' }
 
+/**
+ * Occurrence-level summary status from per-recipient delivery outcomes. The
+ * delivery ledger is the source of truth; this is only a summary on
+ * meeting_briefings. It is `sent` ONLY when every eligible recipient reached
+ * ledger status `sent`. Any unresolved recipient (locked, or an outcome that
+ * isn't `sent`) — or a missing outcome (a recipient step that didn't complete) —
+ * keeps the occurrence non-`sent`. Zero recipients is vacuously `sent` (nothing
+ * to deliver). Pure — unit-tested.
+ *
+ * Note: recipients whose delivery threw never reach this aggregation (their step
+ * throws and the dispatch catch marks the occurrence `failed`); this guards the
+ * remaining `locked`/partial cases.
+ */
+export function occurrenceSummaryStatus(
+  outcomes: { status: string }[],
+  recipientCount: number,
+): 'sent' | 'pending' {
+  if (recipientCount === 0) return 'sent'
+  if (outcomes.length !== recipientCount) return 'pending'
+  return outcomes.every((o) => o?.status === 'sent') ? 'sent' : 'pending'
+}
+
 export interface DeliveryLedgerRow {
   id: string
   status: string
