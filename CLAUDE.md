@@ -72,5 +72,5 @@ verification. There is no verified repo-wide test command — do not invent one.
 ## Keep Kit's Atlas layer current
 
 Update `.ai/` **only** when architecture, runtime ownership, invariants, or
-validation actually change — not for routine feature work. Do not turn Atlas
-back into a build diary. See `.ai/README.md` for maintenance rules.
+validation actually change — not for routine feature work. Do not turn the
+`.ai/` layer back into a build diary. See `.ai/README.md` for maintenance rules.
