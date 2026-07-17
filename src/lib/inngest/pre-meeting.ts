@@ -18,7 +18,14 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { fetchUpcomingEvents } from '@/lib/integrations/google-calendar'
 import { classifyMeeting } from '@/lib/agent/meeting-classifier'
 import { composeBriefing } from '@/lib/agent/briefing-composer'
-import { composeBizdevBriefing, hasBizdevAttendee } from '@/lib/agent/bizdev-briefing'
+import {
+  composeBizdevBriefing,
+  hasBizdevAttendee,
+  buildStaffEmailSet,
+  filterExternalAttendees,
+  shouldBriefAsBizdev,
+} from '@/lib/agent/bizdev-briefing'
+import { matchAttendeesToStaff } from '@/lib/agent/briefing-composer'
 import { deliverBriefingToRecipient, occurrenceSummaryStatus } from '@/lib/agent/briefing-delivery'
 import { recordCronSuccess } from '@/lib/health/state'
 
@@ -121,6 +128,14 @@ export const preMeetingScan = inngest.createFunction(
         }
       }
 
+      // Full active staff directory — used to decide, per event, whether an
+      // unmatched meeting is a bizdev conversation (matched internal staffer +
+      // external attendee), and later to resolve recipients at dispatch.
+      const { data: staffRows } = await sb
+        .from('staff')
+        .select('id, email, email_aliases, slack_user_id, full_name, is_active')
+        .eq('is_active', true)
+
       // Which events are already tracked — one batched query instead of one
       // per event per replay.
       const eventIds = events.map((ev: any) => ev.event_id)
@@ -145,12 +160,15 @@ export const preMeetingScan = inngest.createFunction(
           team_emails: [],
         })),
         bizdevEmails,
+        staff: staffRows || [],
         alreadyTracked,
       }
     })
 
     const { activeProjects, alreadyTracked } = scanContext
     const bizdevEmails = new Set<string>(scanContext.bizdevEmails)
+    const staff = scanContext.staff
+    const internalEmails = buildStaffEmailSet(staff)
     const trackedSet = new Set<string>(alreadyTracked)
 
     // Classify each new event (one memoized step per event), then collect
@@ -193,13 +211,21 @@ export const preMeetingScan = inngest.createFunction(
       }
 
       if (!cls.project_id || cls.confidence < matchThreshold()) {
-        // No project match — but if a bizdev staffer is on the invite, this
-        // is still worth a briefing (attendee bios instead of project
-        // context). Anything else stays a silent skip, as before.
-        const isBizdev = hasBizdevAttendee(
-          (ev.attendees || []).map((a: any) => a.email),
-          bizdevEmails,
-        )
+        // No project match. Brief as bizdev when a bizdev-role staffer is on the
+        // invite OR (fallback) when a matched internal staffer meets an external
+        // attendee — a business-development conversation. Otherwise skip.
+        const internalMatches = matchAttendeesToStaff(ev.attendees || [], staff)
+        const externals = filterExternalAttendees(ev.attendees || [], internalEmails)
+        const isBizdev = shouldBriefAsBizdev({
+          hasBizdevRoleAttendee: hasBizdevAttendee(
+            (ev.attendees || []).map((a: any) => a.email),
+            bizdevEmails,
+          ),
+          internalMatchCount: internalMatches.length,
+          externalCount: externals.length,
+          title: ev.summary || '',
+          externalEmails: externals.map((a: any) => a.email),
+        })
         if (!isBizdev) {
           rows.push({ ...baseRow, status: 'skipped', error: cls.reasoning })
           continue

@@ -60,6 +60,106 @@ export function hasBizdevAttendee(
   return attendeeEmails.some((e) => bizdevEmails.has((e || '').trim().toLowerCase()))
 }
 
+// Parenthetical values that are NOT a company (meeting-logistics noise). Kept
+// small; anything else in "(...)" is treated as a company candidate.
+const TITLE_PAREN_STOPWORDS = new Set([
+  'zoom', 'meet', 'google meet', 'teams', 'internal', 'tentative', 'rescheduled',
+  'canceled', 'cancelled', 'remote', 'virtual', 'hold', 'on hold', 'wip', '1:1',
+  'no agenda', 'recurring', 'optional', 'tbd',
+])
+
+/**
+ * Company candidate from a meeting title's parenthetical, e.g.
+ * "R&F + Steve (Kit Inc)" → "Kit Inc". Returns null when the parenthetical is
+ * absent or is meeting-logistics noise. Pure — unit-tested.
+ */
+export function companyFromTitle(title: string): string | null {
+  const m = (title || '').match(/\(([^)]+)\)/)
+  if (!m) return null
+  const inner = m[1].trim()
+  if (inner.length < 2 || !/[a-zA-Z]/.test(inner)) return null
+  if (TITLE_PAREN_STOPWORDS.has(inner.toLowerCase())) return null
+  return inner
+}
+
+// Explicit business-development / project-inquiry language. Deliberately does
+// NOT include interview/recruiting/personal terms.
+const BIZDEV_TITLE_PATTERNS: RegExp[] = [
+  /\bintro(duction)?\b/, /\bbiz\s?dev\b/, /\bbusiness development\b/,
+  /\bproposal\b/, /\bpitch\b/, /\bprospect\b/, /\bdiscovery\b/,
+  /\bkick[\s-]?off\b/, /\bsow\b/, /\bstatement of work\b/, /\bscope\b/,
+  /\bnew project\b/, /\b(project )?inquiry\b/, /\brfp\b/, /\bpartnership\b/,
+]
+
+/** True if the title uses explicit bizdev / project-inquiry language. Pure. */
+export function hasBizdevLanguage(title: string): boolean {
+  const t = (title || '').toLowerCase()
+  return BIZDEV_TITLE_PATTERNS.some((re) => re.test(t))
+}
+
+/**
+ * At least one POSITIVE business-context signal, using the smallest existing
+ * evidence mechanisms. Attendee topology alone is not enough — this is what
+ * separates a real bizdev call from a recruiter/vendor/personal call. Pure —
+ * unit-tested. Consumer domains (gmail/outlook/…) are NOT company evidence
+ * (parseCompanyFromDomain returns null for them).
+ */
+export function hasBusinessContextSignal(opts: {
+  title: string
+  externalEmails: string[]
+}): boolean {
+  if ((opts.externalEmails || []).some((e) => parseCompanyFromDomain(e) !== null)) return true
+  if (companyFromTitle(opts.title)) return true
+  if (hasBizdevLanguage(opts.title)) return true
+  return false
+}
+
+// Recruiting / interview context. Deliberately NARROW — only unambiguous
+// recruiting terms. A recruiting call can come from a real corporate domain, so
+// this must veto the positive signals for the general fallback (but never the
+// role=bizdev override). Not extended to vendor/accountant/personal — those are
+// ambiguous and out of scope.
+const RECRUITING_TITLE_PATTERNS: RegExp[] = [
+  /\binterview\b/, /\brecruiter\b/, /\brecruiting\b/,
+]
+
+/** True if the title is a recruiting/interview conversation. Pure — unit-tested. */
+export function hasRecruitingContext(title: string): boolean {
+  const t = (title || '').toLowerCase()
+  return RECRUITING_TITLE_PATTERNS.some((re) => re.test(t))
+}
+
+/**
+ * Decide whether a meeting with NO active-project match should still be briefed
+ * as business development. Pure — unit-tested.
+ *
+ * Precedence (evaluated in this order):
+ *   1. role=bizdev override — a bizdev-role staffer on the invite is always
+ *      bizdev (recruiting exclusion does NOT apply here).
+ *   2. Topology required — otherwise, need ≥1 matched internal staff attendee
+ *      AND ≥1 external attendee; else skip.
+ *   3. Recruiting exclusion — an interview/recruiter/recruiting title is skipped
+ *      even if it has a corporate domain or other positive signal.
+ *   4. Positive business-context signal — non-generic company domain, a company
+ *      candidate in the title, or explicit bizdev language; else skip.
+ */
+export function shouldBriefAsBizdev(opts: {
+  hasBizdevRoleAttendee: boolean
+  internalMatchCount: number
+  externalCount: number
+  title: string
+  externalEmails: string[]
+}): boolean {
+  // 1. role=bizdev override.
+  if (opts.hasBizdevRoleAttendee) return true
+  // 2. Topology required.
+  if (!(opts.internalMatchCount >= 1 && opts.externalCount >= 1)) return false
+  // 3. Recruiting exclusion — applied BEFORE positive signals are accepted.
+  if (hasRecruitingContext(opts.title)) return false
+  // 4. Positive business-context signal.
+  return hasBusinessContextSignal({ title: opts.title, externalEmails: opts.externalEmails })
+}
+
 /** Builds the lowercased (email + aliases) set for a set of staff rows. Pure. */
 export function buildStaffEmailSet(
   staff: { email: string | null; email_aliases?: string[] | null }[],

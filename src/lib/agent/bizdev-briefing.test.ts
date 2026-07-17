@@ -26,6 +26,11 @@ import {
   internalHistoryToEvidence,
   researchAttendee,
   retrieveInternalHistory,
+  shouldBriefAsBizdev,
+  hasBusinessContextSignal,
+  companyFromTitle,
+  hasBizdevLanguage,
+  hasRecruitingContext,
 } from './bizdev-briefing'
 import { matchAttendeesToStaff } from './briefing-composer'
 
@@ -163,6 +168,100 @@ describe('renderAttendeeEvidence / buildBizdevBriefingText (no raw prose)', () =
     assert.ok(lines.some((l) => l.includes('Ryan Dolinsky')))
     assert.ok(lines.some((l) => l.includes('Founder of Oshi')))
     assert.ok(lines.some((l) => l.includes('Confidence: resolved')))
+  })
+})
+
+describe('business-context signals', () => {
+  it('companyFromTitle extracts a parenthetical company, ignores logistics noise', () => {
+    assert.equal(companyFromTitle('R&F + Steve (Kit Inc)'), 'Kit Inc')
+    assert.equal(companyFromTitle('Standup (Zoom)'), null)
+    assert.equal(companyFromTitle('Lunch'), null)
+  })
+  it('hasBizdevLanguage matches bizdev/inquiry terms, not interview/personal', () => {
+    assert.equal(hasBizdevLanguage('Intro call with Acme'), true)
+    assert.equal(hasBizdevLanguage('New project inquiry'), true)
+    assert.equal(hasBizdevLanguage('Candidate interview'), false)
+    assert.equal(hasBizdevLanguage('Doctor appointment'), false)
+    assert.equal(hasBizdevLanguage('Lunch'), false)
+  })
+  it('hasRecruitingContext matches interview/recruiter/recruiting only', () => {
+    assert.equal(hasRecruitingContext('Candidate interview'), true)
+    assert.equal(hasRecruitingContext('Interview: senior editor'), true)
+    assert.equal(hasRecruitingContext('Recruiter call'), true)
+    assert.equal(hasRecruitingContext('Recruiting sync'), true)
+    assert.equal(hasRecruitingContext('Discovery'), false)
+    assert.equal(hasRecruitingContext('R&F + Steve (Kit Inc)'), false)
+  })
+  it('hasBusinessContextSignal: company domain OR title company OR bizdev language', () => {
+    assert.equal(hasBusinessContextSignal({ title: 'Sync', externalEmails: ['a@acme.co'] }), true) // domain
+    assert.equal(hasBusinessContextSignal({ title: 'Chat (Acme)', externalEmails: ['a@gmail.com'] }), true) // title company
+    assert.equal(hasBusinessContextSignal({ title: 'Intro', externalEmails: ['a@gmail.com'] }), true) // language
+    assert.equal(hasBusinessContextSignal({ title: 'Lunch', externalEmails: ['a@gmail.com'] }), false) // none
+  })
+})
+
+describe('shouldBriefAsBizdev (no-project fallback: topology + business signal)', () => {
+  const staff = [
+    { id: 's-steve', email: 'steve@rangerandfox.tv', slack_user_id: 'U_STEVE', full_name: 'Steve', is_active: true },
+  ]
+  // Compute the real topology for a set of attendees against the staff directory.
+  function topology(attendees: { email: string }[]) {
+    const internalMatches = matchAttendeesToStaff(attendees, staff)
+    const externals = filterExternalAttendees(attendees, buildStaffEmailSet(staff))
+    return {
+      internalMatchCount: internalMatches.length,
+      externalCount: externals.length,
+      externalEmails: externals.map((e) => e.email),
+    }
+  }
+  const decide = (title: string, attendees: { email: string }[], hasBizdevRoleAttendee = false) =>
+    shouldBriefAsBizdev({ hasBizdevRoleAttendee, title, ...topology(attendees) })
+
+  it('a bizdev-role attendee always triggers bizdev (no signal needed)', () => {
+    assert.equal(decide('Lunch', [{ email: 'steve@rangerandfox.tv' }, { email: 'x@gmail.com' }], true), true)
+  })
+
+  it('REPORTED CASE: "R&F + Steve (Kit Inc)" → bizdev because the title supplies a company candidate', () => {
+    const t = topology([{ email: 'steve@rangerandfox.tv' }, { email: 'stevepanicara@gmail.com' }])
+    assert.equal(t.internalMatchCount, 1)
+    assert.equal(t.externalCount, 1)
+    assert.equal(companyFromTitle('R&F + Steve (Kit Inc)'), 'Kit Inc') // the reason
+    assert.equal(decide('R&F + Steve (Kit Inc)', [{ email: 'steve@rangerandfox.tv' }, { email: 'stevepanicara@gmail.com' }]), true)
+  })
+
+  it('internal + external company domain → bizdev', () => {
+    assert.equal(decide('Sync', [{ email: 'steve@rangerandfox.tv' }, { email: 'buyer@acme.co' }]), true)
+  })
+  it('internal + buyer@acme.com + "Discovery" → bizdev', () => {
+    assert.equal(decide('Discovery', [{ email: 'steve@rangerandfox.tv' }, { email: 'buyer@acme.com' }]), true)
+  })
+
+  // ── Recruiting exclusion: veto positive signals for the general fallback ──
+  it('internal + applicant@company.com + "Candidate interview" → skipped (corp domain vetoed)', () => {
+    assert.equal(decide('Candidate interview', [{ email: 'steve@rangerandfox.tv' }, { email: 'applicant@company.com' }]), false)
+  })
+  it('internal + recruiter@agency.com + "Recruiter call" → skipped', () => {
+    assert.equal(decide('Recruiter call', [{ email: 'steve@rangerandfox.tv' }, { email: 'recruiter@agency.com' }]), false)
+  })
+  it('role=bizdev attendee + recruiting title remains bizdev (override wins)', () => {
+    assert.equal(decide('Candidate interview', [{ email: 'steve@rangerandfox.tv' }, { email: 'applicant@company.com' }], true), true)
+  })
+
+  // ── Negatives: topology present but NO business signal → stay skipped ──
+  it('internal + external Gmail, title "Lunch" → skipped', () => {
+    assert.equal(decide('Lunch', [{ email: 'steve@rangerandfox.tv' }, { email: 'friend@gmail.com' }]), false)
+  })
+  it('internal + external Gmail, title "Doctor appointment" → skipped', () => {
+    assert.equal(decide('Doctor appointment', [{ email: 'steve@rangerandfox.tv' }, { email: 'doc@gmail.com' }]), false)
+  })
+  it('internal + external, title "Candidate interview" → skipped', () => {
+    assert.equal(decide('Candidate interview', [{ email: 'steve@rangerandfox.tv' }, { email: 'applicant@gmail.com' }]), false)
+  })
+  it('internal-only → skipped', () => {
+    assert.equal(decide('Intro (Acme)', [{ email: 'steve@rangerandfox.tv' }]), false)
+  })
+  it('external-only → skipped', () => {
+    assert.equal(decide('Intro (Acme)', [{ email: 'buyer@acme.co' }]), false)
   })
 })
 
