@@ -38,7 +38,15 @@ fact.
   `preMeetingDispatch`, `deliveryDropboxScan`, `deliverySpecsScan`,
   `deliveryJobNotifier`, `deliveryStaleSweep`, `studioKnowledgeAutoSummarize`,
   `brainDeadlineSweep`, `brainScavengerScan`, `brainConsolidate`,
-  `driveTranscriptScan`, `healthWatchdog`.
+  `driveTranscriptScan`, `healthWatchdog`, `projectControlSync`.
+- **`projectControlSync` (Verified):** the one-way Master Project List →
+  Project Control Canvas sync (every 10m), gated on
+  `PROJECT_CONTROL_SYNC_ENABLED`. It owns the workbook Drive-version cursor +
+  sync lease. The *creation-side* binding (Sheet row + Canvas) runs on **Railway**
+  inside the provisioner (`src/lib/project-control/creation.ts`), gated on
+  `PROJECT_CONTROL_CREATION_ENABLED` — a separate control. Both reuse the
+  `GOOGLE_SERVICE_ACCOUNT_JSON` service account (raw REST; googleapis is not in
+  the Bolt image).
 - **Trigger model:** Inngest invokes functions on their schedules/events. A
   function must be listed in `route.ts` *and* synced to Inngest to run.
   *(`route.ts` list is Verified; the Inngest sync state is Needs verification.)*

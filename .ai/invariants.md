@@ -61,6 +61,13 @@ mechanism in code before assuming full compliance.
 13. **Shared behavior stays shared.** New cross-cutting domain logic goes into
     a `src/lib/` module, not duplicated into a Bolt handler and an Inngest
     cron.
+14. **Project Control is one-way and single-bound.** The Master Project List row
+    is authoritative; the Slack Project Control Canvas is a rendered view only.
+    Each project has at most one binding, one bound Canvas, and one Sheet
+    developer-metadata record (`kit_project_id`); Kit never writes the workbook's
+    margin/formula columns, and sync never edits a canvas other than the
+    binding's persisted `canvas_id`. *(Verified — migration 056 unique
+    constraints + `src/lib/project-control/`.)*
 
 ## How to use these
 

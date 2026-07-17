@@ -456,6 +456,39 @@ export async function postProjectLinks(opts: {
 export interface DuplicateCanvasesResult {
   /** IDs of canvases copied from the template and tabbed to the new channel */
   standaloneCanvasIds: string[]
+  /** Per-clone mapping so callers can tell which new canvas came from which
+   *  template (index-based alignment is unreliable — clones can be skipped). */
+  clones: Array<{ templateFileId: string; canvasId: string; title: string }>
+}
+
+/**
+ * List the template channel's canvases with their titles + normalized markdown
+ * bodies. Used by Project Control template resolution (structural signature
+ * match) so it and the cloner share one HTML→markdown path.
+ */
+export async function fetchTemplateCandidates(): Promise<
+  Array<{ fileId: string; title: string; markdown: string }>
+> {
+  const out: Array<{ fileId: string; title: string; markdown: string }> = []
+  if (!process.env.SLACK_BOT_TOKEN) return out
+  const ids = await resolveCanvasTemplateFileIds()
+  for (const fileId of ids) {
+    try {
+      const info = await slackGet('files.info', { file: fileId })
+      const title: string = info.file?.title || info.file?.name || ''
+      const url: string | undefined = info.file?.url_private_download || info.file?.url_private
+      if (!url) continue
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+      })
+      if (!res.ok) continue
+      const markdown = canvasHtmlToMarkdown(await res.text())
+      out.push({ fileId, title, markdown })
+    } catch (err: any) {
+      console.warn(`[Slack] fetchTemplateCandidates(${fileId}) failed:`, err.message)
+    }
+  }
+  return out
 }
 
 /**
@@ -566,8 +599,11 @@ export async function duplicateTemplateCanvases(opts: {
   /** Asset-folder links Kit just created — filled into the Assets Folders table. */
   dropboxUrl?: string
   frameioUrl?: string
+  /** Template file ids to skip in generic cloning (e.g. the Project Control
+   *  template, which is created/managed through its own dedicated path). */
+  excludeFileIds?: string[]
 }): Promise<DuplicateCanvasesResult> {
-  const out: DuplicateCanvasesResult = { standaloneCanvasIds: [] }
+  const out: DuplicateCanvasesResult = { standaloneCanvasIds: [], clones: [] }
   if (!process.env.SLACK_BOT_TOKEN) {
     console.warn('[Slack canvas] SLACK_BOT_TOKEN missing; skipping')
     return out
@@ -576,7 +612,8 @@ export async function duplicateTemplateCanvases(opts: {
   // Dynamic template resolution: list every canvas tabbed to the template
   // channel and clone all of them. Editors maintain the templates by
   // adding/removing canvases in C0B1312H89L — no env-var changes needed.
-  const templateFileIds = await resolveCanvasTemplateFileIds()
+  const excluded = new Set(opts.excludeFileIds || [])
+  const templateFileIds = (await resolveCanvasTemplateFileIds()).filter((id) => !excluded.has(id))
   if (templateFileIds.length === 0) {
     console.warn('[Slack canvas] no template canvases resolved; skipping')
     return out
@@ -707,6 +744,7 @@ export async function duplicateTemplateCanvases(opts: {
         continue
       }
       out.standaloneCanvasIds.push(canvasId)
+      out.clones.push({ templateFileId: fileId, canvasId, title: newTitle })
 
       // 4. Also grant the channel write access so members can edit, not
       //    just read. The channel_id on create gives read; this upgrades it.

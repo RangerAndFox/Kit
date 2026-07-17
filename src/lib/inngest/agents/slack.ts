@@ -12,6 +12,8 @@ import {
   postProjectLinks,
   duplicateTemplateCanvases,
 } from '@/lib/mcp/slack'
+import { workbookConfigFromEnv, projectControlCreationEnabled } from '@/lib/project-control/types'
+import { resolveControlTemplate } from '@/lib/project-control/canvas'
 import type { AgentDefinition, AgentResult } from './types'
 
 const SLACK_API = 'https://slack.com/api'
@@ -87,6 +89,28 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       await postProjectLinks({ channelId: channel.channelId, links })
     }
 
+    // Project Control: when the workbook is configured, resolve the single
+    // Project Control template so it is EXCLUDED from generic cloning and
+    // managed through its own dedicated create/sync path (creation.ts). If it
+    // can't be resolved (0/2+ matches), we don't guess — we surface the reason
+    // and let generic cloning proceed; the binding step records the error.
+    let controlTemplate: { fileId: string; markdown: string; hash: string } | null = null
+    let controlTemplateError: string | null = null
+    const excludeFileIds: string[] = []
+    if (projectControlCreationEnabled() && workbookConfigFromEnv()) {
+      try {
+        const r = await resolveControlTemplate(workbookConfigFromEnv()!)
+        if (r.ok) {
+          controlTemplate = { fileId: r.fileId, markdown: r.markdown, hash: r.hash }
+          excludeFileIds.push(r.fileId)
+        } else {
+          controlTemplateError = r.reason
+        }
+      } catch (e: any) {
+        controlTemplateError = `resolve_failed: ${e.message}`
+      }
+    }
+
     // Duplicate canvases from the template channel (header canvas + standalones)
     let canvasResult: { standaloneCanvasIds: string[] } = {
       standaloneCanvasIds: [],
@@ -103,6 +127,7 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
         delivery: (payload.targetDelivery as string) || undefined,
         dropboxUrl: (payload.dropboxUrl as string) || undefined,
         frameioUrl: (payload.frameioUrl as string) || undefined,
+        excludeFileIds,
       })
     } catch (e: any) {
       console.warn('[SlackAgent] Template canvas copy failed (non-fatal):', e.message)
@@ -118,7 +143,10 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       message: `Created #${channel.channelName}${totalCanvases ? ` with ${totalCanvases} canvas${totalCanvases === 1 ? '' : 'es'}` : ''}`,
       data: {
         channelName: channel.channelName,
+        channelId: channel.channelId,
         standaloneCanvasIds: canvasResult.standaloneCanvasIds,
+        controlTemplate,
+        controlTemplateError,
       },
     }
   } catch (err: any) {

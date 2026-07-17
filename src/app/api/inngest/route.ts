@@ -7,6 +7,7 @@ import { studioKnowledgeAutoSummarize } from '@/lib/inngest/studio-knowledge-cro
 import { brainDeadlineSweep, brainScavengerScan, brainConsolidate } from '@/lib/inngest/brain-crons'
 import { driveTranscriptScan } from '@/lib/inngest/drive-transcripts'
 import { healthWatchdog } from '@/lib/inngest/health-cron'
+import { projectControlSync } from '@/lib/inngest/project-control-sync'
 
 /**
  * Inngest API route.
@@ -33,6 +34,7 @@ export const { GET, POST, PUT } = serve({
     brainConsolidate,
     driveTranscriptScan,
     healthWatchdog,
+    projectControlSync,
     // Add new functions here as agents are built
   ],
 })
