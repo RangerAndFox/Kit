@@ -1,179 +1,216 @@
 /**
  * Durable per-service provisioning tests — through the REAL runDurableProvisioning
- * with an injected in-memory step ledger (no DB).
+ * with an injected in-memory step ledger modeling per-step ownership (claim /
+ * fence / holder-conditional complete). No DB.
  *
  * Run: npx tsx --test src/lib/project-control/provisioning-steps.test.ts
  */
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import {
-  runDurableProvisioning,
-  type StepLedger,
-  type PersistedStep,
-  type StepResult,
-} from './provisioning-steps'
+import { runDurableProvisioning, type StepLedger, type StepResult } from './provisioning-steps'
 
-/** In-memory ledger honoring getSteps + upsert-by-(project,service). */
-function fakeLedger(seed: PersistedStep[] = [], renew?: () => Promise<boolean>): StepLedger & {
-  steps: Map<string, PersistedStep>
-  runningMarks: string[]
-} {
-  const steps = new Map<string, PersistedStep>()
-  for (const s of seed) steps.set(s.service, { ...s })
-  const runningMarks: string[] = []
-  return {
-    steps,
-    runningMarks,
+interface Row {
+  service: string
+  status: string
+  result: Record<string, unknown> | null
+  fence: number
+  holder: string | null
+  external_id?: string | null
+}
+
+/**
+ * In-memory ledger with a single logical holder (the run) unless `otherHolder`
+ * pre-claims a row to simulate a competing/stale worker.
+ */
+function fakeLedger(seed: Partial<Row>[] = [], renew?: () => Promise<boolean>) {
+  const rows = new Map<string, Row>()
+  for (const s of seed) rows.set(s.service!, { service: s.service!, status: s.status ?? 'pending', result: s.result ?? null, fence: s.fence ?? 0, holder: s.holder ?? null, external_id: s.external_id ?? null })
+  const HOLDER = 'run-A'
+
+  const ledger: StepLedger & { rows: Map<string, Row>; getEarly?: number } = {
+    rows,
     async getSteps() {
-      return [...steps.values()]
+      return [...rows.values()].map((r) => ({ service: r.service, status: r.status, result: r.result }))
     },
-    async markStep(_p, service, patch) {
-      if (patch.status === 'running') runningMarks.push(service)
-      const prev = steps.get(service) || { service, status: 'pending', result: null }
-      steps.set(service, {
-        service,
-        status: (patch.status as PersistedStep['status']) ?? prev.status,
-        result: patch.result !== undefined ? patch.result : prev.result,
-      })
+    async claimStep(_pid, service) {
+      const cur = rows.get(service) || { service, status: 'pending', result: null, fence: 0, holder: null }
+      rows.set(service, cur)
+      if (cur.status === 'done' || cur.status === 'terminal') return { ok: false, fence: cur.fence, status: cur.status }
+      if (cur.holder && cur.holder !== HOLDER) return { ok: false, fence: cur.fence, status: cur.status } // actively leased by another
+      cur.fence += 1
+      cur.holder = HOLDER
+      cur.status = 'running'
+      return { ok: true, fence: cur.fence, status: 'running' }
+    },
+    async recordExternalId(_pid, service, fence, o) {
+      const cur = rows.get(service)
+      if (!cur || cur.holder !== HOLDER || cur.fence !== fence) return false
+      if (o.externalId !== undefined) cur.external_id = o.externalId
+      return true
+    },
+    async completeStep(_pid, service, fence, patch) {
+      const cur = rows.get(service)
+      if (!cur || cur.holder !== HOLDER || cur.fence !== fence) return false // lost ownership
+      cur.status = patch.status
+      cur.result = patch.result ?? cur.result
+      cur.holder = null
+      return true
     },
     renew,
   }
+  return ledger
 }
 
 const ok = (service: string, extra: Record<string, unknown> = {}): StepResult => ({ service, success: true, ...extra })
 
-describe('runDurableProvisioning', () => {
-  it('runs every service on a fresh run and records each as done', async () => {
+describe('runDurableProvisioning (per-step ownership)', () => {
+  it('runs every service on a fresh run; allRequiredDone when all done', async () => {
     const ledger = fakeLedger()
     const calls: string[] = []
     const res = await runDurableProvisioning(
       {
         projectId: 'p1',
-        phases: [
-          () => [
-            { service: 'dropbox', run: async () => { calls.push('dropbox'); return ok('dropbox', { url: 'db' }) } },
-            { service: 'frameio', run: async () => { calls.push('frameio'); return ok('frameio', { url: 'f' }) } },
-          ],
-        ],
+        requiredServices: ['dropbox', 'frameio'],
+        phases: [() => [
+          { service: 'dropbox', run: async () => { calls.push('dropbox'); return ok('dropbox', { url: 'db' }) } },
+          { service: 'frameio', run: async () => { calls.push('frameio'); return ok('frameio') } },
+        ]],
       },
       ledger,
     )
     assert.deepEqual(calls.sort(), ['dropbox', 'frameio'])
-    assert.deepEqual(res.ran.sort(), ['dropbox', 'frameio'])
-    assert.deepEqual(res.resumed, [])
-    assert.equal(res.results.dropbox.url, 'db')
-    assert.equal(ledger.steps.get('dropbox')?.status, 'done')
-    assert.equal(ledger.steps.get('frameio')?.status, 'done')
+    assert.equal(res.allRequiredDone, true)
+    assert.equal(res.anyTerminal, false)
+    assert.deepEqual(res.incompleteServices, [])
   })
 
-  it('skips already-done services on resume and reuses their stored result', async () => {
-    const ledger = fakeLedger([
-      { service: 'dropbox', status: 'done', result: { service: 'dropbox', success: true, url: 'db-cached' } },
-    ])
+  it('skips already-done services and reuses their stored result', async () => {
+    const ledger = fakeLedger([{ service: 'dropbox', status: 'done', result: { service: 'dropbox', success: true, url: 'db-cached' } }])
     const calls: string[] = []
     const res = await runDurableProvisioning(
       {
         projectId: 'p1',
-        phases: [
-          () => [
-            { service: 'dropbox', run: async () => { calls.push('dropbox'); return ok('dropbox', { url: 'db-new' }) } },
-            { service: 'frameio', run: async () => { calls.push('frameio'); return ok('frameio') } },
-          ],
-        ],
+        requiredServices: ['dropbox', 'frameio'],
+        phases: [() => [
+          { service: 'dropbox', run: async () => { calls.push('dropbox'); return ok('dropbox', { url: 'db-new' }) } },
+          { service: 'frameio', run: async () => { calls.push('frameio'); return ok('frameio') } },
+        ]],
       },
       ledger,
     )
-    // Dropbox was done → not re-run; frameio runs.
     assert.deepEqual(calls, ['frameio'])
     assert.deepEqual(res.resumed, ['dropbox'])
-    assert.deepEqual(res.ran, ['frameio'])
-    // Reused the cached result, not the fresh one.
     assert.equal(res.results.dropbox.url, 'db-cached')
+    assert.equal(res.allRequiredDone, true)
   })
 
-  it('a soft failure (success:false) is recorded failed and re-runs on the next pass', async () => {
+  it('a failed step keeps allRequiredDone false and lists it incomplete (retryable)', async () => {
+    const ledger = fakeLedger()
+    const res = await runDurableProvisioning(
+      {
+        projectId: 'p1',
+        requiredServices: ['harvest'],
+        phases: [() => [{ service: 'harvest', run: async () => ({ service: 'harvest', success: false, error: 'rate limited' }) }]],
+      },
+      ledger,
+    )
+    assert.equal(res.allRequiredDone, false)
+    assert.equal(res.anyTerminal, false)
+    assert.deepEqual(res.incompleteServices, ['harvest'])
+    assert.equal(ledger.rows.get('harvest')?.status, 'failed')
+  })
+
+  it('a terminal failure sets anyTerminal and blocks completion', async () => {
+    const ledger = fakeLedger()
+    const res = await runDurableProvisioning(
+      {
+        projectId: 'p1',
+        requiredServices: ['harvest'],
+        phases: [() => [{ service: 'harvest', run: async () => ({ service: 'harvest', success: false, terminal: true, error: 'bad config' }) }]],
+      },
+      ledger,
+    )
+    assert.equal(res.allRequiredDone, false)
+    assert.equal(res.anyTerminal, true)
+    assert.equal(ledger.rows.get('harvest')?.status, 'terminal')
+  })
+
+  it('a failed step retries and converges on the next pass', async () => {
     const ledger = fakeLedger()
     let attempts = 0
     const plan = {
       projectId: 'p1',
-      phases: [
-        () => [{ service: 'harvest', run: async () => { attempts++; return attempts === 1 ? { service: 'harvest', success: false, error: 'rate limited' } : ok('harvest') } }],
-      ],
+      requiredServices: ['harvest'],
+      phases: [() => [{ service: 'harvest', run: async () => { attempts++; return attempts === 1 ? { service: 'harvest', success: false, error: 'x' } : ok('harvest') } }]],
     }
     const first = await runDurableProvisioning(plan, ledger)
-    assert.equal(first.results.harvest.success, false)
-    assert.equal(ledger.steps.get('harvest')?.status, 'failed')
-    // Resume: failed step is not in the done set, so it retries and converges.
+    assert.equal(first.allRequiredDone, false)
     const second = await runDurableProvisioning(plan, ledger)
-    assert.equal(second.results.harvest.success, true)
-    assert.deepEqual(second.ran, ['harvest'])
-    assert.equal(ledger.steps.get('harvest')?.status, 'done')
+    assert.equal(second.allRequiredDone, true)
     assert.equal(attempts, 2)
   })
 
-  it('re-runs a crashed (running) step, and a reconcile-first service stays exactly-once', async () => {
-    // Stateful "provider": a reconcile-first service creates only when absent.
-    const provider = { count: 0 }
-    const reconcileFirstRun = async (): Promise<StepResult> => {
-      if (provider.count === 0) provider.count++ // create only when absent
-      return { service: 'harvest', success: true, id: 'H1' }
-    }
-    // Simulate a crash mid-create: step was marked 'running' but never 'done',
-    // and the external resource DID get created (provider.count = 1).
-    provider.count = 1
-    const ledger = fakeLedger([{ service: 'harvest', status: 'running', result: null }])
-
+  it('rejects a stale worker: completeStep fails when the fence advanced mid-run', async () => {
+    const ledger = fakeLedger()
+    // While "our" run holds the harvest step, a competitor reclaims it (bumps
+    // fence + steals holder) before we complete → our complete is rejected.
     const res = await runDurableProvisioning(
-      { projectId: 'p1', phases: [() => [{ service: 'harvest', run: reconcileFirstRun }]] },
+      {
+        projectId: 'p1',
+        requiredServices: ['harvest'],
+        phases: [() => [{ service: 'harvest', run: async () => {
+          const row = ledger.rows.get('harvest')!
+          row.fence += 1 // competitor reclaim
+          row.holder = 'run-B'
+          return ok('harvest')
+        } }]],
+      },
       ledger,
     )
-    // The 'running' step re-ran (not in the done set)...
-    assert.deepEqual(res.ran, ['harvest'])
-    // ...but the reconcile-first service did NOT create a second resource.
-    assert.equal(provider.count, 1)
-    assert.equal(ledger.steps.get('harvest')?.status, 'done')
+    assert.deepEqual(res.lostOwnership, ['harvest'])
+    assert.equal(res.ran.includes('harvest'), false)
   })
 
-  it('a thrown error is captured as a failed step, not propagated', async () => {
-    const ledger = fakeLedger()
+  it('skips a step already claimed (in-flight) by another worker', async () => {
+    const ledger = fakeLedger([{ service: 'slack', status: 'running', holder: 'run-B', fence: 3 }])
     const res = await runDurableProvisioning(
-      { projectId: 'p1', phases: [() => [{ service: 'slack', run: async () => { throw new Error('boom') } }]] },
+      {
+        projectId: 'p1',
+        requiredServices: ['slack'],
+        phases: [() => [{ service: 'slack', run: async () => ok('slack') }]],
+      },
       ledger,
     )
-    assert.equal(res.results.slack.success, false)
-    assert.equal(res.results.slack.error, 'boom')
-    assert.equal(ledger.steps.get('slack')?.status, 'failed')
+    assert.deepEqual(res.skippedInFlight, ['slack'])
+    assert.equal(res.allRequiredDone, false)
   })
 
   it('a later phase sees earlier results — including resumed ones', async () => {
-    const ledger = fakeLedger([
-      { service: 'dropbox', status: 'done', result: { service: 'dropbox', success: true, url: 'DB' } },
-    ])
-    let slackSawUrl: string | undefined
+    const ledger = fakeLedger([{ service: 'dropbox', status: 'done', result: { service: 'dropbox', success: true, url: 'DB' } }])
+    let seen: string | undefined
     await runDurableProvisioning(
       {
         projectId: 'p1',
+        requiredServices: ['dropbox', 'frameio', 'slack'],
         phases: [
           () => [{ service: 'frameio', run: async () => ok('frameio', { url: 'FIO' }) }],
-          (acc) => [{ service: 'slack', run: async () => { slackSawUrl = `${acc.dropbox?.url}+${acc.frameio?.url}`; return ok('slack') } }],
+          (acc) => [{ service: 'slack', run: async () => { seen = `${acc.dropbox?.url}+${acc.frameio?.url}`; return ok('slack') } }],
         ],
       },
       ledger,
     )
-    // Slack (phase 2) saw the resumed dropbox url AND the phase-1 frameio url.
-    assert.equal(slackSawUrl, 'DB+FIO')
+    assert.equal(seen, 'DB+FIO')
   })
 
-  it('rejects a phase before its writes once ownership is lost (enforced fence)', async () => {
-    // Ownership holds for phase 1, then a newer holder reclaims before phase 2.
-    let calls = 0
-    const renew = async () => { calls++; return calls === 1 }
-    const ledger = fakeLedger([], renew)
+  it('aborts before a phase when the request lease is lost', async () => {
+    let n = 0
+    const ledger = fakeLedger([], async () => { n++; return n === 1 })
     const ran: string[] = []
     const res = await runDurableProvisioning(
       {
         projectId: 'p1',
+        requiredServices: ['dropbox', 'slack'],
         phases: [
           () => [{ service: 'dropbox', run: async () => { ran.push('dropbox'); return ok('dropbox') } }],
           () => [{ service: 'slack', run: async () => { ran.push('slack'); return ok('slack') } }],
@@ -182,18 +219,33 @@ describe('runDurableProvisioning', () => {
       ledger,
     )
     assert.equal(res.abortedLostLease, true)
-    // Phase 1 ran (owned); phase 2's write was rejected at the gate BEFORE it ran.
     assert.deepEqual(ran, ['dropbox'])
   })
 
-  it('rejects the very first write when ownership is already lost', async () => {
-    const ledger = fakeLedger([], async () => false) // never owned
-    const ran: string[] = []
+  it('a failed replace_cleanup step blocks completion (never silently completed)', async () => {
+    const ledger = fakeLedger()
     const res = await runDurableProvisioning(
-      { projectId: 'p1', phases: [() => [{ service: 'dropbox', run: async () => { ran.push('dropbox'); return ok('dropbox') } }]] },
+      {
+        projectId: 'p1',
+        requiredServices: ['replace_cleanup', 'dropbox'],
+        phases: [
+          () => [{ service: 'replace_cleanup', run: async () => { throw new Error('delete failed') } }],
+          () => [{ service: 'dropbox', run: async () => ok('dropbox') }],
+        ],
+      },
       ledger,
     )
-    assert.equal(res.abortedLostLease, true)
-    assert.deepEqual(ran, []) // nothing dispatched — rejected before the external boundary
+    assert.equal(res.allRequiredDone, false)
+    assert.ok(res.incompleteServices.includes('replace_cleanup'))
+    assert.equal(ledger.rows.get('replace_cleanup')?.status, 'failed') // retryable
+  })
+
+  it('propagates a getSteps store error (never treats it as an empty ledger)', async () => {
+    const ledger = fakeLedger()
+    ledger.getSteps = async () => { throw new Error('db down') }
+    await assert.rejects(
+      runDurableProvisioning({ projectId: 'p1', requiredServices: ['dropbox'], phases: [() => [{ service: 'dropbox', run: async () => ok('dropbox') }]] }, ledger),
+      /db down/,
+    )
   })
 })

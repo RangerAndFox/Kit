@@ -25,13 +25,18 @@ import {
   loadCreationRequest,
   updateCreationRequest,
   claimCreationRequest,
+  commitCreationDecision,
   claimCreationRequestFenced,
   renewCreationRequestLease,
   listRecoverableRequests,
+  listProjectsWithIncompleteSteps,
+  loadCreationRequestByProjectId,
   listIncompleteBindings,
   getBindingByProject,
   getProvisioningSteps,
-  upsertProvisioningStep,
+  claimProvisioningStep,
+  recordStepExternalId,
+  completeProvisioningStep,
 } from '../../../src/lib/project-control/store'
 import { bindProjectControl } from '../../../src/lib/project-control/creation'
 import { runDurableProvisioning } from '../../../src/lib/project-control/provisioning-steps'
@@ -678,7 +683,12 @@ export function registerInteractionHandlers(app: App) {
       case 'in_flight':
         return // leave the open prompt / let the active worker finish
       case 'duplicate_prompt':
-        await updateCreationRequest(requestKey, { status: 'awaiting_decision' })
+        // Persist the EXACT conflict project id when the prompt is first created,
+        // so the target cannot change between prompt and click.
+        await updateCreationRequest(requestKey, {
+          status: 'awaiting_decision',
+          replace_target_project_id: existing!.id,
+        })
         await client.chat.postMessage(postProvisionDupPrompt(statusChannel, threadTs, existing!, requestKey))
         return
       case 'resume':
@@ -713,10 +723,15 @@ export function registerInteractionHandlers(app: App) {
       return
     }
     const { form, userId, statusChannel, threadTs, workspaceId } = req!.submission
-    // Persist the decision + state BEFORE replacing the prompt, so a crash here
-    // is recoverable (decision='duplicate' + status='provisioning' → the sweep
-    // resumes it) rather than stranding at awaiting_decision.
-    await updateCreationRequest(value, { decision: 'duplicate', status: 'provisioning' })
+    // Atomic CAS: only the FIRST competing click transitions the request out of
+    // awaiting_decision. A racing replace/cancel (or a double duplicate) loses.
+    const won = await commitCreationDecision({
+      requestKey: value, actingUserId: (body as any).user?.id || '', workspaceId: actingWorkspaceId, decision: 'duplicate',
+    })
+    if (!won) {
+      await respond({ replace_original: true, text: ':information_source: That request was already resolved.' })
+      return
+    }
     await respond({ replace_original: true, text: `:heavy_plus_sign: Creating a *duplicate* project for ${form.projectName}...` })
     await runProjectProvisioning({ client, form, workspaceId, userId, statusChannel, threadTs, requestKey: value, creationEnabled: true })
   })
@@ -747,21 +762,19 @@ export function registerInteractionHandlers(app: App) {
       return
     }
     const { form, userId, statusChannel, threadTs, workspaceId } = req!.submission
-    // Re-derive the clashing project from the ledger's number (state reloaded
-    // from Supabase, not from an in-memory stash).
-    const existing = await findExistingProject(workspaceId, form.projectNumber)
-    // DURABLY RECORD THE DECISION + EXACT TARGET + STATE *BEFORE* replacing the
-    // prompt or archiving anything. A crash after this point is fully
-    // recoverable: the recovery sweep sees decision='replace' + the persisted
-    // target and finishes via the same durable path. The archive itself is done
-    // by runProjectProvisioning (idempotent, keyed on the persisted target), so
-    // a replay can never archive the newly created replacement.
-    await updateCreationRequest(value, {
-      decision: 'replace',
-      status: 'provisioning',
-      replace_target_project_id: existing?.id ?? null,
+    // Atomic CAS: only the FIRST competing click wins. The conflict target was
+    // persisted (replace_target_project_id) when the prompt was created, so it
+    // cannot change between prompt and click. The archive itself is a durable
+    // step inside runProjectProvisioning (keyed on the persisted target), so a
+    // crash is recoverable and a replay can never archive the replacement.
+    const won = await commitCreationDecision({
+      requestKey: value, actingUserId: (body as any).user?.id || '', workspaceId: actingWorkspaceId, decision: 'replace',
     })
-    await respond({ replace_original: true, text: `:wastebasket: Removing the old *${existing?.name || form.projectName}* and creating a fresh one...` })
+    if (!won) {
+      await respond({ replace_original: true, text: ':information_source: That request was already resolved.' })
+      return
+    }
+    await respond({ replace_original: true, text: `:wastebasket: Removing the old project and creating a fresh one...` })
     await runProjectProvisioning({ client, form, workspaceId, userId, statusChannel, threadTs, requestKey: value, creationEnabled: true })
   })
 
@@ -780,9 +793,17 @@ export function registerInteractionHandlers(app: App) {
       await respond({ replace_original: true, text: authRefusalText(auth.reason) })
       return
     }
-    // Terminal 'cancelled' (not 'error') so the recovery sweep never resumes it.
-    await updateCreationRequest(value, { status: 'cancelled', error: 'cancelled_by_user' }).catch(() => {})
-    await respond({ replace_original: true, text: ':white_circle: Cancelled — nothing was created.' })
+    // Atomic CAS to terminal 'cancelled' (never resumed). Loses to a racing
+    // duplicate/replace that already committed.
+    const won = await commitCreationDecision({
+      requestKey: value, actingUserId: (body as any).user?.id || '', workspaceId: actingWorkspaceId, decision: 'cancel',
+    })
+    await respond({
+      replace_original: true,
+      text: won
+        ? ':white_circle: Cancelled — nothing was created.'
+        : ':information_source: That request was already resolved.',
+    })
   })
 
   // Provision a project across all selected services. Extracted so both the
@@ -918,31 +939,16 @@ export function registerInteractionHandlers(app: App) {
       const { data: project } = await supabase.from('projects').select('*').eq('id', projectId).maybeSingle()
       if (!project) throw new Error('project row not found after creation')
 
-      // ── Restart-safe replace: archive the persisted target BEFORE fan-out ──
-      // Runs on BOTH the interactive replace and the recovery resume (both call
-      // this function). Idempotent (delete no-ops if already gone) and keyed on
-      // the PERSISTED replace_target_project_id — never findExistingProject — so
-      // a replay can never archive the freshly created replacement. Archiving
-      // first frees the old Slack slug so the replacement reclaims it.
+      // ── Restart-safe replace: compute the persisted archive target ────────
+      // Keyed on the PERSISTED replace_target_project_id (never findExistingProject),
+      // guarded against the run's own new project — so a replay can never archive
+      // the replacement. The archive itself is run as a DURABLE step below (so a
+      // failed delete keeps the request incomplete, never silently completed).
+      let replaceTargetId: string | null = null
       if (creationEnabled && requestKey) {
         const reqRow = await loadCreationRequest(requestKey).catch(() => null)
-        const { archive, targetId } = reqRow
-          ? shouldArchiveReplaceTarget(reqRow, projectId)
-          : { archive: false, targetId: null }
-        if (archive && targetId) {
-          const { data: target } = await supabase.from('projects').select('*').eq('id', targetId).maybeSingle()
-          if (target) {
-            try {
-              await archiveOldProject(client, {
-                id: target.id,
-                name: target.name,
-                slackId: (target.external_links || {}).slack_id,
-              })
-            } catch (err: any) {
-              console.error('[provision] replace archive failed (continuing):', err?.message)
-            }
-          }
-        }
+        const decision = reqRow ? shouldArchiveReplaceTarget(reqRow, projectId) : { archive: false, targetId: null }
+        if (decision.archive) replaceTargetId = decision.targetId
       }
 
       // ── Fan-out to agents in parallel ─────────────────────
@@ -990,6 +996,7 @@ export function registerInteractionHandlers(app: App) {
       }
 
       let serviceResults: Record<string, any> = {}
+      let durableOutcome: Awaited<ReturnType<typeof runDurableProvisioning>> | null = null
 
       // Two-phase so the Slack canvas can be seeded with the Dropbox +
       // Frame.io links Kit just created. Phase 1: everything that produces
@@ -1012,7 +1019,15 @@ export function registerInteractionHandlers(app: App) {
         // ONLY the services that have not completed instead of re-running all of
         // them. The phases preserve ordering (Slack after the link-producers)
         // and the lease is heartbeated between phases (cooperative fencing).
+        // Replacement cleanup is a DURABLE STEP that runs FIRST (frees the old
+        // Slack slug before the Slack step). A failed archive/delete leaves it
+        // 'failed' → the request stays incomplete (never silently completed) and
+        // the recovery sweep retries it.
+        const replaceCleanupPhase = replaceTargetId
+          ? [() => [{ service: 'replace_cleanup', run: () => runReplaceCleanup(client, replaceTargetId as string, project.id) }]]
+          : []
         const phases = [
+          ...replaceCleanupPhase,
           () => phase1Services.map((service) => ({
             service: service as string,
             run: () => runService(service as string, provisionPayload),
@@ -1021,16 +1036,25 @@ export function registerInteractionHandlers(app: App) {
             ? [(acc: Record<string, any>) => [{ service: 'slack', run: () => runService('slack', slackPayload(acc)) }]]
             : []),
         ]
-        const durable = await runDurableProvisioning(
-          { projectId: project.id, phases },
+        const requiredServices = [
+          ...(replaceTargetId ? ['replace_cleanup'] : []),
+          ...(services as string[]),
+        ]
+        durableOutcome = await runDurableProvisioning(
+          { projectId: project.id, phases, requiredServices },
           {
             getSteps: getProvisioningSteps,
-            markStep: upsertProvisioningStep,
+            claimStep: (pid, svc, inputHash) =>
+              claimProvisioningStep(pid, svc, leaseHolder, { inputHash }).then((c) => ({
+                ok: c.ok, fence: c.fence, status: c.status,
+              })),
+            recordExternalId: (pid, svc, fence, o) => recordStepExternalId(pid, svc, leaseHolder, fence, o),
+            completeStep: (pid, svc, fence, patch) => completeProvisioningStep(pid, svc, leaseHolder, fence, patch),
             renew: () => renewCreationRequestLease(requestKey, leaseHolder),
           },
         )
-        serviceResults = durable.results
-        if (durable.abortedLostLease) {
+        serviceResults = durableOutcome.results
+        if (durableOutcome.abortedLostLease) {
           // Another holder reclaimed this request's lease mid-provision. Stop
           // here — that holder (or the next recovery pass) owns finishing it. Do
           // NOT bind, summarize, or mark completed, or we'd double-run.
@@ -1186,7 +1210,30 @@ export function registerInteractionHandlers(app: App) {
           : `⚠️ *${form.projectName}* provisioned with ${failed} issue(s). Check the project channel for details.`,
       }))
 
-      if (creationEnabled && requestKey) await updateCreationRequest(requestKey, { status: 'completed' }).catch(() => {})
+      // ── Terminal-state contract ───────────────────────────
+      // Mark the request `completed` ONLY when every required provisioning step
+      // reached `done` (DB-backed via the step ledger). Otherwise keep a
+      // recoverable `provisioning` state so the Railway sweep retries the
+      // failed/pending steps — never silently complete with unfinished work. A
+      // permanent (terminal) step is surfaced explicitly. NOT swallowed: a write
+      // failure here propagates to the outer catch (visible), not lost.
+      if (creationEnabled && requestKey) {
+        if (!durableOutcome || durableOutcome.allRequiredDone) {
+          await updateCreationRequest(requestKey, { status: 'completed', error: null })
+        } else {
+          const kind = durableOutcome.anyTerminal ? 'terminal' : 'retryable'
+          const detail = durableOutcome.incompleteServices.join(',')
+          await updateCreationRequest(requestKey, {
+            status: 'provisioning',
+            error: `incomplete_steps(${kind}): ${detail}`,
+          })
+          await client.chat.postMessage(postOpts({
+            text: durableOutcome.anyTerminal
+              ? `:red_circle: *${form.projectName}*: ${detail} hit a permanent error and needs attention — it will not auto-complete.`
+              : `:warning: *${form.projectName}*: ${detail} didn't finish; Kit will retry automatically.`,
+          }))
+        }
+      }
 
     } catch (err: any) {
       console.error('[Bolt] Provisioning failed:', err)
@@ -1215,11 +1262,30 @@ export function registerInteractionHandlers(app: App) {
 
     return runProjectControlRecovery({
       listRecoverableRequests,
+      // Step-based discovery: find requests that still own incomplete steps even
+      // if the request row looks terminal (inconsistency safety net).
+      listStepRecoverableRequests: async () => {
+        const projectIds = await listProjectsWithIncompleteSteps()
+        const out = []
+        for (const pid of projectIds) {
+          const req = await loadCreationRequestByProjectId(pid)
+          if (req) out.push({ ...req, request_key: req.request_key, hasIncompleteSteps: true })
+        }
+        return out as any
+      },
       claimRequest: (rk, holder) => claimCreationRequestFenced(rk, holder),
       resumeRequest: async (r, holder) => {
         const sub: any = r.submission || {}
         const form = sub.form
         if (!form) return // nothing to resume from
+        // Un-stick an INCONSISTENT completed request (found via step-based
+        // discovery with incomplete steps): reset it to 'provisioning' so
+        // resolveCreationProject doesn't short-circuit on 'already_completed' and
+        // the durable steps actually re-run. Safe — the steps are idempotent, and
+        // if they were truly all done the run re-marks completed.
+        if (r.hasIncompleteSteps && r.status === 'completed') {
+          await updateCreationRequest(r.request_key, { status: 'provisioning' }).catch(() => {})
+        }
         // A persisted 'replace' decision is honored inside runProjectProvisioning
         // (archives the persisted replace_target_project_id, idempotently) — so
         // the resume path and the interactive path share one archive site.
@@ -1526,15 +1592,49 @@ async function archiveOldProject(
   existing: { id: string; name: string; slackId?: string },
 ): Promise<void> {
   if (existing.slackId) {
-    // Rename first so the replacement can reclaim the original slug (Slack
-    // keeps an archived channel's name reserved otherwise).
+    // Rename first so the replacement can reclaim the original slug (Slack keeps
+    // an archived channel's name reserved otherwise). `already_archived` /
+    // `channel_not_found` are benign (idempotent re-run); any OTHER Slack error
+    // is surfaced (not swallowed) so a genuinely failed archive is visible.
     await client.conversations
       .rename({ channel: existing.slackId, name: `z-archived-${existing.slackId.toLowerCase()}`.slice(0, 80) })
-      .catch(() => {})
+      .catch((err: any) => {
+        const e = err?.data?.error || err?.message || ''
+        if (!/already_archived|channel_not_found|name_taken/.test(String(e))) throw err
+      })
     await client.conversations.archive({ channel: existing.slackId }).catch((err: any) => {
-      console.warn('[provision-dup] channel archive failed (non-fatal):', err?.data?.error || err?.message)
+      const e = err?.data?.error || err?.message || ''
+      if (!/already_archived|channel_not_found/.test(String(e))) throw err
     })
   }
   const sb = createAdminClient()
-  await sb.from('projects').delete().eq('id', existing.id)
+  // The record delete is the load-bearing cleanup — a failure MUST propagate so
+  // the replace_cleanup step stays 'failed' and the request is not completed.
+  const { error } = await sb.from('projects').delete().eq('id', existing.id)
+  if (error) throw new Error(`archiveOldProject delete failed: ${error.message}`)
+}
+
+/**
+ * Durable replacement-cleanup step body. Loads the persisted target and archives
+ * it (idempotent; delete no-ops if already gone). Guarded so it can NEVER delete
+ * the run's own replacement project. Returns a StepResult; a thrown archive/
+ * delete error keeps the step 'failed' (request stays incomplete, retried).
+ */
+async function runReplaceCleanup(
+  client: any,
+  targetId: string,
+  newProjectId: string,
+): Promise<{ service: string; success: boolean; error?: string }> {
+  if (!targetId || targetId === newProjectId) {
+    return { service: 'replace_cleanup', success: true } // nothing to archive / never the replacement
+  }
+  const sb = createAdminClient()
+  const { data: target } = await sb.from('projects').select('*').eq('id', targetId).maybeSingle()
+  if (!target) return { service: 'replace_cleanup', success: true } // already gone (idempotent)
+  await archiveOldProject(client, {
+    id: target.id,
+    name: target.name,
+    slackId: (target.external_links || {}).slack_id,
+  })
+  return { service: 'replace_cleanup', success: true }
 }

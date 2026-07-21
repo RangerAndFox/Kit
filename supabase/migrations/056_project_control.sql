@@ -206,15 +206,38 @@ comment on table public.sheet_sync_state is
 create table if not exists public.project_provisioning_steps (
   id uuid primary key default gen_random_uuid(),
   project_id uuid not null references public.projects(id) on delete cascade,
-  -- Agent/service key (e.g. 'dropbox', 'frameio', 'harvest', 'slack').
+  -- Agent/service key (e.g. 'dropbox', 'frameio', 'harvest', 'slack'), plus the
+  -- synthetic 'replace_cleanup' step for durable replacement archive/delete.
   service text not null,
+  -- Lifecycle:
+  --   pending  -> not yet run
+  --   running  -> a holder is executing it (claim held)
+  --   done     -> succeeded (terminal-success)
+  --   failed   -> RETRYABLE failure; the recovery sweep will re-run it
+  --   terminal -> PERMANENT failure; visible, never auto-retried, blocks completion
   status text not null default 'pending'
     constraint project_provisioning_steps_status_check
-    check (status in ('pending', 'running', 'done', 'failed')),
+    check (status in ('pending', 'running', 'done', 'failed', 'terminal')),
   -- The per-service agent result, memoized so a resumed run reuses it.
   result jsonb,
   error text,
+  -- Deterministic per-step ownership (mirrors the request/workbook lease model):
+  -- a worker claims the step atomically before executing; the final result write
+  -- is conditional on the exact holder + fence, so a reclaimed stale worker
+  -- cannot commit over a newer holder.
+  claim_holder text,
+  claimed_at timestamptz,
+  lease_expires_at timestamptz,
+  -- Monotonic ownership epoch, bumped on each claim (reclaim), held by a renewal.
+  fence bigint not null default 0,
   attempts integer not null default 0,
+  -- Normalized input hash: detects a changed submission so a stale memoized
+  -- result isn't reused for different inputs.
+  input_hash text,
+  -- Persisted external identity, written the instant it is known (before any
+  -- follow-up setup) so a crash-after-create reconciles to it, not a duplicate.
+  external_id text,
+  external_url text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   -- One step row per service per project: idempotent, resume-safe fan-out.
@@ -225,8 +248,13 @@ create table if not exists public.project_provisioning_steps (
 create index if not exists project_provisioning_steps_project_idx
   on public.project_provisioning_steps (project_id);
 
+-- Recovery sweep: find steps that still need work (not done/terminal) whose
+-- lease is free/expired.
+create index if not exists project_provisioning_steps_recovery_idx
+  on public.project_provisioning_steps (status, lease_expires_at);
+
 comment on table public.project_provisioning_steps is
-  'Per-(project, service) durable provisioning step ledger. Memoizes each external service provision so a Railway restart resumes only the incomplete services.';
+  'Per-(project, service) durable provisioning step ledger with deterministic per-step ownership (holder/fence/lease), attempts, input hash, and persisted external id. Memoizes each external service provision so a restart resumes only the incomplete services; final writes are holder/fence-conditional.';
 
 -- ─── RLS ─────────────────────────────────────────────────────────────────────
 -- These are Kit-internal operational tables written/read ONLY by the service

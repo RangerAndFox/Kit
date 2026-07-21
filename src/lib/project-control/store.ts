@@ -114,6 +114,18 @@ export async function loadCreationRequest(requestKey: string): Promise<CreationR
   return (data as CreationRequestRow) || null
 }
 
+/** Find the request that produced a given project (for step-based recovery). */
+export async function loadCreationRequestByProjectId(
+  projectId: string,
+): Promise<CreationRequestRow | null> {
+  const { data } = await db()
+    .from('project_creation_requests')
+    .select('*')
+    .eq('project_id', projectId)
+    .maybeSingle()
+  return (data as CreationRequestRow) || null
+}
+
 export async function updateCreationRequest(
   requestKey: string,
   patch: Partial<CreationRequestRow>,
@@ -123,6 +135,40 @@ export async function updateCreationRequest(
     .update({ ...patch, updated_at: nowIso() })
     .eq('request_key', requestKey)
   if (error) throw new Error(`updateCreationRequest: ${error.message}`)
+}
+
+/**
+ * Atomically commit a duplicate/replace/cancel decision via a compare-and-set
+ * transition OUT of 'awaiting_decision' with a NULL decision, conditioned on the
+ * stored requester + workspace. Only the FIRST competing button action wins;
+ * every later/racing click finds the row already transitioned and loses (returns
+ * false). This is the authoritative gate — button visibility is never trusted.
+ */
+export async function commitCreationDecision(opts: {
+  requestKey: string
+  actingUserId: string
+  workspaceId: string
+  decision: 'duplicate' | 'replace' | 'cancel'
+}): Promise<boolean> {
+  const nowStr = nowIso()
+  // cancel is terminal with no decision recorded; duplicate/replace move to
+  // provisioning and record the decision.
+  const patch =
+    opts.decision === 'cancel'
+      ? { status: 'cancelled', error: 'cancelled_by_user', updated_at: nowStr }
+      : { decision: opts.decision, status: 'provisioning', updated_at: nowStr }
+  const { data, error } = await db()
+    .from('project_creation_requests')
+    .update(patch)
+    .eq('request_key', opts.requestKey)
+    .eq('status', 'awaiting_decision')
+    .eq('requested_by_slack_user_id', opts.actingUserId)
+    .eq('workspace_id', opts.workspaceId)
+    .or('decision.is.null')
+    .select('id')
+    .maybeSingle()
+  if (error) throw new Error(`commitCreationDecision: ${error.message}`)
+  return !!data
 }
 
 /** Compare-and-set lease so only one worker drives a request at a time. */
@@ -429,44 +475,227 @@ export async function claimNotification(projectId: string, key: string): Promise
   return true
 }
 
-// ─── Per-service durable provisioning steps ──────────────────────────────────
+// ─── Per-service durable provisioning steps (deterministic ownership) ─────────
+
+const STEP_LEASE_MS = 5 * 60 * 1000 // > any bounded single provider call
+
+export type ProvisioningStepStatus = 'pending' | 'running' | 'done' | 'failed' | 'terminal'
 
 export interface ProvisioningStepRow {
   id: string
   project_id: string
   service: string
-  status: 'pending' | 'running' | 'done' | 'failed'
+  status: ProvisioningStepStatus
   result: Record<string, unknown> | null
   error: string | null
+  claim_holder: string | null
+  claimed_at: string | null
+  lease_expires_at: string | null
+  fence: number
   attempts: number
+  input_hash: string | null
+  external_id: string | null
+  external_url: string | null
   created_at: string
   updated_at: string
 }
 
-/** All persisted step rows for a project (empty on a first run). */
+/**
+ * All persisted step rows for a project. THROWS on a DB error — it must never
+ * convert a Supabase failure into an empty ledger, which would make a resume
+ * treat every service as un-run and replay them all.
+ */
 export async function getProvisioningSteps(projectId: string): Promise<ProvisioningStepRow[]> {
-  const { data } = await db()
+  const { data, error } = await db()
     .from('project_provisioning_steps')
     .select('*')
     .eq('project_id', projectId)
+  if (error) throw new Error(`getProvisioningSteps: ${error.message}`)
   return (data as ProvisioningStepRow[]) || []
 }
 
-/**
- * Upsert a service step (identity = project_id + service). Used to mark a step
- * 'running' before the call and 'done'/'failed' after, so a resumed run reads
- * the 'done' rows and skips those services. Idempotent by construction.
- */
-export async function upsertProvisioningStep(
+export async function getProvisioningStep(
   projectId: string,
   service: string,
-  patch: Partial<Omit<ProvisioningStepRow, 'id' | 'project_id' | 'service' | 'created_at'>>,
-): Promise<void> {
-  const { error } = await db()
+): Promise<ProvisioningStepRow | null> {
+  const { data, error } = await db()
     .from('project_provisioning_steps')
-    .upsert(
-      { project_id: projectId, service, ...patch, updated_at: nowIso() },
-      { onConflict: 'project_id,service' },
-    )
-  if (error) throw new Error(`upsertProvisioningStep: ${error.message}`)
+    .select('*')
+    .eq('project_id', projectId)
+    .eq('service', service)
+    .maybeSingle()
+  if (error) throw new Error(`getProvisioningStep: ${error.message}`)
+  return (data as ProvisioningStepRow) || null
+}
+
+async function ensureStepRow(projectId: string, service: string): Promise<void> {
+  await db()
+    .from('project_provisioning_steps')
+    .upsert({ project_id: projectId, service }, { onConflict: 'project_id,service', ignoreDuplicates: true })
+}
+
+export interface StepClaim {
+  ok: boolean
+  /** The granted fence to pass to record/complete; null when not claimed. */
+  fence: number | null
+  /** Current status (for the caller to decide reuse vs skip when ok=false). */
+  status: ProvisioningStepStatus | 'missing'
+  row: ProvisioningStepRow | null
+}
+
+/**
+ * Atomically claim a step for execution. Bumps the fence (monotonic ownership
+ * epoch) and increments attempts. Returns ok=false when the step is already
+ * done/terminal (caller reuses/records) or actively leased by another worker
+ * (caller skips — in flight). Only a claim with ok=true may execute + commit.
+ */
+export async function claimProvisioningStep(
+  projectId: string,
+  service: string,
+  holder: string,
+  opts: { inputHash?: string } = {},
+): Promise<StepClaim> {
+  await ensureStepRow(projectId, service)
+  const cur = await getProvisioningStep(projectId, service)
+  if (!cur) return { ok: false, fence: null, status: 'missing', row: null }
+  if (cur.status === 'done' || cur.status === 'terminal') {
+    return { ok: false, fence: cur.fence, status: cur.status, row: cur }
+  }
+  const now = Date.now()
+  const nowStr = new Date(now).toISOString()
+  const nextFence = Number(cur.fence ?? 0) + 1
+  const { data, error } = await db()
+    .from('project_provisioning_steps')
+    .update({
+      claim_holder: holder,
+      claimed_at: nowStr,
+      lease_expires_at: new Date(now + STEP_LEASE_MS).toISOString(),
+      status: 'running',
+      fence: nextFence,
+      attempts: Number(cur.attempts ?? 0) + 1,
+      ...(opts.inputHash !== undefined ? { input_hash: opts.inputHash } : {}),
+      updated_at: nowStr,
+    })
+    .eq('project_id', projectId)
+    .eq('service', service)
+    .or(`lease_expires_at.is.null,lease_expires_at.lt.${nowStr}`)
+    .select('*')
+    .maybeSingle()
+  if (error) throw new Error(`claimProvisioningStep: ${error.message}`)
+  return {
+    ok: !!data,
+    fence: data ? nextFence : null,
+    status: data ? 'running' : cur.status,
+    row: (data as ProvisioningStepRow) ?? cur,
+  }
+}
+
+/**
+ * Persist the external identity the INSTANT it is known (before follow-up setup)
+ * — holder/fence-conditional so a stale worker can't write it. Returns whether
+ * the write committed (i.e. we still own the step).
+ */
+export async function recordStepExternalId(
+  projectId: string,
+  service: string,
+  holder: string,
+  fence: number,
+  o: { externalId?: string | null; externalUrl?: string | null },
+): Promise<boolean> {
+  const { data, error } = await db()
+    .from('project_provisioning_steps')
+    .update({
+      ...(o.externalId !== undefined ? { external_id: o.externalId } : {}),
+      ...(o.externalUrl !== undefined ? { external_url: o.externalUrl } : {}),
+      updated_at: nowIso(),
+    })
+    .eq('project_id', projectId)
+    .eq('service', service)
+    .eq('claim_holder', holder)
+    .eq('fence', fence)
+    .select('id')
+    .maybeSingle()
+  if (error) throw new Error(`recordStepExternalId: ${error.message}`)
+  return !!data
+}
+
+/** Heartbeat a claimed step's lease (holder-conditional). */
+export async function renewProvisioningStep(
+  projectId: string,
+  service: string,
+  holder: string,
+): Promise<boolean> {
+  const now = Date.now()
+  const nowStr = new Date(now).toISOString()
+  const { data, error } = await db()
+    .from('project_provisioning_steps')
+    .update({ lease_expires_at: new Date(now + STEP_LEASE_MS).toISOString(), updated_at: nowStr })
+    .eq('project_id', projectId)
+    .eq('service', service)
+    .eq('claim_holder', holder)
+    .select('id')
+    .maybeSingle()
+  if (error) throw new Error(`renewProvisioningStep: ${error.message}`)
+  return !!data
+}
+
+/**
+ * Final result write — CONDITIONAL on the exact holder + fence. Returns whether
+ * it committed; false means a newer holder reclaimed the step and this stale
+ * worker's result was rejected.
+ */
+export async function completeProvisioningStep(
+  projectId: string,
+  service: string,
+  holder: string,
+  fence: number,
+  patch: {
+    status: 'done' | 'failed' | 'terminal'
+    result?: Record<string, unknown> | null
+    error?: string | null
+    externalId?: string | null
+    externalUrl?: string | null
+  },
+): Promise<boolean> {
+  const { data, error } = await db()
+    .from('project_provisioning_steps')
+    .update({
+      status: patch.status,
+      ...(patch.result !== undefined ? { result: patch.result } : {}),
+      error: patch.error ?? null,
+      ...(patch.externalId !== undefined ? { external_id: patch.externalId } : {}),
+      ...(patch.externalUrl !== undefined ? { external_url: patch.externalUrl } : {}),
+      // Release the lease on a terminal-success/failure so recovery can reclaim
+      // a 'failed' (retryable) step; 'done'/'terminal' are skipped by claim.
+      claim_holder: null,
+      lease_expires_at: null,
+      updated_at: nowIso(),
+    })
+    .eq('project_id', projectId)
+    .eq('service', service)
+    .eq('claim_holder', holder)
+    .eq('fence', fence)
+    .select('id')
+    .maybeSingle()
+  if (error) throw new Error(`completeProvisioningStep: ${error.message}`)
+  return !!data
+}
+
+/**
+ * Distinct project ids that have at least one RETRYABLE step (pending/running/
+ * failed) whose lease is free/expired — the step-based recovery work list. This
+ * discovers stranded work even if the creation-request state became inconsistent
+ * (e.g. wrongly marked completed while a step is still failed). Throws on error.
+ */
+export async function listProjectsWithIncompleteSteps(): Promise<string[]> {
+  const nowStr = new Date().toISOString()
+  const { data, error } = await db()
+    .from('project_provisioning_steps')
+    .in('status', ['pending', 'running', 'failed'])
+    .or(`lease_expires_at.is.null,lease_expires_at.lt.${nowStr}`)
+    .select('project_id')
+  if (error) throw new Error(`listProjectsWithIncompleteSteps: ${error.message}`)
+  const ids = new Set<string>()
+  for (const r of (data as Array<{ project_id: string }>) || []) ids.add(r.project_id)
+  return [...ids]
 }

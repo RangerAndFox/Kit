@@ -13,7 +13,7 @@ import assert from 'node:assert/strict'
 
 import { createHarvestProject, findHarvestProjectByKitId, kitProjectMarker } from '../harvest/client'
 import { createProjectSlackChannel, kitChannelMarker } from '../mcp/slack'
-import { findFrameioProjectByLabel } from '../inngest/agents/frameio'
+import { findFrameioProjectsByKitId, frameioKitMarker, copyFrameioFolderTree } from '../inngest/agents/frameio'
 
 const realFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = realFetch })
@@ -73,40 +73,83 @@ describe('Frame.io reconcile (crash-after-create resume)', () => {
     delete process.env.FRAMEIO_ADOBE_CLIENT_ID
   })
 
-  it('finds an existing workspace project by its deterministic label', async () => {
+  it('reconciles by the Kit UUID marker, not business fields; explicit 0/1/multiple', async () => {
+    // Two intentional Kit duplicates share identical business fields but have
+    // DISTINCT kit markers → each reconciles only to its own project.
+    const KA = 'aaaaaaaa-1111', KB = 'bbbbbbbb-2222'
     const workspaceProjects = [
-      { id: 'F1', name: '2628_Crunchyroll_Expo', root_folder_id: 'root1' },
-      { id: 'F2', name: 'unrelated', root_folder_id: 'root2' },
+      { id: 'F_A', name: `2628_Crunchyroll_Expo ${frameioKitMarker(KA)}`, root_folder_id: 'rootA' },
+      { id: 'F_B', name: `2628_Crunchyroll_Expo ${frameioKitMarker(KB)}`, root_folder_id: 'rootB' },
+      { id: 'F_DUP1', name: `9_X_Y ${frameioKitMarker('dup')}`, root_folder_id: 'r1' },
+      { id: 'F_DUP2', name: `9_X_Y ${frameioKitMarker('dup')}`, root_folder_id: 'r2' },
     ]
     globalThis.fetch = (async (url: string | URL | Request) => {
       if (String(url).includes('/workspaces/ws/projects')) return jsonResponse({ data: workspaceProjects })
       return jsonResponse({ data: [] })
     }) as unknown as typeof fetch
 
-    const hit = await findFrameioProjectByLabel('acct', 'ws', '2628_Crunchyroll_Expo')
-    assert.ok(hit)
-    assert.equal(hit!.id, 'F1')
-    assert.equal(hit!.rootFolderId, 'root1')
-    // A label with no match → null (provision then creates, absence proven).
-    assert.equal(await findFrameioProjectByLabel('acct', 'ws', 'nope'), null)
+    // 1 match — the two business-identical duplicates do NOT cross-match.
+    const a = await findFrameioProjectsByKitId('acct', 'ws', KA)
+    assert.equal(a.length, 1)
+    assert.equal(a[0].id, 'F_A')
+    // 0 matches → provision would create (absence proven).
+    assert.equal((await findFrameioProjectsByKitId('acct', 'ws', 'nope')).length, 0)
+    // multiple matches → caller treats as actionable ambiguity.
+    assert.equal((await findFrameioProjectsByKitId('acct', 'ws', 'dup')).length, 2)
+  })
+
+  it('crash midway through nested template-folder copy: find-or-create does not duplicate', async () => {
+    // Source tree: root → A → A1 ; Dest already has A (from a prior crashed run)
+    // but not A1. A resume must reuse A and only create A1.
+    const source: Record<string, Array<{ id: string; name: string; type: string }>> = {
+      srcRoot: [{ id: 'sA', name: 'A', type: 'folder' }],
+      sA: [{ id: 'sA1', name: 'A1', type: 'folder' }],
+    }
+    const destChildren: Record<string, Array<{ id: string; name: string; type: string }>> = {
+      dstRoot: [{ id: 'dA', name: 'A', type: 'folder' }], // A already exists
+      dA: [],
+    }
+    const created: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url)
+      const m = u.match(/folders\/([^/]+)\/children/)
+      if (m) {
+        const id = m[1]
+        return jsonResponse({ data: source[id] ?? destChildren[id] ?? [] })
+      }
+      if (u.includes('/folders/') && u.endsWith('/folders') && init?.method === 'POST') {
+        const parent = u.match(/folders\/([^/]+)\/folders$/)![1]
+        const body = JSON.parse(init!.body as string)
+        const newId = `new-${body.data.name}`
+        created.push(`${parent}:${body.data.name}`)
+        ;(destChildren[parent] ||= []).push({ id: newId, name: body.data.name, type: 'folder' })
+        destChildren[newId] ||= []
+        return jsonResponse({ data: { id: newId, name: body.data.name } })
+      }
+      return jsonResponse({ data: {} })
+    }) as unknown as typeof fetch
+
+    const res = await copyFrameioFolderTree('acct', 'srcRoot', 'dstRoot', 0)
+    // A was reused (not recreated); only A1 created under the existing A.
+    assert.deepEqual(created, ['dA:A1'])
+    assert.equal(res.created, 1)
   })
 })
 
 // ─── Slack ───────────────────────────────────────────────────────────────────
 
-describe('Slack reconcile (crash-after-create resume)', () => {
+describe('Slack reconcile (deterministic name + crash-after-create resume)', () => {
   beforeEach(() => { process.env.SLACK_BOT_TOKEN = 'xoxb-test' })
 
-  it('reuses the existing channel on resume instead of creating a suffixed duplicate', async () => {
-    const channels: Array<{ id: string; name: string; purpose: { value: string } }> = []
-    let createCalls = 0
-    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+  type Ch = { id: string; name: string; purpose: { value: string } }
+  function slackFetch(channels: Ch[], counters: { create: number }) {
+    return (async (url: string | URL | Request, init?: RequestInit) => {
       const u = String(url)
       const body = init?.body ? JSON.parse(init.body as string) : {}
       if (u.includes('conversations.create')) {
-        createCalls++
+        counters.create++
         if (channels.some((c) => c.name === body.name)) return jsonResponse({ ok: false, error: 'name_taken' })
-        const ch = { id: `C${channels.length + 1}`, name: body.name, purpose: { value: '' } }
+        const ch: Ch = { id: `C${channels.length + 1}`, name: body.name, purpose: { value: '' } }
         channels.push(ch)
         return jsonResponse({ ok: true, channel: { id: ch.id, name: ch.name } })
       }
@@ -119,19 +162,45 @@ describe('Slack reconcile (crash-after-create resume)', () => {
       if (u.includes('conversations.list')) return jsonResponse({ ok: true, channels, response_metadata: {} })
       return jsonResponse({ ok: true })
     }) as unknown as typeof fetch
+  }
+  const shortId = (id: string) => id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toLowerCase()
 
-    const args = { projectId: 'KP1', projectName: 'Sizzle', client: 'Nike', projectNumber: '2601' }
+  it('deterministic name embeds the Kit short id; a resume reuses it (no second channel)', async () => {
+    const channels: Ch[] = []
+    const counters = { create: 0 }
+    globalThis.fetch = slackFetch(channels, counters)
+    const args = { projectId: 'KP1abcd9', projectName: 'Sizzle', client: 'Nike', projectNumber: '2601' }
     const r1 = await createProjectSlackChannel(args)
     const r2 = await createProjectSlackChannel(args) // resume
-
-    // Exactly one channel exists; the resume reused it (same id), no suffix.
     assert.equal(channels.length, 1)
     assert.equal(r1.channelId, r2.channelId)
-    assert.equal(r2.channelName, r1.channelName)
-    // The channel carries the embedded Kit marker (so reconcile could find it).
-    assert.ok(channels[0].purpose.value.includes(kitChannelMarker('KP1')))
-    // create was attempted twice (2nd hit name_taken → reconciled), never suffixed.
-    assert.equal(createCalls, 2)
-    assert.ok(!r2.channelName.includes(args.projectId.slice(0, 8)))
+    assert.equal(r1.channelName, r2.channelName)
+    assert.ok(r1.channelName.endsWith(`-${shortId(args.projectId)}`))
+    assert.equal(counters.create, 2) // 2nd create → name_taken → reconciled by exact name
+  })
+
+  it('crash after conversations.create but before setPurpose: resume reuses the same channel', async () => {
+    const args = { projectId: 'KP2wxyz1', projectName: 'Sizzle', client: 'Nike', projectNumber: '2602' }
+    const name = `2602-nike-sizzle-${shortId(args.projectId)}`
+    // Pre-seed a channel with the deterministic name but EMPTY purpose (marker
+    // never got written — the crash-before-setPurpose window).
+    const channels: Ch[] = [{ id: 'C_PRE', name, purpose: { value: '' } }]
+    const counters = { create: 0 }
+    globalThis.fetch = slackFetch(channels, counters)
+    const r = await createProjectSlackChannel(args)
+    assert.equal(r.channelId, 'C_PRE') // reused by exact name despite no marker
+    assert.equal(channels.length, 1) // no second channel
+  })
+
+  it('an unrelated readable-name collision (base name, no Kit suffix) is NOT adopted', async () => {
+    const args = { projectId: 'KP3aaaa2', projectName: 'Sizzle', client: 'Nike', projectNumber: '2603' }
+    // A human-made channel shares the BASE name but lacks our -shortId suffix.
+    const channels: Ch[] = [{ id: 'C_HUMAN', name: '2603-nike-sizzle', purpose: { value: '' } }]
+    const counters = { create: 0 }
+    globalThis.fetch = slackFetch(channels, counters)
+    const r = await createProjectSlackChannel(args)
+    assert.notEqual(r.channelId, 'C_HUMAN') // did not adopt the unrelated channel
+    assert.ok(r.channelName.endsWith(`-${shortId(args.projectId)}`))
+    assert.equal(channels.length, 2) // created our own distinct deterministic channel
   })
 })

@@ -126,7 +126,7 @@ describe('classifyControlTemplate (fail-closed generic clone)', () => {
     assert.equal(c.cloneSafe, true)
   })
 
-  it('4. explicit configured id whose body failed (absent + partial) → excluded, NOT cloneSafe', () => {
+  it('4. explicit configured id whose body failed (absent) → excluded, uncertain, NOT cloneSafe', () => {
     const c = classifyControlTemplate([{ fileId: 'F_OTHER', markdown: SHOTLIST }], true, 'F_CFG')
     assert.equal(c.ok, false)
     assert.equal(!c.ok && c.reason, 'uncertain')
@@ -134,17 +134,29 @@ describe('classifyControlTemplate (fail-closed generic clone)', () => {
     assert.equal(c.cloneSafe, false)
   })
 
-  it('5. partial enumeration → uncertain, NOT cloneSafe', () => {
+  it('4b. configured id fetched OK is ACCEPTED even under partial enumeration (clone still unsafe)', () => {
+    const c = classifyControlTemplate(
+      [{ fileId: 'F_CFG', markdown: CONTROL }, { fileId: 'F_X', markdown: SHOTLIST }],
+      true, // partial
+      'F_CFG',
+    )
+    assert.equal(c.ok, true)
+    assert.equal(c.ok && c.fileId, 'F_CFG')
+    assert.equal(c.cloneSafe, false) // partial → don't generically clone the others
+  })
+
+  it('5. structural + partial enumeration → uncertain, NOT cloneSafe', () => {
     const c = classifyControlTemplate([{ fileId: 'F2', markdown: SHOTLIST }], true)
     assert.equal(c.ok, false)
     assert.equal(!c.ok && c.reason, 'uncertain')
     assert.equal(c.cloneSafe, false)
   })
 
-  it('6. one candidate fetch fails while others succeed (match found but partial) → ok, NOT cloneSafe', () => {
+  it('6. structural single match under PARTIAL enumeration is UNCERTAIN, not accepted', () => {
     const c = classifyControlTemplate([{ fileId: 'F1', markdown: CONTROL }], true)
-    assert.equal(c.ok, true)
-    assert.equal(c.ok && c.fileId, 'F1')
-    assert.equal(c.cloneSafe, false) // an unread candidate could be control-like → don't clone
+    assert.equal(c.ok, false) // an unread candidate could be control-like → cannot trust discovery
+    assert.equal(!c.ok && c.reason, 'uncertain')
+    assert.ok(!c.ok && c.excludeFileIds.includes('F1'))
+    assert.equal(c.cloneSafe, false)
   })
 })

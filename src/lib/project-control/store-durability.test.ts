@@ -19,7 +19,9 @@ import {
   listRecoverableRequests,
   listIncompleteBindings,
   getProvisioningSteps,
-  upsertProvisioningStep,
+  claimProvisioningStep,
+  completeProvisioningStep,
+  commitCreationDecision,
 } from './store'
 
 type Row = Record<string, unknown>
@@ -124,10 +126,10 @@ describe('renewable / fenced workbook lease', () => {
 
     // Wrong holder cannot renew.
     assert.equal(await renewWorkbookLease('sid', 'creation', 'B'), false)
-    // Correct holder renews; fence unchanged.
+    // Correct holder renews; fence unchanged; expiry not moved backwards.
     assert.equal(await renewWorkbookLease('sid', 'creation', 'A'), true)
     assert.equal(row().creation_fence, 1)
-    assert.notEqual(row().creation_lease_expires_at, firstExpiry)
+    assert.ok(String(row().creation_lease_expires_at) >= String(firstExpiry))
   })
 
   it('a reclaim after expiry bumps the fence monotonically', async () => {
@@ -231,20 +233,84 @@ describe('recovery work-list queries', () => {
   })
 })
 
-describe('per-service provisioning step ledger', () => {
-  it('upserts by (project, service) and reads back per project', async () => {
+describe('commitCreationDecision (atomic duplicate/replace/cancel CAS)', () => {
+  function seedAwaiting() {
+    const fake = fakeDb()
+    __setStoreClientForTests(() => fake)
+    fake.rowsOf('project_creation_requests').push({
+      request_key: 'V1', status: 'awaiting_decision', decision: null,
+      requested_by_slack_user_id: 'U', workspace_id: 'W', replace_target_project_id: 'OLD',
+    })
+    return fake
+  }
+
+  it('only the FIRST competing click wins; a racing click loses', async () => {
+    const fake = seedAwaiting()
+    const row = () => fake.rowsOf('project_creation_requests')[0]
+    // duplicate wins...
+    assert.equal(await commitCreationDecision({ requestKey: 'V1', actingUserId: 'U', workspaceId: 'W', decision: 'duplicate' }), true)
+    assert.equal(row().decision, 'duplicate')
+    assert.equal(row().status, 'provisioning')
+    // ...a racing replace loses (no longer awaiting_decision / decision set).
+    assert.equal(await commitCreationDecision({ requestKey: 'V1', actingUserId: 'U', workspaceId: 'W', decision: 'replace' }), false)
+    assert.equal(row().decision, 'duplicate') // unchanged
+  })
+
+  it('rejects a non-requester and a wrong workspace', async () => {
+    const fake = seedAwaiting()
+    assert.equal(await commitCreationDecision({ requestKey: 'V1', actingUserId: 'OTHER', workspaceId: 'W', decision: 'replace' }), false)
+    assert.equal(await commitCreationDecision({ requestKey: 'V1', actingUserId: 'U', workspaceId: 'OTHER', decision: 'replace' }), false)
+    assert.equal(fake.rowsOf('project_creation_requests')[0].status, 'awaiting_decision')
+  })
+
+  it('cancel transitions to terminal cancelled and then blocks a later decision', async () => {
+    const fake = seedAwaiting()
+    assert.equal(await commitCreationDecision({ requestKey: 'V1', actingUserId: 'U', workspaceId: 'W', decision: 'cancel' }), true)
+    assert.equal(fake.rowsOf('project_creation_requests')[0].status, 'cancelled')
+    assert.equal(await commitCreationDecision({ requestKey: 'V1', actingUserId: 'U', workspaceId: 'W', decision: 'replace' }), false)
+  })
+})
+
+describe('per-service provisioning step ownership', () => {
+  it('claim → complete is holder+fence-conditional; a stale worker cannot commit', async () => {
     const fake = fakeDb()
     __setStoreClientForTests(() => fake)
 
-    await upsertProvisioningStep('proj', 'dropbox', { status: 'running' })
-    await upsertProvisioningStep('proj', 'dropbox', { status: 'done', result: { url: 'db' } })
-    await upsertProvisioningStep('proj', 'frameio', { status: 'done', result: { url: 'f' } })
-    await upsertProvisioningStep('other', 'dropbox', { status: 'done' })
+    const c = await claimProvisioningStep('proj', 'dropbox', 'A')
+    assert.equal(c.ok, true)
+    assert.equal(c.fence, 1)
 
+    // Wrong holder cannot commit; correct holder + wrong fence cannot commit.
+    assert.equal(await completeProvisioningStep('proj', 'dropbox', 'B', 1, { status: 'done' }), false)
+    assert.equal(await completeProvisioningStep('proj', 'dropbox', 'A', 999, { status: 'done' }), false)
+
+    // Correct holder + fence commits.
+    assert.equal(
+      await completeProvisioningStep('proj', 'dropbox', 'A', 1, { status: 'done', result: { url: 'db' } }),
+      true,
+    )
     const steps = await getProvisioningSteps('proj')
-    assert.equal(steps.length, 2) // dropbox merged (not duplicated), frameio added
-    const dropbox = steps.find((s) => s.service === 'dropbox')!
-    assert.equal(dropbox.status, 'done')
-    assert.equal((dropbox.result as Row).url, 'db')
+    assert.equal(steps.find((s) => s.service === 'dropbox')?.status, 'done')
+
+    // A done step is never re-claimed.
+    const c2 = await claimProvisioningStep('proj', 'dropbox', 'A')
+    assert.equal(c2.ok, false)
+    assert.equal(c2.status, 'done')
+  })
+
+  it('a second claimant is blocked while the first holds an active lease', async () => {
+    const fake = fakeDb()
+    __setStoreClientForTests(() => fake)
+    assert.equal((await claimProvisioningStep('proj', 'slack', 'A')).ok, true)
+    assert.equal((await claimProvisioningStep('proj', 'slack', 'B')).ok, false)
+  })
+
+  it('getProvisioningSteps THROWS on a store error (never an empty ledger)', async () => {
+    __setStoreClientForTests(() => ({
+      from: () => ({
+        select: () => ({ eq: () => ({ then: (res: (r: unknown) => void) => res({ data: null, error: { message: 'db down' } }) }) }),
+      }),
+    }) as unknown as ReturnType<typeof fakeDb>)
+    await assert.rejects(getProvisioningSteps('proj'), /db down/)
   })
 })

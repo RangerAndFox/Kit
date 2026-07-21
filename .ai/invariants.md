@@ -68,28 +68,32 @@ mechanism in code before assuming full compliance.
     margin/formula columns, and sync never edits a canvas other than the
     binding's persisted `canvas_id`. *(Verified — migration 056 unique
     constraints + `src/lib/project-control/`.)*
-15. **Project-control provisioning is durable, idempotent, and Railway-recovered.**
-    Provisioning is a per-service durable ledger (`project_provisioning_steps`),
-    so a restart resumes only the incomplete services. Every reachable external
-    provision (Harvest, Frame.io, Slack) reconciles by an embedded/stable Kit
-    identity BEFORE creating — reusing an existing resource, creating only when
-    absence is proven — so a crash after create-but-before-ledger never
-    duplicates on resume. Nonterminal creation requests (expired lease) and
-    incomplete bindings (`creation_state != 'connected'`) are recovered by the
-    **Railway** recovery sweep; the Vercel/Inngest sync only re-renders
-    already-`connected` bindings and must not be extended to complete creation.
-    A `replace` decision persists `decision` + `replace_target_project_id`
-    BEFORE the prompt is replaced or anything archived; the archive runs in the
-    durable path, keyed on the persisted target, so a crash is recoverable and a
-    replay never archives the replacement. A user `cancel` is the terminal
-    `cancelled` status, never resumed. Lease ownership is **enforced**: the
-    acquisition-unique holder is compare-and-set-verified immediately before
-    every irreversible external write (creation Sheet/Canvas, each provisioning
-    phase, each sync Canvas edit) — a reclaimed worker fails its next renew and
-    aborts before the write; release is holder-qualified; all workflow external
-    calls are timeout-bounded. *(Verified — migration 056 (durability folded in)
-    + `provisioning-steps.ts`/`recovery.ts`/`store.ts`/`canvas.ts`/`sheets.ts` +
-    agent reconcilers + tests.)*
+15. **Project-control provisioning is durable, effectively-once, and Railway-recovered.**
+    Provisioning is a per-service durable ledger (`project_provisioning_steps`)
+    with per-step ownership (holder + monotonic fence + lease); the final result
+    write is holder/fence-conditional, so a reclaimed stale worker cannot commit.
+    A request is `completed` ONLY when every required step reached `done` (DB-
+    backed); otherwise it stays recoverable (`provisioning`) or surfaces a
+    permanent `terminal` step — never silently completed. External delivery is
+    **effectively-once through durable ownership + reconciliation, NOT provider-
+    level exactly-once**: each external provision (Harvest by notes marker,
+    Frame.io by an embedded Kit-UUID label marker with explicit 0/1/multiple,
+    Slack by a deterministic Kit-suffixed channel name) reconciles before
+    creating, so a crash between create and the ledger write reconciles instead
+    of duplicating. Recovery is step-based as well as request-based (it finds
+    incomplete steps even if the request row is inconsistent). A `replace`
+    persists `decision` + the conflict `replace_target_project_id` at PROMPT time
+    and commits duplicate/replace/cancel via an atomic compare-and-set out of
+    `awaiting_decision` (only one racing click wins); replacement cleanup is a
+    durable step whose failed delete keeps the request incomplete and can never
+    delete the replacement. Store reads that gate replay THROW on DB error (never
+    an empty ledger). Ownership is enforced before every irreversible external
+    write; release is holder-qualified; workflow external calls are timeout-
+    bounded. *(Partially verified — migration 056 (durability folded in) + the
+    `src/lib/project-control/*` + agent reconcilers are unit-tested; the Bolt
+    wiring in `bolt/src/handlers/interactions.ts` is `@ts-nocheck` and its live
+    Slack/Supabase paths are NOT exercised by tests. Do not mark fully Verified
+    until the Bolt orchestration boundary has production-path coverage.)*
 
 ## How to use these
 

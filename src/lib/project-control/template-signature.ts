@@ -127,16 +127,30 @@ export function classifyControlTemplate(
   partial: boolean,
   configuredFileId?: string,
 ): ControlTemplateClassification {
-  const r = resolveProjectControlTemplate(candidates, configuredFileId)
-  // Even a definitive single match must NOT trigger a generic clone when
-  // enumeration was partial — an unread candidate could be control-like too.
-  if (r.ok) return { ok: true, fileId: r.fileId, markdown: r.markdown, cloneSafe: !partial }
-  const fail = r as Extract<TemplateResolution, { ok: false }>
-  const excludeFileIds = Array.from(
-    new Set([...fail.matchedFileIds, ...(configuredFileId ? [configuredFileId] : [])]),
-  )
-  const configuredButUnverified = !!configuredFileId
-  const cloneSafe = !partial && !configuredButUnverified
-  const reason: 'none' | 'multiple' | 'uncertain' = partial ? 'uncertain' : fail.reason
-  return { ok: false, reason, excludeFileIds, cloneSafe }
+  // A CONFIGURED id is authoritative on its own: if it was fetched successfully
+  // it is accepted even when unrelated channel enumeration was partial. (Generic
+  // cloning of the OTHER canvases is still unsafe under partial → cloneSafe.)
+  if (configuredFileId) {
+    const pinned = candidates.find((c) => c.fileId === configuredFileId)
+    if (pinned) return { ok: true, fileId: pinned.fileId, markdown: pinned.markdown, cloneSafe: !partial }
+    // Configured but its body could not be read → uncertain; exclude it; never clone.
+    return { ok: false, reason: 'uncertain', excludeFileIds: [configuredFileId], cloneSafe: false }
+  }
+
+  // STRUCTURAL discovery under PARTIAL enumeration is ALWAYS uncertain — even a
+  // single read match cannot be trusted, because an unread candidate could be
+  // another control-like canvas. Exclude what we did match; never clone.
+  const matches = candidates.filter((c) => hasProjectControlSignature(c.markdown))
+  if (partial) {
+    return { ok: false, reason: 'uncertain', excludeFileIds: matches.map((m) => m.fileId), cloneSafe: false }
+  }
+
+  // Complete structural enumeration.
+  if (matches.length === 1) return { ok: true, fileId: matches[0].fileId, markdown: matches[0].markdown, cloneSafe: true }
+  return {
+    ok: false,
+    reason: matches.length === 0 ? 'none' : 'multiple',
+    excludeFileIds: matches.map((m) => m.fileId),
+    cloneSafe: true,
+  }
 }

@@ -33,6 +33,8 @@ export interface RecoverableRequest {
   submission: Record<string, unknown>
   workspace_id: string | null
   requested_by_slack_user_id: string | null
+  /** Set by step-based discovery: this request owns ≥1 incomplete step. */
+  hasIncompleteSteps?: boolean
 }
 
 export interface IncompleteBinding {
@@ -42,6 +44,13 @@ export interface IncompleteBinding {
 
 export interface RecoveryDeps {
   listRecoverableRequests(): Promise<RecoverableRequest[]>
+  /**
+   * Optional step-based discovery: requests that own at least one incomplete
+   * (retryable) provisioning step, even if the request state looks terminal
+   * (defence against an inconsistent request row). Merged + deduped by
+   * request_key with listRecoverableRequests.
+   */
+  listStepRecoverableRequests?(): Promise<RecoverableRequest[]>
   /** Fenced compare-and-set claim; ok=false ⇒ a live worker owns it, skip. */
   claimRequest(requestKey: string, holder: string): Promise<{ ok: boolean; fence: number | null }>
   /**
@@ -74,7 +83,16 @@ export interface RecoverySummary {
  * request is resumable ONLY once the user has chosen (decision set); until then
  * the prompt is still theirs to answer and recovery must not act.
  */
-export function isResumable(req: { status: string; decision: string | null }): boolean {
+export function isResumable(req: {
+  status: string
+  decision: string | null
+  hasIncompleteSteps?: boolean
+}): boolean {
+  // 'cancelled' is always terminal. 'completed' is normally terminal, BUT a
+  // completed request that still owns incomplete steps is INCONSISTENT and must
+  // be finished — this is the step-based safety net.
+  if (req.status === 'cancelled') return false
+  if (req.status === 'completed') return !!req.hasIncompleteSteps
   if (req.status === 'awaiting_decision') return !!req.decision
   return req.status === 'pending' || req.status === 'provisioning' || req.status === 'error'
 }
@@ -93,7 +111,13 @@ export async function runProjectControlRecovery(deps: RecoveryDeps): Promise<Rec
   }
 
   // ── 1. Resume nonterminal creation requests ──────────────────────────────
-  const requests = await deps.listRecoverableRequests()
+  // Union of state-based and step-based discovery, deduped by request_key. The
+  // step-based list catches work stranded under an inconsistent request row.
+  const stateReqs = await deps.listRecoverableRequests()
+  const stepReqs = deps.listStepRecoverableRequests ? await deps.listStepRecoverableRequests() : []
+  const byKey = new Map<string, RecoverableRequest>()
+  for (const r of [...stateReqs, ...stepReqs]) if (!byKey.has(r.request_key)) byKey.set(r.request_key, r)
+  const requests = [...byKey.values()]
   summary.requestsConsidered = requests.length
   for (const req of requests) {
     if (!isResumable(req)) {

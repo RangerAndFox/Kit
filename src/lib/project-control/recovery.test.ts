@@ -61,6 +61,11 @@ describe('isResumable', () => {
     assert.equal(isResumable({ status: 'completed', decision: null }), false)
     assert.equal(isResumable({ status: 'cancelled', decision: null }), false)
   })
+  it('resumes an INCONSISTENT completed request that still owns incomplete steps', () => {
+    assert.equal(isResumable({ status: 'completed', decision: null, hasIncompleteSteps: true }), true)
+    // cancelled is ALWAYS terminal, even with stray steps.
+    assert.equal(isResumable({ status: 'cancelled', decision: null, hasIncompleteSteps: true }), false)
+  })
 })
 
 describe('runProjectControlRecovery', () => {
@@ -121,6 +126,19 @@ describe('runProjectControlRecovery', () => {
     const s = await runProjectControlRecovery(deps)
     assert.equal(s.requestsFailed, 1)
     assert.equal(s.requestsResumed, 1) // B still resumed
+  })
+
+  it('merges step-based discovery, deduped by request_key, and resumes inconsistent-completed', async () => {
+    const deps = makeDeps({
+      listRecoverableRequests: async () => [req({ request_key: 'V1', status: 'provisioning' })],
+      listStepRecoverableRequests: async () => [
+        req({ request_key: 'V1', status: 'provisioning', hasIncompleteSteps: true }), // dup of V1 → deduped
+        req({ request_key: 'V2', status: 'completed', hasIncompleteSteps: true }), // inconsistent → resumed
+      ],
+    })
+    const s = await runProjectControlRecovery(deps)
+    assert.deepEqual(deps.resumed.sort(), ['V1', 'V2'])
+    assert.equal(s.requestsResumed, 2) // V1 counted once (deduped)
   })
 
   it('re-drives every incomplete binding', async () => {

@@ -278,13 +278,14 @@ export function kitChannelMarker(projectId: string): string {
 }
 
 /**
- * Reconcile a project channel by name, confirming it is OURS via the embedded
- * Kit marker in its purpose. Lets a resumed provision reuse the channel a prior
- * attempt created (which would otherwise trip `name_taken` and spawn a suffixed
- * duplicate). Bounded pagination. Returns the channel id or null.
+ * Reconcile a project channel by its EXACT deterministic name (which already
+ * embeds the Kit short id, so the name IS the identity). Lets a resumed provision
+ * reuse the channel a prior attempt created — including the crash-after-create-
+ * before-setPurpose window, where the purpose marker may not be written yet. The
+ * purpose marker, when present, is logged as corroborating evidence only.
+ * Bounded pagination. Returns the channel id or null.
  */
 async function findOwnedChannelByName(slug: string, projectId: string): Promise<string | null> {
-  if (!projectId) return null
   const marker = kitChannelMarker(projectId)
   let cursor = ''
   for (let page = 0; page < 10; page++) {
@@ -297,10 +298,13 @@ async function findOwnedChannelByName(slug: string, projectId: string): Promise<
     const res = await slackGet('conversations.list', params).catch(() => null)
     if (!res) return null
     type ChannelLite = { id?: string; name?: string; purpose?: { value?: string } }
-    const match = ((res.channels || []) as ChannelLite[]).find(
-      (c) => c?.name === slug && (c?.purpose?.value || '').includes(marker),
-    )
-    if (match) return match.id ?? null
+    const match = ((res.channels || []) as ChannelLite[]).find((c) => c?.name === slug)
+    if (match) {
+      if (projectId && !(match.purpose?.value || '').includes(marker)) {
+        console.warn(`[Slack] reused channel ${slug} by exact name; purpose marker not yet set (crash-before-setPurpose)`)
+      }
+      return match.id ?? null
+    }
     cursor = res.response_metadata?.next_cursor || ''
     if (!cursor) break
   }
@@ -385,18 +389,22 @@ export async function createProjectSlackChannel(opts: {
     throw new Error('createProjectSlackChannel: client is required')
   }
 
-  // Build channel name slug — {projectNumber}-{client}-{projectName}, matching
-  // the {ID}_{Client}_{Project} spine. Skip the prefix if no number provided.
-  const slugParts = [projectNumber, client, projectName].filter(
-    (part) => part && String(part).trim(),
-  )
-  let slug = slugParts
+  // Build a DETERMINISTIC channel name that embeds a stable short Kit project-id
+  // suffix — {number}-{client}-{project}-{shortId}. Because the suffix is part of
+  // the name from the FIRST create, every retry computes the SAME name, so a
+  // crash after conversations.create is reconciled by exact name (no second
+  // channel), and an unrelated readable-name collision (same base, no suffix)
+  // can never be adopted — it simply has a different name.
+  const shortId = String(projectId).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toLowerCase()
+  const base = [projectNumber, client, projectName]
+    .filter((part) => part && String(part).trim())
     .join('-')
     .toLowerCase()
     .replace(/[^a-z0-9-]/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
-    .slice(0, 80)
+    .slice(0, 80 - (shortId.length + 1))
+  const slug = shortId ? `${base}-${shortId}` : base
 
   // Try to create the channel
   let channelId: string
@@ -410,9 +418,9 @@ export async function createProjectSlackChannel(opts: {
     channelId = createData.channel.id
     channelName = createData.channel.name
   } catch (err: any) {
-    // name_taken: either a prior attempt of THIS project already created the
-    // channel (reconcile + reuse — no duplicate), or it's an unrelated channel
-    // (append the project-id suffix and create a distinct one, as before).
+    // name_taken on the deterministic name ⇒ a prior attempt of THIS project
+    // already created it (the name embeds our short id). Reconcile by the EXACT
+    // deterministic name and reuse — never spawn a second channel.
     if (err.message?.includes('name_taken')) {
       const owned = await findOwnedChannelByName(slug, projectId)
       if (owned) {
@@ -420,28 +428,22 @@ export async function createProjectSlackChannel(opts: {
         channelName = slug
         reused = true
       } else {
-        const suffix = projectId.slice(0, 8)
-        slug = `${slug.slice(0, 70)}-${suffix}`
-        const createData = await slackPost('conversations.create', {
-          name: slug,
-          is_private: false,
-        })
-        channelId = createData.channel.id
-        channelName = createData.channel.name
+        // The exact name is taken but we can't read it back (e.g. transient
+        // list failure or a bot-visibility gap). Fail closed rather than create
+        // a divergent duplicate — a retry will reconcile it.
+        throw new Error(`slack channel ${slug} name_taken but not resolvable for reuse`)
       }
     } else {
       throw err
     }
   }
 
-  // Stamp the embedded Kit marker into the purpose so a later resume can
-  // reconcile this channel by identity (idempotent — safe to re-set).
-  if (!reused) {
-    await slackPost('conversations.setPurpose', {
-      channel: channelId,
-      purpose: `${client} — ${projectName} ${kitChannelMarker(projectId)}`,
-    }).catch(() => {}) // non-critical
-  }
+  // Stamp the embedded Kit marker into the purpose as SUPPORTING evidence (the
+  // deterministic name is the primary identity). Idempotent — safe to re-set.
+  await slackPost('conversations.setPurpose', {
+    channel: channelId,
+    purpose: `${client} — ${projectName} ${kitChannelMarker(projectId)}`,
+  }).catch(() => {}) // non-critical
 
   // Set topic
   const topic = `${client} — ${projectName}`
@@ -539,13 +541,15 @@ export async function fetchTemplateCandidates(): Promise<{
   const out: Array<{ fileId: string; title: string; markdown: string }> = []
   if (!process.env.SLACK_BOT_TOKEN) return { candidates: out, partial: true }
   let ids: string[]
+  let complete: boolean
   try {
-    ids = await resolveCanvasTemplateFileIds()
+    ;({ ids, complete } = await resolveCanvasTemplateFileIds())
   } catch (err) {
     console.warn('[Slack] fetchTemplateCandidates: channel enumeration failed:', (err as Error)?.message)
     return { candidates: out, partial: true }
   }
-  let partial = false
+  // Enumeration that fell back (not authoritative) is inherently partial.
+  let partial = !complete
   for (const fileId of ids) {
     try {
       const info = await slackGet('files.info', { file: fileId })
@@ -613,12 +617,22 @@ const FALLBACK_CANVAS_TEMPLATE_FILE_IDS: string[] = []
  *      so editors can add/remove canvases in C0B1312H89L without redeploys
  *   3. FALLBACK_CANVAS_TEMPLATE_FILE_IDS hardcoded list
  */
-async function resolveCanvasTemplateFileIds(): Promise<string[]> {
+interface TemplateFileIdResolution {
+  ids: string[]
+  /**
+   * True only when the id set is AUTHORITATIVE (env override, or a successful
+   * files.list). False when we fell back (files.list failed or returned empty)
+   * — the caller must treat structural discovery as uncertain.
+   */
+  complete: boolean
+}
+
+async function resolveCanvasTemplateFileIds(): Promise<TemplateFileIdResolution> {
   const envOverride = process.env.SLACK_CANVAS_TEMPLATE_FILE_IDS
   if (envOverride) {
     const ids = envOverride.split(',').map((s) => s.trim()).filter(Boolean)
     console.log(`[Slack canvas] template resolution: env override (${ids.length} ids)`)
-    return ids
+    return { ids, complete: true }
   }
 
   const channelId =
@@ -640,18 +654,19 @@ async function resolveCanvasTemplateFileIds(): Promise<string[]> {
           .map((f) => `${f.id}(${f.title || f.name})`)
           .join(', ')}`,
       )
-      return ids
+      return { ids, complete: true }
     }
     console.warn(
-      `[Slack canvas] template resolution: files.list found no canvases in ${channelId}; using fallback`,
+      `[Slack canvas] template resolution: files.list found no canvases in ${channelId}; using fallback (INCOMPLETE)`,
     )
-  } catch (err: any) {
+  } catch (err) {
     console.warn(
-      `[Slack canvas] template resolution: files.list(${channelId}) failed: ${err.message}; using fallback`,
+      `[Slack canvas] template resolution: files.list(${channelId}) failed: ${(err as Error).message}; using fallback (INCOMPLETE)`,
     )
   }
 
-  return FALLBACK_CANVAS_TEMPLATE_FILE_IDS
+  // Fallback ⇒ enumeration is NOT authoritative.
+  return { ids: FALLBACK_CANVAS_TEMPLATE_FILE_IDS, complete: false }
 }
 
 /**
@@ -689,7 +704,7 @@ export async function duplicateTemplateCanvases(opts: {
   // channel and clone all of them. Editors maintain the templates by
   // adding/removing canvases in C0B1312H89L — no env-var changes needed.
   const excluded = new Set(opts.excludeFileIds || [])
-  const templateFileIds = (await resolveCanvasTemplateFileIds()).filter((id) => !excluded.has(id))
+  const templateFileIds = (await resolveCanvasTemplateFileIds()).ids.filter((id) => !excluded.has(id))
   if (templateFileIds.length === 0) {
     console.warn('[Slack canvas] no template canvases resolved; skipping')
     return out
