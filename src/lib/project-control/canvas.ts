@@ -34,28 +34,63 @@ function headers() {
 // reclaiming worker run concurrently (see the lease-ownership guarantees).
 const SLACK_CALL_TIMEOUT_MS = 15_000
 
-async function slackPost(method: string, body: Record<string, unknown>): Promise<SlackJson> {
-  const res = await fetch(`${SLACK_API}/${method}`, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(SLACK_CALL_TIMEOUT_MS),
-  })
+/**
+ * Channel access level for the managed Project Control Canvas. The Sheet is the
+ * authoritative source of truth (invariant #14); ordinary channel members get
+ * **read-only** access so the Canvas does not appear to be an independently
+ * editable source. Slack's `canvases.access.set` accepts `'read' | 'write'`
+ * (verified against @slack/web-api `CanvasesAccessSetArguments`); `channel_ids`
+ * scopes the grant to channel members, not to Kit's own app token, so Kit
+ * continues to edit the Canvas via `canvases.edit`. (The read + app-edit
+ * interaction is confirmed at staging per the rollout runbook.)
+ */
+export const CONTROL_CANVAS_ACCESS_LEVEL = 'read' as const
+
+type SlackTransport = (
+  kind: 'post' | 'get',
+  method: string,
+  payload: Record<string, unknown> | Record<string, string>,
+) => Promise<SlackJson>
+
+async function httpTransport(
+  kind: 'post' | 'get',
+  method: string,
+  payload: Record<string, unknown> | Record<string, string>,
+): Promise<SlackJson> {
+  let res: Response
+  if (kind === 'post') {
+    res = await fetch(`${SLACK_API}/${method}`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(SLACK_CALL_TIMEOUT_MS),
+    })
+  } else {
+    const qs = new URLSearchParams(payload as Record<string, string>).toString()
+    res = await fetch(`${SLACK_API}/${method}?${qs}`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+      signal: AbortSignal.timeout(SLACK_CALL_TIMEOUT_MS),
+    })
+  }
   const data = (await res.json()) as SlackJson
   if (!data.ok) throw new Error(`Slack ${method}: ${data.error}`)
   return data
 }
 
-async function slackGet(method: string, params: Record<string, string>): Promise<SlackJson> {
-  const qs = new URLSearchParams(params).toString()
-  const res = await fetch(`${SLACK_API}/${method}?${qs}`, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
-    signal: AbortSignal.timeout(SLACK_CALL_TIMEOUT_MS),
-  })
-  const data = (await res.json()) as SlackJson
-  if (!data.ok) throw new Error(`Slack ${method}: ${data.error}`)
-  return data
+let transport: SlackTransport = httpTransport
+
+/** Test seam: swap the Slack HTTP transport for a fake. Pass null to restore. */
+export function __setCanvasTransportForTests(t: SlackTransport | null): void {
+  transport = t || httpTransport
+}
+
+function slackPost(method: string, body: Record<string, unknown>): Promise<SlackJson> {
+  return transport('post', method, body)
+}
+
+function slackGet(method: string, params: Record<string, string>): Promise<SlackJson> {
+  return transport('get', method, params)
 }
 
 /** Deterministic title for a project's Project Control Canvas. */
@@ -104,7 +139,7 @@ export interface CanvasHandle {
   canvasUrl: string | null
 }
 
-/** Create the managed canvas once and grant the channel write access. */
+/** Create the managed canvas once and set the channel to read-only access. */
 export async function createControlCanvas(opts: {
   channelId: string
   title: string
@@ -120,11 +155,13 @@ export async function createControlCanvas(opts: {
   try {
     await slackPost('canvases.access.set', {
       canvas_id: canvasId,
-      access_level: 'write',
+      access_level: CONTROL_CANVAS_ACCESS_LEVEL,
       channel_ids: [opts.channelId],
     })
   } catch (err) {
-    // Non-fatal: the canvas exists and is tabbed; access upgrade can be retried.
+    // Non-fatal: the canvas exists and is tabbed; the read-only grant can be
+    // retried. The generated-view notice + deterministic full re-render keep the
+    // one-way contract even if this grant is momentarily unset.
     console.warn('[project-control canvas] access.set failed:', (err as Error).message)
   }
   return { canvasId, canvasUrl: (created.canvas_url as string | undefined) || null }

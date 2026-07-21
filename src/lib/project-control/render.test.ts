@@ -18,6 +18,7 @@ import {
   NEVER_WRITE_HEADERS,
   MASTER_HEADERS,
   headerToA1Column,
+  GENERATED_VIEW_NOTICE,
   type SheetCell,
 } from './render'
 
@@ -209,5 +210,32 @@ describe('renderProjectControlCanvas', () => {
 
   it('is deterministic / idempotent (re-render equals render)', () => {
     assert.equal(renderProjectControlCanvas(out, row), renderProjectControlCanvas(TEMPLATE, row))
+  })
+
+  it('prepends the generated-view notice exactly once', () => {
+    // Prominent notice present, at the very top, directing users to the Master
+    // Project List and warning that edits are overwritten.
+    assert.ok(out.startsWith(GENERATED_VIEW_NOTICE), 'notice is the first thing in the canvas')
+    assert.match(out, /Master Project List/)
+    assert.match(out, /overwritten/i)
+    assert.match(out, /do not edit here/i)
+    // Re-rendering an already-rendered body must not stack a second banner.
+    const first = out.indexOf(GENERATED_VIEW_NOTICE)
+    const second = out.indexOf(GENERATED_VIEW_NOTICE, first + 1)
+    assert.equal(second, -1, 'notice appears exactly once')
+    // Feeding the rendered output back in still yields a single notice.
+    const twice = renderProjectControlCanvas(out, row)
+    assert.equal(twice.indexOf(GENERATED_VIEW_NOTICE, twice.indexOf(GENERATED_VIEW_NOTICE) + 1), -1)
+  })
+
+  it('lets the authoritative Sheet row win over stale values baked into the canvas body', () => {
+    // Simulate an accidental manual edit: the incoming "template" body already
+    // carries a WRONG client value in the mapped cell. Rendering from the
+    // authoritative row must overwrite it — proving canvas edits never become
+    // source data and the Sheet is the single source of truth.
+    const tampered = `${GENERATED_VIEW_NOTICE}\n\n# 🎬 2xxx Client Project\n\n| ### **Client** | Totally Wrong Co |\n`
+    const rendered = renderProjectControlCanvas(tampered, row)
+    assert.match(rendered, /\|\s*### \*\*Client\*\*\s*\|\s*Nike\s*\|/)
+    assert.doesNotMatch(rendered, /Totally Wrong Co/)
   })
 })
