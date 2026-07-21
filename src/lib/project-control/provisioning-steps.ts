@@ -47,7 +47,14 @@ export interface StepLedger {
       attempts?: number
     },
   ): Promise<void>
-  /** Heartbeat the lease between phases; false ⇒ lease lost, stop writing. */
+  /**
+   * Ownership check + heartbeat, verified IMMEDIATELY BEFORE each phase's
+   * external writes. It is a compare-and-set on the exact lease holder (see
+   * renewCreationRequestLease), so it returns false the instant a newer holder
+   * reclaimed the lease — the runner then stops before dispatching any more
+   * external work. This is the enforced fence: a stale worker cannot start
+   * another write after losing ownership.
+   */
   renew?: () => Promise<boolean>
 }
 
@@ -93,6 +100,13 @@ export async function runDurableProvisioning(
     const steps = phase(results)
     const pending = steps.filter((s) => !done.has(s.service))
 
+    // Ownership gate: verify the lease is still ours IMMEDIATELY BEFORE this
+    // phase's external writes. If a newer holder reclaimed it, stop before
+    // dispatching any create — a stale worker never double-provisions.
+    if (pending.length > 0 && ledger.renew && !(await ledger.renew())) {
+      return { results, resumed, ran, abortedLostLease: true }
+    }
+
     const settled = await Promise.all(
       pending.map(async (s) => {
         await ledger.markStep(args.projectId, s.service, { status: 'running' })
@@ -119,11 +133,6 @@ export async function runDurableProvisioning(
     for (const { service, result } of settled) {
       results[service] = result
       ran.push(service)
-    }
-
-    // Cooperative fencing: heartbeat before the next phase; stop if we lost it.
-    if (ledger.renew && !(await ledger.renew())) {
-      return { results, resumed, ran, abortedLostLease: true }
     }
   }
 

@@ -18,7 +18,17 @@
 --
 --   3. sheet_sync_state — one row per workbook holding the coarse Drive-version
 --      cursor plus lease columns for the exclusive creation claim and the
---      exclusive sync claim (row-based leases, mirroring 055's claim model).
+--      exclusive sync claim (row-based leases, mirroring 055's claim model),
+--      each with a monotonic ownership fence.
+--
+--   4. project_provisioning_steps — a per-(project, service) durable step ledger
+--      so a restart resumes only the incomplete services (durable execution).
+--
+-- Durability columns folded in: project_creation_requests.fence +
+-- .replace_target_project_id + terminal 'cancelled' status; sheet_sync_state
+-- creation_fence/sync_fence; a workbook-scoped binding recovery index. Kept in
+-- this single unapplied migration (rather than a follow-up) so rollout is one
+-- step and cannot drift.
 --
 -- Conventions mirror 055_meeting_briefing_deliveries.sql: lowercase DDL,
 -- create-if-not-exists, named check constraints, claimed_at/lease_expires_at
@@ -62,17 +72,28 @@ create table if not exists public.project_creation_requests (
   decision text
     constraint project_creation_requests_decision_check
     check (decision is null or decision in ('create', 'duplicate', 'replace')),
+  -- The exact project a 'replace' decision must archive, persisted BEFORE the
+  -- prompt is replaced or anything is archived — so a crash mid-replace is
+  -- recoverable and a replay archives the right target (never the replacement).
+  replace_target_project_id uuid references public.projects(id) on delete set null,
   -- The canonical project this request produced (set once inserted).
   project_id uuid references public.projects(id) on delete set null,
+  -- 'cancelled' is a TERMINAL user cancel, distinct from a retryable 'error', so
+  -- the Railway recovery sweep never resumes a request the user cancelled.
   status text not null default 'pending'
     constraint project_creation_requests_status_check
-    check (status in ('pending', 'awaiting_decision', 'provisioning', 'completed', 'error')),
+    check (status in ('pending', 'awaiting_decision', 'provisioning', 'completed', 'error', 'cancelled')),
   attempts integer not null default 0,
   -- Lease so only one worker drives a given request at a time; an expired lease
   -- is reclaimable after a crash.
   claimed_by text,
   claimed_at timestamptz,
   lease_expires_at timestamptz,
+  -- Monotonic ownership epoch: bumped on each reclaim, unchanged by a renewal.
+  -- The acquisition-unique holder + a compare-and-set ownership check before
+  -- every irreversible external write is the enforced fence (a reclaimed worker
+  -- fails its next renew and stops before writing).
+  fence bigint not null default 0,
   error text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -120,6 +141,8 @@ create table if not exists public.project_control_bindings (
   -- Fine-grained change detector: hash of the normalized authoritative Sheet row
   -- (including hyperlink targets) at the last successful render.
   last_row_hash text,
+  -- (sync/creation status indexes below also serve the Railway recovery sweep,
+  -- which lists non-'connected' bindings to re-drive.)
   last_synced_at timestamptz,
   -- Actionable error + persisted notification dedupe so an error/orphan state is
   -- announced once per transition, not every sync tick.
@@ -142,6 +165,11 @@ create index if not exists project_control_bindings_sync_idx
 create index if not exists project_control_bindings_creation_idx
   on public.project_control_bindings (creation_state);
 
+-- Railway recovery sweep: list a workbook's non-'connected' (incomplete)
+-- bindings to re-drive them (the Vercel sync ignores non-connected bindings).
+create index if not exists project_control_bindings_recovery_idx
+  on public.project_control_bindings (spreadsheet_id, creation_state);
+
 comment on table public.project_control_bindings is
   'Authoritative binding of a Kit project to one Master Project List row (via Sheets developer metadata kit_project_id) and one Slack Project Control Canvas. Creation and sync lifecycles are separate. Renders always use the stored template snapshot, not the live template.';
 
@@ -158,15 +186,47 @@ create table if not exists public.sheet_sync_state (
   -- Exclusive creation claim (Railway acquires before writing a new row).
   creation_lease_holder text,
   creation_lease_expires_at timestamptz,
+  creation_fence bigint not null default 0,
   -- Exclusive sync claim (Inngest acquires before a sync pass).
   sync_lease_holder text,
   sync_lease_expires_at timestamptz,
+  sync_fence bigint not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 comment on table public.sheet_sync_state is
-  'Per-workbook coarse Drive-version cursor plus exclusive creation and sync leases for Project Control synchronization.';
+  'Per-workbook coarse Drive-version cursor plus exclusive creation and sync leases (with monotonic ownership fences) for Project Control synchronization.';
+
+-- ─── 4. Per-service durable provisioning step ledger ─────────────────────────
+-- Identity = (project_id, service). Memoizes each external service provision so
+-- a Railway restart mid-provision resumes ONLY the incomplete services instead
+-- of re-running the whole fan-out. Combined with per-service reconcile-before-
+-- create in each agent, provisioning is effectively exactly-once.
+create table if not exists public.project_provisioning_steps (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references public.projects(id) on delete cascade,
+  -- Agent/service key (e.g. 'dropbox', 'frameio', 'harvest', 'slack').
+  service text not null,
+  status text not null default 'pending'
+    constraint project_provisioning_steps_status_check
+    check (status in ('pending', 'running', 'done', 'failed')),
+  -- The per-service agent result, memoized so a resumed run reuses it.
+  result jsonb,
+  error text,
+  attempts integer not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  -- One step row per service per project: idempotent, resume-safe fan-out.
+  constraint project_provisioning_steps_project_service_unique
+    unique (project_id, service)
+);
+
+create index if not exists project_provisioning_steps_project_idx
+  on public.project_provisioning_steps (project_id);
+
+comment on table public.project_provisioning_steps is
+  'Per-(project, service) durable provisioning step ledger. Memoizes each external service provision so a Railway restart resumes only the incomplete services.';
 
 -- ─── RLS ─────────────────────────────────────────────────────────────────────
 -- These are Kit-internal operational tables written/read ONLY by the service
@@ -176,5 +236,6 @@ comment on table public.sheet_sync_state is
 alter table public.project_creation_requests enable row level security;
 alter table public.project_control_bindings enable row level security;
 alter table public.sheet_sync_state enable row level security;
+alter table public.project_provisioning_steps enable row level security;
 
 commit;

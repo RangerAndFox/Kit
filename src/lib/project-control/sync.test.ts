@@ -45,6 +45,7 @@ interface FakeSyncStore {
   updateBinding(pid: string, patch: Partial<BindingRow>): Promise<void>
   getSyncState(): Promise<SyncStateRow | null>
   claimWorkbookLease(s: string, k: 'creation' | 'sync', holder: string): Promise<boolean>
+  renewWorkbookLease(s: string, k: 'creation' | 'sync', holder: string): Promise<boolean>
   releaseWorkbookLease(s: string, k: 'creation' | 'sync', holder: string): Promise<void>
   advanceCursor(s: string, v: string): Promise<void>
   claimNotification(pid: string, key: string): Promise<boolean>
@@ -73,6 +74,7 @@ function makeDeps(over: { bindings?: BindingRow[]; cursor?: string | null; versi
     async updateBinding(pid: string, patch: Partial<BindingRow>) { const b = this.bindings.find((x) => x.project_id === pid); if (b) Object.assign(b, patch) },
     async getSyncState() { return this.state },
     async claimWorkbookLease(_s: string, _k: 'creation' | 'sync', holder: string) { this.claimHolders.push(holder); return true },
+    async renewWorkbookLease(_s: string, _k: 'creation' | 'sync', _holder: string) { return true },
     async releaseWorkbookLease(_s: string, _k: 'creation' | 'sync', holder: string) { this.releaseHolders.push(holder) },
     async advanceCursor(_s: string, v: string) { this.advanced = v },
     async claimNotification(pid: string, key: string) { if (this.notified.get(pid) === key) return false; this.notified.set(pid, key); return true },

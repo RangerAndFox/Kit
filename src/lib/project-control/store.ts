@@ -56,6 +56,8 @@ export interface CreationRequestRow {
   requested_by_slack_user_id: string | null
   submission: Record<string, unknown>
   decision: string | null
+  /** The project a 'replace' decision must archive (persisted before archive). */
+  replace_target_project_id: string | null
   project_id: string | null
   status: string
   attempts: number

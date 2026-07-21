@@ -68,6 +68,21 @@ export function routeCreationRequest(input: RouteInput): RouteAction {
 
 export type ResolutionAction = 'duplicate' | 'replace' | 'cancel'
 
+/**
+ * Decide whether a provisioning run must archive a replace target, and which one.
+ * Keyed on the PERSISTED replace_target_project_id (never a live number lookup),
+ * and never the run's own new project — so a replay/resume can archive the old
+ * project at most once and can NEVER archive the freshly created replacement.
+ */
+export function shouldArchiveReplaceTarget(
+  req: { decision: string | null; replace_target_project_id: string | null },
+  newProjectId: string,
+): { archive: boolean; targetId: string | null } {
+  const targetId = req.replace_target_project_id
+  const archive = req.decision === 'replace' && !!targetId && targetId !== newProjectId
+  return { archive, targetId: archive ? targetId : null }
+}
+
 export interface RequestLike {
   workspace_id: string | null
   requested_by_slack_user_id: string | null

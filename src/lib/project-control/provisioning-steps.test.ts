@@ -112,6 +112,29 @@ describe('runDurableProvisioning', () => {
     assert.equal(attempts, 2)
   })
 
+  it('re-runs a crashed (running) step, and a reconcile-first service stays exactly-once', async () => {
+    // Stateful "provider": a reconcile-first service creates only when absent.
+    const provider = { count: 0 }
+    const reconcileFirstRun = async (): Promise<StepResult> => {
+      if (provider.count === 0) provider.count++ // create only when absent
+      return { service: 'harvest', success: true, id: 'H1' }
+    }
+    // Simulate a crash mid-create: step was marked 'running' but never 'done',
+    // and the external resource DID get created (provider.count = 1).
+    provider.count = 1
+    const ledger = fakeLedger([{ service: 'harvest', status: 'running', result: null }])
+
+    const res = await runDurableProvisioning(
+      { projectId: 'p1', phases: [() => [{ service: 'harvest', run: reconcileFirstRun }]] },
+      ledger,
+    )
+    // The 'running' step re-ran (not in the done set)...
+    assert.deepEqual(res.ran, ['harvest'])
+    // ...but the reconcile-first service did NOT create a second resource.
+    assert.equal(provider.count, 1)
+    assert.equal(ledger.steps.get('harvest')?.status, 'done')
+  })
+
   it('a thrown error is captured as a failed step, not propagated', async () => {
     const ledger = fakeLedger()
     const res = await runDurableProvisioning(
@@ -142,8 +165,11 @@ describe('runDurableProvisioning', () => {
     assert.equal(slackSawUrl, 'DB+FIO')
   })
 
-  it('stops before the next phase when the lease heartbeat fails (cooperative fencing)', async () => {
-    const ledger = fakeLedger([], async () => false) // renew always fails
+  it('rejects a phase before its writes once ownership is lost (enforced fence)', async () => {
+    // Ownership holds for phase 1, then a newer holder reclaims before phase 2.
+    let calls = 0
+    const renew = async () => { calls++; return calls === 1 }
+    const ledger = fakeLedger([], renew)
     const ran: string[] = []
     const res = await runDurableProvisioning(
       {
@@ -156,7 +182,18 @@ describe('runDurableProvisioning', () => {
       ledger,
     )
     assert.equal(res.abortedLostLease, true)
-    // Phase 1 ran; phase 2 did NOT (lease lost at the boundary).
+    // Phase 1 ran (owned); phase 2's write was rejected at the gate BEFORE it ran.
     assert.deepEqual(ran, ['dropbox'])
+  })
+
+  it('rejects the very first write when ownership is already lost', async () => {
+    const ledger = fakeLedger([], async () => false) // never owned
+    const ran: string[] = []
+    const res = await runDurableProvisioning(
+      { projectId: 'p1', phases: [() => [{ service: 'dropbox', run: async () => { ran.push('dropbox'); return ok('dropbox') } }]] },
+      ledger,
+    )
+    assert.equal(res.abortedLostLease, true)
+    assert.deepEqual(ran, []) // nothing dispatched — rejected before the external boundary
   })
 })

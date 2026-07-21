@@ -242,11 +242,16 @@ function headers() {
   }
 }
 
+// Bounded: an unbounded Slack call could hang past a provisioning/creation lease
+// and let a reclaiming worker run concurrently.
+const SLACK_CALL_TIMEOUT_MS = 15_000
+
 async function slackPost(method: string, body: Record<string, unknown>): Promise<any> {
   const res = await fetch(`${SLACK_API}/${method}`, {
     method: 'POST',
     headers: headers(),
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(SLACK_CALL_TIMEOUT_MS),
   })
   const data = await res.json()
   if (!data.ok) throw new Error(`Slack ${method}: ${data.error}`)
@@ -260,10 +265,46 @@ async function slackGet(method: string, params: Record<string, string>): Promise
   const res = await fetch(`${SLACK_API}/${method}?${qs}`, {
     method: 'GET',
     headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+    signal: AbortSignal.timeout(SLACK_CALL_TIMEOUT_MS),
   })
   const data = await res.json()
   if (!data.ok) throw new Error(`Slack ${method}: ${data.error}`)
   return data
+}
+
+/** Embedded stable Kit identity marker, written into a project channel's purpose. */
+export function kitChannelMarker(projectId: string): string {
+  return `[kit:${projectId}]`
+}
+
+/**
+ * Reconcile a project channel by name, confirming it is OURS via the embedded
+ * Kit marker in its purpose. Lets a resumed provision reuse the channel a prior
+ * attempt created (which would otherwise trip `name_taken` and spawn a suffixed
+ * duplicate). Bounded pagination. Returns the channel id or null.
+ */
+async function findOwnedChannelByName(slug: string, projectId: string): Promise<string | null> {
+  if (!projectId) return null
+  const marker = kitChannelMarker(projectId)
+  let cursor = ''
+  for (let page = 0; page < 10; page++) {
+    const params: Record<string, string> = {
+      types: 'public_channel',
+      exclude_archived: 'false',
+      limit: '1000',
+    }
+    if (cursor) params.cursor = cursor
+    const res = await slackGet('conversations.list', params).catch(() => null)
+    if (!res) return null
+    type ChannelLite = { id?: string; name?: string; purpose?: { value?: string } }
+    const match = ((res.channels || []) as ChannelLite[]).find(
+      (c) => c?.name === slug && (c?.purpose?.value || '').includes(marker),
+    )
+    if (match) return match.id ?? null
+    cursor = res.response_metadata?.next_cursor || ''
+    if (!cursor) break
+  }
+  return null
 }
 
 
@@ -360,6 +401,7 @@ export async function createProjectSlackChannel(opts: {
   // Try to create the channel
   let channelId: string
   let channelName: string
+  let reused = false
   try {
     const createData = await slackPost('conversations.create', {
       name: slug,
@@ -368,19 +410,37 @@ export async function createProjectSlackChannel(opts: {
     channelId = createData.channel.id
     channelName = createData.channel.name
   } catch (err: any) {
-    // If name is taken, append short project ID suffix and retry
+    // name_taken: either a prior attempt of THIS project already created the
+    // channel (reconcile + reuse — no duplicate), or it's an unrelated channel
+    // (append the project-id suffix and create a distinct one, as before).
     if (err.message?.includes('name_taken')) {
-      const suffix = projectId.slice(0, 8)
-      slug = `${slug.slice(0, 70)}-${suffix}`
-      const createData = await slackPost('conversations.create', {
-        name: slug,
-        is_private: false,
-      })
-      channelId = createData.channel.id
-      channelName = createData.channel.name
+      const owned = await findOwnedChannelByName(slug, projectId)
+      if (owned) {
+        channelId = owned
+        channelName = slug
+        reused = true
+      } else {
+        const suffix = projectId.slice(0, 8)
+        slug = `${slug.slice(0, 70)}-${suffix}`
+        const createData = await slackPost('conversations.create', {
+          name: slug,
+          is_private: false,
+        })
+        channelId = createData.channel.id
+        channelName = createData.channel.name
+      }
     } else {
       throw err
     }
+  }
+
+  // Stamp the embedded Kit marker into the purpose so a later resume can
+  // reconcile this channel by identity (idempotent — safe to re-set).
+  if (!reused) {
+    await slackPost('conversations.setPurpose', {
+      channel: channelId,
+      purpose: `${client} — ${projectName} ${kitChannelMarker(projectId)}`,
+    }).catch(() => {}) // non-critical
   }
 
   // Set topic
@@ -466,29 +526,45 @@ export interface DuplicateCanvasesResult {
  * bodies. Used by Project Control template resolution (structural signature
  * match) so it and the cloner share one HTML→markdown path.
  */
-export async function fetchTemplateCandidates(): Promise<
-  Array<{ fileId: string; title: string; markdown: string }>
-> {
+export async function fetchTemplateCandidates(): Promise<{
+  candidates: Array<{ fileId: string; title: string; markdown: string }>
+  /**
+   * True when enumeration was INCOMPLETE — the channel list failed, or any
+   * candidate's body could not be fetched. The caller must treat resolution as
+   * uncertain (fail closed: no generic clone), because a Project-Control-like
+   * canvas could be among the ones we couldn't read.
+   */
+  partial: boolean
+}> {
   const out: Array<{ fileId: string; title: string; markdown: string }> = []
-  if (!process.env.SLACK_BOT_TOKEN) return out
-  const ids = await resolveCanvasTemplateFileIds()
+  if (!process.env.SLACK_BOT_TOKEN) return { candidates: out, partial: true }
+  let ids: string[]
+  try {
+    ids = await resolveCanvasTemplateFileIds()
+  } catch (err) {
+    console.warn('[Slack] fetchTemplateCandidates: channel enumeration failed:', (err as Error)?.message)
+    return { candidates: out, partial: true }
+  }
+  let partial = false
   for (const fileId of ids) {
     try {
       const info = await slackGet('files.info', { file: fileId })
       const title: string = info.file?.title || info.file?.name || ''
       const url: string | undefined = info.file?.url_private_download || info.file?.url_private
-      if (!url) continue
+      if (!url) { partial = true; continue }
       const res = await fetch(url, {
         headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+        signal: AbortSignal.timeout(SLACK_CALL_TIMEOUT_MS),
       })
-      if (!res.ok) continue
+      if (!res.ok) { partial = true; continue }
       const markdown = canvasHtmlToMarkdown(await res.text())
       out.push({ fileId, title, markdown })
-    } catch (err: any) {
-      console.warn(`[Slack] fetchTemplateCandidates(${fileId}) failed:`, err.message)
+    } catch (err) {
+      partial = true
+      console.warn(`[Slack] fetchTemplateCandidates(${fileId}) failed:`, (err as Error).message)
     }
   }
-  return out
+  return { candidates: out, partial }
 }
 
 /**

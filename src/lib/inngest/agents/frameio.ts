@@ -77,6 +77,37 @@ async function framePostOnce(path: string, body: Record<string, unknown>): Promi
 }
 
 /**
+ * Reconcile by the deterministic project label within the workspace. Frame.io v4
+ * exposes no writable custom-metadata field here, so the label ({number}_{client}
+ * _{project}) — which is collision-free per Kit project, not merely a display
+ * string — is the strongest available identity. A resumed provision finds the
+ * project it already created instead of creating a second one with the same name.
+ * Returns { id, rootFolderId } or null.
+ */
+export async function findFrameioProjectByLabel(
+  acct: string,
+  ws: string,
+  label: string,
+): Promise<{ id: string; rootFolderId?: string } | null> {
+  const resp = await frameGet(`/accounts/${acct}/workspaces/${ws}/projects`)
+  const projects = (resp.data || resp || []) as any[]
+  const match = projects.find((p) => (p?.name || '') === label)
+  if (!match) return null
+  return { id: match.id, rootFolderId: match.root_folder_id || match.root_asset_id }
+}
+
+/** Existing child folder names under a parent, for idempotent folder creation. */
+async function existingChildFolderNames(acct: string, parentId: string): Promise<Set<string>> {
+  try {
+    const resp = await frameGet(`/accounts/${acct}/folders/${parentId}/children`)
+    const children = (resp.data || resp || []) as any[]
+    return new Set(children.map((c) => c?.name).filter(Boolean))
+  } catch {
+    return new Set()
+  }
+}
+
+/**
  * Recursively mirror a Frame.io folder tree, structure only.
  * Walks every folder under `sourceFolderId` and creates an equivalent under
  * `destFolderId` in the new project. Files, comments, and shares are not
@@ -152,13 +183,22 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
     const acct = getAccountId()
     const ws = getWorkspaceId()
 
-    // v4: POST /v4/accounts/{account_id}/workspaces/{workspace_id}/projects
-    // Single attempt — a retried timeout that actually landed would create a
-    // second project with the same name.
-    const resp = await framePostOnce(`/accounts/${acct}/workspaces/${ws}/projects`, {
-      data: { name: projectLabel },
-    })
-    const project = resp.data || resp
+    // Reconcile FIRST: if this deterministic project already exists (e.g. a prior
+    // attempt created it, then crashed before the step ledger updated), reuse it
+    // instead of creating a duplicate. Create only when absence is proven.
+    let project: { id: string; root_folder_id?: string; root_asset_id?: string }
+    const reconciled = await findFrameioProjectByLabel(acct, ws, projectLabel)
+    if (reconciled) {
+      project = { id: reconciled.id, root_folder_id: reconciled.rootFolderId }
+    } else {
+      // v4: POST /v4/accounts/{account_id}/workspaces/{workspace_id}/projects
+      // Single attempt — a retried timeout that actually landed would create a
+      // second project with the same name.
+      const resp = await framePostOnce(`/accounts/${acct}/workspaces/${ws}/projects`, {
+        data: { name: projectLabel },
+      })
+      project = resp.data || resp
+    }
 
     // Determine the project's root folder ID. v4 sometimes returns it on the
     // create response (root_folder_id or root_asset_id); when it doesn't, fetch
@@ -203,8 +243,12 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
     if (mode === 'static') {
       const folders = folderStructure.frameio || []
       foldersTotal = folders.length
+      // Idempotent: skip folders that already exist under the root (a reused or
+      // resumed project keeps the folders a prior attempt created).
+      const existing = await existingChildFolderNames(acct, parentId)
+      const toCreate = folders.filter((name: string) => !existing.has(name))
       const results = await Promise.allSettled(
-        folders.map((name: string) =>
+        toCreate.map((name: string) =>
           framePost(`/accounts/${acct}/folders/${parentId}/folders`, {
             data: { name },
           }),

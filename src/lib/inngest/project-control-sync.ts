@@ -35,6 +35,7 @@ import {
   updateBinding,
   getSyncState,
   claimWorkbookLease,
+  renewWorkbookLease,
   releaseWorkbookLease,
   advanceCursor,
   claimNotification,
@@ -55,6 +56,7 @@ export interface SyncStorePort {
   updateBinding(projectId: string, patch: Partial<BindingRow>): Promise<void>
   getSyncState(spreadsheetId: string): Promise<SyncStateRow | null>
   claimWorkbookLease(spreadsheetId: string, kind: 'creation' | 'sync', holder: string): Promise<boolean>
+  renewWorkbookLease(spreadsheetId: string, kind: 'creation' | 'sync', holder: string): Promise<boolean>
   releaseWorkbookLease(spreadsheetId: string, kind: 'creation' | 'sync', holder: string): Promise<void>
   advanceCursor(spreadsheetId: string, driveVersion: string): Promise<void>
   claimNotification(projectId: string, key: string): Promise<boolean>
@@ -87,7 +89,7 @@ export function defaultSyncDeps(): SyncDeps {
     canvas: { editControlCanvas },
     store: {
       listSyncableBindings, updateBinding, getSyncState, claimWorkbookLease,
-      releaseWorkbookLease, advanceCursor, claimNotification,
+      renewWorkbookLease, releaseWorkbookLease, advanceCursor, claimNotification,
     },
     post: postAlert,
     config: workbookConfigFromEnv(),
@@ -142,8 +144,17 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
 
     let updated = 0, unchanged = 0, orphaned = 0, errored = 0
     let allOk = true
+    let leaseLost = false
 
     for (const b of bindings) {
+      // Renew between bindings: a long pass must not outlive its lease and let a
+      // reclaiming worker edit canvases concurrently. If we lost ownership, stop
+      // the pass (do not advance the cursor) — the new holder owns the rest.
+      if (!(await deps.store.renewWorkbookLease(config.spreadsheetId, 'sync', holder))) {
+        leaseLost = true
+        allOk = false
+        break
+      }
       try {
         const meta = await deps.sheets.searchRowMetadata(config.spreadsheetId, b.project_id)
         if (!meta) {
@@ -175,6 +186,12 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
           .filter(Boolean).join('_')
         const title = controlCanvasTitle(spine || row['Project Name']?.display || 'Project')
         const markdown = renderProjectControlCanvas(b.template_markdown, row)
+        // Ownership check immediately before the irreversible Canvas edit.
+        if (!(await deps.store.renewWorkbookLease(config.spreadsheetId, 'sync', holder))) {
+          leaseLost = true
+          allOk = false
+          break
+        }
         await deps.canvas.editControlCanvas({ canvasId: b.canvas_id, title, markdown })
 
         const wasBroken = b.sync_status === 'error' || b.sync_status === 'orphaned'
@@ -203,8 +220,14 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
       cursorAdvanced = true
     }
 
-    return { ran: true, considered: bindings.length, updated, unchanged, orphaned, errored, cursorAdvanced }
+    return {
+      ran: true,
+      ...(leaseLost ? { reason: 'sync_lease_lost' } : {}),
+      considered: bindings.length, updated, unchanged, orphaned, errored, cursorAdvanced,
+    }
   } finally {
+    // Holder-qualified release: never clears a newer holder's lease. Skipped when
+    // we already detected the lease was lost (the new holder owns it now).
     await deps.store.releaseWorkbookLease(config.spreadsheetId, 'sync', holder).catch(() => {})
   }
 }

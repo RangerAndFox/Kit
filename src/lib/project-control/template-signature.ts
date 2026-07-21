@@ -105,3 +105,38 @@ export function resolveProjectControlTemplate(
     matchedFileIds: matches.map((m) => m.fileId),
   }
 }
+
+export type ControlTemplateClassification =
+  | { ok: true; fileId: string; markdown: string; cloneSafe: boolean }
+  | { ok: false; reason: 'none' | 'multiple' | 'uncertain'; excludeFileIds: string[]; cloneSafe: boolean }
+
+/**
+ * Pure fail-closed classification over an already-fetched candidate set. Given
+ * whether enumeration was PARTIAL, decides which candidates to exclude from a
+ * generic clone and whether generic cloning is safe at all:
+ *
+ *   - exactly one match → ok (exclude it, clone the rest);
+ *   - zero matches, full enumeration → clone the rest (none are control-like);
+ *   - multiple matches, full enumeration → exclude ALL matches, clone the rest;
+ *   - partial enumeration → uncertain, cloneSafe=false (clone nothing);
+ *   - a configured id that failed to resolve → excluded AND cloneSafe=false
+ *     (we could not verify it, so a control-like canvas might be unexcluded).
+ */
+export function classifyControlTemplate(
+  candidates: TemplateCandidate[],
+  partial: boolean,
+  configuredFileId?: string,
+): ControlTemplateClassification {
+  const r = resolveProjectControlTemplate(candidates, configuredFileId)
+  // Even a definitive single match must NOT trigger a generic clone when
+  // enumeration was partial — an unread candidate could be control-like too.
+  if (r.ok) return { ok: true, fileId: r.fileId, markdown: r.markdown, cloneSafe: !partial }
+  const fail = r as Extract<TemplateResolution, { ok: false }>
+  const excludeFileIds = Array.from(
+    new Set([...fail.matchedFileIds, ...(configuredFileId ? [configuredFileId] : [])]),
+  )
+  const configuredButUnverified = !!configuredFileId
+  const cloneSafe = !partial && !configuredButUnverified
+  const reason: 'none' | 'multiple' | 'uncertain' = partial ? 'uncertain' : fail.reason
+  return { ok: false, reason, excludeFileIds, cloneSafe }
+}

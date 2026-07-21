@@ -87,6 +87,17 @@ export interface HarvestProject {
   code: string
   is_active: boolean
   client?: { id: number; name: string }
+  /** Free-text notes; carries the embedded Kit reconciliation marker. */
+  notes?: string
+}
+
+/**
+ * Embedded stable Kit identity marker written into a Harvest project's notes at
+ * creation, so a resumed provision can find the project it already created —
+ * without relying on the display name/code (which collide across duplicates).
+ */
+export function kitProjectMarker(kitProjectId: string): string {
+  return `[kit:${kitProjectId}]`
 }
 
 export interface HarvestTask {
@@ -166,7 +177,22 @@ export async function listProjects(activeOnly = true): Promise<HarvestProject[]>
     code: p.code || '',
     is_active: p.is_active,
     client: p.client ? { id: p.client.id, name: p.client.name } : undefined,
+    notes: p.notes || '',
   }))
+}
+
+/**
+ * Reconcile by embedded Kit identity: find the Harvest project this exact Kit
+ * project already created (marker in notes), scanning active + inactive. Returns
+ * null when none exists — the caller then creates one. This is what makes a
+ * resumed provision safe: a crash after create-but-before-ledger is reconciled
+ * here instead of creating a second Harvest project.
+ */
+export async function findHarvestProjectByKitId(kitProjectId: string): Promise<HarvestProject | null> {
+  if (!kitProjectId) return null
+  const marker = kitProjectMarker(kitProjectId)
+  const all = await listProjects(false) // include inactive — a replaced/paused one still counts
+  return all.find((p) => (p.notes || '').includes(marker)) || null
 }
 
 /**
@@ -193,6 +219,8 @@ export async function createHarvestProject(opts: {
   startDate?: string
   endDate?: string
   notes?: string
+  /** Kit project id — embedded as a reconciliation marker in the notes. */
+  kitProjectId?: string
 }): Promise<HarvestProject & { task_assignments: HarvestProjectTask[] }> {
   const body: Record<string, unknown> = {
     client_id: opts.clientId,
@@ -206,7 +234,11 @@ export async function createHarvestProject(opts: {
   if (opts.budgetTotal) body.budget = opts.budgetTotal
   if (opts.startDate) body.starts_on = opts.startDate
   if (opts.endDate) body.ends_on = opts.endDate
-  if (opts.notes) body.notes = opts.notes
+  // Embed the Kit marker so a resumed provision can reconcile by identity.
+  const notes = [opts.notes, opts.kitProjectId ? kitProjectMarker(opts.kitProjectId) : '']
+    .filter(Boolean)
+    .join('\n')
+  if (notes) body.notes = notes
 
   const data = await harvestPost('/projects', body)
 
@@ -254,12 +286,17 @@ export async function assignTaskToProject(
 }
 
 /**
- * Assign common creative tasks to a project.
+ * Assign common creative tasks to a project — IDEMPOTENT: tasks already assigned
+ * are skipped, so a resumed/reused provision never duplicates task assignments.
  * Looks for tasks matching creative keywords, or assigns the first few available.
  */
-async function assignDefaultTasks(projectId: number): Promise<HarvestProjectTask[]> {
+export async function assignDefaultTasks(projectId: number): Promise<HarvestProjectTask[]> {
   const allTasks = await listAccountTasks()
   if (allTasks.length === 0) return []
+
+  // Already-assigned task ids on this project — skip them (idempotent reuse).
+  const existing = await listProjectTasks(projectId).catch(() => [] as HarvestProjectTask[])
+  const existingTaskIds = new Set(existing.map((ta) => ta.task.id))
 
   // Preferred creative task names (in priority order)
   const preferredNames = [
@@ -283,8 +320,8 @@ async function assignDefaultTasks(projectId: number): Promise<HarvestProjectTask
     toAssign.push(...allTasks.slice(0, 3))
   }
 
-  // Cap at 5 tasks and assign in parallel
-  const capped = toAssign.slice(0, 5)
+  // Cap at 5 tasks; skip any already assigned; assign the rest in parallel.
+  const capped = toAssign.slice(0, 5).filter((t) => !existingTaskIds.has(t.id))
   const results = await Promise.allSettled(
     capped.map((task) => assignTaskToProject(projectId, task.id))
   )

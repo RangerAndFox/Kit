@@ -12,6 +12,7 @@ import {
   resolveCreationProject,
   runDisabledCreation,
   routeCreationRequest,
+  shouldArchiveReplaceTarget,
   type RequestStorePort,
 } from './creation-request'
 
@@ -184,6 +185,26 @@ describe('ensureProjectForRequest', () => {
     assert.equal(r.status, 'resumed')
     assert.equal(r.projectId, 'p1')
     assert.equal(inserts, 1)
+  })
+})
+
+describe('shouldArchiveReplaceTarget (replay-safe replace)', () => {
+  it('archives the persisted target for a replace decision', () => {
+    assert.deepEqual(
+      shouldArchiveReplaceTarget({ decision: 'replace', replace_target_project_id: 'OLD' }, 'NEW'),
+      { archive: true, targetId: 'OLD' },
+    )
+  })
+  it('never archives the run\'s own new project (replay cannot delete the replacement)', () => {
+    assert.deepEqual(
+      shouldArchiveReplaceTarget({ decision: 'replace', replace_target_project_id: 'SAME' }, 'SAME'),
+      { archive: false, targetId: null },
+    )
+  })
+  it('does nothing for duplicate/create or a missing target', () => {
+    assert.equal(shouldArchiveReplaceTarget({ decision: 'duplicate', replace_target_project_id: 'OLD' }, 'NEW').archive, false)
+    assert.equal(shouldArchiveReplaceTarget({ decision: 'create', replace_target_project_id: null }, 'NEW').archive, false)
+    assert.equal(shouldArchiveReplaceTarget({ decision: 'replace', replace_target_project_id: null }, 'NEW').archive, false)
   })
 })
 

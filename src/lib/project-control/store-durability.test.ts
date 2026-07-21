@@ -13,6 +13,7 @@ import {
   claimWorkbookLease,
   claimWorkbookLeaseFenced,
   renewWorkbookLease,
+  releaseWorkbookLease,
   claimCreationRequestFenced,
   renewCreationRequestLease,
   listRecoverableRequests,
@@ -145,6 +146,27 @@ describe('renewable / fenced workbook lease', () => {
     const blocked = await claimWorkbookLeaseFenced('sid', 'creation', 'C')
     assert.equal(blocked.ok, false)
     assert.equal(blocked.fence, null)
+  })
+
+  it('stale worker A is rejected at the ownership check after B reclaims (before any write)', async () => {
+    const fake = fakeDb()
+    __setStoreClientForTests(() => fake)
+    const row = () => fake.rowsOf('sheet_sync_state')[0]
+
+    // 1) A acquires.
+    assert.equal((await claimWorkbookLeaseFenced('sid', 'creation', 'A')).ok, true)
+    // 2) A's lease expires.
+    row().creation_lease_expires_at = new Date(Date.now() - 1000).toISOString()
+    // 3) B reclaims.
+    assert.equal((await claimWorkbookLeaseFenced('sid', 'creation', 'B')).ok, true)
+    // 4/5) A attempts its next write — its pre-write ownership check (renew) is
+    //      REJECTED, so A never reaches the external boundary.
+    assert.equal(await renewWorkbookLease('sid', 'creation', 'A'), false)
+    // 6) B proceeds (its ownership check passes).
+    assert.equal(await renewWorkbookLease('sid', 'creation', 'B'), true)
+    // A's holder-qualified release cannot clear B's lease.
+    await releaseWorkbookLease('sid', 'creation', 'A')
+    assert.equal(row().creation_lease_holder, 'B')
   })
 
   it('the boolean claimWorkbookLease still works (delegates to fenced)', async () => {

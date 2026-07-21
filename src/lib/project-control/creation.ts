@@ -171,6 +171,10 @@ export async function bindProjectControl(
     // ── Step 1: Sheet row + developer-metadata binding ───────────────────────
     let rowIndex: number | undefined
     if (binding.creation_state === 'pending_sheet') {
+      // Ownership check immediately before the irreversible Sheet write.
+      if (!(await deps.store.renewWorkbookLease(config.spreadsheetId, 'creation', holder))) {
+        return { status: 'deferred', reason: 'creation_lease_lost' }
+      }
       const owned = kitOwnedCreationCells(opts.submission)
       const res = await deps.sheets.createBoundRow(config, opts.projectId, owned)
       rowIndex = res.rowIndex

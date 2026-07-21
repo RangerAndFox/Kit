@@ -68,17 +68,28 @@ mechanism in code before assuming full compliance.
     margin/formula columns, and sync never edits a canvas other than the
     binding's persisted `canvas_id`. *(Verified — migration 056 unique
     constraints + `src/lib/project-control/`.)*
-15. **Project-control provisioning is durable and Railway-recovered.**
+15. **Project-control provisioning is durable, idempotent, and Railway-recovered.**
     Provisioning is a per-service durable ledger (`project_provisioning_steps`),
-    so a restart resumes only the incomplete services, never re-running a
-    completed one. Nonterminal creation requests (expired lease) and incomplete
-    bindings (`creation_state != 'connected'`) are recovered by the **Railway**
-    recovery sweep — the Vercel/Inngest sync only re-renders already-`connected`
-    bindings and must not be extended to complete creation. A user `cancel` is
-    the terminal `cancelled` status and is never resumed. Leases are renewable
-    (heartbeat) and fenced (a per-resource monotonic `fence` bumped on reclaim);
-    a worker that loses its lease stops before writing. *(Verified — migration
-    057 + `provisioning-steps.ts`/`recovery.ts`/`store.ts` + tests.)*
+    so a restart resumes only the incomplete services. Every reachable external
+    provision (Harvest, Frame.io, Slack) reconciles by an embedded/stable Kit
+    identity BEFORE creating — reusing an existing resource, creating only when
+    absence is proven — so a crash after create-but-before-ledger never
+    duplicates on resume. Nonterminal creation requests (expired lease) and
+    incomplete bindings (`creation_state != 'connected'`) are recovered by the
+    **Railway** recovery sweep; the Vercel/Inngest sync only re-renders
+    already-`connected` bindings and must not be extended to complete creation.
+    A `replace` decision persists `decision` + `replace_target_project_id`
+    BEFORE the prompt is replaced or anything archived; the archive runs in the
+    durable path, keyed on the persisted target, so a crash is recoverable and a
+    replay never archives the replacement. A user `cancel` is the terminal
+    `cancelled` status, never resumed. Lease ownership is **enforced**: the
+    acquisition-unique holder is compare-and-set-verified immediately before
+    every irreversible external write (creation Sheet/Canvas, each provisioning
+    phase, each sync Canvas edit) — a reclaimed worker fails its next renew and
+    aborts before the write; release is holder-qualified; all workflow external
+    calls are timeout-bounded. *(Verified — migration 056 (durability folded in)
+    + `provisioning-steps.ts`/`recovery.ts`/`store.ts`/`canvas.ts`/`sheets.ts` +
+    agent reconcilers + tests.)*
 
 ## How to use these
 

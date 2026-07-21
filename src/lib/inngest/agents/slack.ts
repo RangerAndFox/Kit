@@ -97,40 +97,59 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
     let controlTemplate: { fileId: string; markdown: string; hash: string } | null = null
     let controlTemplateError: string | null = null
     const excludeFileIds: string[] = []
+    // Fail closed: when template resolution is uncertain we skip generic canvas
+    // cloning ENTIRELY, so no unmanaged Project-Control-like canvas is created.
+    let skipGenericClone = false
     if (projectControlCreationEnabled() && workbookConfigFromEnv()) {
       try {
         const r = await resolveControlTemplate(workbookConfigFromEnv()!)
         if (r.ok) {
           controlTemplate = { fileId: r.fileId, markdown: r.markdown, hash: r.hash }
           excludeFileIds.push(r.fileId)
+          // A valid match found under partial enumeration: bind it, but don't
+          // generically clone (an unread candidate could be control-like).
+          if (!r.cloneSafe) skipGenericClone = true
         } else {
           controlTemplateError = r.reason
+          // Exclude every matched (and configured) candidate from generic clone…
+          excludeFileIds.push(...r.excludeFileIds)
+          // …and if resolution was uncertain, don't clone anything at all.
+          if (!r.cloneSafe) skipGenericClone = true
         }
       } catch (e: any) {
         controlTemplateError = `resolve_failed: ${e.message}`
+        skipGenericClone = true
       }
     }
 
-    // Duplicate canvases from the template channel (header canvas + standalones)
+    // Duplicate canvases from the template channel (header canvas + standalones).
+    // Skipped entirely when template resolution was uncertain — cloning here
+    // could otherwise clone a Project-Control-like canvas we failed to exclude.
     let canvasResult: { standaloneCanvasIds: string[] } = {
       standaloneCanvasIds: [],
     }
-    try {
-      canvasResult = await duplicateTemplateCanvases({
-        newChannelId: channel.channelId,
-        projectName,
-        projectNumber: (payload.projectNumber as string) || undefined,
-        client,
-        projectType: (payload.projectType as string) || undefined,
-        producerSlackId: (payload.projectManager as string) || undefined,
-        cdSlackId: (payload.creativeDirector as string) || undefined,
-        delivery: (payload.targetDelivery as string) || undefined,
-        dropboxUrl: (payload.dropboxUrl as string) || undefined,
-        frameioUrl: (payload.frameioUrl as string) || undefined,
-        excludeFileIds,
-      })
-    } catch (e: any) {
-      console.warn('[SlackAgent] Template canvas copy failed (non-fatal):', e.message)
+    if (skipGenericClone) {
+      console.warn(
+        `[SlackAgent] skipping generic canvas clone — Project Control template resolution uncertain (${controlTemplateError}); not cloning to avoid an unmanaged control-like canvas`,
+      )
+    } else {
+      try {
+        canvasResult = await duplicateTemplateCanvases({
+          newChannelId: channel.channelId,
+          projectName,
+          projectNumber: (payload.projectNumber as string) || undefined,
+          client,
+          projectType: (payload.projectType as string) || undefined,
+          producerSlackId: (payload.projectManager as string) || undefined,
+          cdSlackId: (payload.creativeDirector as string) || undefined,
+          delivery: (payload.targetDelivery as string) || undefined,
+          dropboxUrl: (payload.dropboxUrl as string) || undefined,
+          frameioUrl: (payload.frameioUrl as string) || undefined,
+          excludeFileIds,
+        })
+      } catch (e: any) {
+        console.warn('[SlackAgent] Template canvas copy failed (non-fatal):', e.message)
+      }
     }
     const totalCanvases = canvasResult.standaloneCanvasIds.length
 

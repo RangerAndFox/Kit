@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 import {
   hasProjectControlSignature,
   resolveProjectControlTemplate,
+  classifyControlTemplate,
 } from './template-signature'
 
 // The verified R&F Project Control structure (from fill-canvas-template.test.ts).
@@ -95,5 +96,55 @@ describe('resolveProjectControlTemplate', () => {
     )
     assert.equal(r.ok, true)
     assert.equal(r.ok && r.fileId, 'F_CFG')
+  })
+})
+
+describe('classifyControlTemplate (fail-closed generic clone)', () => {
+  it('1. exactly one match, full enumeration → ok, cloneSafe', () => {
+    const c = classifyControlTemplate([{ fileId: 'F1', markdown: CONTROL }, { fileId: 'F2', markdown: SHOTLIST }], false)
+    assert.equal(c.ok, true)
+    assert.equal(c.ok && c.fileId, 'F1')
+    assert.equal(c.cloneSafe, true)
+  })
+
+  it('2. zero matches, full enumeration → not ok, cloneSafe (nothing control-like to leak)', () => {
+    const c = classifyControlTemplate([{ fileId: 'F2', markdown: SHOTLIST }], false)
+    assert.equal(c.ok, false)
+    assert.equal(!c.ok && c.reason, 'none')
+    assert.equal(c.cloneSafe, true)
+    assert.deepEqual(!c.ok && c.excludeFileIds, [])
+  })
+
+  it('3. multiple matches → excludes ALL matched, still cloneSafe (others are safe)', () => {
+    const c = classifyControlTemplate(
+      [{ fileId: 'F_A', markdown: CONTROL }, { fileId: 'F_B', markdown: CONTROL }, { fileId: 'F_C', markdown: SHOTLIST }],
+      false,
+    )
+    assert.equal(c.ok, false)
+    assert.equal(!c.ok && c.reason, 'multiple')
+    assert.deepEqual(!c.ok && c.excludeFileIds, ['F_A', 'F_B'])
+    assert.equal(c.cloneSafe, true)
+  })
+
+  it('4. explicit configured id whose body failed (absent + partial) → excluded, NOT cloneSafe', () => {
+    const c = classifyControlTemplate([{ fileId: 'F_OTHER', markdown: SHOTLIST }], true, 'F_CFG')
+    assert.equal(c.ok, false)
+    assert.equal(!c.ok && c.reason, 'uncertain')
+    assert.ok(!c.ok && c.excludeFileIds.includes('F_CFG'))
+    assert.equal(c.cloneSafe, false)
+  })
+
+  it('5. partial enumeration → uncertain, NOT cloneSafe', () => {
+    const c = classifyControlTemplate([{ fileId: 'F2', markdown: SHOTLIST }], true)
+    assert.equal(c.ok, false)
+    assert.equal(!c.ok && c.reason, 'uncertain')
+    assert.equal(c.cloneSafe, false)
+  })
+
+  it('6. one candidate fetch fails while others succeed (match found but partial) → ok, NOT cloneSafe', () => {
+    const c = classifyControlTemplate([{ fileId: 'F1', markdown: CONTROL }], true)
+    assert.equal(c.ok, true)
+    assert.equal(c.ok && c.fileId, 'F1')
+    assert.equal(c.cloneSafe, false) // an unread candidate could be control-like → don't clone
   })
 })

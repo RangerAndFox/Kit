@@ -12,7 +12,7 @@
 
 import { createHash } from 'node:crypto'
 import { fetchTemplateCandidates } from '@/lib/mcp/slack'
-import { resolveProjectControlTemplate, type TemplateResolution } from './template-signature'
+import { classifyControlTemplate, type ControlTemplateClassification } from './template-signature'
 import type { WorkbookConfig } from './types'
 
 const SLACK_API = 'https://slack.com/api'
@@ -30,11 +30,16 @@ function headers() {
   }
 }
 
+// Bounded: an unbounded Slack call could hang past the creation lease and let a
+// reclaiming worker run concurrently (see the lease-ownership guarantees).
+const SLACK_CALL_TIMEOUT_MS = 15_000
+
 async function slackPost(method: string, body: Record<string, unknown>): Promise<SlackJson> {
   const res = await fetch(`${SLACK_API}/${method}`, {
     method: 'POST',
     headers: headers(),
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(SLACK_CALL_TIMEOUT_MS),
   })
   const data = (await res.json()) as SlackJson
   if (!data.ok) throw new Error(`Slack ${method}: ${data.error}`)
@@ -46,6 +51,7 @@ async function slackGet(method: string, params: Record<string, string>): Promise
   const res = await fetch(`${SLACK_API}/${method}?${qs}`, {
     method: 'GET',
     headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+    signal: AbortSignal.timeout(SLACK_CALL_TIMEOUT_MS),
   })
   const data = (await res.json()) as SlackJson
   if (!data.ok) throw new Error(`Slack ${method}: ${data.error}`)
@@ -62,22 +68,35 @@ export function hashTemplate(markdown: string): string {
 }
 
 export type ControlTemplateResolution =
-  | { ok: true; fileId: string; markdown: string; hash: string }
-  | { ok: false; reason: 'none' | 'multiple'; matchedFileIds: string[] }
+  | { ok: true; fileId: string; markdown: string; hash: string; cloneSafe: boolean }
+  | {
+      ok: false
+      reason: 'none' | 'multiple' | 'uncertain'
+      /** Candidate ids to exclude from generic cloning (all structural matches + a configured id). */
+      excludeFileIds: string[]
+      /**
+       * Whether it is safe to generically clone the OTHER template canvases.
+       * False when enumeration was partial or a configured id couldn't be
+       * verified — then the caller must skip generic cloning entirely, so no
+       * unmanaged Project-Control-like canvas can slip through.
+       */
+      cloneSafe: boolean
+    }
 
 /**
  * Resolve the single Project Control template (config override first, else
- * structural signature over the template channel). Fails closed on 0/2+.
+ * structural signature over the template channel). Fails closed on 0/2+ and,
+ * critically, on UNCERTAIN enumeration: when the candidate set is partial (a
+ * channel/list/body fetch failed) or a configured id couldn't be verified, it
+ * reports cloneSafe=false so the caller clones nothing — a Project-Control-like
+ * canvas must never be generically cloned when we can't prove we've excluded it.
  */
 export async function resolveControlTemplate(config: WorkbookConfig): Promise<ControlTemplateResolution> {
-  const candidates = await fetchTemplateCandidates()
-  const r = resolveProjectControlTemplate(candidates, config.controlTemplateFileId)
-  if (r.ok) {
-    const ok = r as Extract<TemplateResolution, { ok: true }>
-    return { ok: true, fileId: ok.fileId, markdown: ok.markdown, hash: hashTemplate(ok.markdown) }
-  }
-  const fail = r as Extract<TemplateResolution, { ok: false }>
-  return { ok: false, reason: fail.reason, matchedFileIds: fail.matchedFileIds }
+  const { candidates, partial } = await fetchTemplateCandidates()
+  const c = classifyControlTemplate(candidates, partial, config.controlTemplateFileId)
+  if (c.ok) return { ok: true, fileId: c.fileId, markdown: c.markdown, hash: hashTemplate(c.markdown), cloneSafe: c.cloneSafe }
+  const fail = c as Extract<ControlTemplateClassification, { ok: false }>
+  return { ok: false, reason: fail.reason, excludeFileIds: fail.excludeFileIds, cloneSafe: fail.cloneSafe }
 }
 
 export interface CanvasHandle {

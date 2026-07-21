@@ -25,6 +25,9 @@ const SCOPES = [
 const SHEETS_BASE = 'https://sheets.googleapis.com/v4/spreadsheets'
 const DRIVE_BASE = 'https://www.googleapis.com/drive/v3/files'
 const A1_LAST_COLUMN = 'Y' // A:Y
+// Bounded: an unbounded Sheets/Drive call could hang past the creation/sync
+// lease and let a reclaiming worker run concurrently.
+const GOOGLE_CALL_TIMEOUT_MS = 15_000
 
 function b64url(input: Buffer | string): string {
   return Buffer.from(input).toString('base64url')
@@ -59,6 +62,7 @@ async function getAccessToken(): Promise<string> {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion }),
+    signal: AbortSignal.timeout(GOOGLE_CALL_TIMEOUT_MS),
   })
   if (!res.ok) throw new Error(`Google token exchange failed (${res.status}): ${await res.text()}`)
   const data = (await res.json()) as { access_token?: string; expires_in?: number }
@@ -78,6 +82,7 @@ async function httpTransport<T>(method: string, url: string, body?: unknown): Pr
       ...(body ? { 'content-type': 'application/json' } : {}),
     },
     ...(body ? { body: JSON.stringify(body) } : {}),
+    signal: AbortSignal.timeout(GOOGLE_CALL_TIMEOUT_MS),
   })
   if (!res.ok) throw new Error(`Google ${method} ${url.split('?')[0]} failed (${res.status}): ${await res.text()}`)
   return (await res.json()) as T

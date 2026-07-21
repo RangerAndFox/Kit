@@ -41,6 +41,7 @@ import {
   runDisabledCreation,
   routeCreationRequest,
   authorizeResolution,
+  shouldArchiveReplaceTarget,
 } from '../../../src/lib/project-control/creation-request'
 import {
   projectControlCreationEnabled,
@@ -712,8 +713,11 @@ export function registerInteractionHandlers(app: App) {
       return
     }
     const { form, userId, statusChannel, threadTs, workspaceId } = req!.submission
+    // Persist the decision + state BEFORE replacing the prompt, so a crash here
+    // is recoverable (decision='duplicate' + status='provisioning' → the sweep
+    // resumes it) rather than stranding at awaiting_decision.
+    await updateCreationRequest(value, { decision: 'duplicate', status: 'provisioning' })
     await respond({ replace_original: true, text: `:heavy_plus_sign: Creating a *duplicate* project for ${form.projectName}...` })
-    await updateCreationRequest(value, { decision: 'duplicate' })
     await runProjectProvisioning({ client, form, workspaceId, userId, statusChannel, threadTs, requestKey: value, creationEnabled: true })
   })
 
@@ -746,15 +750,18 @@ export function registerInteractionHandlers(app: App) {
     // Re-derive the clashing project from the ledger's number (state reloaded
     // from Supabase, not from an in-memory stash).
     const existing = await findExistingProject(workspaceId, form.projectNumber)
+    // DURABLY RECORD THE DECISION + EXACT TARGET + STATE *BEFORE* replacing the
+    // prompt or archiving anything. A crash after this point is fully
+    // recoverable: the recovery sweep sees decision='replace' + the persisted
+    // target and finishes via the same durable path. The archive itself is done
+    // by runProjectProvisioning (idempotent, keyed on the persisted target), so
+    // a replay can never archive the newly created replacement.
+    await updateCreationRequest(value, {
+      decision: 'replace',
+      status: 'provisioning',
+      replace_target_project_id: existing?.id ?? null,
+    })
     await respond({ replace_original: true, text: `:wastebasket: Removing the old *${existing?.name || form.projectName}* and creating a fresh one...` })
-    if (existing) {
-      try {
-        await archiveOldProject(client, existing)
-      } catch (err: any) {
-        console.error('[provision-dup] archive old project failed (continuing):', err?.message)
-      }
-    }
-    await updateCreationRequest(value, { decision: 'replace' })
     await runProjectProvisioning({ client, form, workspaceId, userId, statusChannel, threadTs, requestKey: value, creationEnabled: true })
   })
 
@@ -910,6 +917,33 @@ export function registerInteractionHandlers(app: App) {
       }
       const { data: project } = await supabase.from('projects').select('*').eq('id', projectId).maybeSingle()
       if (!project) throw new Error('project row not found after creation')
+
+      // ── Restart-safe replace: archive the persisted target BEFORE fan-out ──
+      // Runs on BOTH the interactive replace and the recovery resume (both call
+      // this function). Idempotent (delete no-ops if already gone) and keyed on
+      // the PERSISTED replace_target_project_id — never findExistingProject — so
+      // a replay can never archive the freshly created replacement. Archiving
+      // first frees the old Slack slug so the replacement reclaims it.
+      if (creationEnabled && requestKey) {
+        const reqRow = await loadCreationRequest(requestKey).catch(() => null)
+        const { archive, targetId } = reqRow
+          ? shouldArchiveReplaceTarget(reqRow, projectId)
+          : { archive: false, targetId: null }
+        if (archive && targetId) {
+          const { data: target } = await supabase.from('projects').select('*').eq('id', targetId).maybeSingle()
+          if (target) {
+            try {
+              await archiveOldProject(client, {
+                id: target.id,
+                name: target.name,
+                slackId: (target.external_links || {}).slack_id,
+              })
+            } catch (err: any) {
+              console.error('[provision] replace archive failed (continuing):', err?.message)
+            }
+          }
+        }
+      }
 
       // ── Fan-out to agents in parallel ─────────────────────
       const services = form.selectedServices
@@ -1186,16 +1220,9 @@ export function registerInteractionHandlers(app: App) {
         const sub: any = r.submission || {}
         const form = sub.form
         if (!form) return // nothing to resume from
-        // Restart-safe replace: if the user chose 'replace' and it crashed,
-        // archive the still-present clashing project first (idempotent).
-        if (r.decision === 'replace') {
-          const existing = await findExistingProject(sub.workspaceId || r.workspace_id || '', form.projectNumber)
-          if (existing && existing.id !== r.project_id) {
-            try { await archiveOldProject(app.client, existing) } catch (e: any) {
-              console.error('[recovery] archive old project failed (continuing):', e?.message)
-            }
-          }
-        }
+        // A persisted 'replace' decision is honored inside runProjectProvisioning
+        // (archives the persisted replace_target_project_id, idempotently) — so
+        // the resume path and the interactive path share one archive site.
         await runProjectProvisioning({
           client: app.client,
           form,
