@@ -61,6 +61,50 @@ mechanism in code before assuming full compliance.
 13. **Shared behavior stays shared.** New cross-cutting domain logic goes into
     a `src/lib/` module, not duplicated into a Bolt handler and an Inngest
     cron.
+14. **Project Control is one-way and single-bound.** The Master Project List row
+    is authoritative; the Slack Project Control Canvas is a rendered view only.
+    Each project has at most one binding, one bound Canvas, and one Sheet
+    developer-metadata record (`kit_project_id`); Kit never writes the workbook's
+    margin/formula columns, and sync never edits a canvas other than the
+    binding's persisted `canvas_id`. The one-way contract is enforced by three
+    mechanisms, none relied on alone: (a) every render carries a prominent
+    **generated-view notice** at the top directing edits to the Master Project
+    List and warning that Canvas edits are overwritten; (b) sync is a
+    **deterministic full-document replace** rendered only from the template
+    snapshot + the authoritative Sheet row, so a manual Canvas edit is never an
+    input and can never become source data; (c) the managed Canvas is created
+    **read-only for the channel** (`canvases.access.set access_level='read'`),
+    while Kit continues to edit via its own app token. *(Verified — migration 056
+    unique constraints + `src/lib/project-control/`; the read-only grant's enum
+    is verified against `@slack/web-api`, but the read + Kit-edit interaction is
+    a staging-runbook item, so the notice + full re-render are the guaranteed
+    safeguards.)*
+15. **Project-control provisioning is durable, effectively-once, and Railway-recovered.**
+    Provisioning is a per-service durable ledger (`project_provisioning_steps`)
+    with per-step ownership (holder + monotonic fence + lease); the final result
+    write is holder/fence-conditional, so a reclaimed stale worker cannot commit.
+    A request is `completed` ONLY when every required step reached `done` (DB-
+    backed); otherwise it stays recoverable (`provisioning`) or surfaces a
+    permanent `terminal` step — never silently completed. External delivery is
+    **effectively-once through durable ownership + reconciliation, NOT provider-
+    level exactly-once**: each external provision (Harvest by notes marker,
+    Frame.io by an embedded Kit-UUID label marker with explicit 0/1/multiple,
+    Slack by a deterministic Kit-suffixed channel name) reconciles before
+    creating, so a crash between create and the ledger write reconciles instead
+    of duplicating. Recovery is step-based as well as request-based (it finds
+    incomplete steps even if the request row is inconsistent). A `replace`
+    persists `decision` + the conflict `replace_target_project_id` at PROMPT time
+    and commits duplicate/replace/cancel via an atomic compare-and-set out of
+    `awaiting_decision` (only one racing click wins); replacement cleanup is a
+    durable step whose failed delete keeps the request incomplete and can never
+    delete the replacement. Store reads that gate replay THROW on DB error (never
+    an empty ledger). Ownership is enforced before every irreversible external
+    write; release is holder-qualified; workflow external calls are timeout-
+    bounded. *(Partially verified — migration 056 (durability folded in) + the
+    `src/lib/project-control/*` + agent reconcilers are unit-tested; the Bolt
+    wiring in `bolt/src/handlers/interactions.ts` is `@ts-nocheck` and its live
+    Slack/Supabase paths are NOT exercised by tests. Do not mark fully Verified
+    until the Bolt orchestration boundary has production-path coverage.)*
 
 ## How to use these
 

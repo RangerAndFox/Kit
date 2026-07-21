@@ -11,6 +11,7 @@
  * to the user in real time.
  */
 
+import { randomUUID } from 'node:crypto'
 import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import {
@@ -19,6 +20,40 @@ import {
 } from '../../../src/lib/inngest/agents/registry'
 import type { ServiceKey } from '../../../src/lib/provisioner/types'
 import { buildNewProjectModal } from '../../../src/lib/provisioner/modal'
+import {
+  getOrCreateCreationRequest,
+  loadCreationRequest,
+  updateCreationRequest,
+  claimCreationRequest,
+  commitCreationDecision,
+  claimCreationRequestFenced,
+  renewCreationRequestLease,
+  listRecoverableRequests,
+  listProjectsWithIncompleteSteps,
+  loadCreationRequestByProjectId,
+  listIncompleteBindings,
+  getBindingByProject,
+  getProvisioningSteps,
+  claimProvisioningStep,
+  recordStepExternalId,
+  completeProvisioningStep,
+} from '../../../src/lib/project-control/store'
+import { bindProjectControl } from '../../../src/lib/project-control/creation'
+import { runDurableProvisioning } from '../../../src/lib/project-control/provisioning-steps'
+import { runProjectControlRecovery } from '../../../src/lib/project-control/recovery'
+import {
+  resolveCreationProject,
+  runDisabledCreation,
+  routeCreationRequest,
+  authorizeResolution,
+  shouldArchiveReplaceTarget,
+  resolveReplaceCleanup,
+} from '../../../src/lib/project-control/creation-request'
+import {
+  projectControlCreationEnabled,
+  workbookConfigFromEnv,
+} from '../../../src/lib/project-control/types'
+import { resolveControlTemplate } from '../../../src/lib/project-control/canvas'
 import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
 import { peekIntake, takeIntake, updateIntake } from '../../../src/lib/storyboard/stash'
 import { extractScriptFromFile } from '../../../src/lib/storyboard/files'
@@ -596,60 +631,180 @@ export function registerInteractionHandlers(app: App) {
     const teamId = body.team?.id || ''
     const workspaceId = await resolveWorkspaceId(teamId)
 
-    // ── Duplicate guard ───────────────────────────────────
-    // If a project with this number already exists in the workspace, don't
-    // silently create a second channel + record. Ask the producer whether to
-    // replace it, create a duplicate, or cancel.
-    const existing = await findExistingProject(workspaceId, form.projectNumber)
-    if (existing) {
-      const token = putPendingProvision({ form, workspaceId, userId, statusChannel, threadTs, existing })
-      await client.chat.postMessage(
-        postProvisionDupPrompt(statusChannel, threadTs, existing, token),
-      )
+    // Project Control is gated OFF by default. When disabled we take the
+    // ORIGINAL pre-mission path: no migration-056 table is touched, the
+    // in-memory pending map backs the duplicate prompt, and provisioning is
+    // unchanged. When enabled we use the durable creation-request ledger.
+    const creationEnabled = projectControlCreationEnabled()
+
+    if (!creationEnabled) {
+      const existing = await findExistingProject(workspaceId, form.projectNumber)
+      if (existing) {
+        const token = putPendingProvision({ form, workspaceId, userId, statusChannel, threadTs, existing })
+        await client.chat.postMessage(postProvisionDupPrompt(statusChannel, threadTs, existing, token))
+        return
+      }
+      await runProjectProvisioning({ client, form, workspaceId, userId, statusChannel, threadTs, creationEnabled: false })
       return
     }
 
-    await runProjectProvisioning({ client, form, workspaceId, userId, statusChannel, threadTs })
+    // ── Persisted idempotency ledger (keyed by Slack view.id) ──
+    // A Socket-Mode redelivery resumes the SAME request instead of creating a
+    // second project; an intentional duplicate is a new modal → new view.id.
+    // routeCreationRequest is the deterministic state machine that decides what
+    // to do, checking THIS request's ownership before the number dup guard so a
+    // crashed request's own project resumes rather than prompting the producer.
+    const requestKey = view.id
+    const { row: reqRow } = await getOrCreateCreationRequest({
+      requestKey,
+      workspaceId,
+      requestedBy: userId,
+      submission: { form, userId, statusChannel, threadTs, workspaceId },
+    })
+
+    const leaseActive =
+      !!reqRow.lease_expires_at && new Date(reqRow.lease_expires_at).getTime() > Date.now()
+    const linkedProjectId = reqRow.project_id || (await findProjectIdByRequestKey(requestKey))
+    const existing = await findExistingProject(workspaceId, form.projectNumber, true)
+    const unrelatedExisting =
+      existing && existing.creationRequestId !== requestKey && existing.id !== linkedProjectId
+        ? { id: existing.id, name: existing.name }
+        : null
+
+    const decision = routeCreationRequest({ status: reqRow.status, linkedProjectId, leaseActive, unrelatedExisting })
+    switch (decision.action) {
+      case 'already_completed':
+        await client.chat.postMessage({
+          channel: statusChannel,
+          ...(threadTs ? { thread_ts: threadTs } : {}),
+          text: `:information_source: *${form.projectName}* was already created for this request — not creating it again.`,
+        })
+        return
+      case 'awaiting_decision':
+      case 'in_flight':
+        return // leave the open prompt / let the active worker finish
+      case 'duplicate_prompt':
+        // Persist the EXACT conflict project id when the prompt is first created,
+        // so the target cannot change between prompt and click.
+        await updateCreationRequest(requestKey, {
+          status: 'awaiting_decision',
+          replace_target_project_id: existing!.id,
+        })
+        await client.chat.postMessage(postProvisionDupPrompt(statusChannel, threadTs, existing!, requestKey))
+        return
+      case 'resume':
+        await runProjectProvisioning({ client, form, workspaceId, userId, statusChannel, threadTs, requestKey, creationEnabled: true })
+        return
+      case 'provision':
+        await updateCreationRequest(requestKey, { decision: 'create' })
+        await runProjectProvisioning({ client, form, workspaceId, userId, statusChannel, threadTs, requestKey, creationEnabled: true })
+        return
+    }
   })
 
   // ─── New Project: duplicate-resolution buttons ────────────
   app.action('kit_provision_dup_duplicate', async ({ ack, body, client, respond }) => {
     await ack()
-    const pending = takePendingProvision((body as any).actions?.[0]?.value || '')
-    if (!pending) {
-      await respond({ replace_original: true, text: ':warning: That request expired — re-run the project form.' })
+    const value = (body as any).actions?.[0]?.value || ''
+    if (!projectControlCreationEnabled()) {
+      const pending = takePendingProvision(value)
+      if (!pending) {
+        await respond({ replace_original: true, text: ':warning: That request expired — re-run the project form.' })
+        return
+      }
+      await respond({ replace_original: true, text: `:heavy_plus_sign: Creating a *duplicate* project for ${pending.form.projectName}...` })
+      await runProjectProvisioning({ client, ...pending, creationEnabled: false })
       return
     }
-    await respond({
-      replace_original: true,
-      text: `:heavy_plus_sign: Creating a *duplicate* project for ${pending.form.projectName}...`,
+    const req = await loadCreationRequest(value)
+    const actingWorkspaceId = await resolveWorkspaceId((body as any).team?.id || '')
+    const auth = authorizeResolution(req, { actingUserId: (body as any).user?.id || '', workspaceId: actingWorkspaceId, action: 'duplicate' })
+    if (!auth.ok) {
+      await respond({ replace_original: true, text: authRefusalText(auth.reason) })
+      return
+    }
+    const { form, userId, statusChannel, threadTs, workspaceId } = req!.submission
+    // Atomic CAS: only the FIRST competing click transitions the request out of
+    // awaiting_decision. A racing replace/cancel (or a double duplicate) loses.
+    const won = await commitCreationDecision({
+      requestKey: value, actingUserId: (body as any).user?.id || '', workspaceId: actingWorkspaceId, decision: 'duplicate',
     })
-    await runProjectProvisioning({ client, ...pending })
+    if (!won) {
+      await respond({ replace_original: true, text: ':information_source: That request was already resolved.' })
+      return
+    }
+    await respond({ replace_original: true, text: `:heavy_plus_sign: Creating a *duplicate* project for ${form.projectName}...` })
+    await runProjectProvisioning({ client, form, workspaceId, userId, statusChannel, threadTs, requestKey: value, creationEnabled: true })
   })
 
   app.action('kit_provision_dup_replace', async ({ ack, body, client, respond }) => {
     await ack()
-    const pending = takePendingProvision((body as any).actions?.[0]?.value || '')
-    if (!pending) {
-      await respond({ replace_original: true, text: ':warning: That request expired — re-run the project form.' })
+    const value = (body as any).actions?.[0]?.value || ''
+    if (!projectControlCreationEnabled()) {
+      const pending = takePendingProvision(value)
+      if (!pending) {
+        await respond({ replace_original: true, text: ':warning: That request expired — re-run the project form.' })
+        return
+      }
+      await respond({ replace_original: true, text: `:wastebasket: Removing the old *${pending.existing.name}* and creating a fresh one...` })
+      try {
+        await archiveOldProject(client, pending.existing)
+      } catch (err: any) {
+        console.error('[provision-dup] archive old project failed (continuing):', err?.message)
+      }
+      await runProjectProvisioning({ client, ...pending, creationEnabled: false })
       return
     }
-    await respond({
-      replace_original: true,
-      text: `:wastebasket: Removing the old *${pending.existing.name}* and creating a fresh one...`,
-    })
-    try {
-      await archiveOldProject(client, pending.existing)
-    } catch (err: any) {
-      console.error('[provision-dup] archive old project failed (continuing):', err?.message)
+    const req = await loadCreationRequest(value)
+    const actingWorkspaceId = await resolveWorkspaceId((body as any).team?.id || '')
+    const auth = authorizeResolution(req, { actingUserId: (body as any).user?.id || '', workspaceId: actingWorkspaceId, action: 'replace' })
+    if (!auth.ok) {
+      await respond({ replace_original: true, text: authRefusalText(auth.reason) })
+      return
     }
-    await runProjectProvisioning({ client, ...pending })
+    const { form, userId, statusChannel, threadTs, workspaceId } = req!.submission
+    // Atomic CAS: only the FIRST competing click wins. The conflict target was
+    // persisted (replace_target_project_id) when the prompt was created, so it
+    // cannot change between prompt and click. The archive itself is a durable
+    // step inside runProjectProvisioning (keyed on the persisted target), so a
+    // crash is recoverable and a replay can never archive the replacement.
+    const won = await commitCreationDecision({
+      requestKey: value, actingUserId: (body as any).user?.id || '', workspaceId: actingWorkspaceId, decision: 'replace',
+    })
+    if (!won) {
+      await respond({ replace_original: true, text: ':information_source: That request was already resolved.' })
+      return
+    }
+    await respond({ replace_original: true, text: `:wastebasket: Removing the old project and creating a fresh one...` })
+    await runProjectProvisioning({ client, form, workspaceId, userId, statusChannel, threadTs, requestKey: value, creationEnabled: true })
   })
 
   app.action('kit_provision_dup_cancel', async ({ ack, body, respond }) => {
     await ack()
-    takePendingProvision((body as any).actions?.[0]?.value || '')
-    await respond({ replace_original: true, text: ':white_circle: Cancelled — nothing was created.' })
+    const value = (body as any).actions?.[0]?.value || ''
+    if (!projectControlCreationEnabled()) {
+      takePendingProvision(value)
+      await respond({ replace_original: true, text: ':white_circle: Cancelled — nothing was created.' })
+      return
+    }
+    const req = await loadCreationRequest(value)
+    const actingWorkspaceId = await resolveWorkspaceId((body as any).team?.id || '')
+    const auth = authorizeResolution(req, { actingUserId: (body as any).user?.id || '', workspaceId: actingWorkspaceId, action: 'cancel' })
+    if (!auth.ok) {
+      await respond({ replace_original: true, text: authRefusalText(auth.reason) })
+      return
+    }
+    // Atomic CAS to terminal 'cancelled' (never resumed). Loses to a racing
+    // duplicate/replace that already committed.
+    const won = await commitCreationDecision({
+      requestKey: value, actingUserId: (body as any).user?.id || '', workspaceId: actingWorkspaceId, decision: 'cancel',
+    })
+    await respond({
+      replace_original: true,
+      text: won
+        ? ':white_circle: Cancelled — nothing was created.'
+        : ':information_source: That request was already resolved.',
+    })
   })
 
   // Provision a project across all selected services. Extracted so both the
@@ -662,8 +817,20 @@ export function registerInteractionHandlers(app: App) {
     userId: string
     statusChannel: string
     threadTs?: string
+    requestKey?: string
+    creationEnabled?: boolean
+    // Set by the recovery sweep: it already holds this request's lease, so the
+    // resume skips the redelivery-guard claim and heartbeats with THIS holder.
+    preClaimed?: boolean
+    leaseHolder?: string
   }) {
-    const { client, form, workspaceId, userId, statusChannel, threadTs } = args
+    const { client, form, workspaceId, userId, statusChannel, threadTs, requestKey } = args
+    const creationEnabled = args.creationEnabled ?? projectControlCreationEnabled()
+    // The lease holder for the durable heartbeat + the resume-safe claim. The
+    // recovery sweep passes the holder it reclaimed with; the fresh path derives
+    // it from the requester.
+    const leaseHolder = args.leaseHolder ?? `bolt:${userId}`
+    const preClaimed = args.preClaimed ?? false
     const postOpts = (extra: Record<string, unknown> = {}) => ({
       channel: statusChannel,
       ...(threadTs ? { thread_ts: threadTs } : {}),
@@ -675,11 +842,6 @@ export function registerInteractionHandlers(app: App) {
     // No after(), no Inngest, no 60s ceiling. Just do the work.
 
     try {
-      // Tell the user we're starting (in the same thread the flow started in)
-      await client.chat.postMessage(postOpts({
-        text: `⚡ Provisioning *${form.projectName}* for ${form.clientName}...`,
-      }))
-
       // Build the project code
       const projectCode = `${form.projectNumber}-${form.clientName.replace(/\s+/g, '')}`
 
@@ -692,32 +854,102 @@ export function registerInteractionHandlers(app: App) {
         .replace(/[^\w\s-]/g, '')
         .replace(/\s+/g, '_')
 
-      // ── Create project record in Supabase ─────────────────
+      // ── Create project record (idempotent, resume-safe) ────
+      // When creation is ENABLED, resolveCreationProject owns the exclusive
+      // lease + resume-safe insert (a redelivered submission / concurrent click
+      // cannot create a second project; a crash between insert and ledger-link
+      // is reconciled via projects.creation_request_id). When DISABLED it inserts
+      // directly and touches no migration-056 table.
       const supabase = createAdminClient()
-      const { data: project, error: dbError } = await supabase
-        .from('projects')
-        .insert({
-          workspace_id: workspaceId,
-          name: form.projectName,
-          client: form.clientName,
-          project_code: projectCode,
-          project_type: form.projectType,
-          status: 'provisioning',
-          start_date: form.startDate || null,
-          target_delivery: form.deadline || null,
-          brief_summary: form.description || null,
-          budget_total: form.budgetTotal ?? null,
-          project_manager_slack_id: form.projectManager || null,
-          external_ids: {
-            dropbox_safe_name: dropboxSafeName,
-            ...(form.creativeDirector ? { creative_director_slack_id: form.creativeDirector } : {}),
-          },
-        })
-        .select()
-        .single()
+      const insertProject = async () => {
+        const { data: inserted, error: dbError } = await supabase
+          .from('projects')
+          .insert({
+            workspace_id: workspaceId,
+            name: form.projectName,
+            client: form.clientName,
+            project_code: projectCode,
+            project_type: form.projectType,
+            status: 'provisioning',
+            start_date: form.startDate || null,
+            target_delivery: form.deadline || null,
+            brief_summary: form.description || null,
+            budget_total: form.budgetTotal ?? null,
+            project_manager_slack_id: form.projectManager || null,
+            // Durable request→project identity (unique for non-null). Only
+            // INCLUDED when creation is enabled, so the disabled path never
+            // references the migration-056 column (pre-mission insert shape).
+            ...(creationEnabled && requestKey ? { creation_request_id: requestKey } : {}),
+            external_ids: {
+              dropbox_safe_name: dropboxSafeName,
+              ...(form.creativeDirector ? { creative_director_slack_id: form.creativeDirector } : {}),
+            },
+          })
+          .select()
+          .single()
+        if (dbError || !inserted) {
+          throw new Error(`Failed to create project record: ${dbError?.message || 'unknown'}`)
+        }
+        return { id: inserted.id }
+      }
+      const findProjectByRequestId = async (rk: string) => {
+        if (!rk) return null
+        const { data } = await supabase.from('projects').select('id').eq('creation_request_id', rk).maybeSingle()
+        return data ? { id: data.id } : null
+      }
+      const announce = async () => {
+        await client.chat.postMessage(postOpts({
+          text: `⚡ Provisioning *${form.projectName}* for ${form.clientName}...`,
+        }))
+      }
 
-      if (dbError || !project) {
-        throw new Error(`Failed to create project record: ${dbError?.message || 'unknown'}`)
+      let projectId: string
+      if (!creationEnabled) {
+        // Pre-mission order: announce "Provisioning…" FIRST, then insert. No
+        // migration-056 store is consulted on this path.
+        const created = await runDisabledCreation({ announce, insertProject })
+        projectId = created.id
+      } else {
+        const ensured = await resolveCreationProject(
+          {
+            store: { getOrCreateCreationRequest, loadCreationRequest, updateCreationRequest, claimCreationRequest },
+            insertProject,
+            findProjectByRequestId,
+            holder: leaseHolder,
+            preClaimed,
+            creationEnabled,
+          },
+          {
+            requestKey: requestKey || `norequest:${projectCode}`,
+            workspaceId,
+            requestedBy: userId,
+            submission: { form, userId, statusChannel, threadTs, workspaceId },
+          },
+        )
+        if (ensured.status === 'already_completed') {
+          await client.chat.postMessage(postOpts({
+            text: `:information_source: *${form.projectName}* was already created for this request — not creating it again.`,
+          }))
+          return
+        }
+        if (ensured.status === 'in_flight') return // another worker owns it
+        if (!ensured.projectId) throw new Error('creation returned no project id')
+        projectId = ensured.projectId
+        await announce()
+      }
+      const { data: project } = await supabase.from('projects').select('*').eq('id', projectId).maybeSingle()
+      if (!project) throw new Error('project row not found after creation')
+
+      // ── Restart-safe replace: compute the persisted archive target ────────
+      // Keyed on the PERSISTED replace_target_project_id (never findExistingProject),
+      // guarded against the run's own new project — so a replay can never archive
+      // the replacement. The archive itself is run as a DURABLE step below (so a
+      // failed delete keeps the request incomplete, never silently completed).
+      let replaceTargetId: string | null = null
+      if (creationEnabled && requestKey) {
+        const reqRow = await loadCreationRequest(requestKey).catch(() => null)
+        const decision = reqRow ? shouldArchiveReplaceTarget(reqRow, projectId) : { archive: false, targetId: null }
+        if (decision.archive) replaceTargetId = decision.targetId
       }
 
       // ── Fan-out to agents in parallel ─────────────────────
@@ -764,7 +996,8 @@ export function registerInteractionHandlers(app: App) {
         }
       }
 
-      const serviceResults: Record<string, any> = {}
+      let serviceResults: Record<string, any> = {}
+      let durableOutcome: Awaited<ReturnType<typeof runDurableProvisioning>> | null = null
 
       // Two-phase so the Slack canvas can be seeded with the Dropbox +
       // Frame.io links Kit just created. Phase 1: everything that produces
@@ -773,28 +1006,78 @@ export function registerInteractionHandlers(app: App) {
       // phase 1 covers everything.
       const slackSelected = services.includes('slack' as ServiceKey)
       const phase1Services = services.filter((s) => s !== 'slack')
+      const slackPayload = (acc: Record<string, any>) => ({
+        ...provisionPayload,
+        // Freshly-created (or resumed) Dropbox + Frame.io URLs so the canvas's
+        // "Assets Folders" rows get filled in.
+        dropboxUrl: acc.dropbox?.url,
+        frameioUrl: acc.frameio?.url,
+      })
 
-      const phase1 = await Promise.allSettled(
-        phase1Services.map((service) => runService(service as string, provisionPayload)),
-      )
-      for (const settled of phase1) {
-        const result = settled.status === 'fulfilled'
-          ? settled.value
-          : { service: 'unknown', success: false, error: settled.reason?.message }
-        serviceResults[result.service] = result
-      }
-
-      if (slackSelected) {
-        // Pass the freshly-created Dropbox + Frame.io URLs so the canvas's
-        // "Assets Folders" rows get filled in. These are canvas-only fields
-        // (kept separate from collectedLinks so we don't re-introduce the
-        // in-channel links message).
-        const slackResult = await runService('slack', {
-          ...provisionPayload,
-          dropboxUrl: serviceResults.dropbox?.url,
-          frameioUrl: serviceResults.frameio?.url,
-        })
-        serviceResults[slackResult.service] = slackResult
+      if (creationEnabled && requestKey) {
+        // Durable per-service fan-out: each service's outcome is memoized in
+        // project_provisioning_steps, so a Railway restart mid-provision resumes
+        // ONLY the services that have not completed instead of re-running all of
+        // them. The phases preserve ordering (Slack after the link-producers)
+        // and the lease is heartbeated between phases (cooperative fencing).
+        // Replacement cleanup is a DURABLE STEP that runs FIRST (frees the old
+        // Slack slug before the Slack step). A failed archive/delete leaves it
+        // 'failed' → the request stays incomplete (never silently completed) and
+        // the recovery sweep retries it.
+        const replaceCleanupPhase = replaceTargetId
+          ? [() => [{ service: 'replace_cleanup', run: () => runReplaceCleanup(client, replaceTargetId as string, project.id) }]]
+          : []
+        const phases = [
+          ...replaceCleanupPhase,
+          () => phase1Services.map((service) => ({
+            service: service as string,
+            run: () => runService(service as string, provisionPayload),
+          })),
+          ...(slackSelected
+            ? [(acc: Record<string, any>) => [{ service: 'slack', run: () => runService('slack', slackPayload(acc)) }]]
+            : []),
+        ]
+        const requiredServices = [
+          ...(replaceTargetId ? ['replace_cleanup'] : []),
+          ...(services as string[]),
+        ]
+        durableOutcome = await runDurableProvisioning(
+          { projectId: project.id, phases, requiredServices },
+          {
+            getSteps: getProvisioningSteps,
+            claimStep: (pid, svc, inputHash) =>
+              claimProvisioningStep(pid, svc, leaseHolder, { inputHash }).then((c) => ({
+                ok: c.ok, fence: c.fence, status: c.status,
+              })),
+            recordExternalId: (pid, svc, fence, o) => recordStepExternalId(pid, svc, leaseHolder, fence, o),
+            completeStep: (pid, svc, fence, patch) => completeProvisioningStep(pid, svc, leaseHolder, fence, patch),
+            renew: () => renewCreationRequestLease(requestKey, leaseHolder),
+          },
+        )
+        serviceResults = durableOutcome.results
+        if (durableOutcome.abortedLostLease) {
+          // Another holder reclaimed this request's lease mid-provision. Stop
+          // here — that holder (or the next recovery pass) owns finishing it. Do
+          // NOT bind, summarize, or mark completed, or we'd double-run.
+          console.warn(`[Bolt] provisioning for ${form.projectName} yielded the lease; a newer holder will finish it.`)
+          return
+        }
+      } else {
+        // Pre-mission in-memory fan-out (creation disabled): unchanged behavior,
+        // touches no migration-056/057 table.
+        const phase1 = await Promise.allSettled(
+          phase1Services.map((service) => runService(service as string, provisionPayload)),
+        )
+        for (const settled of phase1) {
+          const result = settled.status === 'fulfilled'
+            ? settled.value
+            : { service: 'unknown', success: false, error: settled.reason?.message }
+          serviceResults[result.service] = result
+        }
+        if (slackSelected) {
+          const slackResult = await runService('slack', slackPayload(serviceResults))
+          serviceResults[slackResult.service] = slackResult
+        }
       }
 
       // ── Update project status ─────────────────────────────
@@ -812,6 +1095,43 @@ export function registerInteractionHandlers(app: App) {
           external_links: projectLinks,
         })
         .eq('id', project.id)
+
+      // ── Project Control: bind Master Project List row + Canvas ──
+      // Only when creation is enabled (and the workbook configured). Skipped
+      // entirely when disabled, so no Sheet row / binding / Canvas exclusion.
+      // Binding health lives on project_control_bindings; a failure here does
+      // not fail provisioning, but it IS surfaced (no false "connected").
+      if (creationEnabled) {
+        try {
+          const bind = await bindProjectControl({
+            projectId: project.id,
+            submission: {
+              projectNumber: form.projectNumber,
+              clientName: form.clientName,
+              projectName: form.projectName,
+              startDate: form.startDate,
+              deadline: form.deadline,
+              producerName: await resolveUserDisplayName(client, form.projectManager),
+              creativeDirectorName: await resolveUserDisplayName(client, form.creativeDirector),
+              frameioUrl: serviceResults.frameio?.url,
+              dropboxUrl: serviceResults.dropbox?.url,
+            },
+            slackResult: serviceResults.slack,
+          })
+          // Creation-time bind failures ('error') and lease contention that
+          // outlived the retry window ('deferred') do NOT auto-recover — the
+          // recurring sync only re-renders bindings that already reached
+          // 'connected'. Surface them honestly so they are actioned, not
+          // silently lost, and never claim a false auto-retry.
+          if (bind.status === 'error' || bind.status === 'deferred') {
+            await client.chat.postMessage(postOpts({
+              text: `:warning: *${form.projectName}* is created, but its Project Control Sheet/Canvas link is incomplete (${bind.reason}) and needs attention — it will not auto-recover.`,
+            }))
+          }
+        } catch (err: any) {
+          console.error('[Bolt] project-control bind failed (non-fatal):', err?.message)
+        }
+      }
 
       // (No provisioning-summary card is posted to the project channel —
       // the per-service breakdown was noisy + sometimes listed stale
@@ -891,12 +1211,178 @@ export function registerInteractionHandlers(app: App) {
           : `⚠️ *${form.projectName}* provisioned with ${failed} issue(s). Check the project channel for details.`,
       }))
 
+      // ── Terminal-state contract ───────────────────────────
+      // Mark the request `completed` ONLY when every required provisioning step
+      // reached `done` (DB-backed via the step ledger). Otherwise keep a
+      // recoverable `provisioning` state so the Railway sweep retries the
+      // failed/pending steps — never silently complete with unfinished work. A
+      // permanent (terminal) step is surfaced explicitly. NOT swallowed: a write
+      // failure here propagates to the outer catch (visible), not lost.
+      if (creationEnabled && requestKey) {
+        if (!durableOutcome || durableOutcome.allRequiredDone) {
+          await updateCreationRequest(requestKey, { status: 'completed', error: null })
+        } else {
+          const kind = durableOutcome.anyTerminal ? 'terminal' : 'retryable'
+          const detail = durableOutcome.incompleteServices.join(',')
+          await updateCreationRequest(requestKey, {
+            status: 'provisioning',
+            error: `incomplete_steps(${kind}): ${detail}`,
+          })
+          await client.chat.postMessage(postOpts({
+            text: durableOutcome.anyTerminal
+              ? `:red_circle: *${form.projectName}*: ${detail} hit a permanent error and needs attention — it will not auto-complete.`
+              : `:warning: *${form.projectName}*: ${detail} didn't finish; Kit will retry automatically.`,
+          }))
+        }
+      }
+
     } catch (err: any) {
       console.error('[Bolt] Provisioning failed:', err)
+      if (creationEnabled && requestKey) {
+        await updateCreationRequest(requestKey, { status: 'error', error: err?.message || 'unknown error' }).catch(() => {})
+      }
       await client.chat.postMessage(postOpts({
         text: `❌ Provisioning *${form.projectName}* failed: ${err.message || 'unknown error'}`,
       }))
     }
+  }
+
+  // ─── Railway-owned recovery sweep ──────────────────────────
+  // Completes work stranded by a crash: nonterminal creation requests whose
+  // lease expired, and bindings that never reached 'connected'. The Vercel sync
+  // deliberately ignores both (it only re-renders connected bindings), so this
+  // is Railway's to own. Everything it calls is idempotent — the durable step
+  // ledger, the creation-request ledger, and bindProjectControl — so a resumed
+  // request never double-provisions and a re-driven bind never double-creates.
+  // Returned to app.ts, which schedules it (cron ownership stays in app.ts) but
+  // needs this closure for the shared provisioning path.
+  async function runProjectControlRecoverySweep() {
+    if (!projectControlCreationEnabled()) return { ran: false, reason: 'disabled' as const }
+    const config = workbookConfigFromEnv()
+    if (!config) return { ran: false, reason: 'workbook_not_configured' as const }
+
+    return runProjectControlRecovery({
+      listRecoverableRequests,
+      // Step-based discovery: find requests that still own incomplete steps even
+      // if the request row looks terminal (inconsistency safety net).
+      listStepRecoverableRequests: async () => {
+        const projectIds = await listProjectsWithIncompleteSteps()
+        const out = []
+        for (const pid of projectIds) {
+          const req = await loadCreationRequestByProjectId(pid)
+          if (req) out.push({ ...req, request_key: req.request_key, hasIncompleteSteps: true })
+        }
+        return out as any
+      },
+      claimRequest: (rk, holder) => claimCreationRequestFenced(rk, holder),
+      resumeRequest: async (r, holder) => {
+        const sub: any = r.submission || {}
+        const form = sub.form
+        if (!form) return // nothing to resume from
+        // Un-stick an INCONSISTENT completed request (found via step-based
+        // discovery with incomplete steps): reset it to 'provisioning' so
+        // resolveCreationProject doesn't short-circuit on 'already_completed' and
+        // the durable steps actually re-run. Safe — the steps are idempotent, and
+        // if they were truly all done the run re-marks completed.
+        if (r.hasIncompleteSteps && r.status === 'completed') {
+          await updateCreationRequest(r.request_key, { status: 'provisioning' }).catch(() => {})
+        }
+        // A persisted 'replace' decision is honored inside runProjectProvisioning
+        // (archives the persisted replace_target_project_id, idempotently) — so
+        // the resume path and the interactive path share one archive site.
+        await runProjectProvisioning({
+          client: app.client,
+          form,
+          workspaceId: sub.workspaceId || r.workspace_id || '',
+          userId: sub.userId || r.requested_by_slack_user_id || '',
+          statusChannel: sub.statusChannel || sub.userId || r.requested_by_slack_user_id || '',
+          threadTs: sub.threadTs,
+          requestKey: r.request_key,
+          creationEnabled: true,
+          preClaimed: true,   // the sweep already holds the lease
+          leaseHolder: holder, // heartbeat the lease this sweep reclaimed
+        })
+      },
+      listIncompleteBindings: () => listIncompleteBindings(config.spreadsheetId),
+      rebind: (b) => rebindIncompleteBinding(app.client, b.project_id, config),
+      makeHolder: (rk) => `recovery:${rk}:${randomUUID()}`,
+    })
+  }
+
+  return { runProjectControlRecoverySweep }
+}
+
+/**
+ * Re-drive a stalled Project Control binding (creation_state != 'connected') by
+ * reconstructing bindProjectControl's inputs from the persisted project +
+ * creation request and re-resolving the control template. Idempotent: the Sheet
+ * step searches developer metadata before writing and the Canvas step reconciles
+ * by title, so a re-drive completes the binding without duplicating a row/canvas.
+ */
+async function rebindIncompleteBinding(
+  client: any,
+  projectId: string,
+  config: NonNullable<ReturnType<typeof workbookConfigFromEnv>>,
+): Promise<void> {
+  const supabase = createAdminClient()
+  const { data: project } = await supabase.from('projects').select('*').eq('id', projectId).maybeSingle()
+  if (!project) return
+  const links: Record<string, string> = project.external_links || {}
+  const channelId = links.slack_id || (links as any).slack_channel_id
+  if (!channelId) throw new Error(`rebind: no Slack channel for project ${projectId}`)
+
+  // Reconstruct the original modal form from the creation request (best-effort).
+  let form: any = {}
+  if (project.creation_request_id) {
+    const req = await loadCreationRequest(project.creation_request_id)
+    form = (req?.submission as any)?.form || {}
+  }
+
+  const t = await resolveControlTemplate(config)
+  const controlTemplate = t.ok ? { fileId: t.fileId, markdown: t.markdown, hash: t.hash } : null
+  const controlTemplateError = t.ok ? null : t.reason
+
+  await bindProjectControl({
+    projectId,
+    submission: {
+      projectNumber: form.projectNumber || String(project.project_code || '').split('-')[0] || '',
+      clientName: form.clientName || project.client || '',
+      projectName: form.projectName || project.name || '',
+      startDate: form.startDate || project.start_date || undefined,
+      deadline: form.deadline || project.target_delivery || undefined,
+      producerName: await resolveUserDisplayName(client, form.projectManager),
+      creativeDirectorName: await resolveUserDisplayName(client, form.creativeDirector),
+      frameioUrl: links.frameio,
+      dropboxUrl: links.dropbox,
+    },
+    slackResult: { id: channelId, data: { channelId, controlTemplate, controlTemplateError } },
+  })
+}
+
+/** User-facing refusal text for an unauthorized/invalid duplicate-resolution. */
+function authRefusalText(reason: string): string {
+  switch (reason) {
+    case 'not_found':
+      return ':warning: That request expired — re-run the project form.'
+    case 'wrong_workspace':
+      return ':no_entry: That request belongs to a different workspace.'
+    case 'not_authorized':
+      return ':no_entry: Only the person who started this project request can resolve it.'
+    case 'invalid_state':
+      return ':information_source: That request was already resolved.'
+    default:
+      return ':warning: That action can\'t be completed.'
+  }
+}
+
+/** Best-effort Slack display name for a user id (for Sheet Producer/CD cells). */
+async function resolveUserDisplayName(client: any, userId?: string): Promise<string | undefined> {
+  if (!userId) return undefined
+  try {
+    const r = await client.users.info({ user: userId })
+    return r.user?.real_name || r.user?.profile?.display_name || undefined
+  } catch {
+    return undefined
   }
 }
 
@@ -943,6 +1429,12 @@ async function resolveWorkspaceId(teamId: string): Promise<string> {
 }
 
 // ─── New-project duplicate guard ────────────────────────────
+// When Project Control creation is ENABLED, pending-provision state lives in the
+// persisted project_creation_requests ledger (keyed by Slack view.id). When it
+// is DISABLED, we fall back to this in-memory Map — the exact pre-mission
+// behavior (single Railway process; entries TTL out after an hour; a restart
+// just drops them and the producer re-runs the form). No migration-056 table is
+// touched on the disabled path.
 
 interface PendingProvision {
   form: any
@@ -953,10 +1445,6 @@ interface PendingProvision {
   existing: { id: string; name: string; code?: string; slackId?: string }
 }
 
-// In-memory stash for a project provision awaiting a duplicate-resolution
-// click. The Bolt app is a single Railway process, so a Map is fine; entries
-// TTL out after an hour and a process restart just drops them (the producer
-// re-runs the form).
 const pendingProvisions = new Map<string, { value: PendingProvision; expires: number }>()
 const PENDING_PROVISION_TTL_MS = 60 * 60 * 1000
 
@@ -983,13 +1471,19 @@ function takePendingProvision(token: string): PendingProvision | null {
 async function findExistingProject(
   workspaceId: string,
   projectNumber: string,
-): Promise<{ id: string; name: string; code?: string; slackId?: string } | null> {
+  includeRequestId = false,
+): Promise<{ id: string; name: string; code?: string; slackId?: string; creationRequestId?: string | null } | null> {
   if (!workspaceId || !projectNumber) return null
   try {
     const sb = createAdminClient()
+    // creation_request_id is a migration-056 column; only select it on the
+    // enabled path (includeRequestId), so the disabled path never depends on 056.
+    const cols = includeRequestId
+      ? 'id, name, project_code, external_links, status, creation_request_id'
+      : 'id, name, project_code, external_links, status'
     const { data } = await sb
       .from('projects')
-      .select('id, name, project_code, external_links, status')
+      .select(cols)
       .eq('workspace_id', workspaceId)
       .ilike('project_code', `${projectNumber}-%`)
       .not('status', 'in', '("archived","cancelled")')
@@ -1002,9 +1496,32 @@ async function findExistingProject(
       name: data.name,
       code: data.project_code || undefined,
       slackId: (data as any).external_links?.slack_id || undefined,
+      creationRequestId: includeRequestId ? ((data as any).creation_request_id ?? null) : undefined,
     }
   } catch (err: any) {
     console.warn('[provision-dup] findExistingProject failed:', err?.message)
+    return null
+  }
+}
+
+/**
+ * Find the project a request already created, by the durable
+ * projects.creation_request_id identity (migration-056 column). Covers a crash
+ * whose ledger project_id link never landed, and a project whose number later
+ * changed. Enabled-path only.
+ */
+async function findProjectIdByRequestKey(requestKey: string): Promise<string | null> {
+  if (!requestKey) return null
+  try {
+    const sb = createAdminClient()
+    const { data } = await sb
+      .from('projects')
+      .select('id')
+      .eq('creation_request_id', requestKey)
+      .maybeSingle()
+    return data?.id || null
+  } catch (err: any) {
+    console.warn('[provision-dup] findProjectIdByRequestKey failed:', err?.message)
     return null
   }
 }
@@ -1076,15 +1593,57 @@ async function archiveOldProject(
   existing: { id: string; name: string; slackId?: string },
 ): Promise<void> {
   if (existing.slackId) {
-    // Rename first so the replacement can reclaim the original slug (Slack
-    // keeps an archived channel's name reserved otherwise).
+    // Rename first so the replacement can reclaim the original slug (Slack keeps
+    // an archived channel's name reserved otherwise). `already_archived` /
+    // `channel_not_found` are benign (idempotent re-run); any OTHER Slack error
+    // is surfaced (not swallowed) so a genuinely failed archive is visible.
     await client.conversations
       .rename({ channel: existing.slackId, name: `z-archived-${existing.slackId.toLowerCase()}`.slice(0, 80) })
-      .catch(() => {})
+      .catch((err: any) => {
+        const e = err?.data?.error || err?.message || ''
+        if (!/already_archived|channel_not_found|name_taken/.test(String(e))) throw err
+      })
     await client.conversations.archive({ channel: existing.slackId }).catch((err: any) => {
-      console.warn('[provision-dup] channel archive failed (non-fatal):', err?.data?.error || err?.message)
+      const e = err?.data?.error || err?.message || ''
+      if (!/already_archived|channel_not_found/.test(String(e))) throw err
     })
   }
   const sb = createAdminClient()
-  await sb.from('projects').delete().eq('id', existing.id)
+  // The record delete is the load-bearing cleanup — a failure MUST propagate so
+  // the replace_cleanup step stays 'failed' and the request is not completed.
+  const { error } = await sb.from('projects').delete().eq('id', existing.id)
+  if (error) throw new Error(`archiveOldProject delete failed: ${error.message}`)
+}
+
+/**
+ * Durable replacement-cleanup step body. Loads the persisted target and archives
+ * it (idempotent; delete no-ops if already gone). Guarded so it can NEVER delete
+ * the run's own replacement project. Returns a StepResult; a thrown archive/
+ * delete error keeps the step 'failed' (request stays incomplete, retried).
+ */
+async function runReplaceCleanup(
+  client: any,
+  targetId: string,
+  newProjectId: string,
+): Promise<{ service: string; success: boolean; error?: string }> {
+  // Fast-guard the two decisions that need no DB read (no target / the run's own
+  // replacement) via the pure resolver, so a replay can never target the
+  // replacement.
+  if (resolveReplaceCleanup({ targetId, newProjectId, targetExists: true }).action === 'noop') {
+    return { service: 'replace_cleanup', success: true }
+  }
+  const sb = createAdminClient()
+  const { data: target } = await sb.from('projects').select('*').eq('id', targetId).maybeSingle()
+  // Re-resolve with the observed existence: an absent target (archived + deleted
+  // by a prior attempt, then a crash before the step was marked done) converges
+  // idempotently to success on this resume — the persisted target id survives the
+  // deletion (migration 057), so the step stayed required until it reached here.
+  const decision = resolveReplaceCleanup({ targetId, newProjectId, targetExists: !!target })
+  if (decision.action === 'noop') return { service: 'replace_cleanup', success: true }
+  await archiveOldProject(client, {
+    id: target.id,
+    name: target.name,
+    slackId: (target.external_links || {}).slack_id,
+  })
+  return { service: 'replace_cleanup', success: true }
 }

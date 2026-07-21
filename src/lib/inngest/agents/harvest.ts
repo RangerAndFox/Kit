@@ -10,6 +10,8 @@
 import {
   findOrCreateClient,
   createHarvestProject,
+  findHarvestProjectByKitId,
+  assignDefaultTasks,
   assignAllUsersToProject,
   listProjects,
   searchProjects,
@@ -19,6 +21,8 @@ import {
   listUsers,
   listAccountTasks,
   getProjectBudgetReport,
+  type HarvestProject,
+  type HarvestProjectTask,
 } from '@/lib/harvest/client'
 import { studioToday, studioDateMinusDays } from '@/lib/time/studio-date'
 import { staffProfile } from '@/lib/staff/timezone'
@@ -28,17 +32,32 @@ import type { AgentDefinition, AgentResult } from './types'
 
 async function provision(payload: Record<string, unknown>): Promise<AgentResult> {
   try {
+    const kitProjectId = (payload.projectId as string) || ''
     const harvestClient = await findOrCreateClient(payload.client as string)
-    const project = await createHarvestProject({
-      name: payload.projectName as string,
-      clientId: harvestClient.id,
-      code: (payload.projectCode as string) || undefined,
-      isBillable: true,
-      budgetTotal: (payload.budgetTotal as number) || undefined,
-      startDate: (payload.startDate as string) || undefined,
-      endDate: (payload.targetDelivery as string) || undefined,
-      notes: (payload.briefSummary as string) || undefined,
-    })
+
+    // Reconcile by embedded Kit identity FIRST: if this exact Kit project already
+    // created a Harvest project (e.g. a prior attempt crashed before the step
+    // ledger was updated), reuse it instead of creating a duplicate. Only create
+    // when absence is proven.
+    const existing = kitProjectId ? await findHarvestProjectByKitId(kitProjectId) : null
+    let project: HarvestProject & { task_assignments: HarvestProjectTask[] }
+    if (existing) {
+      // Complete follow-up setup idempotently against the reused project.
+      const task_assignments = await assignDefaultTasks(existing.id)
+      project = { ...existing, task_assignments }
+    } else {
+      project = await createHarvestProject({
+        name: payload.projectName as string,
+        clientId: harvestClient.id,
+        code: (payload.projectCode as string) || undefined,
+        isBillable: true,
+        budgetTotal: (payload.budgetTotal as number) || undefined,
+        startDate: (payload.startDate as string) || undefined,
+        endDate: (payload.targetDelivery as string) || undefined,
+        notes: (payload.briefSummary as string) || undefined,
+        kitProjectId: kitProjectId || undefined,
+      })
+    }
 
     // Studio policy: everyone is assigned to every project, so time entry
     // never hits Harvest's must-be-assigned rule. Non-fatal — the

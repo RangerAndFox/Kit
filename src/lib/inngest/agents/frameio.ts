@@ -77,6 +77,139 @@ async function framePostOnce(path: string, body: Record<string, unknown>): Promi
 }
 
 /**
+ * Stable Kit-identity marker embedded in the Frame.io project label. Business
+ * fields (number/client/name) are NOT an identity — intentional Kit duplicates
+ * share them — so reconciliation keys on this marker (the canonical Kit UUID).
+ */
+export function frameioKitMarker(kitProjectId: string): string {
+  return `[kit:${kitProjectId}]`
+}
+
+/**
+ * Extract a recognizable project array from a v4 list response, or null when the
+ * payload is NOT a list Kit can trust (a bare array or `{ data: [...] }` are the
+ * only accepted shapes). Returning null is a deliberate fail-closed signal — a
+ * malformed page must never be read as "zero projects" and green-light a create.
+ */
+function extractProjectList(resp: unknown): Array<Record<string, unknown>> | null {
+  if (Array.isArray(resp)) return resp as Array<Record<string, unknown>>
+  if (resp && typeof resp === 'object' && Array.isArray((resp as { data?: unknown }).data)) {
+    return (resp as { data: Array<Record<string, unknown>> }).data
+  }
+  return null
+}
+
+/** Page cap; more than this many project pages in one workspace is anomalous. */
+const FRAMEIO_PROJECT_PAGE_CAP = 50
+
+/**
+ * Reconcile by the embedded Kit UUID marker within the workspace, enumerating
+ * EVERY page before concluding. Returns ALL matches so the caller can treat
+ * 0 / 1 / multiple explicitly (0 = absence PROVEN → create; 1 = reuse; ≥2 = an
+ * actionable ambiguity, never silently picked).
+ *
+ * Fails closed (throws) rather than under-reporting when the listing cannot be
+ * fully + unambiguously enumerated, so absence is never concluded — and a
+ * duplicate never created — off an incompletely-read list:
+ *   - a page payload that is not a recognizable project array (list ambiguity);
+ *   - more pages indicated but not safely followable: a malformed `links.next`,
+ *     a next link to a different host, a pagination cycle, or the page cap hit
+ *     while a next link still remains (pagination ambiguity).
+ *
+ * `fetchPage` is injected (defaults to the real `frameGet`) so the pagination /
+ * fail-closed behavior is unit-tested without the network.
+ */
+export async function findFrameioProjectsByKitId(
+  acct: string,
+  ws: string,
+  kitProjectId: string,
+  fetchPage: (path: string) => Promise<unknown> = frameGet,
+): Promise<Array<{ id: string; rootFolderId?: string }>> {
+  if (!kitProjectId) return []
+  const marker = frameioKitMarker(kitProjectId)
+  const matches: Array<{ id: string; rootFolderId?: string }> = []
+
+  let path: string | null = `/accounts/${acct}/workspaces/${ws}/projects`
+  let budget = FRAMEIO_PROJECT_PAGE_CAP
+  const visited = new Set<string>()
+
+  while (path) {
+    if (budget-- <= 0) {
+      throw new Error('frameio_pagination_ambiguous: project page cap reached before list end')
+    }
+    if (visited.has(path)) {
+      throw new Error('frameio_pagination_ambiguous: pagination cycle detected')
+    }
+    visited.add(path)
+
+    const resp = await fetchPage(path)
+    const projects = extractProjectList(resp)
+    if (projects === null) {
+      throw new Error('frameio_list_ambiguous: unrecognized projects list payload')
+    }
+    for (const p of projects) {
+      if (String(p?.name || '').includes(marker)) {
+        matches.push({
+          id: String(p.id),
+          rootFolderId: (p.root_folder_id || p.root_asset_id) as string | undefined,
+        })
+      }
+    }
+
+    // v4 list responses carry links.next (absolute URL or relative path) when
+    // there are more pages; its ABSENCE is the normal terminal signal. A present
+    // but unusable next link is pagination ambiguity → fail closed.
+    const next: unknown = (resp as { links?: { next?: unknown; next_page?: unknown } })?.links?.next
+      ?? (resp as { links?: { next?: unknown; next_page?: unknown } })?.links?.next_page
+    if (next == null) {
+      path = null
+      continue
+    }
+    if (typeof next !== 'string' || next.trim() === '') {
+      throw new Error('frameio_pagination_ambiguous: malformed next link')
+    }
+    const rel = next.startsWith('http') ? next.replace(FRAMEIO_API, '') : next
+    if (rel.startsWith('http')) {
+      throw new Error('frameio_pagination_ambiguous: next link points to a different host')
+    }
+    path = rel
+  }
+
+  return matches
+}
+
+/** Existing child folders (name → id) under a parent, for find-or-create. */
+async function existingChildFolders(acct: string, parentId: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  try {
+    const resp = await frameGet(`/accounts/${acct}/folders/${parentId}/children`)
+    const children = (resp.data || resp || []) as Array<Record<string, unknown>>
+    for (const c of children) {
+      const t = c?.type || c?.resource_type
+      if ((t === 'folder' || t === undefined) && c?.name && c?.id) out.set(c.name, c.id)
+    }
+  } catch {
+    /* treat as none */
+  }
+  return out
+}
+
+/** Find-or-create a single child folder by name; returns its id (or undefined). */
+async function findOrCreateChildFolder(
+  acct: string,
+  parentId: string,
+  name: string,
+  existing?: Map<string, string>,
+): Promise<string | undefined> {
+  const known = existing ?? (await existingChildFolders(acct, parentId))
+  const hit = known.get(name)
+  if (hit) return hit
+  const resp = await framePost(`/accounts/${acct}/folders/${parentId}/folders`, { data: { name } })
+  const created = resp.data || resp
+  return created?.id
+}
+
+/**
  * Recursively mirror a Frame.io folder tree, structure only.
  * Walks every folder under `sourceFolderId` and creates an equivalent under
  * `destFolderId` in the new project. Files, comments, and shares are not
@@ -86,7 +219,7 @@ async function framePostOnce(path: string, body: Record<string, unknown>): Promi
  */
 const MAX_TEMPLATE_DEPTH = 8
 
-async function copyFrameioFolderTree(
+export async function copyFrameioFolderTree(
   acct: string,
   sourceFolderId: string,
   destFolderId: string,
@@ -104,14 +237,15 @@ async function copyFrameioFolderTree(
   let created = 0
   let total = folderChildren.length
 
+  // Find-or-create each destination child (resume-safe: a re-run reuses folders a
+  // prior attempt created and recurses INTO the existing folder rather than
+  // duplicating it).
+  const destExisting = await existingChildFolders(acct, destFolderId)
   for (const child of folderChildren) {
     try {
-      const resp = await framePost(`/accounts/${acct}/folders/${destFolderId}/folders`, {
-        data: { name: child.name },
-      })
-      const newFolder = resp.data || resp
-      const newFolderId: string | undefined = newFolder.id
-      created++
+      const preexisting = destExisting.has(child.name)
+      const newFolderId = await findOrCreateChildFolder(acct, destFolderId, child.name, destExisting)
+      if (!preexisting) created++
 
       if (newFolderId) {
         const sub = await copyFrameioFolderTree(acct, child.id, newFolderId, depth + 1)
@@ -134,12 +268,15 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
   const projectName = (payload.projectName as string) || ''
   const projectNumber = (payload.projectNumber as string) || ''
 
-  // Standard label: {number}_{client}_{project}, falling back gracefully.
-  const projectLabel = [projectNumber, client, projectName]
+  // Business label + embedded Kit UUID marker. The marker (not the business
+  // fields, which intentional duplicates share) is the reconciliation identity.
+  const kitProjectId = (payload.projectId as string) || ''
+  const businessLabel = [projectNumber, client, projectName]
     .filter((part) => part && part.trim())
     .join('_')
+  const projectLabel = kitProjectId ? `${businessLabel} ${frameioKitMarker(kitProjectId)}` : businessLabel
 
-  if (!projectLabel) {
+  if (!businessLabel) {
     return {
       agent: 'frameio',
       action: 'provision',
@@ -152,13 +289,31 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
     const acct = getAccountId()
     const ws = getWorkspaceId()
 
-    // v4: POST /v4/accounts/{account_id}/workspaces/{workspace_id}/projects
-    // Single attempt — a retried timeout that actually landed would create a
-    // second project with the same name.
-    const resp = await framePostOnce(`/accounts/${acct}/workspaces/${ws}/projects`, {
-      data: { name: projectLabel },
-    })
-    const project = resp.data || resp
+    // Reconcile FIRST by the Kit UUID marker. Treat 0 / 1 / multiple explicitly:
+    //   1 → reuse; 0 → create (absence proven); ≥2 → actionable ambiguity, fail
+    //   closed as a TERMINAL step (never silently pick one).
+    let project: { id: string; root_folder_id?: string; root_asset_id?: string }
+    const matches = kitProjectId ? await findFrameioProjectsByKitId(acct, ws, kitProjectId) : []
+    if (matches.length > 1) {
+      return {
+        agent: 'frameio',
+        action: 'provision',
+        success: false,
+        terminal: true,
+        error: `ambiguous_frameio_projects: ${matches.map((m) => m.id).join(',')} share kit marker`,
+      } as AgentResult
+    }
+    if (matches.length === 1) {
+      project = { id: matches[0].id, root_folder_id: matches[0].rootFolderId }
+    } else {
+      // v4: POST /v4/accounts/{account_id}/workspaces/{workspace_id}/projects
+      // Single attempt — a retried timeout that actually landed would create a
+      // second project; the marker lets the next resume reconcile it instead.
+      const resp = await framePostOnce(`/accounts/${acct}/workspaces/${ws}/projects`, {
+        data: { name: projectLabel },
+      })
+      project = resp.data || resp
+    }
 
     // Determine the project's root folder ID. v4 sometimes returns it on the
     // create response (root_folder_id or root_asset_id); when it doesn't, fetch
@@ -203,12 +358,12 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
     if (mode === 'static') {
       const folders = folderStructure.frameio || []
       foldersTotal = folders.length
+      // Find-or-create each root folder (resume-safe: a reused/resumed project
+      // keeps the folders a prior attempt created; only missing ones are made).
+      const existing = await existingChildFolders(acct, parentId)
+      const toCreate = folders.filter((name: string) => !existing.has(name))
       const results = await Promise.allSettled(
-        folders.map((name: string) =>
-          framePost(`/accounts/${acct}/folders/${parentId}/folders`, {
-            data: { name },
-          }),
-        ),
+        toCreate.map((name: string) => findOrCreateChildFolder(acct, parentId, name, existing)),
       )
       foldersCreated = results.filter((r) => r.status === 'fulfilled').length
     }
