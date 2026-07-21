@@ -130,6 +130,14 @@ export interface EnsureProjectDeps {
    */
   findProjectByRequestId: (requestKey: string) => Promise<{ id: string } | null>
   holder: string
+  /**
+   * Set by the Railway recovery sweep, which has ALREADY reclaimed this
+   * request's lease before resuming it. When true the resume skips the
+   * redelivery-guard claim (it would otherwise fail against the lease the sweep
+   * already holds) and proceeds resume-safely. The fresh Slack path leaves this
+   * false so a redelivered submission is still blocked.
+   */
+  preClaimed?: boolean
 }
 
 export type EnsureStatus = 'created' | 'resumed' | 'already_completed' | 'in_flight'
@@ -200,8 +208,12 @@ export async function ensureProjectForRequest(
 
   // Exclusive claim: succeeds only if no live lease. An expired lease (crash) is
   // reclaimable, so a restart resumes; an actively-held lease blocks a re-run.
-  const claimed = await deps.store.claimCreationRequest(args.requestKey, deps.holder)
-  if (!claimed) return { status: 'in_flight', projectId: row.project_id }
+  // The recovery sweep already holds the lease (preClaimed), so it skips this
+  // guard rather than fail against its own reclaim.
+  if (!deps.preClaimed) {
+    const claimed = await deps.store.claimCreationRequest(args.requestKey, deps.holder)
+    if (!claimed) return { status: 'in_flight', projectId: row.project_id }
+  }
 
   const latest = await deps.store.loadCreationRequest(args.requestKey)
   if (latest?.project_id) return { status: 'resumed', projectId: latest.project_id }

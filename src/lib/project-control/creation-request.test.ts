@@ -101,6 +101,26 @@ describe('ensureProjectForRequest', () => {
     assert.equal(counter.n, 1) // inserted once
   })
 
+  it('preClaimed (recovery already holds the lease) resumes without re-claiming', async () => {
+    const store = new FakeStore()
+    const counter = { n: 0 }
+    // Recovery holds an ACTIVE lease (future expiry). A normal resume would see
+    // the lease as held and return in_flight; preClaimed skips that guard.
+    store.rows.set('V-rec', {
+      status: 'provisioning', project_id: 'p-rec',
+      workspace_id: 'w', requested_by_slack_user_id: 'U1', lease_expires_at: Date.now() + 60_000,
+    })
+    const deps = { ...makeDeps(store, counter), preClaimed: true }
+    const r = await ensureProjectForRequest(deps, { requestKey: 'V-rec', workspaceId: 'w', requestedBy: 'U1', submission: {} })
+    assert.equal(r.status, 'resumed')
+    assert.equal(r.projectId, 'p-rec')
+    assert.equal(counter.n, 0) // no new insert
+
+    // Without preClaimed the same active lease blocks the resume.
+    const blocked = await ensureProjectForRequest(makeDeps(store, counter), { requestKey: 'V-rec', workspaceId: 'w', requestedBy: 'U1', submission: {} })
+    assert.equal(blocked.status, 'in_flight')
+  })
+
   it('resumes the same project after a simulated restart (expired lease + project_id set)', async () => {
     const store = new FakeStore()
     const counter = { n: 5 }

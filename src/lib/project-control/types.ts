@@ -19,6 +19,9 @@ export type CreationRequestStatus =
   | 'provisioning'
   | 'completed'
   | 'error'
+  // Terminal user cancel. Distinct from 'error' so the Railway recovery sweep
+  // never resumes a request the user explicitly cancelled.
+  | 'cancelled'
 
 export type CreationDecision = 'create' | 'duplicate' | 'replace'
 

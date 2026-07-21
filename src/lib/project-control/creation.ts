@@ -48,6 +48,7 @@ import {
   getBindingByProject,
   updateBinding,
   claimWorkbookLease,
+  renewWorkbookLease,
   releaseWorkbookLease,
   type BindingRow,
 } from './store'
@@ -73,6 +74,7 @@ export interface CreationStorePort {
   getBindingByProject(projectId: string): Promise<BindingRow | null>
   updateBinding(projectId: string, patch: Partial<BindingRow>): Promise<void>
   claimWorkbookLease(spreadsheetId: string, kind: 'creation' | 'sync', holder: string): Promise<boolean>
+  renewWorkbookLease(spreadsheetId: string, kind: 'creation' | 'sync', holder: string): Promise<boolean>
   releaseWorkbookLease(spreadsheetId: string, kind: 'creation' | 'sync', holder: string): Promise<void>
 }
 
@@ -102,7 +104,10 @@ export function defaultCreationDeps(): CreationDeps {
       createBoundRow: realCreateBoundRow,
     },
     canvas: { createControlCanvas, editControlCanvas, reconcileControlCanvas },
-    store: { ensureBinding, getBindingByProject, updateBinding, claimWorkbookLease, releaseWorkbookLease },
+    store: {
+      ensureBinding, getBindingByProject, updateBinding,
+      claimWorkbookLease, renewWorkbookLease, releaseWorkbookLease,
+    },
     config: workbookConfigFromEnv(),
     enabled: projectControlCreationEnabled(),
     now: () => new Date().toISOString(),
@@ -195,6 +200,14 @@ export async function bindProjectControl(
         source_template_hash: controlTemplate.hash,
         template_markdown: controlTemplate.markdown,
       })
+    }
+
+    // Heartbeat the lease before the (potentially slow) Slack canvas step. If we
+    // lost it — a peer reclaimed it after our lease expired — stop before
+    // touching the canvas so we never race a newer holder. Deferred, not error:
+    // the newer holder (or the recovery sweep) will complete the binding.
+    if (!(await deps.store.renewWorkbookLease(config.spreadsheetId, 'creation', holder))) {
+      return { status: 'deferred', reason: 'creation_lease_lost' }
     }
 
     // ── Step 3: render from the authoritative row + create/reconcile canvas ──

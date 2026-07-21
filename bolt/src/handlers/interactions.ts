@@ -11,6 +11,7 @@
  * to the user in real time.
  */
 
+import { randomUUID } from 'node:crypto'
 import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import {
@@ -24,15 +25,28 @@ import {
   loadCreationRequest,
   updateCreationRequest,
   claimCreationRequest,
+  claimCreationRequestFenced,
+  renewCreationRequestLease,
+  listRecoverableRequests,
+  listIncompleteBindings,
+  getBindingByProject,
+  getProvisioningSteps,
+  upsertProvisioningStep,
 } from '../../../src/lib/project-control/store'
 import { bindProjectControl } from '../../../src/lib/project-control/creation'
+import { runDurableProvisioning } from '../../../src/lib/project-control/provisioning-steps'
+import { runProjectControlRecovery } from '../../../src/lib/project-control/recovery'
 import {
   resolveCreationProject,
   runDisabledCreation,
   routeCreationRequest,
   authorizeResolution,
 } from '../../../src/lib/project-control/creation-request'
-import { projectControlCreationEnabled } from '../../../src/lib/project-control/types'
+import {
+  projectControlCreationEnabled,
+  workbookConfigFromEnv,
+} from '../../../src/lib/project-control/types'
+import { resolveControlTemplate } from '../../../src/lib/project-control/canvas'
 import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
 import { peekIntake, takeIntake, updateIntake } from '../../../src/lib/storyboard/stash'
 import { extractScriptFromFile } from '../../../src/lib/storyboard/files'
@@ -759,7 +773,8 @@ export function registerInteractionHandlers(app: App) {
       await respond({ replace_original: true, text: authRefusalText(auth.reason) })
       return
     }
-    await updateCreationRequest(value, { status: 'error', error: 'cancelled_by_user' }).catch(() => {})
+    // Terminal 'cancelled' (not 'error') so the recovery sweep never resumes it.
+    await updateCreationRequest(value, { status: 'cancelled', error: 'cancelled_by_user' }).catch(() => {})
     await respond({ replace_original: true, text: ':white_circle: Cancelled — nothing was created.' })
   })
 
@@ -775,9 +790,18 @@ export function registerInteractionHandlers(app: App) {
     threadTs?: string
     requestKey?: string
     creationEnabled?: boolean
+    // Set by the recovery sweep: it already holds this request's lease, so the
+    // resume skips the redelivery-guard claim and heartbeats with THIS holder.
+    preClaimed?: boolean
+    leaseHolder?: string
   }) {
     const { client, form, workspaceId, userId, statusChannel, threadTs, requestKey } = args
     const creationEnabled = args.creationEnabled ?? projectControlCreationEnabled()
+    // The lease holder for the durable heartbeat + the resume-safe claim. The
+    // recovery sweep passes the holder it reclaimed with; the fresh path derives
+    // it from the requester.
+    const leaseHolder = args.leaseHolder ?? `bolt:${userId}`
+    const preClaimed = args.preClaimed ?? false
     const postOpts = (extra: Record<string, unknown> = {}) => ({
       channel: statusChannel,
       ...(threadTs ? { thread_ts: threadTs } : {}),
@@ -862,7 +886,8 @@ export function registerInteractionHandlers(app: App) {
             store: { getOrCreateCreationRequest, loadCreationRequest, updateCreationRequest, claimCreationRequest },
             insertProject,
             findProjectByRequestId,
-            holder: `bolt:${userId}`,
+            holder: leaseHolder,
+            preClaimed,
             creationEnabled,
           },
           {
@@ -930,7 +955,7 @@ export function registerInteractionHandlers(app: App) {
         }
       }
 
-      const serviceResults: Record<string, any> = {}
+      let serviceResults: Record<string, any> = {}
 
       // Two-phase so the Slack canvas can be seeded with the Dropbox +
       // Frame.io links Kit just created. Phase 1: everything that produces
@@ -939,28 +964,61 @@ export function registerInteractionHandlers(app: App) {
       // phase 1 covers everything.
       const slackSelected = services.includes('slack' as ServiceKey)
       const phase1Services = services.filter((s) => s !== 'slack')
+      const slackPayload = (acc: Record<string, any>) => ({
+        ...provisionPayload,
+        // Freshly-created (or resumed) Dropbox + Frame.io URLs so the canvas's
+        // "Assets Folders" rows get filled in.
+        dropboxUrl: acc.dropbox?.url,
+        frameioUrl: acc.frameio?.url,
+      })
 
-      const phase1 = await Promise.allSettled(
-        phase1Services.map((service) => runService(service as string, provisionPayload)),
-      )
-      for (const settled of phase1) {
-        const result = settled.status === 'fulfilled'
-          ? settled.value
-          : { service: 'unknown', success: false, error: settled.reason?.message }
-        serviceResults[result.service] = result
-      }
-
-      if (slackSelected) {
-        // Pass the freshly-created Dropbox + Frame.io URLs so the canvas's
-        // "Assets Folders" rows get filled in. These are canvas-only fields
-        // (kept separate from collectedLinks so we don't re-introduce the
-        // in-channel links message).
-        const slackResult = await runService('slack', {
-          ...provisionPayload,
-          dropboxUrl: serviceResults.dropbox?.url,
-          frameioUrl: serviceResults.frameio?.url,
-        })
-        serviceResults[slackResult.service] = slackResult
+      if (creationEnabled && requestKey) {
+        // Durable per-service fan-out: each service's outcome is memoized in
+        // project_provisioning_steps, so a Railway restart mid-provision resumes
+        // ONLY the services that have not completed instead of re-running all of
+        // them. The phases preserve ordering (Slack after the link-producers)
+        // and the lease is heartbeated between phases (cooperative fencing).
+        const phases = [
+          () => phase1Services.map((service) => ({
+            service: service as string,
+            run: () => runService(service as string, provisionPayload),
+          })),
+          ...(slackSelected
+            ? [(acc: Record<string, any>) => [{ service: 'slack', run: () => runService('slack', slackPayload(acc)) }]]
+            : []),
+        ]
+        const durable = await runDurableProvisioning(
+          { projectId: project.id, phases },
+          {
+            getSteps: getProvisioningSteps,
+            markStep: upsertProvisioningStep,
+            renew: () => renewCreationRequestLease(requestKey, leaseHolder),
+          },
+        )
+        serviceResults = durable.results
+        if (durable.abortedLostLease) {
+          // Another holder reclaimed this request's lease mid-provision. Stop
+          // here — that holder (or the next recovery pass) owns finishing it. Do
+          // NOT bind, summarize, or mark completed, or we'd double-run.
+          console.warn(`[Bolt] provisioning for ${form.projectName} yielded the lease; a newer holder will finish it.`)
+          return
+        }
+      } else {
+        // Pre-mission in-memory fan-out (creation disabled): unchanged behavior,
+        // touches no migration-056/057 table.
+        const phase1 = await Promise.allSettled(
+          phase1Services.map((service) => runService(service as string, provisionPayload)),
+        )
+        for (const settled of phase1) {
+          const result = settled.status === 'fulfilled'
+            ? settled.value
+            : { service: 'unknown', success: false, error: settled.reason?.message }
+          serviceResults[result.service] = result
+        }
+        if (slackSelected) {
+          const slackResult = await runService('slack', slackPayload(serviceResults))
+          serviceResults[slackResult.service] = slackResult
+        }
       }
 
       // ── Update project status ─────────────────────────────
@@ -1106,6 +1164,105 @@ export function registerInteractionHandlers(app: App) {
       }))
     }
   }
+
+  // ─── Railway-owned recovery sweep ──────────────────────────
+  // Completes work stranded by a crash: nonterminal creation requests whose
+  // lease expired, and bindings that never reached 'connected'. The Vercel sync
+  // deliberately ignores both (it only re-renders connected bindings), so this
+  // is Railway's to own. Everything it calls is idempotent — the durable step
+  // ledger, the creation-request ledger, and bindProjectControl — so a resumed
+  // request never double-provisions and a re-driven bind never double-creates.
+  // Returned to app.ts, which schedules it (cron ownership stays in app.ts) but
+  // needs this closure for the shared provisioning path.
+  async function runProjectControlRecoverySweep() {
+    if (!projectControlCreationEnabled()) return { ran: false, reason: 'disabled' as const }
+    const config = workbookConfigFromEnv()
+    if (!config) return { ran: false, reason: 'workbook_not_configured' as const }
+
+    return runProjectControlRecovery({
+      listRecoverableRequests,
+      claimRequest: (rk, holder) => claimCreationRequestFenced(rk, holder),
+      resumeRequest: async (r, holder) => {
+        const sub: any = r.submission || {}
+        const form = sub.form
+        if (!form) return // nothing to resume from
+        // Restart-safe replace: if the user chose 'replace' and it crashed,
+        // archive the still-present clashing project first (idempotent).
+        if (r.decision === 'replace') {
+          const existing = await findExistingProject(sub.workspaceId || r.workspace_id || '', form.projectNumber)
+          if (existing && existing.id !== r.project_id) {
+            try { await archiveOldProject(app.client, existing) } catch (e: any) {
+              console.error('[recovery] archive old project failed (continuing):', e?.message)
+            }
+          }
+        }
+        await runProjectProvisioning({
+          client: app.client,
+          form,
+          workspaceId: sub.workspaceId || r.workspace_id || '',
+          userId: sub.userId || r.requested_by_slack_user_id || '',
+          statusChannel: sub.statusChannel || sub.userId || r.requested_by_slack_user_id || '',
+          threadTs: sub.threadTs,
+          requestKey: r.request_key,
+          creationEnabled: true,
+          preClaimed: true,   // the sweep already holds the lease
+          leaseHolder: holder, // heartbeat the lease this sweep reclaimed
+        })
+      },
+      listIncompleteBindings: () => listIncompleteBindings(config.spreadsheetId),
+      rebind: (b) => rebindIncompleteBinding(app.client, b.project_id, config),
+      makeHolder: (rk) => `recovery:${rk}:${randomUUID()}`,
+    })
+  }
+
+  return { runProjectControlRecoverySweep }
+}
+
+/**
+ * Re-drive a stalled Project Control binding (creation_state != 'connected') by
+ * reconstructing bindProjectControl's inputs from the persisted project +
+ * creation request and re-resolving the control template. Idempotent: the Sheet
+ * step searches developer metadata before writing and the Canvas step reconciles
+ * by title, so a re-drive completes the binding without duplicating a row/canvas.
+ */
+async function rebindIncompleteBinding(
+  client: any,
+  projectId: string,
+  config: NonNullable<ReturnType<typeof workbookConfigFromEnv>>,
+): Promise<void> {
+  const supabase = createAdminClient()
+  const { data: project } = await supabase.from('projects').select('*').eq('id', projectId).maybeSingle()
+  if (!project) return
+  const links: Record<string, string> = project.external_links || {}
+  const channelId = links.slack_id || (links as any).slack_channel_id
+  if (!channelId) throw new Error(`rebind: no Slack channel for project ${projectId}`)
+
+  // Reconstruct the original modal form from the creation request (best-effort).
+  let form: any = {}
+  if (project.creation_request_id) {
+    const req = await loadCreationRequest(project.creation_request_id)
+    form = (req?.submission as any)?.form || {}
+  }
+
+  const t = await resolveControlTemplate(config)
+  const controlTemplate = t.ok ? { fileId: t.fileId, markdown: t.markdown, hash: t.hash } : null
+  const controlTemplateError = t.ok ? null : t.reason
+
+  await bindProjectControl({
+    projectId,
+    submission: {
+      projectNumber: form.projectNumber || String(project.project_code || '').split('-')[0] || '',
+      clientName: form.clientName || project.client || '',
+      projectName: form.projectName || project.name || '',
+      startDate: form.startDate || project.start_date || undefined,
+      deadline: form.deadline || project.target_delivery || undefined,
+      producerName: await resolveUserDisplayName(client, form.projectManager),
+      creativeDirectorName: await resolveUserDisplayName(client, form.creativeDirector),
+      frameioUrl: links.frameio,
+      dropboxUrl: links.dropbox,
+    },
+    slackResult: { id: channelId, data: { channelId, controlTemplate, controlTemplateError } },
+  })
 }
 
 /** User-facing refusal text for an unauthorized/invalid duplicate-resolution. */

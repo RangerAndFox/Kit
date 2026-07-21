@@ -121,7 +121,7 @@ app.assistant(assistant)
 
 registerMessageHandlers(app)
 registerCommandHandlers(app)
-registerInteractionHandlers(app)
+const { runProjectControlRecoverySweep } = registerInteractionHandlers(app)
 registerBrainApprovalHandlers(app)
 
 // ─── Resilience + Diagnostics ──────────────────────────────
@@ -337,6 +337,31 @@ cron.schedule(
       .catch((err) => console.error('[cron] timesheet-meme failed:', err))
   },
   { timezone: CHECKIN_TZ },
+)
+
+// ─── Cron: Project Control recovery sweep ──────────────────
+// Every 5 minutes — completes work stranded by a crash: nonterminal creation
+// requests whose lease expired, and bindings that never reached 'connected'
+// (which the Vercel/Inngest sync deliberately ignores). Railway-owned because
+// Railway owns creation. Everything it calls is idempotent, so frequent runs
+// are safe. Inert unless PROJECT_CONTROL_CREATION_ENABLED (checked inside the
+// sweep) and a workbook are configured. A simple in-process guard prevents an
+// overlong sweep from overlapping itself.
+let recoverySweepRunning = false
+cron.schedule(
+  '*/5 * * * *',
+  () => {
+    if (process.env.PROJECT_CONTROL_CREATION_ENABLED !== 'true') return
+    if (recoverySweepRunning) return
+    recoverySweepRunning = true
+    Promise.resolve(runProjectControlRecoverySweep())
+      .then((res) => {
+        if (res && (res as any).ran !== false) console.log('[cron] project-control-recovery:', res)
+      })
+      .catch((err) => console.error('[cron] project-control-recovery failed:', err))
+      .finally(() => { recoverySweepRunning = false })
+  },
+  { timezone: 'UTC' },
 )
 
 // ─── Cron: daily celebrations ──────────────────────────────

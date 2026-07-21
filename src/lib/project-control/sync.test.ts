@@ -53,8 +53,8 @@ interface FakeSyncStore {
 function syncState(driveVersion: string | null): SyncStateRow {
   return {
     spreadsheet_id: 'sid', drive_version: driveVersion, cursor_advanced_at: null,
-    creation_lease_holder: null, creation_lease_expires_at: null,
-    sync_lease_holder: null, sync_lease_expires_at: null,
+    creation_lease_holder: null, creation_lease_expires_at: null, creation_fence: 0,
+    sync_lease_holder: null, sync_lease_expires_at: null, sync_fence: 0,
   }
 }
 

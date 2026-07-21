@@ -68,6 +68,17 @@ mechanism in code before assuming full compliance.
     margin/formula columns, and sync never edits a canvas other than the
     binding's persisted `canvas_id`. *(Verified — migration 056 unique
     constraints + `src/lib/project-control/`.)*
+15. **Project-control provisioning is durable and Railway-recovered.**
+    Provisioning is a per-service durable ledger (`project_provisioning_steps`),
+    so a restart resumes only the incomplete services, never re-running a
+    completed one. Nonterminal creation requests (expired lease) and incomplete
+    bindings (`creation_state != 'connected'`) are recovered by the **Railway**
+    recovery sweep — the Vercel/Inngest sync only re-renders already-`connected`
+    bindings and must not be extended to complete creation. A user `cancel` is
+    the terminal `cancelled` status and is never resumed. Leases are renewable
+    (heartbeat) and fenced (a per-resource monotonic `fence` bumped on reclaim);
+    a worker that loses its lease stops before writing. *(Verified — migration
+    057 + `provisioning-steps.ts`/`recovery.ts`/`store.ts` + tests.)*
 
 ## How to use these
 

@@ -55,6 +55,7 @@ function makeStore(initial: Partial<BindingRow> = {}): FakeStore {
     getBindingByProject: async () => b,
     updateBinding: async (_p: string, patch: Partial<BindingRow>) => { Object.assign(b, patch) },
     claimWorkbookLease: async (_s: string, _k: 'creation' | 'sync', holder: string) => { claimHolders.push(holder); return true },
+    renewWorkbookLease: async () => true,
     releaseWorkbookLease: async (_s: string, _k: 'creation' | 'sync', holder: string) => { releaseHolders.push(holder) },
   }
 }

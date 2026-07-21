@@ -26,6 +26,8 @@ interface QueryBuilder extends PromiseLike<QueryResult> {
   update(values: Record<string, unknown>): QueryBuilder
   upsert(values: Record<string, unknown>, opts?: Record<string, unknown>): QueryBuilder
   eq(col: string, val: unknown): QueryBuilder
+  neq(col: string, val: unknown): QueryBuilder
+  in(col: string, vals: unknown[]): QueryBuilder
   or(filter: string): QueryBuilder
   maybeSingle(): Promise<QueryResult>
   single(): Promise<QueryResult>
@@ -60,6 +62,9 @@ export interface CreationRequestRow {
   claimed_by: string | null
   claimed_at: string | null
   lease_expires_at: string | null
+  // Monotonic fence: bumped on each reclaim, unchanged by a renewal. A worker
+  // keeps the fence it was granted and refuses to write once a newer one exists.
+  fence: number
   error: string | null
   created_at: string
   updated_at: string
@@ -120,21 +125,75 @@ export async function updateCreationRequest(
 
 /** Compare-and-set lease so only one worker drives a request at a time. */
 export async function claimCreationRequest(requestKey: string, holder: string): Promise<boolean> {
+  return (await claimCreationRequestFenced(requestKey, holder)).ok
+}
+
+/**
+ * Fenced claim: like `claimCreationRequest` but returns the granted fence token.
+ * A reclaim (the lease was free/expired) bumps the fence monotonically; the
+ * claimer keeps that fence and passes it to `renewCreationRequestLease` and to
+ * fenced writes so a stale worker whose lease was reclaimed cannot clobber the
+ * new holder. Only one concurrent claimant's CAS update matches the expired
+ * filter, so the written fence stays monotonic.
+ */
+export async function claimCreationRequestFenced(
+  requestKey: string,
+  holder: string,
+): Promise<{ ok: boolean; fence: number | null }> {
   const now = Date.now()
   const nowStr = new Date(now).toISOString()
+  const current = await loadCreationRequest(requestKey)
+  const nextFence = Number(current?.fence ?? 0) + 1
   const { data } = await db()
     .from('project_creation_requests')
     .update({
       claimed_by: holder,
       claimed_at: nowStr,
       lease_expires_at: new Date(now + CREATION_LEASE_MS).toISOString(),
+      fence: nextFence,
       updated_at: nowStr,
     })
     .eq('request_key', requestKey)
     .or(`lease_expires_at.is.null,lease_expires_at.lt.${nowStr}`)
     .select('id')
     .maybeSingle()
+  return { ok: !!data, fence: data ? nextFence : null }
+}
+
+/**
+ * Renew (heartbeat) a held request lease: extend the expiry ONLY while this
+ * holder still owns it. Returns false when the lease was lost (reclaimed by a
+ * newer holder) — the caller must then stop writing. The fence is unchanged by
+ * a renewal, so a heartbeat never disturbs fencing.
+ */
+export async function renewCreationRequestLease(requestKey: string, holder: string): Promise<boolean> {
+  const now = Date.now()
+  const nowStr = new Date(now).toISOString()
+  const { data } = await db()
+    .from('project_creation_requests')
+    .update({ lease_expires_at: new Date(now + CREATION_LEASE_MS).toISOString(), updated_at: nowStr })
+    .eq('request_key', requestKey)
+    .eq('claimed_by', holder)
+    .select('id')
+    .maybeSingle()
   return !!data
+}
+
+/**
+ * Nonterminal creation requests whose lease is free/expired — the Railway
+ * recovery sweep's work list. A request stuck in 'pending'/'provisioning'/
+ * 'error', or an 'awaiting_decision' that already carries a decision, is
+ * resumable after a crash. An actively-leased request is skipped (a live worker
+ * owns it); a 'completed' request is terminal.
+ */
+export async function listRecoverableRequests(): Promise<CreationRequestRow[]> {
+  const nowStr = new Date().toISOString()
+  const { data } = await db()
+    .from('project_creation_requests')
+    .in('status', ['pending', 'awaiting_decision', 'provisioning', 'error'])
+    .or(`lease_expires_at.is.null,lease_expires_at.lt.${nowStr}`)
+    .select('*')
+  return (data as CreationRequestRow[]) || []
 }
 
 // ─── Bindings ────────────────────────────────────────────────────────────────
@@ -218,6 +277,21 @@ export async function listSyncableBindings(spreadsheetId: string): Promise<Bindi
   return (data as BindingRow[]) || []
 }
 
+/**
+ * Bindings that never reached 'connected' (incomplete creation) — the Railway
+ * recovery sweep re-drives these. The Vercel/Inngest sync deliberately ignores
+ * them (it only re-renders already-connected bindings), so completing a stalled
+ * creation binding is Railway-owned recovery, not sync's job.
+ */
+export async function listIncompleteBindings(spreadsheetId: string): Promise<BindingRow[]> {
+  const { data } = await db()
+    .from('project_control_bindings')
+    .select('*')
+    .eq('spreadsheet_id', spreadsheetId)
+    .neq('creation_state', 'connected')
+  return (data as BindingRow[]) || []
+}
+
 // ─── Workbook sync state: cursor + leases ────────────────────────────────────
 
 export interface SyncStateRow {
@@ -226,8 +300,10 @@ export interface SyncStateRow {
   cursor_advanced_at: string | null
   creation_lease_holder: string | null
   creation_lease_expires_at: string | null
+  creation_fence: number
   sync_lease_holder: string | null
   sync_lease_expires_at: string | null
+  sync_fence: number
 }
 
 async function ensureSyncStateRow(spreadsheetId: string): Promise<void> {
@@ -251,17 +327,62 @@ export async function claimWorkbookLease(
   kind: 'creation' | 'sync',
   holder: string,
 ): Promise<boolean> {
+  return (await claimWorkbookLeaseFenced(spreadsheetId, kind, holder)).ok
+}
+
+/**
+ * Fenced workbook claim: compare-and-set on the expiry, returning the granted
+ * fence token. Each reclaim bumps `${kind}_fence` monotonically; a renewal
+ * leaves it. The holder passes the fence to fenced writes so a stale worker
+ * (reclaimed after a pause) cannot clobber the new holder's canvas/binding work.
+ */
+export async function claimWorkbookLeaseFenced(
+  spreadsheetId: string,
+  kind: 'creation' | 'sync',
+  holder: string,
+): Promise<{ ok: boolean; fence: number | null }> {
   await ensureSyncStateRow(spreadsheetId)
   const now = Date.now()
   const nowStr = new Date(now).toISOString()
   const ms = kind === 'sync' ? SYNC_LEASE_MS : CREATION_LEASE_MS
   const holderCol = `${kind}_lease_holder`
   const expiresCol = `${kind}_lease_expires_at`
+  const fenceCol = `${kind}_fence`
+  const current = await getSyncState(spreadsheetId)
+  const nextFence = Number((current as unknown as Record<string, unknown> | null)?.[fenceCol] ?? 0) + 1
   const { data } = await db()
     .from('sheet_sync_state')
-    .update({ [holderCol]: holder, [expiresCol]: new Date(now + ms).toISOString(), updated_at: nowStr })
+    .update({
+      [holderCol]: holder,
+      [expiresCol]: new Date(now + ms).toISOString(),
+      [fenceCol]: nextFence,
+      updated_at: nowStr,
+    })
     .eq('spreadsheet_id', spreadsheetId)
     .or(`${expiresCol}.is.null,${expiresCol}.lt.${nowStr}`)
+    .select('spreadsheet_id')
+    .maybeSingle()
+  return { ok: !!data, fence: data ? nextFence : null }
+}
+
+/**
+ * Renew (heartbeat) a held workbook lease: extend the expiry ONLY while this
+ * holder still owns it. Returns false when the lease was lost — the caller must
+ * then stop writing to the workbook/canvas. The fence is unchanged.
+ */
+export async function renewWorkbookLease(
+  spreadsheetId: string,
+  kind: 'creation' | 'sync',
+  holder: string,
+): Promise<boolean> {
+  const now = Date.now()
+  const nowStr = new Date(now).toISOString()
+  const ms = kind === 'sync' ? SYNC_LEASE_MS : CREATION_LEASE_MS
+  const { data } = await db()
+    .from('sheet_sync_state')
+    .update({ [`${kind}_lease_expires_at`]: new Date(now + ms).toISOString(), updated_at: nowStr })
+    .eq('spreadsheet_id', spreadsheetId)
+    .eq(`${kind}_lease_holder`, holder)
     .select('spreadsheet_id')
     .maybeSingle()
   return !!data
@@ -304,4 +425,46 @@ export async function claimNotification(projectId: string, key: string): Promise
   if (binding.error_notified_key === key) return false
   await updateBinding(projectId, { error_notified_key: key })
   return true
+}
+
+// ─── Per-service durable provisioning steps ──────────────────────────────────
+
+export interface ProvisioningStepRow {
+  id: string
+  project_id: string
+  service: string
+  status: 'pending' | 'running' | 'done' | 'failed'
+  result: Record<string, unknown> | null
+  error: string | null
+  attempts: number
+  created_at: string
+  updated_at: string
+}
+
+/** All persisted step rows for a project (empty on a first run). */
+export async function getProvisioningSteps(projectId: string): Promise<ProvisioningStepRow[]> {
+  const { data } = await db()
+    .from('project_provisioning_steps')
+    .select('*')
+    .eq('project_id', projectId)
+  return (data as ProvisioningStepRow[]) || []
+}
+
+/**
+ * Upsert a service step (identity = project_id + service). Used to mark a step
+ * 'running' before the call and 'done'/'failed' after, so a resumed run reads
+ * the 'done' rows and skips those services. Idempotent by construction.
+ */
+export async function upsertProvisioningStep(
+  projectId: string,
+  service: string,
+  patch: Partial<Omit<ProvisioningStepRow, 'id' | 'project_id' | 'service' | 'created_at'>>,
+): Promise<void> {
+  const { error } = await db()
+    .from('project_provisioning_steps')
+    .upsert(
+      { project_id: projectId, service, ...patch, updated_at: nowIso() },
+      { onConflict: 'project_id,service' },
+    )
+  if (error) throw new Error(`upsertProvisioningStep: ${error.message}`)
 }
