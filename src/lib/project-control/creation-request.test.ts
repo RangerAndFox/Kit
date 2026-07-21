@@ -13,6 +13,7 @@ import {
   runDisabledCreation,
   routeCreationRequest,
   shouldArchiveReplaceTarget,
+  resolveReplaceCleanup,
   type RequestStorePort,
 } from './creation-request'
 
@@ -205,6 +206,110 @@ describe('shouldArchiveReplaceTarget (replay-safe replace)', () => {
     assert.equal(shouldArchiveReplaceTarget({ decision: 'duplicate', replace_target_project_id: 'OLD' }, 'NEW').archive, false)
     assert.equal(shouldArchiveReplaceTarget({ decision: 'create', replace_target_project_id: null }, 'NEW').archive, false)
     assert.equal(shouldArchiveReplaceTarget({ decision: 'replace', replace_target_project_id: null }, 'NEW').archive, false)
+  })
+})
+
+describe('resolveReplaceCleanup (crash/recovery convergence)', () => {
+  it('archives when the target exists and is not the replacement', () => {
+    assert.deepEqual(
+      resolveReplaceCleanup({ targetId: 'OLD', newProjectId: 'NEW', targetExists: true }),
+      { action: 'archive', reason: 'archive' },
+    )
+  })
+  it('no-ops when there is no persisted target', () => {
+    assert.deepEqual(
+      resolveReplaceCleanup({ targetId: null, newProjectId: 'NEW', targetExists: true }),
+      { action: 'noop', reason: 'no_target' },
+    )
+  })
+  it('never archives the run\'s own replacement (replay guard)', () => {
+    assert.deepEqual(
+      resolveReplaceCleanup({ targetId: 'NEW', newProjectId: 'NEW', targetExists: true }),
+      { action: 'noop', reason: 'is_replacement' },
+    )
+  })
+  it('converges to a no-op once the target is already gone (deleted then crashed)', () => {
+    assert.deepEqual(
+      resolveReplaceCleanup({ targetId: 'OLD', newProjectId: 'NEW', targetExists: false }),
+      { action: 'noop', reason: 'already_gone' },
+    )
+  })
+})
+
+// ─── Replace cleanup: durable step stays required until done, across crashes ──
+// Models the interactions.ts wiring with the pure decisions, so the three crash
+// windows the blocker names are exercised without live Slack/Supabase:
+//   (a) crash BEFORE archive, (b) crash AFTER archive (target deleted) but before
+//   the step is marked done, (c) resume AFTER deletion → converge.
+// The load-bearing precondition is migration 057: the persisted
+// replace_target_project_id is IMMUTABLE and survives the target's deletion, so
+// every resume still computes the same target and keeps replace_cleanup REQUIRED
+// until the step actually reaches done.
+describe('replace_cleanup durability (pure simulation of the interactions wiring)', () => {
+  const NEW = 'p-new'
+  const OLD = 'p-old'
+
+  // A resume pass: (persisted request row, whether the OLD project still exists,
+  // whether this pass runs the archive to completion). Returns the derived
+  // orchestration state a resume would compute.
+  function resumePass(
+    req: { decision: string | null; replace_target_project_id: string | null },
+    oldExists: boolean,
+    completeArchive: boolean,
+  ): { requiredIncludesCleanup: boolean; stepReachedDone: boolean; deletedTarget: boolean } {
+    const { targetId } = shouldArchiveReplaceTarget(req, NEW)
+    const requiredIncludesCleanup = !!targetId
+    if (!targetId) return { requiredIncludesCleanup, stepReachedDone: false, deletedTarget: false }
+
+    const decision = resolveReplaceCleanup({ targetId, newProjectId: NEW, targetExists: oldExists })
+    if (decision.action === 'noop') {
+      // nothing left to archive → the step resolves to success (done)
+      return { requiredIncludesCleanup, stepReachedDone: true, deletedTarget: false }
+    }
+    // action === 'archive': it deletes the target; the step is only 'done' if the
+    // pass runs to completion (no crash before completeStep).
+    return { requiredIncludesCleanup, stepReachedDone: completeArchive, deletedTarget: true }
+  }
+
+  it('(a) crash before archive: cleanup stays required and is retried', () => {
+    // Persisted row is untouched (nothing deleted yet).
+    const req = { decision: 'replace', replace_target_project_id: OLD }
+    const crashed = resumePass(req, /*oldExists*/ true, /*completeArchive*/ false)
+    assert.equal(crashed.requiredIncludesCleanup, true)
+    assert.equal(crashed.stepReachedDone, false) // not done → request stays incomplete
+  })
+
+  it('(b)+(c) crash after archive/deletion, before completion → converges on resume', () => {
+    // Pass 1 archives + deletes the target but crashes before marking the step done.
+    const req = { decision: 'replace', replace_target_project_id: OLD }
+    const pass1 = resumePass(req, /*oldExists*/ true, /*completeArchive*/ false)
+    assert.equal(pass1.deletedTarget, true)
+    assert.equal(pass1.stepReachedDone, false)
+
+    // Migration 057: the persisted target id SURVIVES the target's deletion, so
+    // the request row is unchanged. If it were nulled (pre-057), cleanup would
+    // stop being required before it was done — the bug this blocker fixes.
+    const reqAfterDelete = { decision: 'replace', replace_target_project_id: OLD }
+
+    // Pass 2 resumes: the target row is now gone → converges to done, and cleanup
+    // remained required right up until it reached done.
+    const pass2 = resumePass(reqAfterDelete, /*oldExists*/ false, /*completeArchive*/ true)
+    assert.equal(pass2.requiredIncludesCleanup, true) // still required this pass
+    assert.equal(pass2.stepReachedDone, true) // converged
+  })
+
+  it('replay after full completion never targets the replacement', () => {
+    // Even a stray extra resume with the same persisted target can only ever
+    // no-op (target gone) — and could never resolve to the new project.
+    const req = { decision: 'replace', replace_target_project_id: OLD }
+    const replay = resumePass(req, /*oldExists*/ false, /*completeArchive*/ true)
+    assert.equal(replay.deletedTarget, false) // no delete — nothing to archive
+    assert.equal(replay.stepReachedDone, true)
+    // And the replay guard rejects the replacement outright:
+    assert.equal(
+      resolveReplaceCleanup({ targetId: NEW, newProjectId: NEW, targetExists: true }).action,
+      'noop',
+    )
   })
 })
 

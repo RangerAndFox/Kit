@@ -83,6 +83,34 @@ export function shouldArchiveReplaceTarget(
   return { archive, targetId: archive ? targetId : null }
 }
 
+/**
+ * Decide what the durable replace_cleanup step must do for one run, given the
+ * persisted target and whether that target project still exists. Pure so every
+ * crash/recovery window is unit-tested through the real decision:
+ *
+ *   - no target, or the target IS the run's own replacement → 'noop' (a replay
+ *     can never archive the replacement);
+ *   - target row already absent (archived + deleted on a prior attempt, then a
+ *     crash before the step was marked done) → 'noop' (idempotent convergence);
+ *   - otherwise → 'archive'.
+ *
+ * Both 'noop' and a completed 'archive' resolve the step to success, so once the
+ * old project is gone the step converges to done on the next resume — but it
+ * stays required (never silently completed) until it actually reaches that
+ * state, because the caller keeps computing this from the IMMUTABLE persisted
+ * target (retained even after the target is deleted — migration 057).
+ */
+export function resolveReplaceCleanup(input: {
+  targetId: string | null
+  newProjectId: string
+  targetExists: boolean
+}): { action: 'noop' | 'archive'; reason: 'no_target' | 'is_replacement' | 'already_gone' | 'archive' } {
+  if (!input.targetId) return { action: 'noop', reason: 'no_target' }
+  if (input.targetId === input.newProjectId) return { action: 'noop', reason: 'is_replacement' }
+  if (!input.targetExists) return { action: 'noop', reason: 'already_gone' }
+  return { action: 'archive', reason: 'archive' }
+}
+
 export interface RequestLike {
   workspace_id: string | null
   requested_by_slack_user_id: string | null

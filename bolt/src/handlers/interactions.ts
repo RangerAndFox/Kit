@@ -47,6 +47,7 @@ import {
   routeCreationRequest,
   authorizeResolution,
   shouldArchiveReplaceTarget,
+  resolveReplaceCleanup,
 } from '../../../src/lib/project-control/creation-request'
 import {
   projectControlCreationEnabled,
@@ -1625,12 +1626,20 @@ async function runReplaceCleanup(
   targetId: string,
   newProjectId: string,
 ): Promise<{ service: string; success: boolean; error?: string }> {
-  if (!targetId || targetId === newProjectId) {
-    return { service: 'replace_cleanup', success: true } // nothing to archive / never the replacement
+  // Fast-guard the two decisions that need no DB read (no target / the run's own
+  // replacement) via the pure resolver, so a replay can never target the
+  // replacement.
+  if (resolveReplaceCleanup({ targetId, newProjectId, targetExists: true }).action === 'noop') {
+    return { service: 'replace_cleanup', success: true }
   }
   const sb = createAdminClient()
   const { data: target } = await sb.from('projects').select('*').eq('id', targetId).maybeSingle()
-  if (!target) return { service: 'replace_cleanup', success: true } // already gone (idempotent)
+  // Re-resolve with the observed existence: an absent target (archived + deleted
+  // by a prior attempt, then a crash before the step was marked done) converges
+  // idempotently to success on this resume — the persisted target id survives the
+  // deletion (migration 057), so the step stayed required until it reached here.
+  const decision = resolveReplaceCleanup({ targetId, newProjectId, targetExists: !!target })
+  if (decision.action === 'noop') return { service: 'replace_cleanup', success: true }
   await archiveOldProject(client, {
     id: target.id,
     name: target.name,

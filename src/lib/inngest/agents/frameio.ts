@@ -86,22 +86,96 @@ export function frameioKitMarker(kitProjectId: string): string {
 }
 
 /**
- * Reconcile by the embedded Kit UUID marker within the workspace. Returns ALL
- * matches so the caller can treat 0 / 1 / multiple explicitly (multiple is an
+ * Extract a recognizable project array from a v4 list response, or null when the
+ * payload is NOT a list Kit can trust (a bare array or `{ data: [...] }` are the
+ * only accepted shapes). Returning null is a deliberate fail-closed signal — a
+ * malformed page must never be read as "zero projects" and green-light a create.
+ */
+function extractProjectList(resp: unknown): Array<Record<string, unknown>> | null {
+  if (Array.isArray(resp)) return resp as Array<Record<string, unknown>>
+  if (resp && typeof resp === 'object' && Array.isArray((resp as { data?: unknown }).data)) {
+    return (resp as { data: Array<Record<string, unknown>> }).data
+  }
+  return null
+}
+
+/** Page cap; more than this many project pages in one workspace is anomalous. */
+const FRAMEIO_PROJECT_PAGE_CAP = 50
+
+/**
+ * Reconcile by the embedded Kit UUID marker within the workspace, enumerating
+ * EVERY page before concluding. Returns ALL matches so the caller can treat
+ * 0 / 1 / multiple explicitly (0 = absence PROVEN → create; 1 = reuse; ≥2 = an
  * actionable ambiguity, never silently picked).
+ *
+ * Fails closed (throws) rather than under-reporting when the listing cannot be
+ * fully + unambiguously enumerated, so absence is never concluded — and a
+ * duplicate never created — off an incompletely-read list:
+ *   - a page payload that is not a recognizable project array (list ambiguity);
+ *   - more pages indicated but not safely followable: a malformed `links.next`,
+ *     a next link to a different host, a pagination cycle, or the page cap hit
+ *     while a next link still remains (pagination ambiguity).
+ *
+ * `fetchPage` is injected (defaults to the real `frameGet`) so the pagination /
+ * fail-closed behavior is unit-tested without the network.
  */
 export async function findFrameioProjectsByKitId(
   acct: string,
   ws: string,
   kitProjectId: string,
+  fetchPage: (path: string) => Promise<unknown> = frameGet,
 ): Promise<Array<{ id: string; rootFolderId?: string }>> {
   if (!kitProjectId) return []
   const marker = frameioKitMarker(kitProjectId)
-  const resp = await frameGet(`/accounts/${acct}/workspaces/${ws}/projects`)
-  const projects = (resp.data || resp || []) as Array<Record<string, unknown>>
-  return projects
-    .filter((p) => String(p?.name || '').includes(marker))
-    .map((p) => ({ id: String(p.id), rootFolderId: (p.root_folder_id || p.root_asset_id) as string | undefined }))
+  const matches: Array<{ id: string; rootFolderId?: string }> = []
+
+  let path: string | null = `/accounts/${acct}/workspaces/${ws}/projects`
+  let budget = FRAMEIO_PROJECT_PAGE_CAP
+  const visited = new Set<string>()
+
+  while (path) {
+    if (budget-- <= 0) {
+      throw new Error('frameio_pagination_ambiguous: project page cap reached before list end')
+    }
+    if (visited.has(path)) {
+      throw new Error('frameio_pagination_ambiguous: pagination cycle detected')
+    }
+    visited.add(path)
+
+    const resp = await fetchPage(path)
+    const projects = extractProjectList(resp)
+    if (projects === null) {
+      throw new Error('frameio_list_ambiguous: unrecognized projects list payload')
+    }
+    for (const p of projects) {
+      if (String(p?.name || '').includes(marker)) {
+        matches.push({
+          id: String(p.id),
+          rootFolderId: (p.root_folder_id || p.root_asset_id) as string | undefined,
+        })
+      }
+    }
+
+    // v4 list responses carry links.next (absolute URL or relative path) when
+    // there are more pages; its ABSENCE is the normal terminal signal. A present
+    // but unusable next link is pagination ambiguity → fail closed.
+    const next: unknown = (resp as { links?: { next?: unknown; next_page?: unknown } })?.links?.next
+      ?? (resp as { links?: { next?: unknown; next_page?: unknown } })?.links?.next_page
+    if (next == null) {
+      path = null
+      continue
+    }
+    if (typeof next !== 'string' || next.trim() === '') {
+      throw new Error('frameio_pagination_ambiguous: malformed next link')
+    }
+    const rel = next.startsWith('http') ? next.replace(FRAMEIO_API, '') : next
+    if (rel.startsWith('http')) {
+      throw new Error('frameio_pagination_ambiguous: next link points to a different host')
+    }
+    path = rel
+  }
+
+  return matches
 }
 
 /** Existing child folders (name → id) under a parent, for find-or-create. */
