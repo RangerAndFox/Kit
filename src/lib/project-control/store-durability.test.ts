@@ -17,7 +17,9 @@ import {
   claimCreationRequestFenced,
   renewCreationRequestLease,
   listRecoverableRequests,
+  listProjectsWithIncompleteSteps,
   listIncompleteBindings,
+  listSyncableBindings,
   getProvisioningSteps,
   claimProvisioningStep,
   completeProvisioningStep,
@@ -34,6 +36,8 @@ type Row = Record<string, unknown>
 function fakeDb() {
   const tables = new Map<string, Row[]>()
   const rowsOf = (t: string) => tables.get(t) ?? (tables.set(t, []), tables.get(t)!)
+  // Set to a message to simulate a Supabase read/write error on the next runs.
+  const state: { forceError: string | null } = { forceError: null }
 
   function builder(table: string) {
     let op: 'select' | 'insert' | 'update' | 'upsert' | null = null
@@ -62,7 +66,8 @@ function fakeDb() {
       return true
     }
 
-    const run = (single: boolean): { data: unknown; error: null } => {
+    const run = (single: boolean): { data: unknown; error: { message: string } | null } => {
+      if (state.forceError) return { data: null, error: { message: state.forceError } }
       const rows = rowsOf(table)
       if (op === 'insert') {
         const created = { ...values }
@@ -85,30 +90,47 @@ function fakeDb() {
       return { data: single ? (matched[0] ?? null) : matched, error: null }
     }
 
-    const api = {
-      select(_c?: string) { if (!op) op = 'select'; return api },
-      insert(v: Row) { op = 'insert'; values = v; return api },
-      update(v: Row) { op = 'update'; values = v; return api },
+    // Terminal/filter stage — filters + shapers live ONLY here, matching the
+    // real client. `select` here is the returning-refinement (never resets op).
+    const filter = {
+      select(_c?: string) { void _c; return filter },
+      eq(c: string, v: unknown) { eqs.push([c, v]); return filter },
+      neq(c: string, v: unknown) { neqs.push([c, v]); return filter },
+      in(c: string, v: unknown[]) { ins.push([c, v]); return filter },
+      or(f: string) { orFilter = f; return filter },
+      async maybeSingle() { return run(true) },
+      async single() { return run(true) },
+      then(
+        res: (r: { data: unknown; error: { message: string } | null }) => void,
+        rej: (e: unknown) => void,
+      ) {
+        try { res(run(false)) } catch (e) { rej(e) }
+      },
+    }
+    // Table stage — only a read/write verb; NO filter methods exist yet, so a
+    // filter-before-select (e.g. from().in(...)) throws "in is not a function",
+    // exactly as the real @supabase/postgrest-js builder does.
+    const table_ = {
+      select(_c?: string) { void _c; if (!op) op = 'select'; return filter },
+      insert(v: Row) { op = 'insert'; values = v; return filter },
+      update(v: Row) { op = 'update'; values = v; return filter },
       upsert(v: Row, opts?: Row) {
         op = 'upsert'; values = v
         conflict = String(opts?.onConflict ?? '').split(',').map((s) => s.trim()).filter(Boolean)
         ignoreDup = opts?.ignoreDuplicates === true
-        return api
-      },
-      eq(c: string, v: unknown) { eqs.push([c, v]); return api },
-      neq(c: string, v: unknown) { neqs.push([c, v]); return api },
-      in(c: string, v: unknown[]) { ins.push([c, v]); return api },
-      or(f: string) { orFilter = f; return api },
-      async maybeSingle() { return run(true) },
-      async single() { return run(true) },
-      then(res: (r: { data: unknown; error: null }) => void, rej: (e: unknown) => void) {
-        try { res(run(false)) } catch (e) { rej(e) }
+        return filter
       },
     }
-    return api
+    return table_
   }
 
-  return { tables, rowsOf, from: (t: string) => builder(t) }
+  return {
+    tables,
+    rowsOf,
+    from: (t: string) => builder(t),
+    /** Make subsequent reads/writes return a Supabase error (to test throw-not-empty). */
+    failWith(msg: string | null) { state.forceError = msg },
+  }
 }
 
 afterEach(() => __setStoreClientForTests(null))
@@ -312,5 +334,77 @@ describe('per-service provisioning step ownership', () => {
       }),
     }) as unknown as ReturnType<typeof fakeDb>)
     await assert.rejects(getProvisioningSteps('proj'), /db down/)
+  })
+})
+
+describe('recovery work-list reads — production-compatible builder ordering', () => {
+  const past = new Date(Date.now() - 60_000).toISOString()
+  const future = new Date(Date.now() + 60_000).toISOString()
+
+  it('listRecoverableRequests runs select-before-filters and returns only eligible rows', async () => {
+    const fake = fakeDb()
+    __setStoreClientForTests(() => fake)
+    // Seed directly (bypassing insert) so we control lease/status precisely.
+    fake.rowsOf('project_creation_requests').push(
+      { request_key: 'r-provisioning-expired', status: 'provisioning', lease_expires_at: past }, // eligible (preserved shape)
+      { request_key: 'r-error-null', status: 'error', lease_expires_at: null },                   // eligible
+      { request_key: 'r-completed', status: 'completed', lease_expires_at: null },                 // excluded (terminal)
+      { request_key: 'r-active-lease', status: 'provisioning', lease_expires_at: future },         // excluded (live worker)
+      { request_key: 'r-cancelled', status: 'cancelled', lease_expires_at: null },                 // excluded (terminal)
+    )
+    const out = await listRecoverableRequests()
+    assert.deepEqual(
+      out.map((r) => r.request_key).sort(),
+      ['r-error-null', 'r-provisioning-expired'],
+    )
+  })
+
+  it('the preserved V0BJU8Y5ESZ request shape is eligible for recovery', async () => {
+    const fake = fakeDb()
+    __setStoreClientForTests(() => fake)
+    fake.rowsOf('project_creation_requests').push({
+      request_key: 'V0BJU8Y5ESZ',
+      status: 'provisioning',
+      decision: 'create',
+      error: 'incomplete_steps(retryable): frameio',
+      attempts: 0,
+      lease_expires_at: '2026-07-22T02:14:04.187+00:00', // long expired → reclaimable
+    })
+    const out = await listRecoverableRequests()
+    assert.deepEqual(out.map((r) => r.request_key), ['V0BJU8Y5ESZ'])
+  })
+
+  it('listProjectsWithIncompleteSteps runs select-before-filters and dedupes eligible project ids', async () => {
+    const fake = fakeDb()
+    __setStoreClientForTests(() => fake)
+    fake.rowsOf('project_provisioning_steps').push(
+      { project_id: 'projA', service: 'frameio', status: 'failed', lease_expires_at: past }, // eligible
+      { project_id: 'projA', service: 'harvest', status: 'done', lease_expires_at: null },   // excluded (done)
+      { project_id: 'projB', service: 'slack', status: 'pending', lease_expires_at: null },  // eligible
+      { project_id: 'projC', service: 'x', status: 'running', lease_expires_at: future },     // excluded (active lease)
+    )
+    const out = await listProjectsWithIncompleteSteps()
+    assert.deepEqual(out.sort(), ['projA', 'projB'])
+  })
+
+  it('a DB error THROWS from each recovery read (never an empty work list)', async () => {
+    const fake = fakeDb()
+    __setStoreClientForTests(() => fake)
+    fake.failWith('connection reset')
+    await assert.rejects(listRecoverableRequests(), /listRecoverableRequests: connection reset/)
+    await assert.rejects(listProjectsWithIncompleteSteps(), /listProjectsWithIncompleteSteps: connection reset/)
+    await assert.rejects(listIncompleteBindings('sid'), /listIncompleteBindings: connection reset/)
+    await assert.rejects(listSyncableBindings('sid'), /listSyncableBindings: connection reset/)
+  })
+
+  it('the fake rejects a filter invoked BEFORE select (reproduces the production TypeError)', () => {
+    const fake = fakeDb()
+    // The real production defect: from(...).in(...) before select(...).
+    const tb = fake.from('project_creation_requests') as { in?: (c: string, v: unknown[]) => unknown }
+    assert.equal(typeof tb.in, 'undefined')
+    assert.throws(() => (tb.in as (c: string, v: unknown[]) => unknown)('status', []), TypeError)
+    // The valid ordering exposes the filter only after select().
+    const filter = fake.from('project_creation_requests').select('*') as { in?: unknown }
+    assert.equal(typeof filter.in, 'function')
   })
 })
