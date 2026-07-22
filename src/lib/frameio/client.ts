@@ -13,8 +13,9 @@
  */
 
 import { frameioHeaders } from './auth'
+import { normalizeFrameioNextLink, FRAMEIO_API_BASE } from './url'
 
-const BASE_URL = 'https://api.frame.io/v4'
+const BASE_URL = FRAMEIO_API_BASE
 
 function getAccountId(): string {
   const id = process.env.FRAMEIO_ACCOUNT_ID
@@ -135,26 +136,33 @@ export async function getAsset(fileId: string): Promise<FrameIoAsset> {
  * Without the pagination walk, heavily-reviewed cuts silently truncated at
  * the API's default page size — the exported notes doc just missed comments.
  */
-export async function getAssetComments(fileId: string): Promise<FrameIoComment[]> {
+export async function getAssetComments(
+  fileId: string,
+  fetchPage: (path: string) => Promise<unknown> = frameioGet,
+): Promise<FrameIoComment[]> {
   const acct = getAccountId()
   const all: any[] = []
   let path: string | null = `/accounts/${acct}/files/${fileId}/comments`
   let safety = 20 // pagination cap — thousands of comments means something is wrong
 
   while (path && safety-- > 0) {
-    const data = await frameioGet(path)
+    const data = await fetchPage(path)
     const items = data.data || data.comments || data.items || data
     if (Array.isArray(items)) all.push(...items)
 
-    // v4 list responses carry links.next (absolute URL or path) when there
-    // are more pages. Normalize an absolute URL back to a BASE_URL-relative
-    // path for frameioGet.
-    const next: string | undefined = data.links?.next || data.links?.next_page || undefined
-    if (next && typeof next === 'string') {
-      path = next.startsWith('http') ? next.replace(BASE_URL, '') : next
-      if (path.startsWith('http')) break // different host — don't follow
-    } else {
+    // v4 list responses carry links.next (absolute URL or path) when there are
+    // more pages; its absence is the normal terminal signal. Canonicalize via
+    // the shared helper (strips a leading "/v4" so fetchPage does not re-prepend
+    // it → the /v4/v4 404). A malformed / cross-host link is not followed.
+    const next: unknown = data.links?.next ?? data.links?.next_page
+    if (next == null) {
       path = null
+    } else {
+      try {
+        path = normalizeFrameioNextLink(next)
+      } catch {
+        break // malformed / cross-host next link — stop, return what we have
+      }
     }
   }
 
