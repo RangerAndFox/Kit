@@ -167,21 +167,53 @@ export async function createControlCanvas(opts: {
   return { canvasId, canvasUrl: (created.canvas_url as string | undefined) || null }
 }
 
+/** A single `canvases.edit` change operation (only the ops this module emits). */
+export interface CanvasChange {
+  operation: 'rename' | 'replace'
+  title_content?: { type: 'markdown'; markdown: string }
+  document_content?: { type: 'markdown'; markdown: string }
+}
+
+/**
+ * Deterministic pre-flight guard for the `canvases.edit` payload, run before any
+ * network transport so a malformed change set fails locally with a clear error
+ * instead of surfacing as a Slack `invalid_arguments` in production. Scoped to
+ * the exact contract this module emits (rename→title_content, replace→
+ * document_content) — deliberately not a general schema framework.
+ */
+export function assertValidCanvasChanges(changes: unknown): asserts changes is CanvasChange[] {
+  if (!Array.isArray(changes)) {
+    throw new Error('canvases.edit: `changes` must be a native array')
+  }
+  for (const c of changes as CanvasChange[]) {
+    if (c.operation === 'rename' && typeof c.title_content?.markdown !== 'string') {
+      throw new Error('canvases.edit: rename operation requires `title_content.markdown`')
+    }
+    if (c.operation === 'replace' && typeof c.document_content?.markdown !== 'string') {
+      throw new Error('canvases.edit: replace operation requires `document_content.markdown`')
+    }
+  }
+}
+
 /** Full-document deterministic replace of the managed canvas (rename + replace). */
 export async function editControlCanvas(opts: {
   canvasId: string
   title: string
   markdown: string
 }): Promise<void> {
-  // canvases.edit requires `changes` as a JSON-encoded STRING (Bolt/web-api does
-  // not reliably auto-stringify it). Raw fetch avoids that gotcha entirely.
-  const changes = [
+  // The raw transport posts `application/json`, so `changes` must be a NATIVE
+  // array (same as `document_content`/`channel_ids` elsewhere in this file).
+  // JSON-stringifying it here is only correct for form-encoded Bolt/web-api
+  // calls; on this JSON transport it double-encodes to a string and Slack
+  // rejects the request with `invalid_arguments`.
+  const changes: CanvasChange[] = [
     { operation: 'rename', title_content: { type: 'markdown', markdown: opts.title } },
     { operation: 'replace', document_content: { type: 'markdown', markdown: opts.markdown } },
   ]
+  assertValidCanvasChanges(changes)
   await slackPost('canvases.edit', {
     canvas_id: opts.canvasId,
-    changes: JSON.stringify(changes),
+    changes,
   })
 }
 
