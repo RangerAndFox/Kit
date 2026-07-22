@@ -20,20 +20,33 @@ const SYNC_LEASE_MS = 10 * 60 * 1000
 // ─── Narrow Supabase facade (tables not yet in generated types) ──────────────
 
 interface QueryResult { data: unknown; error: { message: string } | null }
-interface QueryBuilder extends PromiseLike<QueryResult> {
-  select(cols?: string): QueryBuilder
-  insert(values: Record<string, unknown>): QueryBuilder
-  update(values: Record<string, unknown>): QueryBuilder
-  upsert(values: Record<string, unknown>, opts?: Record<string, unknown>): QueryBuilder
-  eq(col: string, val: unknown): QueryBuilder
-  neq(col: string, val: unknown): QueryBuilder
-  in(col: string, vals: unknown[]): QueryBuilder
-  or(filter: string): QueryBuilder
+
+/**
+ * Terminal/filter stage — what `.select()/.insert()/.update()/.upsert()` return.
+ * Read filters (`eq/neq/in/or`) and row-shapers (`maybeSingle/single`) live ONLY
+ * here, never on the table stage, mirroring @supabase/postgrest-js: `from()`
+ * yields a query builder whose filter methods do not exist until a read/write
+ * verb has been chosen. This makes filter-before-select (e.g. `from().in(...)`)
+ * a compile error instead of a production `TypeError` (the recovery-sweep bug).
+ */
+interface FilterBuilder extends PromiseLike<QueryResult> {
+  select(cols?: string): FilterBuilder
+  eq(col: string, val: unknown): FilterBuilder
+  neq(col: string, val: unknown): FilterBuilder
+  in(col: string, vals: unknown[]): FilterBuilder
+  or(filter: string): FilterBuilder
   maybeSingle(): Promise<QueryResult>
   single(): Promise<QueryResult>
 }
+/** Table stage — what `.from()` returns: a read/write verb must come first. */
+interface TableBuilder {
+  select(cols?: string): FilterBuilder
+  insert(values: Record<string, unknown>): FilterBuilder
+  update(values: Record<string, unknown>): FilterBuilder
+  upsert(values: Record<string, unknown>, opts?: Record<string, unknown>): FilterBuilder
+}
 interface SupabaseLike {
-  from(table: string): QueryBuilder
+  from(table: string): TableBuilder
 }
 
 let clientFactory: () => unknown = createAdminClient
@@ -236,11 +249,15 @@ export async function renewCreationRequestLease(requestKey: string, holder: stri
  */
 export async function listRecoverableRequests(): Promise<CreationRequestRow[]> {
   const nowStr = new Date().toISOString()
-  const { data } = await db()
+  // select() MUST precede the read filters (real Supabase exposes in/or only on
+  // the builder returned by select). Throw on a DB error so a failed read can
+  // never masquerade as an empty recovery work list (invariant 15).
+  const { data, error } = await db()
     .from('project_creation_requests')
+    .select('*')
     .in('status', ['pending', 'awaiting_decision', 'provisioning', 'error'])
     .or(`lease_expires_at.is.null,lease_expires_at.lt.${nowStr}`)
-    .select('*')
+  if (error) throw new Error(`listRecoverableRequests: ${error.message}`)
   return (data as CreationRequestRow[]) || []
 }
 
@@ -317,11 +334,12 @@ export async function updateBinding(projectId: string, patch: Partial<BindingRow
  * regardless of the Drive cursor.
  */
 export async function listSyncableBindings(spreadsheetId: string): Promise<BindingRow[]> {
-  const { data } = await db()
+  const { data, error } = await db()
     .from('project_control_bindings')
     .select('*')
     .eq('spreadsheet_id', spreadsheetId)
     .eq('creation_state', 'connected')
+  if (error) throw new Error(`listSyncableBindings: ${error.message}`)
   return (data as BindingRow[]) || []
 }
 
@@ -332,11 +350,12 @@ export async function listSyncableBindings(spreadsheetId: string): Promise<Bindi
  * creation binding is Railway-owned recovery, not sync's job.
  */
 export async function listIncompleteBindings(spreadsheetId: string): Promise<BindingRow[]> {
-  const { data } = await db()
+  const { data, error } = await db()
     .from('project_control_bindings')
     .select('*')
     .eq('spreadsheet_id', spreadsheetId)
     .neq('creation_state', 'connected')
+  if (error) throw new Error(`listIncompleteBindings: ${error.message}`)
   return (data as BindingRow[]) || []
 }
 
@@ -691,9 +710,9 @@ export async function listProjectsWithIncompleteSteps(): Promise<string[]> {
   const nowStr = new Date().toISOString()
   const { data, error } = await db()
     .from('project_provisioning_steps')
+    .select('project_id')
     .in('status', ['pending', 'running', 'failed'])
     .or(`lease_expires_at.is.null,lease_expires_at.lt.${nowStr}`)
-    .select('project_id')
   if (error) throw new Error(`listProjectsWithIncompleteSteps: ${error.message}`)
   const ids = new Set<string>()
   for (const r of (data as Array<{ project_id: string }>) || []) ids.add(r.project_id)
