@@ -14,10 +14,11 @@
 
 import { withRetry } from '@/lib/provisioner/retry'
 import { frameioHeaders } from '@/lib/frameio/auth'
+import { normalizeFrameioNextLink, FRAMEIO_API_BASE } from '@/lib/frameio/url'
 import folderStructure from '@/lib/provisioner/folder-structure.json'
 import type { AgentDefinition, AgentResult } from './types'
 
-const FRAMEIO_API = 'https://api.frame.io/v4'
+const FRAMEIO_API = FRAMEIO_API_BASE
 
 function getAccountId(): string {
   const id = process.env.FRAMEIO_ACCOUNT_ID
@@ -165,14 +166,11 @@ export async function findFrameioProjectsByKitId(
       path = null
       continue
     }
-    if (typeof next !== 'string' || next.trim() === '') {
-      throw new Error('frameio_pagination_ambiguous: malformed next link')
-    }
-    const rel = next.startsWith('http') ? next.replace(FRAMEIO_API, '') : next
-    if (rel.startsWith('http')) {
-      throw new Error('frameio_pagination_ambiguous: next link points to a different host')
-    }
-    path = rel
+    // Canonicalize to a base-relative rooted path (strips a leading "/v4" so
+    // frameGet does not re-prepend it → the /v4/v4 404). Fails closed on
+    // malformed / cross-host links, preserving the reconcile's no-partial-read
+    // guarantee.
+    path = normalizeFrameioNextLink(next)
   }
 
   return matches

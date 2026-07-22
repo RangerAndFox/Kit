@@ -24,13 +24,22 @@ const API = 'https://api.frame.io/v4'
  * Build a fetchPage fake from an ordered list of page payloads, auto-wiring a
  * `links.next` onto every page but the last so the walker enumerates them all.
  */
-function pager(pages: Array<Record<string, unknown>>, opts?: { linkStyle?: 'relative' | 'absolute' }) {
+function pager(
+  pages: Array<Record<string, unknown>>,
+  opts?: { linkStyle?: 'relative' | 'absolute' | 'v4relative' },
+) {
   const style = opts?.linkStyle ?? 'relative'
   const calls: string[] = []
   const wired = pages.map((page, i) => {
     if (i >= pages.length - 1) return page // last page: no next link
     const nextRel = `${START}?page=${i + 2}`
-    return { ...page, links: { next: style === 'absolute' ? `${API}${nextRel}` : nextRel } }
+    const next =
+      style === 'absolute'
+        ? `${API}${nextRel}` // https://api.frame.io/v4/accounts/...
+        : style === 'v4relative'
+          ? `/v4${nextRel}` // the exact production shape → /v4/accounts/... (root cause)
+          : nextRel // base-relative /accounts/...
+    return { ...page, links: { next } }
   })
   const fetchPage = async (path: string) => {
     const payload = wired[calls.length]
@@ -76,6 +85,23 @@ describe('findFrameioProjectsByKitId — enumerate all pages', () => {
     const out = await findFrameioProjectsByKitId(ACCT, WS, KIT, fetchPage)
     assert.deepEqual(out, [{ id: 'pMATCH', rootFolderId: 'root-x' }])
     assert.equal(calls.length, 3) // walked all pages to reach the match
+  })
+
+  it('follows /v4-prefixed relative next links without producing /v4/v4 (production shape)', async () => {
+    const { fetchPage, calls } = pager(
+      [
+        { data: [proj('2600_A', 'p1')] },
+        { data: [proj(`2601_B ${MARKER}`, 'pMATCH')] },
+      ],
+      { linkStyle: 'v4relative' },
+    )
+    const out = await findFrameioProjectsByKitId(ACCT, WS, KIT, fetchPage)
+    assert.equal(out.length, 1)
+    assert.equal(out[0].id, 'pMATCH')
+    // Page 2 must be requested as a base-relative path (no leading /v4); the
+    // caller re-prepends the /v4 base, so a retained /v4 would 404 as /v4/v4.
+    assert.equal(calls[1], `${START}?page=2`)
+    assert.ok(!calls[1].startsWith('/v4/'))
   })
 
   it('follows absolute-URL next links (normalized back to a relative path)', async () => {
