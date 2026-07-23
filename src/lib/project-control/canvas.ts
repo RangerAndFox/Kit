@@ -74,8 +74,29 @@ async function httpTransport(
     })
   }
   const data = (await res.json()) as SlackJson
-  if (!data.ok) throw new Error(`Slack ${method}: ${data.error}`)
+  if (!data.ok) throw new Error(`Slack ${method}: ${data.error}${formatSlackResponseMessages(data)}`)
   return data
+}
+
+/**
+ * Best-effort extraction of Slack's `response_metadata.messages` for error
+ * surfacing (e.g. the field-level reason behind `invalid_arguments`). Defensive
+ * by contract: must NEVER throw while formatting an upstream error, and must
+ * tolerate missing / non-array / malformed metadata. Returns a bounded ` (…)`
+ * suffix, or '' when nothing usable is present — never raw unrelated response
+ * data.
+ */
+export function formatSlackResponseMessages(data: SlackJson): string {
+  try {
+    const meta = (data as { response_metadata?: unknown }).response_metadata
+    const messages = (meta as { messages?: unknown } | null | undefined)?.messages
+    if (!Array.isArray(messages)) return ''
+    const cleaned = messages.filter((m): m is string => typeof m === 'string').map((m) => m.trim()).filter(Boolean)
+    if (cleaned.length === 0) return ''
+    return ` (${cleaned.join('; ')})`
+  } catch {
+    return ''
+  }
 }
 
 let transport: SlackTransport = httpTransport
@@ -185,6 +206,11 @@ export function assertValidCanvasChanges(changes: unknown): asserts changes is C
   if (!Array.isArray(changes)) {
     throw new Error('canvases.edit: `changes` must be a native array')
   }
+  // Slack accepts exactly ONE operation per canvases.edit call; a 0- or 2+-op
+  // array is rejected upstream as `invalid_arguments`. Enforce it locally.
+  if (changes.length !== 1) {
+    throw new Error('canvases.edit: `changes` must contain exactly one operation')
+  }
   for (const c of changes as CanvasChange[]) {
     if (c.operation === 'rename' && typeof c.title_content?.markdown !== 'string') {
       throw new Error('canvases.edit: rename operation requires `title_content.markdown`')
@@ -195,25 +221,40 @@ export function assertValidCanvasChanges(changes: unknown): asserts changes is C
   }
 }
 
-/** Full-document deterministic replace of the managed canvas (rename + replace). */
+/** Issue a single-operation `canvases.edit` against an existing canvas. */
+async function editCanvasOnce(canvasId: string, change: CanvasChange): Promise<void> {
+  // `changes` MUST be a native array (application/json transport) AND — per the
+  // Slack contract — carry exactly ONE operation per call; a multi-op array is
+  // rejected with `invalid_arguments`. The guard enforces both locally.
+  const changes: CanvasChange[] = [change]
+  assertValidCanvasChanges(changes)
+  await slackPost('canvases.edit', { canvas_id: canvasId, changes })
+}
+
+/**
+ * Full-document deterministic update of the managed canvas.
+ *
+ * Slack `canvases.edit` accepts only ONE operation per call, so this is TWO
+ * sequential single-op requests against the same canvas_id: `replace` first
+ * (the document body, which carries the H1 title, so content is correct even if
+ * the rename later fails), then `rename` (the tab title). Sequential `await`
+ * gives the required failure semantics: if replace throws, rename is never
+ * issued; a rename failure after a successful replace propagates. Both ops are
+ * deterministic full sets, so a retry (which re-issues both) is idempotent. No
+ * canvas is created here; the canvas_id is never changed.
+ */
 export async function editControlCanvas(opts: {
   canvasId: string
   title: string
   markdown: string
 }): Promise<void> {
-  // The raw transport posts `application/json`, so `changes` must be a NATIVE
-  // array (same as `document_content`/`channel_ids` elsewhere in this file).
-  // JSON-stringifying it here is only correct for form-encoded Bolt/web-api
-  // calls; on this JSON transport it double-encodes to a string and Slack
-  // rejects the request with `invalid_arguments`.
-  const changes: CanvasChange[] = [
-    { operation: 'rename', title_content: { type: 'markdown', markdown: opts.title } },
-    { operation: 'replace', document_content: { type: 'markdown', markdown: opts.markdown } },
-  ]
-  assertValidCanvasChanges(changes)
-  await slackPost('canvases.edit', {
-    canvas_id: opts.canvasId,
-    changes,
+  await editCanvasOnce(opts.canvasId, {
+    operation: 'replace',
+    document_content: { type: 'markdown', markdown: opts.markdown },
+  })
+  await editCanvasOnce(opts.canvasId, {
+    operation: 'rename',
+    title_content: { type: 'markdown', markdown: opts.title },
   })
 }
 

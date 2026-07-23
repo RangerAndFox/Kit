@@ -13,6 +13,7 @@ import {
   createControlCanvas,
   editControlCanvas,
   assertValidCanvasChanges,
+  formatSlackResponseMessages,
   CONTROL_CANVAS_ACCESS_LEVEL,
   __setCanvasTransportForTests,
 } from './canvas'
@@ -72,33 +73,125 @@ describe('createControlCanvas read-only enforcement', () => {
   })
 })
 
-describe('editControlCanvas deterministic full replace', () => {
-  it('issues a full-document replace (not a merge) so manual edits are discarded', async () => {
+interface EditChange {
+  operation: string
+  title_content?: { type?: string; markdown: string }
+  document_content?: { type?: string; markdown: string }
+}
+
+describe('editControlCanvas — two single-op requests (Slack allows one op per call)', () => {
+  it('issues exactly two canvases.edit calls: replace THEN rename, each a native one-op array', async () => {
     const r = recorder()
     __setCanvasTransportForTests(r.transport)
 
     await editControlCanvas({ canvasId: 'C1', title: 'New Title', markdown: '# regenerated' })
 
-    const edit = r.calls.find((c) => c.method === 'canvases.edit')
-    assert.ok(edit, 'canvases.edit is called')
-    assert.equal(edit!.payload.canvas_id, 'C1')
-    // `changes` must be a NATIVE array on this application/json transport — a
-    // JSON-stringified value is rejected by Slack as `invalid_arguments`.
-    assert.ok(Array.isArray(edit!.payload.changes), '`changes` is a native array, not a JSON string')
-    const changes = edit!.payload.changes as Array<{
-      operation: string
-      title_content?: { markdown: string }
-      document_content?: { markdown: string }
-    }>
-    // Inspect the operations directly (no JSON.parse).
-    const rename = changes.find((c) => c.operation === 'rename')
-    assert.ok(rename, 'a rename operation is present')
-    assert.equal(rename!.title_content!.markdown, 'New Title')
-    const replace = changes.find((c) => c.operation === 'replace')
-    assert.ok(replace, 'a full replace operation is present')
-    assert.equal(replace!.document_content!.markdown, '# regenerated')
-    // No partial/insert/append op that would retain existing canvas content.
-    assert.ok(!changes.some((c) => ['insert_after', 'insert_before', 'append'].includes(c.operation)))
+    const edits = r.calls.filter((c) => c.method === 'canvases.edit')
+    assert.equal(edits.length, 2, 'exactly two canvases.edit calls')
+
+    // Deterministic order: replace before rename.
+    const first = edits[0].payload
+    const second = edits[1].payload
+    assert.equal(first.canvas_id, 'C1')
+    assert.equal(second.canvas_id, 'C1')
+
+    // Each request: a NATIVE array (not a JSON string) of length exactly one.
+    for (const e of edits) {
+      assert.ok(Array.isArray(e.payload.changes), '`changes` is a native array')
+      assert.notEqual(typeof e.payload.changes, 'string')
+      assert.equal((e.payload.changes as unknown[]).length, 1, 'exactly one operation per call')
+    }
+
+    // Exact replace payload (first call).
+    const c1 = (first.changes as EditChange[])[0]
+    assert.deepEqual(c1, {
+      operation: 'replace',
+      document_content: { type: 'markdown', markdown: '# regenerated' },
+    })
+
+    // Exact rename payload (second call).
+    const c2 = (second.changes as EditChange[])[0]
+    assert.deepEqual(c2, {
+      operation: 'rename',
+      title_content: { type: 'markdown', markdown: 'New Title' },
+    })
+  })
+
+  it('first-call (replace) failure prevents the rename call', async () => {
+    const r = recorder()
+    let calls = 0
+    __setCanvasTransportForTests(async (kind, method, payload) => {
+      if (method === 'canvases.edit') {
+        calls++
+        throw new Error('Slack canvases.edit: some_error')
+      }
+      return r.transport(kind, method, payload)
+    })
+
+    await assert.rejects(
+      () => editControlCanvas({ canvasId: 'C1', title: 'T', markdown: '# body' }),
+      /Slack canvases.edit: some_error/,
+    )
+    assert.equal(calls, 1, 'only the replace call was attempted; rename was not issued')
+  })
+
+  it('second-call (rename) failure propagates after both calls were attempted', async () => {
+    const seen: string[] = []
+    __setCanvasTransportForTests(async (_kind, method, payload) => {
+      if (method === 'canvases.edit') {
+        const op = ((payload.changes as EditChange[])[0]).operation
+        seen.push(op)
+        if (op === 'rename') throw new Error('Slack canvases.edit: rename_boom')
+        return { ok: true }
+      }
+      return { ok: true }
+    })
+
+    await assert.rejects(
+      () => editControlCanvas({ canvasId: 'C1', title: 'T', markdown: '# body' }),
+      /rename_boom/,
+    )
+    assert.deepEqual(seen, ['replace', 'rename'], 'replace succeeded, then rename was attempted and failed')
+  })
+
+  it('real partial-success then retry: first invocation fails on rename, second fully succeeds', async () => {
+    const requests: Array<{ method: string; op?: string; canvasId?: unknown; changes: unknown }> = []
+    let renameSeen = 0
+    __setCanvasTransportForTests(async (_kind, method, payload) => {
+      if (method === 'canvases.edit') {
+        const op = ((payload.changes as EditChange[])[0]).operation
+        requests.push({ method, op, canvasId: payload.canvas_id, changes: payload.changes })
+        if (op === 'rename') {
+          renameSeen++
+          if (renameSeen === 1) throw new Error('Slack canvases.edit: rename_boom') // fail the FIRST rename only
+        }
+        return { ok: true }
+      }
+      requests.push({ method, changes: payload.changes })
+      return { ok: true }
+    })
+
+    // 1) First invocation: replace ok, rename fails → the whole invocation rejects.
+    await assert.rejects(
+      () => editControlCanvas({ canvasId: 'C1', title: 'New Title', markdown: '# regenerated' }),
+      /rename_boom/,
+    )
+
+    // 2) Second invocation (retry): replace ok, rename ok → resolves.
+    await editControlCanvas({ canvasId: 'C1', title: 'New Title', markdown: '# regenerated' })
+
+    const edits = requests.filter((r) => r.method === 'canvases.edit')
+    // Observed op sequence across both invocations is exactly replace, rename, replace, rename.
+    assert.deepEqual(edits.map((e) => e.op), ['replace', 'rename', 'replace', 'rename'])
+    // Every request targets the same original canvas_id.
+    assert.ok(edits.every((e) => e.canvasId === 'C1'), 'every edit uses the original canvas_id')
+    // Every request is a native one-element changes array.
+    assert.ok(
+      edits.every((e) => Array.isArray(e.changes) && (e.changes as unknown[]).length === 1),
+      'every edit sends a native one-element changes array',
+    )
+    // The edit path never creates a canvas.
+    assert.ok(!requests.some((r) => r.method === 'canvases.create'), 'edit path never creates a canvas')
   })
 
   it('records both create.document_content and edit.changes as native, non-string values', async () => {
@@ -139,12 +232,65 @@ describe('assertValidCanvasChanges guard', () => {
     )
   })
 
-  it('accepts a well-formed rename + replace change set', () => {
-    assert.doesNotThrow(() =>
-      assertValidCanvasChanges([
-        { operation: 'rename', title_content: { type: 'markdown', markdown: 'T' } },
-        { operation: 'replace', document_content: { type: 'markdown', markdown: '# body' } },
-      ]),
+  it('rejects an empty changes array (must contain exactly one operation)', () => {
+    assert.throws(() => assertValidCanvasChanges([]), /`changes` must contain exactly one operation/)
+  })
+
+  it('rejects a two-operation array (Slack allows only one op per call)', () => {
+    assert.throws(
+      () =>
+        assertValidCanvasChanges([
+          { operation: 'replace', document_content: { type: 'markdown', markdown: '# body' } },
+          { operation: 'rename', title_content: { type: 'markdown', markdown: 'T' } },
+        ]),
+      /`changes` must contain exactly one operation/,
     )
+  })
+
+  it('accepts a well-formed single-op change set', () => {
+    assert.doesNotThrow(() =>
+      assertValidCanvasChanges([{ operation: 'rename', title_content: { type: 'markdown', markdown: 'T' } }]),
+    )
+    assert.doesNotThrow(() =>
+      assertValidCanvasChanges([{ operation: 'replace', document_content: { type: 'markdown', markdown: '# body' } }]),
+    )
+  })
+})
+
+describe('formatSlackResponseMessages (defensive error enrichment)', () => {
+  it('appends response_metadata.messages when present', () => {
+    const out = formatSlackResponseMessages({
+      ok: false,
+      error: 'invalid_arguments',
+      response_metadata: { messages: ['[ERROR] too many operations', 'only one op allowed'] },
+    })
+    assert.equal(out, ' ([ERROR] too many operations; only one op allowed)')
+  })
+
+  it('returns empty string (no throw) when response_metadata is missing', () => {
+    assert.equal(formatSlackResponseMessages({ ok: false, error: 'invalid_arguments' }), '')
+  })
+
+  it('tolerates malformed response_metadata without throwing', () => {
+    // messages not an array
+    assert.equal(formatSlackResponseMessages({ ok: false, response_metadata: { messages: 'nope' } }), '')
+    // response_metadata not an object
+    assert.equal(formatSlackResponseMessages({ ok: false, response_metadata: 42 }), '')
+    // null metadata
+    assert.equal(formatSlackResponseMessages({ ok: false, response_metadata: null }), '')
+    // messages array with non-string / empty entries → filtered out
+    assert.equal(formatSlackResponseMessages({ ok: false, response_metadata: { messages: [1, '', '  ', null] } }), '')
+  })
+
+  it('never exposes unrelated raw response fields', () => {
+    const out = formatSlackResponseMessages({
+      ok: false,
+      error: 'invalid_arguments',
+      secret_token: 'do-not-leak',
+      response_metadata: { messages: ['visible detail'], warnings: ['hidden'] },
+    })
+    assert.equal(out, ' (visible detail)')
+    assert.ok(!out.includes('do-not-leak'))
+    assert.ok(!out.includes('hidden'))
   })
 })
