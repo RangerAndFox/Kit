@@ -206,6 +206,11 @@ export function assertValidCanvasChanges(changes: unknown): asserts changes is C
   if (!Array.isArray(changes)) {
     throw new Error('canvases.edit: `changes` must be a native array')
   }
+  // Slack accepts exactly ONE operation per canvases.edit call; a 0- or 2+-op
+  // array is rejected upstream as `invalid_arguments`. Enforce it locally.
+  if (changes.length !== 1) {
+    throw new Error('canvases.edit: `changes` must contain exactly one operation')
+  }
   for (const c of changes as CanvasChange[]) {
     if (c.operation === 'rename' && typeof c.title_content?.markdown !== 'string') {
       throw new Error('canvases.edit: rename operation requires `title_content.markdown`')
