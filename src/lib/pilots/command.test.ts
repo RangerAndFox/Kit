@@ -30,6 +30,23 @@ async function createPilot(deps: PilotDeps, store: FakePilotStore): Promise<stri
   return store.pilots[0].id
 }
 
+/** Record the full evidence set through the command path so finalize passes. */
+async function recordFullEvidence(deps: PilotDeps, store: FakePilotStore, id: string): Promise<void> {
+  await run(deps, `ref ${id} pinterest https://p :: r`)
+  await run(deps, `ref ${id} figma https://f :: m`)
+  await run(deps, `ref ${id} styleframe - :: dir`)
+  await run(deps, `visual-language ${id} :: neon`)
+  await run(deps, `generation ${id} up://1 :: f`)
+  await run(deps, `accept ${store.generations[0].id}`)
+  await run(deps, `map ${id} Steel albedo :: base`)
+  await run(deps, `validate ${id} cinema4d pass c.png :: s`)
+  await run(deps, `validate ${id} redshift pass r.exr :: s`)
+  for (const k of REQUIRED_MEASUREMENT_KEYS) await run(deps, `evidence ${id} measurement ${k} :: ${k} :: 1 u`)
+  await run(deps, `evidence ${id} assumption :: a :: none`)
+  await run(deps, `evidence ${id} unknown :: u :: tbd`)
+  await run(deps, `evidence ${id} decision :: d :: supports`)
+}
+
 describe('runPilotCommand — gate + parsing safety', () => {
   it('gate disabled → inert notice, no state', async () => {
     const { deps, store } = make()
@@ -151,5 +168,79 @@ describe('runPilotCommand — Canvas observability', () => {
     // canvas_id stays null → retry re-creates, never a duplicate binding.
     assert.equal(store.pilots[0].canvas_id, null)
     assert.equal(store.pilots[0].status, 'active')
+  })
+})
+
+describe('runPilotCommand — readiness output is secret-safe (correction 1)', () => {
+  const SECRET = 'sk_live_LEAKME SELECT * FROM pilots WHERE id=abc {"provider":"payload"}'
+  it('a thrown DB error never reaches rendered output', async () => {
+    const base = makeFakePilotStore()
+    base.projectInfos['proj'] = { status: 'active', workspace_id: 'ws', slack_channel_id: 'C1' }
+    const store: FakePilotStore = Object.assign(base, {
+      async pilotSchemaPresent() { return true },
+      async countActivePilots(): Promise<number> { throw new Error(SECRET) },
+      async getProjectInfo(): Promise<never> { throw new Error(SECRET) },
+    })
+    const deps: PilotDeps = { store, canvas: makeFakeCanvas(), now: () => 't' }
+    const r = await runPilotCommand(deps, { args: 'readiness proj', channelId: CH, actor: ACTOR, gateEnabled: true })
+    assert.match(r.text, /Pilot readiness/)
+    assert.match(r.text, /see runtime logs/)
+    for (const leak of ['sk_live_LEAKME', 'SELECT', 'provider', 'abc']) {
+      assert.ok(!r.text.includes(leak), `must not leak "${leak}" — got: ${r.text}`)
+    }
+  })
+})
+
+describe('runPilotCommand — finalize reports Canvas outcome (correction 2)', () => {
+  it('finalized + Canvas refreshed → both reported, canvas created once', async () => {
+    const { deps, store } = make()
+    const canvas = deps.canvas as ReturnType<typeof makeFakeCanvas>
+    const id = await createPilot(deps, store)
+    await recordFullEvidence(deps, store, id)
+    const r = await run(deps, `finalize ${id} adopt :: trustworthy`)
+    assert.match(r.text, /finalized/)
+    assert.match(r.text, /Canvas refreshed/)
+    assert.equal(store.pilots[0].status, 'finalized')
+    assert.equal(canvas.created, 1)
+  })
+
+  it('finalized + typed Canvas failure → finalized, retry-safe message, no duplicate', async () => {
+    const throwing: PilotCanvasPort = {
+      createPilotCanvas: async () => { throw new Error('slack invalid_arguments {secret}') },
+      editPilotCanvas: async () => { throw new Error('slack invalid_arguments {secret}') },
+    }
+    const { deps, store } = make(throwing)
+    const id = await createPilot(deps, store)
+    await recordFullEvidence(deps, store, id)
+    const r = await run(deps, `finalize ${id} adopt :: trustworthy`)
+    assert.match(r.text, /finalized/)
+    assert.match(r.text, /Canvas refresh failed/)
+    assert.match(r.text, new RegExp(`/kit pilot show ${id}`))
+    assert.ok(!r.text.includes('secret'), 'no raw provider error leaked')
+    assert.equal(store.pilots[0].status, 'finalized')
+    assert.equal(store.pilots[0].canvas_id, null) // no binding → retry cannot duplicate
+  })
+
+  it('finalized + thrown Canvas failure (persist throws) → finalized, retry-safe message', async () => {
+    const base = makeFakePilotStore()
+    base.projectWorkspaces['proj'] = 'ws'
+    base.projectInfos['proj'] = { status: 'active', workspace_id: 'ws', slack_channel_id: 'C1' }
+    // Finalize's status write succeeds; only the Canvas-id persist throws, so
+    // refreshPilotCanvas throws AFTER the canvas is created (unexpected throw).
+    const origUpdate = base.updatePilot.bind(base)
+    const store: FakePilotStore = Object.assign(base, {
+      async updatePilot(pid: string, patch: Partial<import('./types').PilotRow>) {
+        if ('canvas_id' in patch) throw new Error('persist boom {secret}')
+        return origUpdate(pid, patch)
+      },
+    })
+    const deps: PilotDeps = { store, canvas: makeFakeCanvas(), now: () => 't' }
+    const id = await createPilot(deps, store)
+    await recordFullEvidence(deps, store, id)
+    const r = await run(deps, `finalize ${id} adopt :: trustworthy`)
+    assert.match(r.text, /finalized/)
+    assert.match(r.text, /Canvas refresh failed/)
+    assert.ok(!r.text.includes('secret'), 'no raw error leaked')
+    assert.equal(store.pilots[0].status, 'finalized')
   })
 })

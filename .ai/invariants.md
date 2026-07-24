@@ -131,10 +131,10 @@ mechanism in code before assuming full compliance.
     derives every value from authoritative state at read time and stores no new
     authoritative summary; the deterministic completeness owner
     (`completeness.ts`) remains the single source for finalization, and a Canvas
-    failure never corrupts pilot state (retry-safe). The DB constraints/triggers
-    are defined in migration 058
-    but NOT yet applied; do not mark the structural DB guarantees fully verified
-    until the migration is applied.)*
+    failure never corrupts pilot state (retry-safe). Migration 058 defines and
+    enforces the production pilot schema (the six tables, their constraints,
+    append-only/generation-guard triggers, and RLS); its structural guarantees
+    have been verified against the intended production schema.)*
 
 ## How to use these
 

@@ -37,6 +37,17 @@ export interface Check {
   detail: string
 }
 
+/**
+ * Operator-safe failure detail. Logs the RAW error (message/query text/provider
+ * payload/identifiers) to the internal runtime log only, and returns a stable,
+ * secret-free string for the user-facing Check. Never let a caught DB/provider
+ * error string reach Slack output (operator-output safety invariant).
+ */
+function safeErrorDetail(scope: string, err: unknown): string {
+  console.error(`[pilots] ${scope} error:`, (err as Error)?.message ?? err)
+  return `${scope} failed — see runtime logs`
+}
+
 // ─── 1. Readiness ─────────────────────────────────────────────────────────────
 
 /** Env vars the pilot runtime needs. Presence only — never the value. */
@@ -151,14 +162,14 @@ export async function runPilotReadiness(
         : { key: 'pilot_schema', status: 'unavailable', detail: 'pilot schema not present/readable (migration 058 not applied here?)' },
     )
   } catch (err) {
-    database.push({ key: 'pilot_schema', status: 'error', detail: (err as Error).message })
+    database.push({ key: 'pilot_schema', status: 'error', detail: safeErrorDetail('pilot schema check', err) })
   }
   if (schemaOk) {
     try {
       const active = await deps.store.countActivePilots()
       database.push({ key: 'active_pilot_count', status: 'ready', detail: `${active} active pilot(s)` })
     } catch (err) {
-      database.push({ key: 'active_pilot_count', status: 'error', detail: (err as Error).message })
+      database.push({ key: 'active_pilot_count', status: 'error', detail: safeErrorDetail('active-pilot count', err) })
     }
   }
 
@@ -179,7 +190,7 @@ export async function runPilotReadiness(
           activeVdPilotId: active?.id ?? null,
         })
       } catch (err) {
-        projectEligibility = [{ key: 'project_eligibility', status: 'error', detail: (err as Error).message }]
+        projectEligibility = [{ key: 'project_eligibility', status: 'error', detail: safeErrorDetail('project eligibility', err) }]
       }
     }
   }

@@ -217,8 +217,23 @@ async function dispatch(
             : ''
         return out(`Cannot finalize: ${res.reason}${missing}`)
       }
-      await refreshPilotCanvas(deps, { pilotId: cmd.pilotId, channelId, actor }).catch(() => {})
-      return out(`✅ Pilot finalized: *${cmd.recommendation}*.`)
+      // Finalization is authoritative and already committed. The Canvas is a
+      // projection: a refresh failure (typed Err OR an unexpected throw) must
+      // NOT roll it back — report the split outcome and point to a safe retry.
+      // Raw provider errors are logged only, never shown.
+      let canvasRefreshed = false
+      try {
+        const refresh = await refreshPilotCanvas(deps, { pilotId: cmd.pilotId, channelId, actor })
+        canvasRefreshed = !isErr(refresh)
+        if (isErr(refresh)) console.error('[pilots] finalize canvas refresh failed:', refresh.reason, refresh.detail)
+      } catch (err) {
+        console.error('[pilots] finalize canvas refresh threw:', (err as Error)?.message ?? err)
+      }
+      return out(
+        canvasRefreshed
+          ? `✅ Pilot finalized: *${cmd.recommendation}*. Canvas refreshed.`
+          : `✅ Pilot finalized: *${cmd.recommendation}*. ⚠️ Canvas refresh failed — the pilot is finalized regardless; re-run \`/kit pilot show ${cmd.pilotId}\` to retry (safe).`,
+      )
     }
   }
 }
