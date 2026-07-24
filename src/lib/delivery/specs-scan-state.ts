@@ -24,7 +24,7 @@ import { createAdminClient } from '../supabase/admin'
 const ROW_ID = 'singleton'
 /**
  * Lease lifetime. Must exceed one invocation's elapsed budget (see
- * specs-watcher SCAN_TIME_BUDGET_MS ~45s) so a live run keeps the lease for its
+ * specs-watcher SCAN_TIME_BUDGET_MS ~30s) so a live run keeps the lease for its
  * whole tick, yet be short enough that a crashed run is reclaimable soon.
  */
 const LEASE_MS = 4 * 60 * 1000

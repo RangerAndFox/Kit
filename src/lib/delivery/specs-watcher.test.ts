@@ -308,6 +308,35 @@ describe('stability gate + firing', () => {
     assert.equal(h.posts.length, 0)
     assert.equal(h.ledger.get('v1')!.notified_at, null)
   })
+
+  it('caps the fire pass per tick and defers the rest oldest-first (deterministic forward progress)', async () => {
+    // 27 projects each with one stable pending drop; the fire-pass cap is 25.
+    // loadPendingSpecs yields oldest-first (the real query orders by
+    // first_seen_at), so the two NEWEST are deferred and only age toward the
+    // front — never starved.
+    const N = 27
+    const ledger: any[] = []
+    const folders: Record<string, any[]> = {}
+    const channels: Record<string, { projectId: string; name: string; channelId: string | null }> = {}
+    for (let i = 0; i < N; i++) {
+      const safe = `P${String(i).padStart(2, '0')}`
+      const vp = `/production/2026/${safe}/specs/video/a.mov`
+      ledger.push({ dropbox_id: `v${i}`, path: vp, size_bytes: 10, notified_at: null, stable_check_count: 1 })
+      folders[`${ROOT}/2026/${safe}/specs/video`] = [fileEntry(`v${i}`, vp, 10)]
+      folders[`${ROOT}/2026/${safe}/specs/audio`] = []
+      channels[safe] = { projectId: `p${i}`, name: safe, channelId: `C${i}` }
+    }
+    const h = makeHarness({ ledger, folders, channels })
+    const s = await runSpecsScanTick(h.deps, 'A')
+    assert.equal(s.projectsChecked, 25)
+    assert.equal(s.deferredProjects, 2)
+    assert.equal(s.posted, 25)
+    // Oldest 25 fired; the two newest were deferred and remain pending.
+    assert.ok(h.ledger.get('v0')!.notified_at)
+    assert.ok(h.ledger.get('v24')!.notified_at)
+    assert.equal(h.ledger.get('v25')!.notified_at, null)
+    assert.equal(h.ledger.get('v26')!.notified_at, null)
+  })
 })
 
 // ─── Idempotency contract ───────────────────────────────────

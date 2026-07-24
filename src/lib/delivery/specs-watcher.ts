@@ -51,9 +51,12 @@ export const PROVIDE_SPECS_ACTION = 'kit_delivery_provide_specs'
 const SCAN_MAX_PAGES = 6
 /** Max projects whose specs folders are re-listed for firing per invocation. */
 const SCAN_MAX_PENDING_PROJECTS = 25
-/** Elapsed-time budget per invocation — conservatively below the hosting limit
- *  and above a single dropboxRpc timeout (15s) so at least one page can finish. */
-const SCAN_TIME_BUDGET_MS = 45_000
+/** Elapsed-time budget per invocation. Conservatively below the route's owned
+ *  60s maxDuration (src/app/api/inngest/route.ts): the loop stops STARTING new
+ *  work at 30s, leaving ~30s of headroom for one in-flight Dropbox call (15s
+ *  ceiling) — so a healthy tick never approaches the platform limit, and any
+ *  rare overrun is checkpoint-safe (the cursor resumes next tick). */
+const SCAN_TIME_BUDGET_MS = 30_000
 /** Defensive pagination cap when re-listing a single specs subfolder. */
 const FOLDER_PAGE_CAP = 10
 
@@ -183,7 +186,14 @@ async function updateSeenRow(
   if (error) throw new Error(`updateSeenRow(${dropboxId}): ${error.message}`)
 }
 
-/** Pending (unnotified) specs rows — the fire pass's work list. Throws on error. */
+/**
+ * Pending (unnotified) specs rows — the fire pass's work list. Throws on error.
+ *
+ * Ordered oldest-first (first_seen_at) so the per-tick project cap makes
+ * DETERMINISTIC forward progress: the longest-waiting drops are always served
+ * first, and a project deferred past the cap only ages toward the front, so it
+ * cannot be starved by continuous fresh activity in other projects.
+ */
 async function loadPendingSpecsRows(): Promise<SeenRow[]> {
   const sb = createAdminClient()
   const { data, error } = await sb
@@ -191,6 +201,7 @@ async function loadPendingSpecsRows(): Promise<SeenRow[]> {
     .select('dropbox_id, path, size_bytes, notified_at, stable_check_count')
     .is('notified_at', null)
     .like('path', `${WATCH_ROOT}/%/specs/%`)
+    .order('first_seen_at', { ascending: true })
   if (error) throw new Error(`loadPendingSpecsRows: ${error.message}`)
   return (data as SeenRow[]) || []
 }
