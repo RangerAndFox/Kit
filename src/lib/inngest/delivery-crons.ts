@@ -21,16 +21,9 @@ import { createAdminClient } from '../supabase/admin'
 import { scanDeliveryQueue, markFileNotified, resolveDeliveryChannel } from '../delivery/dropbox-watcher'
 import { isSrtFile } from '../delivery/subtitle-convert'
 import { processSrtFile } from '../delivery/subtitle-watcher'
-import {
-  scanProjectSpecs,
-  markSpecsNotified,
-  resolveProjectChannel,
-  buildSpecsPromptBlocks,
-} from '../delivery/specs-watcher'
-import { pairSpecsFiles } from '../delivery/pairing'
+import { runSpecsScanTick } from '../delivery/specs-watcher'
 import { progressBar } from '../delivery/progress-bar'
 import { resetStaleJobs } from '../delivery/storage'
-import { recordSpecIntake } from '../delivery/spec-intake-store'
 import { recordCronSuccess } from '../health/state'
 
 const SLACK_API = 'https://slack.com/api'
@@ -225,70 +218,12 @@ export const deliverySpecsScan = inngest.createFunction(
       return { skipped: 'no_dropbox_token' }
     }
 
-    const drops = await step.run('scan-specs', () => scanProjectSpecs())
-    if (drops.length === 0) return { scanned: 0 }
-
-    let posted = 0
-    // Dedupe by the files a posted prompt actually COVERED — not blindly by
-    // project. The pair prompt covers exactly its video+audio; a second,
-    // unrelated video dropped the same tick must keep its own prompt (a
-    // project-level consume used to strand it as notified-but-never-posted).
-    const coveredThisTick = new Set<string>()
-    for (const drop of drops) {
-      if (coveredThisTick.has(drop.trigger.dropbox_id)) {
-        // This file was part of a pair already prompted this tick — consume.
-        await markSpecsNotified(drop.trigger.dropbox_id)
-        continue
-      }
-      const project = await resolveProjectChannel(drop.safeName)
-      const channel = project?.channelId || DEFAULT_NOTIFY_CHANNEL
-      if (!channel) {
-        // Nowhere to post. Do NOT mark notified — that would strand the file
-        // permanently; leave it to retry once a channel is configured.
-        console.warn(
-          `[delivery-specs] no Slack channel for ${drop.safeName} — will retry (set DELIVERY_NOTIFY_CHANNEL_ID or link the project channel)`,
-        )
-        continue
-      }
-      const pair = pairSpecsFiles({
-        trigger: drop.trigger,
-        videoFiles: drop.videoFiles,
-        audioFiles: drop.audioFiles,
-      })
-      const blocks = buildSpecsPromptBlocks({ projectName: project?.name || drop.safeName, pair })
-
-      // Mark before posting so a Slack failure doesn't re-loop (operator can
-      // re-drop or use /kit deliver). markSpecsNotified THROWS on a failed
-      // write — if we can't record the claim, we don't post (retry next tick)
-      // rather than prompting every minute forever.
-      await markSpecsNotified(drop.trigger.dropbox_id)
-      coveredThisTick.add(drop.trigger.dropbox_id)
-      const ts = await slackPost(channel, `New delivery source in ${drop.safeName}`, blocks)
-      if (ts) {
-        posted++
-        // Record the prompt thread so a spec reply (text/PDF/screenshot) ties
-        // back to this video+audio pair.
-        if (pair.ok && pair.video) {
-          // The prompt covers the whole pair — mark both halves notified so
-          // the partner file can't fire its own prompt on a later tick.
-          const pairIds = [pair.video.dropbox_id, pair.audio?.dropbox_id].filter(Boolean) as string[]
-          for (const id of pairIds) {
-            coveredThisTick.add(id)
-            if (id !== drop.trigger.dropbox_id) {
-              await markSpecsNotified(id).catch((err) =>
-                console.warn(`[delivery-specs] pair-partner mark failed: ${err?.message}`),
-              )
-            }
-          }
-          const sources = [
-            { path: pair.video.path, type: 'video', size_bytes: pair.video.size_bytes },
-            ...(pair.audio ? [{ path: pair.audio.path, type: 'audio', size_bytes: pair.audio.size_bytes }] : []),
-          ]
-          await recordSpecIntake({ channelId: channel, threadTs: ts, sources }).catch(() => {})
-        }
-      }
-    }
-    return { drops: drops.length, posted }
+    // One bounded tick: a DB lease serializes overlapping invocations, discovery
+    // advances a persisted Dropbox cursor (bootstrap enumeration → delta), and
+    // firing re-lists only projects with pending drops. Work is proportional to
+    // NEW activity, never the whole /production tree — the fix for the every-
+    // minute "operation was aborted due to timeout". See specs-watcher.ts.
+    return step.run('scan-specs-tick', () => runSpecsScanTick())
   },
 )
 

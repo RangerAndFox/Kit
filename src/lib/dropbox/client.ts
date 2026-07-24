@@ -123,18 +123,40 @@ const DROPBOX_RPC_API = 'https://api.dropboxapi.com/2'
  * POST to a Dropbox RPC endpoint with auth headers, JSON body, and a
  * timeout. Shared by the delivery watchers (was duplicated verbatim in
  * dropbox-watcher.ts and specs-watcher.ts).
+ *
+ * On an AbortSignal.timeout() fire, native fetch rejects with a bare
+ * `TimeoutError` DOMException whose message is only "The operation was aborted
+ * due to timeout." — no endpoint, no budget, no provider. That opaque string is
+ * exactly what surfaced in production. We wrap the abort with the endpoint +
+ * timeout it happened on while preserving the original DOMException as `cause`.
+ * Only the endpoint path (e.g. "/files/list_folder") and the numeric budget are
+ * included — never headers, tokens, or the request body.
  */
 export async function dropboxRpc(
   endpoint: string,
   body: Record<string, unknown>,
   timeoutMs = 15_000,
 ): Promise<any> {
-  const res = await fetch(`${DROPBOX_RPC_API}${endpoint}`, {
-    method: 'POST',
-    headers: await dropboxHeaders(),
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
-  })
+  let res: Response
+  try {
+    res = await fetch(`${DROPBOX_RPC_API}${endpoint}`, {
+      method: 'POST',
+      headers: await dropboxHeaders(),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+  } catch (err) {
+    const name = (err as { name?: string } | null)?.name
+    // AbortSignal.timeout → TimeoutError; a manual abort → AbortError. Either
+    // way, attribute it to this endpoint + budget and keep the original cause.
+    if (name === 'TimeoutError' || name === 'AbortError') {
+      throw new Error(`Dropbox ${endpoint} timed out after ${timeoutMs}ms`, { cause: err })
+    }
+    // Network/DNS/TLS failures: still opaque without the endpoint. Attribute
+    // them too, preserving the cause.
+    const message = (err as { message?: string } | null)?.message
+    throw new Error(`Dropbox ${endpoint} request failed: ${message || String(err)}`, { cause: err })
+  }
   if (!res.ok) {
     throw new Error(`Dropbox ${endpoint} ${res.status}: ${await res.text().catch(() => '')}`)
   }
