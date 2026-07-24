@@ -81,6 +81,32 @@ export const REQUIRED_MEASUREMENT_KEYS: readonly string[] = [
  */
 export const UNIT_REQUIRED_MEASUREMENT_KEYS: readonly string[] = ['time', 'cost'] as const
 
+// Runtime enum arrays (mirror the type unions above) so the parser, help text,
+// and diagnostics can display/validate valid values from one authoritative
+// source rather than hard-coded literals scattered across surfaces.
+export const REFERENCE_TYPES: readonly ReferenceType[] = [
+  'pinterest',
+  'figma_moodboard',
+  'styleframe_direction',
+  'other',
+] as const
+
+export const MATERIAL_MAP_TYPES: readonly MaterialMapType[] = [
+  'albedo',
+  'roughness',
+  'normal',
+  'height',
+  'displacement',
+  'metalness',
+  'ao',
+  'opacity',
+  'other',
+] as const
+
+export const VALIDATION_TOOLS: readonly ValidationTool[] = ['cinema4d', 'redshift'] as const
+
+export const PILOT_STATUSES: readonly PilotStatus[] = ['active', 'finalized', 'abandoned'] as const
+
 // ─── Row shapes ──────────────────────────────────────────────────────────────
 
 export interface PilotRow {

@@ -8,10 +8,13 @@
 
 import type { PilotDeps } from './service'
 import {
+  countActivePilots,
   getActivePilot,
   getGenerationById,
   getPilotById,
+  getProjectInfo,
   getProjectWorkspaceId,
+  pilotSchemaPresent,
   insertEvidence,
   insertGeneration,
   insertMaterialMap,
@@ -40,6 +43,9 @@ export function defaultPilotDeps(): PilotDeps {
       insertMaterialMap,
       insertValidation,
       loadSnapshot,
+      getProjectInfo,
+      pilotSchemaPresent,
+      countActivePilots,
     },
     canvas: { createPilotCanvas, editPilotCanvas },
     now: () => new Date().toISOString(),

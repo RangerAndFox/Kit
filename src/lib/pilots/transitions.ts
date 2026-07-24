@@ -45,6 +45,15 @@ export function isValidRecommendation(value: string): value is PilotRecommendati
   return (PILOT_RECOMMENDATIONS as readonly string[]).includes(value)
 }
 
+// Type-guard narrowing (not boolean-discriminant narrowing) so consumers compile
+// under both the root strict tsconfig and Bolt's non-strict one.
+export function isAuthDenied(a: AuthDecision): a is Extract<AuthDecision, { ok: false }> {
+  return !a.ok
+}
+export function isFinalizeBlocked(d: FinalizeDecision): d is Extract<FinalizeDecision, { ok: false }> {
+  return !d.ok
+}
+
 // ─── Finalization guard ──────────────────────────────────────────────────────
 
 export type FinalizeDecision =
