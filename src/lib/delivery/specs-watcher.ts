@@ -200,7 +200,10 @@ async function loadPendingSpecsRows(): Promise<SeenRow[]> {
     .from('seen_dropbox_files')
     .select('dropbox_id, path, size_bytes, notified_at, stable_check_count')
     .is('notified_at', null)
-    .like('path', `${WATCH_ROOT}/%/specs/%`)
+    // ilike, not like: parseSpecsPath's regex is case-insensitive, so a file
+    // recorded with non-canonical casing (e.g. `/Specs/`) must still be loaded
+    // by the fire pass — a case-sensitive LIKE would strand it, unfired.
+    .ilike('path', `${WATCH_ROOT}/%/specs/%`)
     .order('first_seen_at', { ascending: true })
   if (error) throw new Error(`loadPendingSpecsRows: ${error.message}`)
   return (data as SeenRow[]) || []

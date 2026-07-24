@@ -222,6 +222,20 @@ describe('discovery — bootstrap → delta', () => {
     assert.equal(h.ledger.size, 8)
   })
 
+  it('a failed ledger write aborts the tick BEFORE the cursor advances (safe replay)', async () => {
+    const h = makeHarness({
+      discoveryPages: [{ entries: [fileEntry('v1', '/production/2026/P/specs/video/a.mov', 10)], hasMore: false }],
+    })
+    // Simulate the discovery-page ledger write failing (Supabase error → throw).
+    h.deps.insertFirstSightings = async () => {
+      throw new Error('insertFirstSightings: simulated DB failure')
+    }
+    await assert.rejects(() => runSpecsScanTick(h.deps, 'A'))
+    // Cursor did NOT advance (page replays next tick) and the lease was released.
+    assert.equal(h.state.cursor, null)
+    assert.equal(h.state.lease_holder, null)
+  })
+
   it('delta mode continues from the persisted cursor (no recursive list_folder)', async () => {
     // Start already in delta at cursor '3'; a single delta page carries one new file.
     const pages: any[] = []
