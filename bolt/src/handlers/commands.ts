@@ -25,6 +25,7 @@ import { renderJobsStatusBlocks, renderWorkersStatusBlocks } from '../delivery/s
 import { setWorkerOptOut, setWorkerOptIn, listProfiles } from '../../../src/lib/delivery/storage'
 import { listAeRenders, getAeRenderStatus } from '../../../src/lib/delivery/ae-storage'
 import { buildRenderModal } from '../delivery/render-modal'
+import { handlePilotCommand } from './pilots'
 
 /**
  * Resolve the Slack user's Kit access context for a slash command.
@@ -144,6 +145,24 @@ export function registerCommandHandlers(app: App) {
             text: `Error looking up status: ${err.message}`,
           })
         }
+        break
+      }
+
+      // ── Visual Development Pilot ─────────────────────────────
+      case 'pilot': {
+        await ack()
+        const workspaceId = process.env.KIT_DEFAULT_WORKSPACE_ID
+        if (!workspaceId) {
+          await respond({ response_type: 'ephemeral', text: 'KIT_DEFAULT_WORKSPACE_ID is not set.' })
+          break
+        }
+        const user = await resolveCommandUser(client, workspaceId, command.user_id)
+        await handlePilotCommand({
+          args,
+          channelId: command.channel_id,
+          ctx: { workspaceId: user.workspaceId, slackUserId: command.user_id },
+          respond,
+        })
         break
       }
 

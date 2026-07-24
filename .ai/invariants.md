@@ -106,6 +106,30 @@ mechanism in code before assuming full compliance.
     Slack/Supabase paths are NOT exercised by tests. Do not mark fully Verified
     until the Bolt orchestration boundary has production-path coverage.)*
 
+16. **Experimental evidence has one structured owner; rendered artifacts are
+    projections; final conclusions require deterministic completeness.** A pilot's
+    state lives in Supabase (migration 058: `pilots` + append-only
+    `pilot_evidence` / `pilot_generations` + `pilot_references` /
+    `pilot_material_maps` / `pilot_validations`); any Slack Canvas is a
+    deterministic **read-only projection** rendered only from that state
+    (`src/lib/pilots/render.ts`) and is never authoritative. Evidence categories
+    (measurement / observation / judgment / assumption / unknown / risk /
+    decision) stay semantically separated — a subjective judgment is never filed
+    as an objective measurement. Append-only evidence has **no update path**, and
+    a generated output may only transition its **attributed** acceptance (nothing
+    accepted by default). Derived metrics (usable-output rate) come only from the
+    deterministic owner (`src/lib/pilots/metrics.ts`) — never stored
+    authoritatively or produced by a model, and the zero-output case is explicit
+    (rate = null, not 0). A pilot reaches a final recommendation only when the
+    pure completeness gate (`src/lib/pilots/completeness.ts`) passes, enforced in
+    the state-transition owner; the recommendation is **human-authored**, never
+    model-generated. At most one **active** pilot per (project, type). *(Verified
+    in `src/lib/pilots/*` unit + controlled-workflow tests — 55 cases via
+    `npx tsx --test` (incl. cross-workspace authorization rejection for every
+    operation). The DB constraints/triggers are defined in migration 058
+    but NOT yet applied; do not mark the structural DB guarantees fully verified
+    until the migration is applied.)*
+
 ## How to use these
 
 - **Fixing a bug:** name the invariant it violates first. If none fits, you may
