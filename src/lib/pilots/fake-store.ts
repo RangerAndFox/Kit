@@ -15,9 +15,19 @@ import type {
   ValidationRow,
 } from './types'
 
+export interface FakeProjectInfo {
+  status: string | null
+  workspace_id: string | null
+  slack_channel_id: string | null
+}
+
 export interface FakePilotStore extends PilotStorePort {
   /** Seeded project → workspace map (authoritative source for create auth). */
   projectWorkspaces: Record<string, string>
+  /** Seeded richer project facts for the readiness diagnostic. */
+  projectInfos: Record<string, FakeProjectInfo>
+  /** When false, pilotSchemaPresent() reports the schema as unavailable. */
+  schemaPresent: boolean
   pilots: PilotRow[]
   references: ReferenceRow[]
   evidence: EvidenceRow[]
@@ -32,6 +42,8 @@ export function makeFakePilotStore(): FakePilotStore {
   const T = '2026-01-01T00:00:00.000Z'
 
   const projectWorkspaces: Record<string, string> = {}
+  const projectInfos: Record<string, FakeProjectInfo> = {}
+  const state = { schemaPresent: true }
   const pilots: PilotRow[] = []
   const references: ReferenceRow[] = []
   const evidence: EvidenceRow[] = []
@@ -41,6 +53,13 @@ export function makeFakePilotStore(): FakePilotStore {
 
   return {
     projectWorkspaces,
+    projectInfos,
+    get schemaPresent() {
+      return state.schemaPresent
+    },
+    set schemaPresent(v: boolean) {
+      state.schemaPresent = v
+    },
     pilots,
     references,
     evidence,
@@ -50,6 +69,20 @@ export function makeFakePilotStore(): FakePilotStore {
 
     async getProjectWorkspaceId(projectId) {
       return projectWorkspaces[projectId] ?? null
+    },
+    async getProjectInfo(projectId) {
+      const info = projectInfos[projectId]
+      if (info) return { exists: true, ...info }
+      // Fall back to the workspace-only seed so create-auth tests keep working.
+      const ws = projectWorkspaces[projectId]
+      if (ws) return { exists: true, status: 'active', workspace_id: ws, slack_channel_id: null }
+      return { exists: false, status: null, workspace_id: null, slack_channel_id: null }
+    },
+    async pilotSchemaPresent() {
+      return state.schemaPresent
+    },
+    async countActivePilots() {
+      return pilots.filter((p) => p.status === 'active').length
     },
     async getPilotById(pid) {
       return pilots.find((p) => p.id === pid) ?? null

@@ -66,6 +66,49 @@ export async function getProjectWorkspaceId(projectId: string): Promise<string |
   return row?.workspace_id ?? null
 }
 
+/** Deterministic project facts the readiness diagnostic needs (read-only). */
+export interface ProjectInfo {
+  exists: boolean
+  status: string | null
+  workspace_id: string | null
+  slack_channel_id: string | null
+}
+
+export async function getProjectInfo(projectId: string): Promise<ProjectInfo> {
+  const { data } = await db()
+    .from('projects')
+    .select('status, workspace_id, slack_channel_id')
+    .eq('id', projectId)
+    .maybeSingle()
+  const row = data as { status?: string | null; workspace_id?: string | null; slack_channel_id?: string | null } | null
+  if (!row) return { exists: false, status: null, workspace_id: null, slack_channel_id: null }
+  return {
+    exists: true,
+    status: row.status ?? null,
+    workspace_id: row.workspace_id ?? null,
+    slack_channel_id: row.slack_channel_id ?? null,
+  }
+}
+
+/**
+ * Whether the pilot schema is present + readable. Returns false on ANY error
+ * (missing table, permission) so the diagnostic reports "schema unavailable"
+ * rather than throwing — the operator-facing signal, not a crash.
+ */
+export async function pilotSchemaPresent(): Promise<boolean> {
+  const { error } = await db().from('pilots').select('id').eq('id', ZERO_UUID).maybeSingle()
+  return !error
+}
+
+const ZERO_UUID = '00000000-0000-0000-0000-000000000000'
+
+/** Count of active (non-terminal) pilots across the workspace (diagnostic). */
+export async function countActivePilots(): Promise<number> {
+  const { data, error } = await db().from('pilots').select('id').eq('status', 'active')
+  if (error) throw new Error(`countActivePilots: ${error.message}`)
+  return ((data as unknown[]) || []).length
+}
+
 // ─── Pilot record ────────────────────────────────────────────────────────────
 
 export async function insertPilot(values: {

@@ -18,6 +18,7 @@
 
 import { pilotCanvasTitle } from './canvas'
 import { renderPilotCanvas } from './render'
+import type { ProjectInfo } from './store'
 import { authorizePilotAction, decideFinalize, type AuthDecision, type FinalizeDecision } from './transitions'
 import type {
   EvidenceCategory,
@@ -69,6 +70,10 @@ export interface PilotStorePort {
   insertMaterialMap(v: Omit<MaterialMapRow, 'id' | 'created_at'>): Promise<MaterialMapRow>
   insertValidation(v: Omit<ValidationRow, 'id' | 'created_at'>): Promise<ValidationRow>
   loadSnapshot(pilotId: string): Promise<PilotSnapshot | null>
+  // Read-only diagnostics support (Workstreams 1-3).
+  getProjectInfo(projectId: string): Promise<ProjectInfo>
+  pilotSchemaPresent(): Promise<boolean>
+  countActivePilots(): Promise<number>
 }
 
 export interface PilotCanvasPort {
@@ -102,7 +107,7 @@ function fail<T>(reason: string, detail?: unknown): ServiceResult<T> {
 // Type-guard narrowing (not boolean-discriminant narrowing) so these compile
 // identically under the root's strict tsconfig AND the Bolt package's
 // non-strict one, where `if (!x.ok)` does not narrow a boolean-tagged union.
-function isErr(r: ServiceResult<unknown>): r is { ok: false; reason: string; detail?: unknown } {
+export function isErr(r: ServiceResult<unknown>): r is { ok: false; reason: string; detail?: unknown } {
   return !r.ok
 }
 function isDenied(a: AuthDecision): a is Extract<AuthDecision, { ok: false }> {
@@ -431,11 +436,25 @@ export async function refreshPilotCanvas(
   if (!snapshot) return fail('pilot_not_found')
   const markdown = renderPilotCanvas(snapshot)
   const title = pilotCanvasTitle(snapshot.pilot.title || 'Pilot')
+  // A Canvas (Slack) failure must never corrupt authoritative pilot state or
+  // throw out of the operator path: catch it and return a typed failure so the
+  // pilot row is untouched and a retry is safe. On an EDIT failure the bound
+  // canvas_id is preserved (retry re-edits); on a CREATE failure canvas_id
+  // stays null (retry re-creates) — never a duplicate binding.
   if (snapshot.pilot.canvas_id) {
-    await deps.canvas.editPilotCanvas({ canvasId: snapshot.pilot.canvas_id, title, markdown })
+    try {
+      await deps.canvas.editPilotCanvas({ canvasId: snapshot.pilot.canvas_id, title, markdown })
+    } catch (err) {
+      return fail('canvas_edit_failed', (err as Error).message)
+    }
     return ok({ canvasId: snapshot.pilot.canvas_id, canvasUrl: snapshot.pilot.canvas_url })
   }
-  const handle = await deps.canvas.createPilotCanvas({ channelId: args.channelId, title, markdown })
+  let handle: { canvasId: string; canvasUrl: string | null }
+  try {
+    handle = await deps.canvas.createPilotCanvas({ channelId: args.channelId, title, markdown })
+  } catch (err) {
+    return fail('canvas_create_failed', (err as Error).message)
+  }
   await deps.store.updatePilot(args.pilotId, { canvas_id: handle.canvasId, canvas_url: handle.canvasUrl })
   return ok(handle)
 }
