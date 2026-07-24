@@ -114,6 +114,9 @@ function makeHarness(opts: HarnessOpts = {}) {
       const row = ledger.get(id)
       if (row) Object.assign(row, patch)
     },
+    evictSeen: async (id) => {
+      ledger.delete(id)
+    },
     markNotified: async (id) => {
       if (opts.markThrows) throw new Error('simulated ledger write failure')
       const row = ledger.get(id)
@@ -191,11 +194,18 @@ describe('pure helpers', () => {
 describe('discovery — bootstrap → delta', () => {
   it('bootstrap progresses across invocations, transitions to delta, and never restarts the full tree', async () => {
     // 8 pages; page[7] is the last (has_more=false). Each page adds one file.
-    const pages = Array.from({ length: 8 }, (_, i) => ({
-      entries: [fileEntry(`id${i}`, `/production/2026/P${i}/specs/video/a.mov`, 10)],
-      hasMore: i < 7,
-    }))
-    const h = makeHarness({ discoveryPages: pages })
+    // Populate each file's folder too (a discovered specs file really lives in
+    // its specs/video folder), so the fire pass doesn't treat it as vanished.
+    // No channels are configured, so nothing fires — the files stay pending.
+    const pages: Array<{ entries: any[]; hasMore: boolean }> = []
+    const folders: Record<string, any[]> = {}
+    for (let i = 0; i < 8; i++) {
+      const vp = `/production/2026/P${i}/specs/video/a.mov`
+      pages.push({ entries: [fileEntry(`id${i}`, vp, 10)], hasMore: i < 7 })
+      folders[`${ROOT}/2026/P${i}/specs/video`] = [fileEntry(`id${i}`, vp, 10)]
+      folders[`${ROOT}/2026/P${i}/specs/audio`] = []
+    }
+    const h = makeHarness({ discoveryPages: pages, folders })
 
     // Tick 1: capped at SCAN_MAX_PAGES (6), still bootstrap.
     const s1 = await runSpecsScanTick(h.deps, 'A')
@@ -287,6 +297,20 @@ describe('stability gate + firing', () => {
     assert.equal(h.posts.length, 0)
     assert.equal(h.ledger.get('v1')!.size_bytes, 150)
     assert.equal(h.ledger.get('v1')!.stable_check_count, 1)
+  })
+
+  it('evicts a pending file that has vanished from a successfully-listed folder', async () => {
+    const h = makeHarness({
+      ledger: [{ dropbox_id: 'v1', path: VPATH, size_bytes: 100, notified_at: null, stable_check_count: 1 }],
+      // Folders list successfully but no longer contain v1 → terminal (gone).
+      folders: { [`${ROOT}/2026/P/specs/video`]: [], [`${ROOT}/2026/P/specs/audio`]: [] },
+      channels: { P: { projectId: 'p1', name: 'Proj', channelId: 'C123' } },
+    })
+    const s = await runSpecsScanTick(h.deps, 'A')
+    assert.equal(s.evicted, 1)
+    assert.equal(s.posted, 0)
+    assert.equal(h.posts.length, 0)
+    assert.equal(h.ledger.has('v1'), false) // dead row removed → frees the slot
   })
 
   it('a video+audio pair fires exactly one prompt and marks both halves', async () => {

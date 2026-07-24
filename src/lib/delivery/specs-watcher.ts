@@ -187,6 +187,20 @@ async function updateSeenRow(
 }
 
 /**
+ * Terminal eviction: delete a pending row whose file has vanished from Dropbox.
+ * Called only when the file's specs folder listed SUCCESSFULLY without it (a
+ * transient Dropbox error throws in listSpecsFolder and aborts the tick first),
+ * so this is a definitive "gone", not a flaky read. If the file ever returns it
+ * is re-discovered fresh (a re-added file gets a new Dropbox id). Throws on a DB
+ * error so a failed delete doesn't silently leave the dead row occupying a slot.
+ */
+async function evictSeenRow(dropboxId: string): Promise<void> {
+  const sb = createAdminClient()
+  const { error } = await sb.from('seen_dropbox_files').delete().eq('dropbox_id', dropboxId)
+  if (error) throw new Error(`evictSeenRow(${dropboxId}): ${error.message}`)
+}
+
+/**
  * Pending (unnotified) specs rows — the fire pass's work list. Throws on error.
  *
  * Ordered oldest-first (first_seen_at) so the per-tick project cap makes
@@ -354,6 +368,7 @@ export interface SpecsScanDeps {
   insertFirstSightings: (rows: { dropbox_id: string; path: string; size_bytes: number }[]) => Promise<void>
   loadPendingSpecs: () => Promise<SeenRow[]>
   updateSeen: (dropboxId: string, patch: { size_bytes?: number; stable_check_count?: number }) => Promise<void>
+  evictSeen: (dropboxId: string) => Promise<void>
   markNotified: (dropboxId: string) => Promise<void>
   resolveChannel: (safeName: string) => Promise<{ projectId: string; name: string; channelId: string | null } | null>
   post: (channel: string, text: string, blocks: any[]) => Promise<string | null>
@@ -373,6 +388,7 @@ function defaultSpecsScanDeps(): SpecsScanDeps {
     insertFirstSightings,
     loadPendingSpecs: loadPendingSpecsRows,
     updateSeen: updateSeenRow,
+    evictSeen: evictSeenRow,
     markNotified: markSpecsNotified,
     resolveChannel: resolveProjectChannel,
     post: defaultSlackPost,
@@ -393,6 +409,7 @@ export interface SpecsScanSummary {
   projectsChecked: number
   posted: number
   deferredProjects: number
+  evicted: number
   bootstrapComplete?: boolean
 }
 
@@ -429,6 +446,7 @@ export async function runSpecsScanTick(overrides: Partial<SpecsScanDeps> = {}, h
     projectsChecked: 0,
     posted: 0,
     deferredProjects: 0,
+    evicted: 0,
   }
 
   const claim = await deps.claimLease(holder)
@@ -524,7 +542,18 @@ export async function runSpecsScanTick(overrides: Partial<SpecsScanDeps> = {}, h
         const prev = seen[t.dropbox_id]
         if (!prev || prev.notified_at) continue
         const live = liveById.get(t.dropbox_id)
-        if (!live) continue // vanished before stabilizing — leave pending
+        if (!live) {
+          // The file is gone from a successfully-listed specs folder (a
+          // transient Dropbox error would have thrown above). Evict the dead
+          // row so it stops occupying a fire-pass slot — otherwise ≥25 such
+          // vanished rows at the front of the oldest-first queue would starve
+          // live projects behind them. Terminal: a re-added file returns under
+          // a new Dropbox id and is re-discovered fresh.
+          await deps.evictSeen(t.dropbox_id)
+          summary.evicted++
+          console.warn(`[delivery-specs] evicted vanished pending file ${t.path}`)
+          continue
+        }
         const decision = decideStability(prev, live.size_bytes)
         if (decision.action === 'fire') readyToFire.push(live)
         else await deps.updateSeen(t.dropbox_id, decision.patch)
