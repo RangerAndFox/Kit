@@ -46,15 +46,14 @@ import {
   getSpecsScanState,
   claimSpecsScanLease,
   advanceSpecsScanCursor,
-  renewSpecsScanLeaseFenced,
-  markBacklogComplete,
   releaseSpecsScanLease,
   type SpecsScanPhase,
 } from './specs-scan-state'
 import {
   enqueueFrontier,
   loadFrontierBatch,
-  deleteFrontierPath,
+  commitBacklogFolder,
+  markBacklogCompleteIfEmpty,
 } from './specs-scan-frontier'
 
 const WATCH_ROOT = '/production'
@@ -446,12 +445,11 @@ export interface SpecsScanDeps {
   getState: typeof getSpecsScanState
   claimLease: typeof claimSpecsScanLease
   advanceCursor: typeof advanceSpecsScanCursor
-  renewLeaseFenced: typeof renewSpecsScanLeaseFenced
-  markBacklogComplete: typeof markBacklogComplete
   releaseLease: typeof releaseSpecsScanLease
   enqueueFrontier: (paths: string[]) => Promise<void>
   loadFrontierBatch: (limit: number) => Promise<string[]>
-  deleteFrontier: (path: string) => Promise<void>
+  commitBacklogFolder: (holder: string, fence: number, parent: string, children: string[]) => Promise<boolean>
+  markBacklogCompleteIfEmpty: (holder: string, fence: number) => Promise<boolean>
   defaultChannel: string
 }
 
@@ -471,12 +469,11 @@ function defaultSpecsScanDeps(): SpecsScanDeps {
     getState: getSpecsScanState,
     claimLease: claimSpecsScanLease,
     advanceCursor: advanceSpecsScanCursor,
-    renewLeaseFenced: renewSpecsScanLeaseFenced,
-    markBacklogComplete,
     releaseLease: releaseSpecsScanLease,
     enqueueFrontier,
     loadFrontierBatch,
-    deleteFrontier: deleteFrontierPath,
+    commitBacklogFolder,
+    markBacklogCompleteIfEmpty,
     defaultChannel: DEFAULT_NOTIFY_CHANNEL,
   }
 }
@@ -610,25 +607,31 @@ export async function runSpecsScanTick(overrides: Partial<SpecsScanDeps> = {}, h
 
     // ── HISTORICAL BACKLOG (bounded non-recursive BFS over the frontier) ────
     if (!state.backlog_complete && !overBudget()) {
-      // Re-assert ownership before mutating the frontier (fenced): a stale holder
-      // reclaimed after a pause fails here and stops before touching progress.
-      const owned = await deps.renewLeaseFenced(holder, fence)
-      if (!owned) return { ...summary, phase: 'delta', skipped: 'lease_lost' }
-
       const batch = await deps.loadFrontierBatch(SCAN_MAX_BACKLOG_FOLDERS)
       if (batch.length === 0) {
-        // Frontier drained → backlog is complete (fenced). Never restarts; live
-        // delta polling above is unaffected.
-        if (await deps.markBacklogComplete(holder, fence)) summary.backlogComplete = true
+        // Frontier drained → mark complete ONLY if we still own the lease AND
+        // the frontier is empty, atomically (migration 061). Never restarts;
+        // live delta polling above is unaffected.
+        if (await deps.markBacklogCompleteIfEmpty(holder, fence)) summary.backlogComplete = true
       } else {
         for (const folderPath of batch) {
           if (summary.backlogFoldersVisited >= SCAN_MAX_BACKLOG_FOLDERS || overBudget()) break
           const { specsFiles, subfolders } = await listFolderForBacklog(deps.rpc, folderPath)
+          // Convergent + idempotent; safe even if the frontier commit below is
+          // rejected as stale (the real owner re-records on re-visit).
           await recordSpecs(specsFiles)
-          // Enqueue pruned children BEFORE deleting self, so a crash re-visits
-          // this folder without losing its subtree.
-          await deps.enqueueFrontier(specsFrontierChildren(folderPath, subfolders))
-          await deps.deleteFrontier(folderPath)
+          // Atomic, ownership-conditional checkpoint (migration 061): enqueue
+          // pruned children + delete this folder in ONE transaction, or mutate
+          // nothing if the lease was lost. A stale holder cannot corrupt the
+          // frontier; a rejected commit stops the tick and leaves the folder for
+          // the real owner to re-visit (deterministic replay).
+          const committed = await deps.commitBacklogFolder(
+            holder,
+            fence,
+            folderPath,
+            specsFrontierChildren(folderPath, subfolders),
+          )
+          if (!committed) return { ...summary, phase: 'delta', skipped: 'lease_lost' }
           summary.backlogFoldersVisited++
         }
       }

@@ -11,8 +11,6 @@ import {
   getSpecsScanState,
   claimSpecsScanLease,
   advanceSpecsScanCursor,
-  renewSpecsScanLeaseFenced,
-  markBacklogComplete,
   releaseSpecsScanLease,
   __setSpecsScanStateClientForTests,
 } from './specs-scan-state'
@@ -157,30 +155,5 @@ describe('specs-scan lease + cursor', () => {
     assert.equal((fake.rows.get('singleton') as Row).lease_holder, 'A')
     await releaseSpecsScanLease('A')
     assert.equal((fake.rows.get('singleton') as Row).lease_holder, null)
-  })
-
-  it('fenced renew re-asserts ownership; a stale fence is refused', async () => {
-    const fake = fakeStateClient()
-    __setSpecsScanStateClientForTests(() => fake)
-    const a = await claimSpecsScanLease('A')
-    // Current holder + fence renews.
-    assert.equal(await renewSpecsScanLeaseFenced('A', a.fence!), true)
-    // Wrong holder or stale fence is refused (a reclaimed stale holder cannot
-    // renew, so it cannot go on to mutate the frontier).
-    assert.equal(await renewSpecsScanLeaseFenced('B', a.fence!), false)
-    assert.equal(await renewSpecsScanLeaseFenced('A', a.fence! + 1), false)
-  })
-
-  it('markBacklogComplete is fenced and sticks; a stale fence cannot set it', async () => {
-    const fake = fakeStateClient()
-    __setSpecsScanStateClientForTests(() => fake)
-    const a = await claimSpecsScanLease('A')
-    assert.equal((await getSpecsScanState()).backlog_complete, false)
-    // Stale fence cannot complete the backlog.
-    assert.equal(await markBacklogComplete('A', a.fence! + 1), false)
-    assert.equal((await getSpecsScanState()).backlog_complete, false)
-    // Correct holder + fence sets it.
-    assert.equal(await markBacklogComplete('A', a.fence!), true)
-    assert.equal((await getSpecsScanState()).backlog_complete, true)
   })
 })

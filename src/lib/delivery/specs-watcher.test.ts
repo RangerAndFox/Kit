@@ -146,11 +146,6 @@ function makeHarness(opts: HarnessOpts = {}) {
       state.lease_expires_at = new Date(clock.t + LEASE_MS).toISOString()
       return true
     },
-    renewLeaseFenced: async (holder, fence) => state.lease_holder === holder && state.fence === fence,
-    markBacklogComplete: async (holder, fence) => {
-      if (state.lease_holder !== holder || state.fence !== fence) return false
-      state.backlog_complete = true; return true
-    },
     releaseLease: async (holder) => {
       if (state.lease_holder === holder) { state.lease_holder = null; state.lease_expires_at = null }
     },
@@ -158,8 +153,18 @@ function makeHarness(opts: HarnessOpts = {}) {
       for (const p of paths) if (!frontierSet.has(p)) { frontierSet.add(p); frontier.push(p) }
     },
     loadFrontierBatch: async (limit) => frontier.slice(0, limit),
-    deleteFrontier: async (path) => {
-      const i = frontier.indexOf(path); if (i >= 0) frontier.splice(i, 1); frontierSet.delete(path)
+    // Atomic ownership-conditional checkpoint (mirrors migration-061 RPCs): all
+    // frontier mutations happen only when the holder+fence still own the lease.
+    commitBacklogFolder: async (holder, fence, parent, children) => {
+      if (state.lease_holder !== holder || state.fence !== fence) return false
+      for (const c of children) if (!frontierSet.has(c)) { frontierSet.add(c); frontier.push(c) }
+      const i = frontier.indexOf(parent); if (i >= 0) frontier.splice(i, 1); frontierSet.delete(parent)
+      return true
+    },
+    markBacklogCompleteIfEmpty: async (holder, fence) => {
+      if (state.lease_holder !== holder || state.fence !== fence) return false
+      if (frontier.length > 0) return false
+      state.backlog_complete = true; return true
     },
     defaultChannel: '',
   }
@@ -304,16 +309,17 @@ describe('historical backlog', () => {
     assert.ok(!h.rpcCalls.some((c) => c.body?.path === ROOT)) // no backlog listing at all
   })
 
-  it('a lost fenced-renew stops the backlog before mutating the frontier', async () => {
+  it('a rejected (stale) atomic commit stops the backlog and leaves the frontier untouched', async () => {
     const h = makeHarness({
       state: { cursor: 'seeded', backlog_complete: false },
       frontier: [ROOT],
       folders: { [ROOT]: [folderEntry('/production/2026')] },
     })
-    h.deps.renewLeaseFenced = async () => false
+    // The atomic RPC rejects a stale owner: no enqueue, no delete.
+    h.deps.commitBacklogFolder = async () => false
     const s = await runSpecsScanTick(h.deps, 'A')
     assert.equal(s.skipped, 'lease_lost')
-    assert.deepEqual(h.frontier, [ROOT]) // untouched
+    assert.deepEqual(h.frontier, [ROOT]) // untouched — no partial mutation
   })
 })
 

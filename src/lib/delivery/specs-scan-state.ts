@@ -167,54 +167,6 @@ export async function advanceSpecsScanCursor(
 }
 
 /**
- * Fenced heartbeat: re-assert ownership + renew the lease WITHOUT changing the
- * cursor. Returns false when the lease was lost (a newer holder reclaimed it,
- * bumping the fence). The backlog traversal calls this immediately before each
- * frontier-mutation batch so a stale holder — whose fence no longer matches —
- * cannot delete/enqueue frontier rows after reclamation. Same guarantee as
- * advanceSpecsScanCursor; the tick (~30s) is far shorter than the lease (4m),
- * so a live holder never loses the lease mid-batch.
- */
-export async function renewSpecsScanLeaseFenced(
-  holder: string,
-  fence: number,
-  now = Date.now(),
-): Promise<boolean> {
-  const { data, error } = await db()
-    .from('delivery_specs_scan_state')
-    .update({ lease_expires_at: nowIso(now + LEASE_MS), updated_at: nowIso(now) })
-    .eq('id', ROW_ID)
-    .eq('lease_holder', holder)
-    .eq('fence', fence)
-    .select('id')
-    .maybeSingle()
-  if (error) throw new Error(`renewSpecsScanLeaseFenced: ${error.message}`)
-  return !!data
-}
-
-/**
- * Mark the historical backlog traversal complete — CONDITIONAL on still holding
- * the lease at the granted fence. Once true it is never reset, so a completed
- * backlog never restarts. Live delta polling is unaffected by this flag.
- */
-export async function markBacklogComplete(
-  holder: string,
-  fence: number,
-  now = Date.now(),
-): Promise<boolean> {
-  const { data, error } = await db()
-    .from('delivery_specs_scan_state')
-    .update({ backlog_complete: true, lease_expires_at: nowIso(now + LEASE_MS), updated_at: nowIso(now) })
-    .eq('id', ROW_ID)
-    .eq('lease_holder', holder)
-    .eq('fence', fence)
-    .select('id')
-    .maybeSingle()
-  if (error) throw new Error(`markBacklogComplete: ${error.message}`)
-  return !!data
-}
-
-/**
  * Ownership-safe release: clears the lease ONLY when the stored holder still
  * matches. A run whose lease already expired and was reclaimed cannot release
  * the new holder's lease.
