@@ -309,6 +309,21 @@ describe('historical backlog', () => {
     assert.ok(!h.rpcCalls.some((c) => c.body?.path === ROOT)) // no backlog listing at all
   })
 
+  it('a folder that cannot be fully drained throws instead of silently truncating (frontier row survives)', async () => {
+    const target = '/production/2026/P/specs/video'
+    const h = makeHarness({ state: { cursor: 'seeded', backlog_complete: false }, frontier: [target] })
+    // A bottomless folder: every page reports has_more=true.
+    h.deps.rpc = async (endpoint: string, body: any) => {
+      if (endpoint === '/files/list_folder' && body.recursive === false) return { entries: [], cursor: 'k', has_more: true }
+      if (endpoint === '/files/list_folder/continue') return { entries: [], cursor: 'k', has_more: true }
+      throw new Error(`unexpected ${endpoint}`)
+    }
+    await assert.rejects(() => runSpecsScanTick(h.deps, 'A'))
+    // Not deleted → no silent skip, no false completion; retried next tick.
+    assert.deepEqual(h.frontier, [target])
+    assert.equal(h.state.backlog_complete, false)
+  })
+
   it('a rejected (stale) atomic commit stops the backlog and leaves the frontier untouched', async () => {
     const h = makeHarness({
       state: { cursor: 'seeded', backlog_complete: false },
