@@ -1,7 +1,9 @@
 // @ts-nocheck
-import { NextResponse } from 'next/server'
 import { verifySlackSignature } from '@/lib/slack/verify'
+import { slackAuthDenied } from '@/lib/slack/deny'
 import { buildNewProjectModal } from '@/lib/provisioner/modal'
+
+const ROUTE = '/api/webhooks/slack/commands'
 
 export const maxDuration = 10
 
@@ -16,9 +18,14 @@ export async function POST(request: Request) {
   const timestamp = request.headers.get('x-slack-request-timestamp') || ''
   const signature = request.headers.get('x-slack-signature') || ''
 
+  // Authorization runs before any semantic parsing or side effect. An absent or
+  // empty signing secret DENIES — missing configuration must never grant access.
   const signingSecret = process.env.SLACK_SIGNING_SECRET
-  if (signingSecret && !verifySlackSignature(signingSecret, timestamp, rawBody, signature)) {
-    return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
+  if (!signingSecret || signingSecret.trim() === '') {
+    return slackAuthDenied({ route: ROUTE, reason: 'signing_secret_missing', request })
+  }
+  if (!verifySlackSignature(signingSecret, timestamp, rawBody, signature)) {
+    return slackAuthDenied({ route: ROUTE, reason: 'invalid_signature', request })
   }
 
   const params = new URLSearchParams(rawBody)
