@@ -1,12 +1,15 @@
 // @ts-nocheck
 import { NextResponse, after } from 'next/server'
 import { verifySlackSignature } from '@/lib/slack/verify'
+import { slackAuthDenied } from '@/lib/slack/deny'
 import { routeWebhook } from '@/lib/managed-agents/webhook-router'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { messageHasFrameIoLink, handleFrameIoLink } from '@/lib/frameio/slack-handler'
 import { isTimeEntryMessage, handleTimeEntry } from '@/lib/harvest/slack-handler'
 
 export const maxDuration = 60
+
+const ROUTE = '/api/webhooks/slack/events'
 
 /**
  * Slack Events API webhook.
@@ -26,21 +29,23 @@ export async function POST(request: Request) {
     const timestamp = request.headers.get('x-slack-request-timestamp') || ''
     const signature = request.headers.get('x-slack-signature') || ''
 
-    // Parse once — we need to check for url_verification BEFORE signature check,
-    // because Slack's initial test request is legitimate and still signed correctly.
+    // Authorization runs before any semantic parsing or side effect. An absent or
+    // empty signing secret DENIES — missing configuration must never grant access.
+    const signingSecret = process.env.SLACK_SIGNING_SECRET
+    if (!signingSecret || signingSecret.trim() === '') {
+      return slackAuthDenied({ route: ROUTE, reason: 'signing_secret_missing', request })
+    }
+    if (!verifySlackSignature(signingSecret, timestamp, rawBody, signature)) {
+      return slackAuthDenied({ route: ROUTE, reason: 'invalid_signature', request })
+    }
+
+    // Parsed only after the request is proven to come from Slack. The
+    // url_verification challenge is itself signed, so it needs no exemption.
     let payload: any
     try {
       payload = JSON.parse(rawBody)
     } catch {
       return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
-    }
-
-    // Verify Slack signature (skip in local dev if no secret set)
-    const signingSecret = process.env.SLACK_SIGNING_SECRET
-    if (signingSecret) {
-      if (!verifySlackSignature(signingSecret, timestamp, rawBody, signature)) {
-        return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
-      }
     }
 
     // 1) URL verification challenge (respond immediately with the challenge token)
