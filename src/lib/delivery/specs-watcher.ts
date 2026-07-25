@@ -75,8 +75,12 @@ const SCAN_MAX_PENDING_PROJECTS = 25
  *  ceiling) — so a healthy tick never approaches the platform limit, and any
  *  rare overrun is checkpoint-safe (the cursor resumes next tick). */
 const SCAN_TIME_BUDGET_MS = 30_000
-/** Defensive pagination cap when re-listing a single specs subfolder. */
+/** Defensive pagination cap when re-listing a single specs subfolder (fire pass). */
 const FOLDER_PAGE_CAP = 10
+/** Full-drain cap for a backlog folder visit — generous so real specs-subtree
+ *  folders always drain fully; exceeding it throws rather than truncating (the
+ *  folder would otherwise be deleted from the frontier with history skipped). */
+const BACKLOG_FOLDER_PAGE_CAP = 100
 
 const SLACK_API = 'https://slack.com/api'
 const DEFAULT_NOTIFY_CHANNEL = process.env.DELIVERY_NOTIFY_CHANNEL_ID || ''
@@ -419,11 +423,23 @@ async function listFolderForBacklog(
   }
   collect(resp)
   let cursor = resp.has_more ? resp.cursor : undefined
-  let guard = FOLDER_PAGE_CAP
+  let guard = BACKLOG_FOLDER_PAGE_CAP
   while (cursor && guard-- > 0) {
     resp = await rpc('/files/list_folder/continue', { cursor })
     collect(resp)
     cursor = resp.has_more ? resp.cursor : undefined
+  }
+  // The caller DELETES this folder from the frontier on a successful visit, so a
+  // partial listing would silently skip the rest and could let the backlog be
+  // marked complete with missing history. Never return a truncated listing: if a
+  // folder somehow exceeds the (generous) page cap, throw — the folder stays in
+  // the frontier and the tick fails loudly rather than losing data. Specs-subtree
+  // folders (years, projects, video/audio) are far smaller than this cap in
+  // practice; a persisted per-folder resume cursor is unnecessary at this scale.
+  if (cursor) {
+    throw new Error(
+      `listFolderForBacklog(${path}): exceeded ${BACKLOG_FOLDER_PAGE_CAP} pages; refusing to truncate (folder left on frontier)`,
+    )
   }
   return { specsFiles, subfolders }
 }
