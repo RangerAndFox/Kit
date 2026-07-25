@@ -40,6 +40,8 @@ export interface SpecsScanState {
   lease_holder: string | null
   lease_expires_at: string | null
   fence: number
+  /** Historical backlog traversal drained (migration 060). Never re-enabled. */
+  backlog_complete: boolean
   updated_at: string
 }
 
@@ -98,6 +100,7 @@ export async function getSpecsScanState(): Promise<SpecsScanState> {
     lease_holder: row.lease_holder ?? null,
     lease_expires_at: row.lease_expires_at ?? null,
     fence: Number(row.fence ?? 0),
+    backlog_complete: !!row.backlog_complete,
     updated_at: row.updated_at ?? nowIso(),
   }
 }

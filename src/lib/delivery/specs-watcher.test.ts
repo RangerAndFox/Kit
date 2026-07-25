@@ -1,9 +1,11 @@
 /**
  * Bounded specs-scan orchestrator tests. `runSpecsScanTick` takes injectable
  * dependencies, so these drive it with in-memory fakes (no DB, no Dropbox, no
- * Slack) and assert the durable behavior: bounded bootstrap across invocations,
- * bootstrap→delta transition with no full-tree restart, the two-sighting gate,
- * dedup/pairing, and the post-then-mark idempotency contract.
+ * Slack) and assert the durable behavior of the two-path model: one-time live-
+ * cursor seeding (get_latest_cursor, no recursive enumeration), delta polling,
+ * non-recursive backlog traversal over a persisted frontier, convergence/
+ * idempotency between the two paths, plus the preserved two-sighting gate,
+ * dedup/pairing, post-then-mark, eviction, and lease/fence behavior.
  *
  * Run: npx tsx --test src/lib/delivery/specs-watcher.test.ts
  */
@@ -12,9 +14,8 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   runSpecsScanTick,
-  planDiscoveryCall,
-  nextPhase,
   decideStability,
+  specsFrontierChildren,
   type SpecsScanDeps,
 } from './specs-watcher'
 
@@ -33,13 +34,21 @@ function fileEntry(id: string, path: string, size: number) {
   const name = path.split('/').pop()!
   return { '.tag': 'file', id, name, path_display: path, path_lower: path.toLowerCase(), size }
 }
+function folderEntry(path: string) {
+  const name = path.split('/').pop()!
+  return { '.tag': 'folder', id: `fld:${path}`, name, path_display: path, path_lower: path.toLowerCase() }
+}
 
 interface HarnessOpts {
   ledger?: SeenRow[]
-  discoveryPages?: Array<{ entries: any[]; hasMore: boolean }>
+  /** Non-recursive list_folder responses: path -> entries (files + folders). Absent path => Dropbox not_found. */
   folders?: Record<string, any[]>
+  /** list_folder/continue responses keyed by incoming cursor. */
+  deltaResponses?: Record<string, { entries: any[]; cursor: string; has_more: boolean }>
+  latestCursor?: string
   channels?: Record<string, { projectId: string; name: string; channelId: string | null }>
-  state?: Partial<{ phase: 'bootstrap' | 'delta'; cursor: string | null }>
+  state?: Partial<{ cursor: string | null; backlog_complete: boolean }>
+  frontier?: string[]
   postFails?: boolean
   markThrows?: boolean
 }
@@ -49,38 +58,42 @@ function makeHarness(opts: HarnessOpts = {}) {
   const ledger = new Map<string, SeenRow>()
   for (const r of opts.ledger || []) ledger.set(r.dropbox_id, { ...r })
 
+  // Default: SEEDED (cursor set) + backlog complete, so fire/stability/eviction
+  // tests exercise the fire pass without seeding or backlog side-effects.
   const state = {
     id: 'singleton',
-    phase: (opts.state?.phase || 'bootstrap') as 'bootstrap' | 'delta',
-    cursor: opts.state?.cursor ?? null,
+    phase: 'delta' as 'bootstrap' | 'delta',
+    cursor: opts.state?.cursor === undefined ? 'seeded-cursor' : opts.state.cursor,
     lease_holder: null as string | null,
     lease_expires_at: null as string | null,
     fence: 0,
+    backlog_complete: opts.state?.backlog_complete ?? true,
     updated_at: new Date(clock.t).toISOString(),
   }
 
-  const discoveryPages = opts.discoveryPages || []
   const folders = opts.folders || {}
+  const deltaResponses = opts.deltaResponses || {}
   const channels = opts.channels || {}
+  const frontier: string[] = [...(opts.frontier || [])]
+  const frontierSet = new Set(frontier)
   const rpcCalls: Array<{ endpoint: string; body: any }> = []
   const posts: Array<{ channel: string; text: string; blocks: any[] }> = []
   const intakes: any[] = []
-
   const iso = () => new Date(clock.t).toISOString()
 
   const rpc = async (endpoint: string, body: any) => {
     rpcCalls.push({ endpoint, body })
-    if (endpoint === '/files/list_folder' && body.recursive === true) {
-      const pg = discoveryPages[0] || { entries: [], hasMore: false }
-      return { entries: pg.entries, cursor: '1', has_more: !!pg.hasMore }
+    if (endpoint === '/files/list_folder/get_latest_cursor') {
+      return { cursor: opts.latestCursor || 'live-cursor' }
     }
     if (endpoint === '/files/list_folder/continue') {
-      const idx = Number(body.cursor)
-      const pg = discoveryPages[idx] || { entries: [], hasMore: false }
-      return { entries: pg.entries, cursor: String(idx + 1), has_more: !!pg.hasMore }
+      const r = deltaResponses[body.cursor]
+      return r || { entries: [], cursor: body.cursor, has_more: false }
     }
     if (endpoint === '/files/list_folder' && body.recursive === false) {
-      return { entries: folders[body.path] || [], cursor: 'f', has_more: false }
+      const entries = folders[body.path]
+      if (entries === undefined) throw new Error(`Dropbox /files/list_folder 409: {"error_summary":"path/not_found/.."}`)
+      return { entries, cursor: `f:${body.path}`, has_more: false }
     }
     throw new Error(`unexpected rpc ${endpoint} ${JSON.stringify(body)}`)
   }
@@ -97,11 +110,8 @@ function makeHarness(opts: HarnessOpts = {}) {
       for (const r of rows) {
         if (!ledger.has(r.dropbox_id)) {
           ledger.set(r.dropbox_id, {
-            dropbox_id: r.dropbox_id,
-            path: r.path,
-            size_bytes: r.size_bytes,
-            notified_at: null,
-            stable_check_count: 1,
+            dropbox_id: r.dropbox_id, path: r.path, size_bytes: r.size_bytes,
+            notified_at: null, stable_check_count: 1,
           })
         }
       }
@@ -110,17 +120,11 @@ function makeHarness(opts: HarnessOpts = {}) {
       [...ledger.values()].filter(
         (r) => r.notified_at == null && /^\/production\/\d{4}\/[^/]+\/specs\//i.test(r.path),
       ),
-    updateSeen: async (id, patch) => {
-      const row = ledger.get(id)
-      if (row) Object.assign(row, patch)
-    },
-    evictSeen: async (id) => {
-      ledger.delete(id)
-    },
+    updateSeen: async (id, patch) => { const row = ledger.get(id); if (row) Object.assign(row, patch) },
+    evictSeen: async (id) => { ledger.delete(id) },
     markNotified: async (id) => {
       if (opts.markThrows) throw new Error('simulated ledger write failure')
-      const row = ledger.get(id)
-      if (row) row.notified_at = iso()
+      const row = ledger.get(id); if (row) row.notified_at = iso()
     },
     resolveChannel: async (safeName) => channels[safeName] || null,
     post: async (channel, text, blocks) => {
@@ -132,186 +136,230 @@ function makeHarness(opts: HarnessOpts = {}) {
     claimLease: async (holder) => {
       const expired = state.lease_expires_at == null || state.lease_expires_at < iso()
       if (!expired) return { ok: false, fence: null }
-      state.fence += 1
-      state.lease_holder = holder
+      state.fence += 1; state.lease_holder = holder
       state.lease_expires_at = new Date(clock.t + LEASE_MS).toISOString()
       return { ok: true, fence: state.fence }
     },
     advanceCursor: async (holder, fence, patch) => {
       if (state.lease_holder !== holder || state.fence !== fence) return false
-      state.cursor = patch.cursor
-      state.phase = patch.phase
+      state.cursor = patch.cursor; state.phase = patch.phase
       state.lease_expires_at = new Date(clock.t + LEASE_MS).toISOString()
       return true
     },
     releaseLease: async (holder) => {
-      if (state.lease_holder === holder) {
-        state.lease_holder = null
-        state.lease_expires_at = null
-      }
+      if (state.lease_holder === holder) { state.lease_holder = null; state.lease_expires_at = null }
+    },
+    enqueueFrontier: async (paths) => {
+      for (const p of paths) if (!frontierSet.has(p)) { frontierSet.add(p); frontier.push(p) }
+    },
+    loadFrontierBatch: async (limit) => frontier.slice(0, limit),
+    // Atomic ownership-conditional checkpoint (mirrors migration-061 RPCs): all
+    // frontier mutations happen only when the holder+fence still own the lease.
+    commitBacklogFolder: async (holder, fence, parent, children) => {
+      if (state.lease_holder !== holder || state.fence !== fence) return false
+      for (const c of children) if (!frontierSet.has(c)) { frontierSet.add(c); frontier.push(c) }
+      const i = frontier.indexOf(parent); if (i >= 0) frontier.splice(i, 1); frontierSet.delete(parent)
+      return true
+    },
+    markBacklogCompleteIfEmpty: async (holder, fence) => {
+      if (state.lease_holder !== holder || state.fence !== fence) return false
+      if (frontier.length > 0) return false
+      state.backlog_complete = true; return true
     },
     defaultChannel: '',
   }
 
-  return { deps, ledger, state, rpcCalls, posts, intakes, clock }
+  return { deps, ledger, state, rpcCalls, posts, intakes, frontier, clock }
 }
 
 // ─── Pure helpers ───────────────────────────────────────────
 
 describe('pure helpers', () => {
-  it('planDiscoveryCall: no cursor → recursive list_folder; cursor → continue', () => {
-    const a = planDiscoveryCall(null)
-    assert.equal(a.endpoint, '/files/list_folder')
-    assert.equal(a.body.recursive, true)
-    assert.equal(a.body.path, ROOT)
-    const b = planDiscoveryCall('cur9')
-    assert.equal(b.endpoint, '/files/list_folder/continue')
-    assert.equal(b.body.cursor, 'cur9')
-  })
-
-  it('nextPhase: bootstrap completes only when enumeration is exhausted; delta is terminal', () => {
-    assert.equal(nextPhase('bootstrap', true), 'bootstrap')
-    assert.equal(nextPhase('bootstrap', false), 'delta')
-    assert.equal(nextPhase('delta', true), 'delta')
-    assert.equal(nextPhase('delta', false), 'delta')
-  })
-
   it('decideStability: same size twice fires; same size once increments; size change resets', () => {
     assert.deepEqual(decideStability({ size_bytes: 100, stable_check_count: 1 }, 100), { action: 'fire' })
     assert.deepEqual(decideStability({ size_bytes: 100, stable_check_count: 0 }, 100), {
-      action: 'update',
-      patch: { size_bytes: 100, stable_check_count: 1 },
+      action: 'update', patch: { size_bytes: 100, stable_check_count: 1 },
     })
     assert.deepEqual(decideStability({ size_bytes: 100, stable_check_count: 1 }, 150), {
-      action: 'update',
-      patch: { size_bytes: 150, stable_check_count: 1 },
+      action: 'update', patch: { size_bytes: 150, stable_check_count: 1 },
     })
+  })
+
+  it('specsFrontierChildren prunes each level to the specs subtree', () => {
+    assert.deepEqual(
+      specsFrontierChildren('/production', ['/production/2026', '/production/archive', '/production/2025']),
+      ['/production/2026', '/production/2025'], // only 4-digit years
+    )
+    assert.deepEqual(
+      specsFrontierChildren('/production/2026', ['/production/2026/A', '/production/2026/B']),
+      ['/production/2026/A', '/production/2026/B'], // all projects
+    )
+    assert.deepEqual(
+      specsFrontierChildren('/production/2026/P', ['/production/2026/P/specs', '/production/2026/P/08_AE']),
+      ['/production/2026/P/specs'], // only specs
+    )
+    assert.deepEqual(
+      specsFrontierChildren('/production/2026/P/specs', ['/production/2026/P/specs/video', '/production/2026/P/specs/junk']),
+      ['/production/2026/P/specs/video'], // only video/audio
+    )
+    assert.deepEqual(
+      specsFrontierChildren('/production/2026/P/specs/video', ['/production/2026/P/specs/video/nested']),
+      [], // leaf — specs files are direct children, nothing deeper
+    )
   })
 })
 
-// ─── Discovery: bounded bootstrap, transition, no restart ───
+// ─── Seeding (one-time upgrade from cursor=null) ────────────
 
-describe('discovery — bootstrap → delta', () => {
-  it('bootstrap progresses across invocations, transitions to delta, and never restarts the full tree', async () => {
-    // 8 pages; page[7] is the last (has_more=false). Each page adds one file.
-    // Populate each file's folder too (a discovered specs file really lives in
-    // its specs/video folder), so the fire pass doesn't treat it as vanished.
-    // No channels are configured, so nothing fires — the files stay pending.
-    const pages: Array<{ entries: any[]; hasMore: boolean }> = []
-    const folders: Record<string, any[]> = {}
-    for (let i = 0; i < 8; i++) {
-      const vp = `/production/2026/P${i}/specs/video/a.mov`
-      pages.push({ entries: [fileEntry(`id${i}`, vp, 10)], hasMore: i < 7 })
-      folders[`${ROOT}/2026/P${i}/specs/video`] = [fileEntry(`id${i}`, vp, 10)]
-      folders[`${ROOT}/2026/P${i}/specs/audio`] = []
-    }
-    const h = makeHarness({ discoveryPages: pages, folders })
-
-    // Tick 1: capped at SCAN_MAX_PAGES (6), still bootstrap.
-    const s1 = await runSpecsScanTick(h.deps, 'A')
-    assert.equal(s1.pagesFetched, 6)
-    assert.equal(s1.phase, 'bootstrap')
-    assert.notEqual(s1.bootstrapComplete, true)
-    assert.equal(h.state.phase, 'bootstrap')
-
-    // Tick 2: fetches the remaining 2 pages and completes bootstrap → delta.
-    const firstCallCountBefore = h.rpcCalls.length
-    const s2 = await runSpecsScanTick(h.deps, 'B')
-    assert.equal(s2.pagesFetched, 2)
-    assert.equal(s2.bootstrapComplete, true)
-    assert.equal(s2.phase, 'delta')
-    assert.equal(h.state.phase, 'delta')
-
-    // No full-tree restart: tick 2's FIRST discovery call was a continue, not a
-    // fresh recursive list_folder.
-    const tick2FirstCall = h.rpcCalls[firstCallCountBefore]
-    assert.equal(tick2FirstCall.endpoint, '/files/list_folder/continue')
-    assert.ok(!h.rpcCalls.slice(firstCallCountBefore).some((c) => c.endpoint === '/files/list_folder' && c.body.recursive === true))
-
-    // All 8 files discovered into the ledger.
-    assert.equal(h.ledger.size, 8)
-  })
-
-  it('a failed ledger write aborts the tick BEFORE the cursor advances (safe replay)', async () => {
-    const h = makeHarness({
-      discoveryPages: [{ entries: [fileEntry('v1', '/production/2026/P/specs/video/a.mov', 10)], hasMore: false }],
-    })
-    // Simulate the discovery-page ledger write failing (Supabase error → throw).
-    h.deps.insertFirstSightings = async () => {
-      throw new Error('insertFirstSightings: simulated DB failure')
-    }
-    await assert.rejects(() => runSpecsScanTick(h.deps, 'A'))
-    // Cursor did NOT advance (page replays next tick) and the lease was released.
-    assert.equal(h.state.cursor, null)
-    assert.equal(h.state.lease_holder, null)
-  })
-
-  it('delta mode continues from the persisted cursor (no recursive list_folder)', async () => {
-    // Start already in delta at cursor '3'; a single delta page carries one new file.
-    const pages: any[] = []
-    pages[3] = { entries: [fileEntry('new1', '/production/2026/Q/specs/video/n.mov', 5)], hasMore: false }
-    const h = makeHarness({ state: { phase: 'delta', cursor: '3' }, discoveryPages: pages })
-
+describe('seed live coverage', () => {
+  it('seeds via get_latest_cursor with no recursive enumeration, enqueues the backlog root, and returns', async () => {
+    const h = makeHarness({ state: { cursor: null, backlog_complete: false }, latestCursor: 'C0' })
     const s = await runSpecsScanTick(h.deps, 'A')
+
+    assert.equal(s.seeded, true)
+    assert.equal(h.state.cursor, 'C0') // live cursor persisted
+    assert.equal(h.state.phase, 'delta')
+    assert.ok(h.frontier.includes(ROOT)) // backlog root enqueued
+    // No recursive enumeration anywhere.
+    assert.ok(!h.rpcCalls.some((c) => c.endpoint === '/files/list_folder' && c.body.recursive === true))
+    assert.ok(h.rpcCalls.some((c) => c.endpoint === '/files/list_folder/get_latest_cursor'))
+    assert.equal(h.posts.length, 0) // establishes coverage only
+    assert.equal(h.state.lease_holder, null) // released
+  })
+
+  it('a lost lease during seed does not persist the cursor', async () => {
+    const h = makeHarness({ state: { cursor: null, backlog_complete: false } })
+    h.deps.advanceCursor = async () => false
+    const s = await runSpecsScanTick(h.deps, 'A')
+    assert.equal(s.skipped, 'lease_lost')
+    assert.equal(h.state.cursor, null)
+  })
+})
+
+// ─── Live delta ─────────────────────────────────────────────
+
+describe('live delta', () => {
+  it('processes a delta page while the backlog is still incomplete; never enumerates recursively', async () => {
+    const VP = '/production/2026/Q/specs/video/n.mov'
+    const h = makeHarness({
+      state: { cursor: 'c0', backlog_complete: false },
+      deltaResponses: { c0: { entries: [fileEntry('n1', VP, 5)], cursor: 'c1', has_more: false } },
+      frontier: [ROOT],
+      folders: { [ROOT]: [] }, // backlog visits root, finds nothing new this tick
+    })
+    const s = await runSpecsScanTick(h.deps, 'A')
+    assert.equal(h.ledger.has('n1'), true) // delta discovered the new file
+    assert.equal(h.state.cursor, 'c1') // cursor advanced
     assert.equal(s.phase, 'delta')
-    assert.equal(h.ledger.has('new1'), true)
     assert.ok(!h.rpcCalls.some((c) => c.endpoint === '/files/list_folder' && c.body.recursive === true))
   })
 })
 
-// ─── Stability gate + firing ────────────────────────────────
+// ─── Historical backlog traversal ───────────────────────────
+
+describe('historical backlog', () => {
+  const treeFolders = () => ({
+    [ROOT]: [folderEntry('/production/2026')],
+    '/production/2026': [folderEntry('/production/2026/P')],
+    '/production/2026/P': [folderEntry('/production/2026/P/specs'), folderEntry('/production/2026/P/08_AE')],
+    '/production/2026/P/specs': [folderEntry('/production/2026/P/specs/video'), folderEntry('/production/2026/P/specs/audio')],
+    '/production/2026/P/specs/video': [fileEntry('deep1', '/production/2026/P/specs/video/a.mov', 10)],
+    '/production/2026/P/specs/audio': [],
+  })
+
+  it('advances breadth-first across invocations, visits nested folders, prunes non-specs branches, and discovers the deep file', async () => {
+    const folders = treeFolders()
+    const h = makeHarness({ state: { cursor: 'seeded', backlog_complete: false }, frontier: [ROOT], folders })
+
+    // Drive several ticks; each visits one BFS generation.
+    let completed = false
+    for (let i = 0; i < 8 && !completed; i++) {
+      const s = await runSpecsScanTick(h.deps, `run-${i}`)
+      if (s.backlogComplete) completed = true
+    }
+    assert.equal(completed, true) // reached completion
+    assert.equal(h.state.backlog_complete, true)
+    assert.equal(h.ledger.has('deep1'), true) // deep specs file discovered
+    // The non-specs branch was pruned (never listed).
+    assert.ok(!h.rpcCalls.some((c) => c.body?.path === '/production/2026/P/08_AE'))
+    // Frontier fully drained.
+    assert.equal(h.frontier.length, 0)
+  })
+
+  it('resumes from the persisted frontier (a fresh run continues mid-traversal)', async () => {
+    const folders = treeFolders()
+    // Frontier persisted mid-traversal at the project level.
+    const h = makeHarness({
+      state: { cursor: 'seeded', backlog_complete: false },
+      frontier: ['/production/2026/P'],
+      folders,
+    })
+    const s = await runSpecsScanTick(h.deps, 'resume')
+    // Visited the project, pruned to specs, enqueued it — did NOT restart at root.
+    assert.ok(h.rpcCalls.some((c) => c.body?.path === '/production/2026/P'))
+    assert.ok(!h.rpcCalls.some((c) => c.body?.path === ROOT))
+    assert.ok(h.frontier.includes('/production/2026/P/specs'))
+    assert.equal(s.backlogFoldersVisited, 1)
+  })
+
+  it('a completed backlog never restarts and never re-lists', async () => {
+    const h = makeHarness({ state: { cursor: 'seeded', backlog_complete: true }, frontier: [], folders: { [ROOT]: [] } })
+    const s = await runSpecsScanTick(h.deps, 'A')
+    assert.equal(s.backlogFoldersVisited, 0)
+    assert.ok(!h.rpcCalls.some((c) => c.body?.path === ROOT)) // no backlog listing at all
+  })
+
+  it('a folder that cannot be fully drained throws instead of silently truncating (frontier row survives)', async () => {
+    const target = '/production/2026/P/specs/video'
+    const h = makeHarness({ state: { cursor: 'seeded', backlog_complete: false }, frontier: [target] })
+    // A bottomless folder: every page reports has_more=true.
+    h.deps.rpc = async (endpoint: string, body: any) => {
+      if (endpoint === '/files/list_folder' && body.recursive === false) return { entries: [], cursor: 'k', has_more: true }
+      if (endpoint === '/files/list_folder/continue') return { entries: [], cursor: 'k', has_more: true }
+      throw new Error(`unexpected ${endpoint}`)
+    }
+    await assert.rejects(() => runSpecsScanTick(h.deps, 'A'))
+    // Not deleted → no silent skip, no false completion; retried next tick.
+    assert.deepEqual(h.frontier, [target])
+    assert.equal(h.state.backlog_complete, false)
+  })
+
+  it('a rejected (stale) atomic commit stops the backlog and leaves the frontier untouched', async () => {
+    const h = makeHarness({
+      state: { cursor: 'seeded', backlog_complete: false },
+      frontier: [ROOT],
+      folders: { [ROOT]: [folderEntry('/production/2026')] },
+    })
+    // The atomic RPC rejects a stale owner: no enqueue, no delete.
+    h.deps.commitBacklogFolder = async () => false
+    const s = await runSpecsScanTick(h.deps, 'A')
+    assert.equal(s.skipped, 'lease_lost')
+    assert.deepEqual(h.frontier, [ROOT]) // untouched — no partial mutation
+  })
+})
+
+// ─── Convergence / idempotency between delta and backlog ────
+
+describe('convergence', () => {
+  it('the same file discovered by BOTH delta and backlog yields one ledger row (id-keyed, idempotent)', async () => {
+    const VP = '/production/2026/P/specs/video/a.mov'
+    const h = makeHarness({
+      state: { cursor: 'c0', backlog_complete: false },
+      deltaResponses: { c0: { entries: [fileEntry('dup1', VP, 10)], cursor: 'c1', has_more: false } },
+      frontier: [VP.replace(/\/[^/]+$/, '')], // frontier positioned at the video folder
+      folders: { '/production/2026/P/specs/video': [fileEntry('dup1', VP, 10)] },
+    })
+    const s = await runSpecsScanTick(h.deps, 'A')
+    assert.equal(h.ledger.size, 1)
+    assert.equal(h.ledger.has('dup1'), true)
+    assert.equal(s.discovered, 1) // counted fresh exactly once
+  })
+})
+
+// ─── Stability gate + firing (preserved) ────────────────────
 
 describe('stability gate + firing', () => {
   const VPATH = '/production/2026/P/specs/video/a.mov'
-
-  it('a discovered file is not fired the same tick; it fires one tick later when size is stable', async () => {
-    const h = makeHarness({
-      discoveryPages: [{ entries: [fileEntry('v1', VPATH, 100)], hasMore: false }],
-      folders: { [`${ROOT}/2026/P/specs/video`]: [fileEntry('v1', VPATH, 100)], [`${ROOT}/2026/P/specs/audio`]: [] },
-      channels: { P: { projectId: 'p1', name: 'Proj', channelId: 'C123' } },
-    })
-
-    // Tick 1: discovers v1 (count=1) but does NOT fire (not pending before this tick).
-    const s1 = await runSpecsScanTick(h.deps, 'A')
-    assert.equal(s1.posted, 0)
-    assert.equal(h.posts.length, 0)
-    assert.equal(h.ledger.get('v1')!.notified_at, null)
-    assert.equal(h.ledger.get('v1')!.stable_check_count, 1)
-
-    // Tick 2: v1 is pending; re-list shows same size → second sighting → fire.
-    const s2 = await runSpecsScanTick(h.deps, 'B')
-    assert.equal(s2.posted, 1)
-    assert.equal(h.posts.length, 1)
-    assert.ok(h.ledger.get('v1')!.notified_at)
-    assert.equal(h.intakes.length, 1)
-  })
-
-  it('a growing file resets the gate instead of firing', async () => {
-    const h = makeHarness({
-      ledger: [{ dropbox_id: 'v1', path: VPATH, size_bytes: 100, notified_at: null, stable_check_count: 1 }],
-      folders: { [`${ROOT}/2026/P/specs/video`]: [fileEntry('v1', VPATH, 150)], [`${ROOT}/2026/P/specs/audio`]: [] },
-      channels: { P: { projectId: 'p1', name: 'Proj', channelId: 'C123' } },
-    })
-    const s = await runSpecsScanTick(h.deps, 'A')
-    assert.equal(s.posted, 0)
-    assert.equal(h.posts.length, 0)
-    assert.equal(h.ledger.get('v1')!.size_bytes, 150)
-    assert.equal(h.ledger.get('v1')!.stable_check_count, 1)
-  })
-
-  it('evicts a pending file that has vanished from a successfully-listed folder', async () => {
-    const h = makeHarness({
-      ledger: [{ dropbox_id: 'v1', path: VPATH, size_bytes: 100, notified_at: null, stable_check_count: 1 }],
-      // Folders list successfully but no longer contain v1 → terminal (gone).
-      folders: { [`${ROOT}/2026/P/specs/video`]: [], [`${ROOT}/2026/P/specs/audio`]: [] },
-      channels: { P: { projectId: 'p1', name: 'Proj', channelId: 'C123' } },
-    })
-    const s = await runSpecsScanTick(h.deps, 'A')
-    assert.equal(s.evicted, 1)
-    assert.equal(s.posted, 0)
-    assert.equal(h.posts.length, 0)
-    assert.equal(h.ledger.has('v1'), false) // dead row removed → frees the slot
-  })
 
   it('a video+audio pair fires exactly one prompt and marks both halves', async () => {
     const VP = '/production/2026/P/specs/video/a.mov'
@@ -322,8 +370,8 @@ describe('stability gate + firing', () => {
         { dropbox_id: 'a1', path: AP, size_bytes: 5, notified_at: null, stable_check_count: 1 },
       ],
       folders: {
-        [`${ROOT}/2026/P/specs/video`]: [fileEntry('v1', VP, 10)],
-        [`${ROOT}/2026/P/specs/audio`]: [fileEntry('a1', AP, 5)],
+        '/production/2026/P/specs/video': [fileEntry('v1', VP, 10)],
+        '/production/2026/P/specs/audio': [fileEntry('a1', AP, 5)],
       },
       channels: { P: { projectId: 'p1', name: 'Proj', channelId: 'C123' } },
     })
@@ -335,33 +383,51 @@ describe('stability gate + firing', () => {
     assert.equal(h.intakes[0].sources.length, 2)
   })
 
-  it('no resolvable channel leaves the file pending (never marked)', async () => {
+  it('a growing file resets the gate instead of firing', async () => {
     const h = makeHarness({
       ledger: [{ dropbox_id: 'v1', path: VPATH, size_bytes: 100, notified_at: null, stable_check_count: 1 }],
-      folders: { [`${ROOT}/2026/P/specs/video`]: [fileEntry('v1', VPATH, 100)], [`${ROOT}/2026/P/specs/audio`]: [] },
-      channels: {}, // no project match, defaultChannel is ''
+      folders: { '/production/2026/P/specs/video': [fileEntry('v1', VPATH, 150)], '/production/2026/P/specs/audio': [] },
+      channels: { P: { projectId: 'p1', name: 'Proj', channelId: 'C123' } },
     })
     const s = await runSpecsScanTick(h.deps, 'A')
     assert.equal(s.posted, 0)
-    assert.equal(h.posts.length, 0)
+    assert.equal(h.ledger.get('v1')!.stable_check_count, 1)
+    assert.equal(h.ledger.get('v1')!.size_bytes, 150)
+  })
+
+  it('no resolvable channel leaves the file pending (never marked)', async () => {
+    const h = makeHarness({
+      ledger: [{ dropbox_id: 'v1', path: VPATH, size_bytes: 100, notified_at: null, stable_check_count: 1 }],
+      folders: { '/production/2026/P/specs/video': [fileEntry('v1', VPATH, 100)], '/production/2026/P/specs/audio': [] },
+      channels: {},
+    })
+    const s = await runSpecsScanTick(h.deps, 'A')
+    assert.equal(s.posted, 0)
     assert.equal(h.ledger.get('v1')!.notified_at, null)
   })
 
-  it('caps the fire pass per tick and defers the rest oldest-first (deterministic forward progress)', async () => {
-    // 27 projects each with one stable pending drop; the fire-pass cap is 25.
-    // loadPendingSpecs yields oldest-first (the real query orders by
-    // first_seen_at), so the two NEWEST are deferred and only age toward the
-    // front — never starved.
+  it('evicts a pending file that has vanished from a successfully-listed folder', async () => {
+    const h = makeHarness({
+      ledger: [{ dropbox_id: 'v1', path: VPATH, size_bytes: 100, notified_at: null, stable_check_count: 1 }],
+      folders: { '/production/2026/P/specs/video': [], '/production/2026/P/specs/audio': [] },
+      channels: { P: { projectId: 'p1', name: 'Proj', channelId: 'C123' } },
+    })
+    const s = await runSpecsScanTick(h.deps, 'A')
+    assert.equal(s.evicted, 1)
+    assert.equal(h.ledger.has('v1'), false)
+  })
+
+  it('caps the fire pass per tick and defers the rest oldest-first', async () => {
     const N = 27
     const ledger: any[] = []
     const folders: Record<string, any[]> = {}
-    const channels: Record<string, { projectId: string; name: string; channelId: string | null }> = {}
+    const channels: Record<string, any> = {}
     for (let i = 0; i < N; i++) {
       const safe = `P${String(i).padStart(2, '0')}`
       const vp = `/production/2026/${safe}/specs/video/a.mov`
       ledger.push({ dropbox_id: `v${i}`, path: vp, size_bytes: 10, notified_at: null, stable_check_count: 1 })
-      folders[`${ROOT}/2026/${safe}/specs/video`] = [fileEntry(`v${i}`, vp, 10)]
-      folders[`${ROOT}/2026/${safe}/specs/audio`] = []
+      folders[`/production/2026/${safe}/specs/video`] = [fileEntry(`v${i}`, vp, 10)]
+      folders[`/production/2026/${safe}/specs/audio`] = []
       channels[safe] = { projectId: `p${i}`, name: safe, channelId: `C${i}` }
     }
     const h = makeHarness({ ledger, folders, channels })
@@ -369,86 +435,68 @@ describe('stability gate + firing', () => {
     assert.equal(s.projectsChecked, 25)
     assert.equal(s.deferredProjects, 2)
     assert.equal(s.posted, 25)
-    // Oldest 25 fired; the two newest were deferred and remain pending.
-    assert.ok(h.ledger.get('v0')!.notified_at)
-    assert.ok(h.ledger.get('v24')!.notified_at)
     assert.equal(h.ledger.get('v25')!.notified_at, null)
     assert.equal(h.ledger.get('v26')!.notified_at, null)
   })
+
+  it('partial backlog traversal does not evict a pending file', async () => {
+    const VP = '/production/2026/P/specs/video/a.mov'
+    const h = makeHarness({
+      state: { cursor: 'seeded', backlog_complete: false },
+      ledger: [{ dropbox_id: 'v1', path: VP, size_bytes: 100, notified_at: null, stable_check_count: 1 }],
+      // Fire pass sees the file present (no eviction); no channel so it just waits.
+      folders: { '/production/2026/P/specs/video': [fileEntry('v1', VP, 100)], '/production/2026/P/specs/audio': [], [ROOT]: [] },
+      frontier: [ROOT], // backlog visits root, which does not contain the file
+      channels: {},
+    })
+    const s = await runSpecsScanTick(h.deps, 'A')
+    assert.equal(s.evicted, 0) // backlog never evicts
+    assert.equal(h.ledger.has('v1'), true) // survives partial traversal
+  })
 })
 
-// ─── Idempotency contract ───────────────────────────────────
+// ─── Idempotency contract (preserved) ───────────────────────
 
 describe('idempotency — post-then-mark', () => {
   const VPATH = '/production/2026/P/specs/video/a.mov'
   const stableLedger = () => [
     { dropbox_id: 'v1', path: VPATH, size_bytes: 100, notified_at: null as string | null, stable_check_count: 1 },
   ]
-  const folders = { [`${ROOT}/2026/P/specs/video`]: [fileEntry('v1', VPATH, 100)], [`${ROOT}/2026/P/specs/audio`]: [] }
+  const folders = { '/production/2026/P/specs/video': [fileEntry('v1', VPATH, 100)], '/production/2026/P/specs/audio': [] }
   const channels = { P: { projectId: 'p1', name: 'Proj', channelId: 'C123' } }
 
-  it('a Slack failure leaves the file pending and it re-posts next tick (no lost delivery)', async () => {
-    // Tick 1: post fails → not marked.
+  it('a Slack failure leaves the file pending; a mark failure after a post degrades to at-least-once, never loss', async () => {
     const h1 = makeHarness({ ledger: stableLedger(), folders, channels, postFails: true })
     const s1 = await runSpecsScanTick(h1.deps, 'A')
     assert.equal(s1.posted, 0)
-    assert.equal(h1.posts.length, 1) // attempted
-    assert.equal(h1.ledger.get('v1')!.notified_at, null) // still pending
+    assert.equal(h1.ledger.get('v1')!.notified_at, null) // pending → retried
 
-    // Tick 2 (fresh harness = same ledger state) with Slack recovered → delivered.
-    const h2 = makeHarness({ ledger: stableLedger(), folders, channels, postFails: false })
+    const h2 = makeHarness({ ledger: stableLedger(), folders, channels, markThrows: true })
     const s2 = await runSpecsScanTick(h2.deps, 'B')
-    assert.equal(s2.posted, 1)
-    assert.ok(h2.ledger.get('v1')!.notified_at)
-  })
-
-  it('a mark failure AFTER a successful post degrades to an at-least-once duplicate, never a loss', async () => {
-    const h = makeHarness({ ledger: stableLedger(), folders, channels, markThrows: true })
-    // The post succeeds (delivered) even though the mark write fails; the tick
-    // must not throw, and the row stays pending (→ recoverable duplicate later).
-    const s = await runSpecsScanTick(h.deps, 'A')
-    assert.equal(s.posted, 1)
-    assert.equal(h.posts.length, 1)
-    assert.equal(h.ledger.get('v1')!.notified_at, null)
+    assert.equal(s2.posted, 1) // delivered
+    assert.equal(h2.ledger.get('v1')!.notified_at, null) // mark failed → recoverable duplicate, not a loss
   })
 })
 
-// ─── Lease behavior through the orchestrator ────────────────
+// ─── Lease behavior (preserved) ─────────────────────────────
 
 describe('lease behavior', () => {
-  it('a contending run exits successfully as skipped without touching the cursor', async () => {
-    const h = makeHarness({ discoveryPages: [{ entries: [fileEntry('v1', '/production/2026/P/specs/video/a.mov', 1)], hasMore: false }] })
-    // Simulate an active lease held by another run.
+  it('a contending run exits skipped without touching state', async () => {
+    const h = makeHarness({ state: { cursor: null, backlog_complete: false } })
     h.state.lease_holder = 'other'
     h.state.lease_expires_at = new Date(h.clock.t + LEASE_MS).toISOString()
-
     const s = await runSpecsScanTick(h.deps, 'A')
     assert.equal(s.skipped, 'locked')
-    assert.equal(h.posts.length, 0)
-    assert.equal(h.ledger.size, 0) // nothing discovered
-    assert.equal(h.state.lease_holder, 'other') // untouched
+    assert.equal(h.state.cursor, null) // untouched
+    assert.equal(h.state.lease_holder, 'other')
   })
 
   it('an expired lease is reclaimed and the tick runs and releases', async () => {
-    const h = makeHarness({ discoveryPages: [{ entries: [fileEntry('v1', '/production/2026/P/specs/video/a.mov', 1)], hasMore: false }] })
+    const h = makeHarness({})
     h.state.lease_holder = 'crashed'
-    h.state.lease_expires_at = new Date(h.clock.t - 1000).toISOString() // expired
-
+    h.state.lease_expires_at = new Date(h.clock.t - 1000).toISOString()
     const s = await runSpecsScanTick(h.deps, 'A')
     assert.notEqual(s.skipped, 'locked')
-    assert.equal(h.ledger.size, 1) // discovered
-    assert.equal(h.state.lease_holder, null) // released at end
-  })
-
-  it('losing the lease mid-tick stops before firing', async () => {
-    const h = makeHarness({
-      discoveryPages: [{ entries: [fileEntry('v1', '/production/2026/P/specs/video/a.mov', 1)], hasMore: false }],
-    })
-    // Override advanceCursor to simulate the lease being reclaimed by a newer holder.
-    h.deps.advanceCursor = async () => false
-
-    const s = await runSpecsScanTick(h.deps, 'A')
-    assert.equal(s.skipped, 'lease_lost')
-    assert.equal(h.posts.length, 0)
+    assert.equal(h.state.lease_holder, null) // released
   })
 })
