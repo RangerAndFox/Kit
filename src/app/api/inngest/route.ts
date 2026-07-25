@@ -19,6 +19,15 @@ import { projectControlSync } from '@/lib/inngest/project-control-sync'
  *
  * All Kit Inngest functions are registered here.
  */
+
+// Own the serverless execution limit for this route rather than inheriting an
+// unstated Vercel default (which can be as low as 10-15s). The delivery specs
+// scan bounds each tick to a ~30s elapsed budget; 60s leaves conservative
+// headroom for a page or folder re-list already in flight. Matches the
+// explicit-ownership convention used by the app's other heavy routes
+// (mcp, slack/events = 60).
+export const maxDuration = 60
+
 export const { GET, POST, PUT } = serve({
   client: inngest,
   functions: [
