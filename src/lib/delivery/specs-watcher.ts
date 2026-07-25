@@ -12,19 +12,29 @@
  *
  * SCAN MODEL (why this isn't a full-tree walk anymore):
  *   The scan used to enumerate the ENTIRE /production tree recursively every
- *   minute. As the tree grew, one Dropbox list_folder page exceeded dropboxRpc's
- *   15s AbortSignal budget and the cron failed every minute. It now bounds work
- *   per invocation (invariant 7):
- *     1. DISCOVERY advances a persisted Dropbox cursor (delivery_specs_scan_state,
- *        migration 059) — a bounded `bootstrap` enumeration first (so pre-existing
- *        and outage-period files are recorded, never skipped), then `delta`
- *        (list_folder/continue). Newly-seen files are recorded into the ledger;
- *        the cursor advances one page at a time under a DB lease.
- *     2. FIRE re-lists only the specs folders of projects that still have PENDING
- *        (unnotified) ledger rows, advances the two-sighting stability gate on
- *        those files, and prompts for the stable ones. Bounded by pending
- *        activity, not by total tree size.
- *   Exclusivity + cursor ownership live in `./specs-scan-state`.
+ *   minute. As the tree grew, even the FIRST recursive list_folder page exceeded
+ *   dropboxRpc's 15s AbortSignal budget, so discovery never checkpointed. The
+ *   scan now bounds work per invocation (invariant 7) via two independent,
+ *   converging paths through the SAME ledger, gated by one DB lease:
+ *     1. LIVE DELTA — the cursor is seeded once via `list_folder/get_latest_cursor`
+ *        (anchored to "now", NO enumeration), then polled with
+ *        `list_folder/continue`. New activity is processable immediately, before
+ *        historical recovery finishes. `delivery_specs_scan_state.cursor` holds it
+ *        (NULL = not yet seeded → the row upgrades on its next run).
+ *     2. HISTORICAL BACKLOG — a persisted NON-recursive breadth-first traversal
+ *        (delivery_specs_scan_frontier, migration 060). Each visit lists ONE
+ *        folder, records specs files, and enqueues child folders (pruned to the
+ *        specs subtree). The frontier is the durable resume point; `backlog_complete`
+ *        is the terminal flag and never restarts. Backlog completion does NOT
+ *        disable live delta polling.
+ *     3. FIRE re-lists only the specs folders of projects that still have PENDING
+ *        (unnotified) ledger rows, advances the two-sighting stability gate, and
+ *        prompts for stable ones. Bounded by pending activity, not tree size.
+ *   Both discovery paths call the same idempotent `insertFirstSightings` keyed on
+ *   Dropbox id, so a file seen by delta AND backlog yields one ledger row and one
+ *   prompt; already-notified historical files stay notified (no re-prompt).
+ *   Exclusivity + cursor/frontier ownership live in `./specs-scan-state` +
+ *   `./specs-scan-frontier`.
  */
 
 import { createAdminClient } from '../supabase/admin'
@@ -36,9 +46,16 @@ import {
   getSpecsScanState,
   claimSpecsScanLease,
   advanceSpecsScanCursor,
+  renewSpecsScanLeaseFenced,
+  markBacklogComplete,
   releaseSpecsScanLease,
   type SpecsScanPhase,
 } from './specs-scan-state'
+import {
+  enqueueFrontier,
+  loadFrontierBatch,
+  deleteFrontierPath,
+} from './specs-scan-frontier'
 
 const WATCH_ROOT = '/production'
 const SPECS_RE = /^\/production\/(\d{4})\/([^/]+)\/specs\/(video|audio)\/([^/]+)$/i
@@ -47,8 +64,10 @@ export const PICK_SPEC_ACTION = 'kit_delivery_pick_spec'
 export const PROVIDE_SPECS_ACTION = 'kit_delivery_provide_specs'
 
 // ── Per-invocation bounds (keep each run well under the hosting limit) ──
-/** Max Dropbox discovery pages fetched per invocation. */
+/** Max live-delta pages (list_folder/continue) fetched per invocation. */
 const SCAN_MAX_PAGES = 6
+/** Max backlog folders visited (one non-recursive list each) per invocation. */
+const SCAN_MAX_BACKLOG_FOLDERS = 8
 /** Max projects whose specs folders are re-listed for firing per invocation. */
 const SCAN_MAX_PENDING_PROJECTS = 25
 /** Elapsed-time budget per invocation. Conservatively below the route's owned
@@ -120,28 +139,30 @@ function parseSpecsRow(row: SeenRow): ParsedSpecsFile | null {
 // ─── Pure decision helpers (unit-tested) ────────────────────
 
 /**
- * Choose the Dropbox call for this discovery step from the persisted cursor.
- * No cursor → a fresh recursive enumeration (bootstrap start); an existing
- * cursor → continue (delta OR a bootstrap continuation). Because a delta cursor
- * is never nulled, there is no full-tree restart once bootstrap finishes.
+ * Prune a visited folder's subfolders to only those that can lead to a specs
+ * file, derived from SPECS_RE (`/production/<YYYY>/<safe>/specs/(video|audio)/file`).
+ * The backlog BFS enqueues only these, so it walks the specs subtree instead of
+ * the whole /production tree — far fewer Dropbox calls (and 429s). Depth is
+ * measured in path segments below /production:
+ *   0 /production            → keep 4-digit year folders
+ *   1 /production/YYYY       → keep every project folder
+ *   2 /production/YYYY/safe  → keep only `specs`
+ *   3 …/specs                → keep only `video` / `audio`
+ *   ≥4 …/specs/video|audio   → leaf; specs files are DIRECT children, none deeper
+ * Pure — unit-tested.
  */
-export function planDiscoveryCall(cursor: string | null): { endpoint: string; body: Record<string, unknown> } {
-  if (!cursor) {
-    return {
-      endpoint: '/files/list_folder',
-      body: { path: WATCH_ROOT, recursive: true, include_deleted: false, include_non_downloadable_files: false },
-    }
+export function specsFrontierChildren(parentPath: string, subfolderPaths: string[]): string[] {
+  const rel = parentPath.replace(/^\/production\/?/i, '')
+  const depth = rel === '' ? 0 : rel.split('/').length
+  const keep = (childPath: string): boolean => {
+    const name = childPath.split('/').pop() || ''
+    if (depth === 0) return /^\d{4}$/.test(name)
+    if (depth === 1) return true
+    if (depth === 2) return /^specs$/i.test(name)
+    if (depth === 3) return /^(video|audio)$/i.test(name)
+    return false
   }
-  return { endpoint: '/files/list_folder/continue', body: { cursor } }
-}
-
-/**
- * Phase after processing a page. Bootstrap completes (→ delta) only when the
- * recursive enumeration is exhausted (has_more=false); delta is terminal.
- */
-export function nextPhase(phase: SpecsScanPhase, hasMore: boolean): SpecsScanPhase {
-  if (phase === 'delta') return 'delta'
-  return hasMore ? 'bootstrap' : 'delta'
+  return subfolderPaths.filter(keep)
 }
 
 /**
@@ -359,6 +380,55 @@ async function listSpecsFolder(
   return out
 }
 
+/**
+ * List ONE folder non-recursively for the historical backlog traversal: returns
+ * the specs files directly in it plus its subfolder paths. A missing folder
+ * (deleted since it was enqueued) lists as empty and is simply dropped from the
+ * frontier — NOT treated as a file deletion (file eviction lives only in the
+ * fire pass, after an authoritative listing of the file's own specs folder). A
+ * transient (non-not_found) error throws, so the folder stays in the frontier
+ * for a safe retry rather than being lost.
+ */
+async function listFolderForBacklog(
+  rpc: (endpoint: string, body: Record<string, unknown>) => Promise<any>,
+  path: string,
+): Promise<{ specsFiles: ParsedSpecsFile[]; subfolders: string[] }> {
+  const specsFiles: ParsedSpecsFile[] = []
+  const subfolders: string[] = []
+  const collect = (r: any) => {
+    for (const e of (r.entries || []) as DbxEntry[]) {
+      if (e['.tag'] === 'folder') {
+        const p = e.path_display || e.path_lower
+        if (p) subfolders.push(p)
+      } else if (e['.tag'] === 'file') {
+        const sp = parseSpecsPath(e as any)
+        if (sp) specsFiles.push(sp)
+      }
+    }
+  }
+  let resp: any
+  try {
+    resp = await rpc('/files/list_folder', {
+      path,
+      recursive: false,
+      include_deleted: false,
+      include_non_downloadable_files: false,
+    })
+  } catch (err: any) {
+    if (isDropboxNotFound(err)) return { specsFiles, subfolders }
+    throw err
+  }
+  collect(resp)
+  let cursor = resp.has_more ? resp.cursor : undefined
+  let guard = FOLDER_PAGE_CAP
+  while (cursor && guard-- > 0) {
+    resp = await rpc('/files/list_folder/continue', { cursor })
+    collect(resp)
+    cursor = resp.has_more ? resp.cursor : undefined
+  }
+  return { specsFiles, subfolders }
+}
+
 // ─── Orchestrator ───────────────────────────────────────────
 
 export interface SpecsScanDeps {
@@ -376,7 +446,12 @@ export interface SpecsScanDeps {
   getState: typeof getSpecsScanState
   claimLease: typeof claimSpecsScanLease
   advanceCursor: typeof advanceSpecsScanCursor
+  renewLeaseFenced: typeof renewSpecsScanLeaseFenced
+  markBacklogComplete: typeof markBacklogComplete
   releaseLease: typeof releaseSpecsScanLease
+  enqueueFrontier: (paths: string[]) => Promise<void>
+  loadFrontierBatch: (limit: number) => Promise<string[]>
+  deleteFrontier: (path: string) => Promise<void>
   defaultChannel: string
 }
 
@@ -396,7 +471,12 @@ function defaultSpecsScanDeps(): SpecsScanDeps {
     getState: getSpecsScanState,
     claimLease: claimSpecsScanLease,
     advanceCursor: advanceSpecsScanCursor,
+    renewLeaseFenced: renewSpecsScanLeaseFenced,
+    markBacklogComplete,
     releaseLease: releaseSpecsScanLease,
+    enqueueFrontier,
+    loadFrontierBatch,
+    deleteFrontier: deleteFrontierPath,
     defaultChannel: DEFAULT_NOTIFY_CHANNEL,
   }
 }
@@ -404,13 +484,16 @@ function defaultSpecsScanDeps(): SpecsScanDeps {
 export interface SpecsScanSummary {
   skipped?: string
   phase?: SpecsScanPhase
+  /** True on the one-time upgrade run that established the live delta cursor. */
+  seeded?: boolean
   pagesFetched: number
   discovered: number
+  backlogFoldersVisited: number
+  backlogComplete?: boolean
   projectsChecked: number
   posted: number
   deferredProjects: number
   evicted: number
-  bootstrapComplete?: boolean
 }
 
 function newHolder(now: number): string {
@@ -419,20 +502,27 @@ function newHolder(now: number): string {
 }
 
 /**
- * One bounded scan tick: claim the lease, DISCOVER new files into the ledger
- * (bootstrap enumeration → delta), then FIRE prompts for stable pending files.
+ * One bounded scan tick: claim the lease, then either SEED live coverage (first
+ * run) or run LIVE DELTA + HISTORICAL BACKLOG discovery, then FIRE prompts for
+ * stable pending files. See the module header for the two-path model.
  *
  * Idempotency / replay:
- *   - Discovery records first sightings via an idempotent upsert and advances
- *     the cursor one page at a time, holder+fence conditional. A failure before
- *     a page's cursor commit replays that page next tick (re-recording is a
- *     no-op). A lost lease (fence bumped by a newer holder) stops the tick.
+ *   - Seeding persists a get_latest_cursor cursor + the frontier root; the
+ *     frontier root is enqueued BEFORE the cursor commits, so a crash between
+ *     them can never leave live coverage active with no backlog to recover
+ *     pre-seed files. A failed cursor commit replays cleanly (re-seed is
+ *     idempotent; the later cursor is still covered by the full backlog).
+ *   - Delta records first sightings via idempotent upsert and advances the
+ *     cursor one page at a time, holder+fence conditional. A pre-checkpoint
+ *     failure replays that page. Backlog visits are idempotent too: children are
+ *     enqueued (ON CONFLICT DO NOTHING) BEFORE the visited folder is deleted, so
+ *     a crash re-visits the folder without losing its subtree. Both paths feed
+ *     the same Dropbox-id-keyed ledger, so a file seen by both yields one row.
+ *   - Frontier mutations are gated by a fenced lease renew; a stale holder whose
+ *     fence was superseded cannot overwrite progress after reclamation.
  *   - Firing is driven by PENDING ledger rows, not the cursor, and marks a file
- *     notified only AFTER a confirmed Slack post. A Slack failure leaves the row
- *     pending → retried next tick. This is the fix for the old mark-BEFORE-post
- *     flow, where a post failure permanently suppressed the delivery.
- *   - Contract is at-least-once: a crash between a successful post and the mark
- *     re-posts next tick (a recoverable duplicate prompt), never a lost delivery.
+ *     notified only AFTER a confirmed Slack post (at-least-once — a duplicate is
+ *     recoverable, a lost delivery is not).
  */
 export async function runSpecsScanTick(overrides: Partial<SpecsScanDeps> = {}, holderOverride?: string): Promise<SpecsScanSummary> {
   const deps: SpecsScanDeps = { ...defaultSpecsScanDeps(), ...overrides }
@@ -443,6 +533,7 @@ export async function runSpecsScanTick(overrides: Partial<SpecsScanDeps> = {}, h
   const summary: SpecsScanSummary = {
     pagesFetched: 0,
     discovered: 0,
+    backlogFoldersVisited: 0,
     projectsChecked: 0,
     posted: 0,
     deferredProjects: 0,
@@ -455,53 +546,93 @@ export async function runSpecsScanTick(overrides: Partial<SpecsScanDeps> = {}, h
   }
   const fence = claim.fence
 
+  // Record fresh specs files into the shared ledger (idempotent, id-keyed).
+  const recordSpecs = async (specs: ParsedSpecsFile[]) => {
+    if (!specs.length) return
+    const seen = await deps.getSeenByIds(specs.map((s) => s.dropbox_id))
+    const fresh = specs.filter((s) => !seen[s.dropbox_id])
+    if (fresh.length) {
+      await deps.insertFirstSightings(
+        fresh.map((s) => ({ dropbox_id: s.dropbox_id, path: s.path, size_bytes: s.size_bytes })),
+      )
+      summary.discovered += fresh.length
+    }
+  }
+
   try {
     const state = await deps.getState()
-    let phase: SpecsScanPhase = state.phase
     let cursor: string | null = state.cursor
 
+    // ── SEED (one-time upgrade): establish live delta coverage without any
+    // recursive enumeration. Enqueue the backlog root FIRST so live coverage is
+    // never active without a backlog to recover pre-seed files.
+    if (cursor == null) {
+      await deps.enqueueFrontier([WATCH_ROOT])
+      const seedResp = await deps.rpc('/files/list_folder/get_latest_cursor', {
+        path: WATCH_ROOT,
+        recursive: true,
+        include_deleted: false,
+      })
+      const seededCursor: string | null = seedResp?.cursor ?? null
+      if (!seededCursor) throw new Error('get_latest_cursor returned no cursor')
+      const owned = await deps.advanceCursor(holder, fence, { cursor: seededCursor, phase: 'delta' })
+      if (!owned) return { ...summary, phase: 'delta', skipped: 'lease_lost' }
+      summary.seeded = true
+      summary.phase = 'delta'
+      return summary
+    }
+
     // Snapshot files pending BEFORE this tick's discovery. A file discovered
-    // this tick is NOT fired this tick — its second stability sighting must come
-    // from a later tick's re-list, preserving the two-sighting timing.
+    // this tick (delta OR backlog) is NOT fired this tick — its second stability
+    // sighting comes from a later tick's re-list, preserving two-sighting timing.
     const pendingBefore = (await deps.loadPendingSpecs()).map(parseSpecsRow).filter(Boolean) as ParsedSpecsFile[]
 
-    // ── DISCOVERY ──────────────────────────────────────────
+    // ── LIVE DELTA (list_folder/continue from the persisted cursor) ─────────
     let keepGoing = true
     while (keepGoing && summary.pagesFetched < SCAN_MAX_PAGES && !overBudget()) {
-      const call = planDiscoveryCall(cursor)
-      const resp = await deps.rpc(call.endpoint, call.body)
+      const resp = await deps.rpc('/files/list_folder/continue', { cursor })
       summary.pagesFetched++
-
-      const specs = ((resp.entries || []) as DbxEntry[])
-        .filter((e) => e['.tag'] === 'file')
-        .map((e) => parseSpecsPath(e as any))
-        .filter(Boolean) as ParsedSpecsFile[]
-      if (specs.length) {
-        const seen = await deps.getSeenByIds(specs.map((s) => s.dropbox_id))
-        const fresh = specs.filter((s) => !seen[s.dropbox_id])
-        if (fresh.length) {
-          await deps.insertFirstSightings(
-            fresh.map((s) => ({ dropbox_id: s.dropbox_id, path: s.path, size_bytes: s.size_bytes })),
-          )
-          summary.discovered += fresh.length
-        }
-      }
-
+      await recordSpecs(
+        ((resp.entries || []) as DbxEntry[])
+          .filter((e) => e['.tag'] === 'file')
+          .map((e) => parseSpecsPath(e as any))
+          .filter(Boolean) as ParsedSpecsFile[],
+      )
       const hasMore = !!resp.has_more
       const newCursor: string | null = resp.cursor ?? cursor
-      const newPhase = nextPhase(phase, hasMore)
-      // Checkpoint: advance ONLY after the page is safely recorded, and only if
-      // we still own the lease at our fence.
-      const owned = await deps.advanceCursor(holder, fence, { cursor: newCursor, phase: newPhase })
-      if (!owned) {
-        return { ...summary, phase, skipped: 'lease_lost' }
-      }
-      if (phase === 'bootstrap' && newPhase === 'delta') summary.bootstrapComplete = true
-      phase = newPhase
+      // Checkpoint: advance ONLY after the page is recorded, holder+fence conditional.
+      const owned = await deps.advanceCursor(holder, fence, { cursor: newCursor, phase: 'delta' })
+      if (!owned) return { ...summary, phase: 'delta', skipped: 'lease_lost' }
       cursor = newCursor
       keepGoing = hasMore
     }
-    summary.phase = phase
+    summary.phase = 'delta'
+
+    // ── HISTORICAL BACKLOG (bounded non-recursive BFS over the frontier) ────
+    if (!state.backlog_complete && !overBudget()) {
+      // Re-assert ownership before mutating the frontier (fenced): a stale holder
+      // reclaimed after a pause fails here and stops before touching progress.
+      const owned = await deps.renewLeaseFenced(holder, fence)
+      if (!owned) return { ...summary, phase: 'delta', skipped: 'lease_lost' }
+
+      const batch = await deps.loadFrontierBatch(SCAN_MAX_BACKLOG_FOLDERS)
+      if (batch.length === 0) {
+        // Frontier drained → backlog is complete (fenced). Never restarts; live
+        // delta polling above is unaffected.
+        if (await deps.markBacklogComplete(holder, fence)) summary.backlogComplete = true
+      } else {
+        for (const folderPath of batch) {
+          if (summary.backlogFoldersVisited >= SCAN_MAX_BACKLOG_FOLDERS || overBudget()) break
+          const { specsFiles, subfolders } = await listFolderForBacklog(deps.rpc, folderPath)
+          await recordSpecs(specsFiles)
+          // Enqueue pruned children BEFORE deleting self, so a crash re-visits
+          // this folder without losing its subtree.
+          await deps.enqueueFrontier(specsFrontierChildren(folderPath, subfolders))
+          await deps.deleteFrontier(folderPath)
+          summary.backlogFoldersVisited++
+        }
+      }
+    }
 
     // ── FIRE (stable pending files only) ───────────────────
     const byProject = new Map<string, ParsedSpecsFile[]>()
