@@ -53,8 +53,35 @@ export async function loadFrontierBatch(limit) {
   return (data || []).map((r) => r.path)
 }
 
-/** Remove a visited folder from the frontier. */
-export async function deleteFrontierPath(path) {
-  const { error } = await db().from(TABLE).delete().eq('path', path)
-  if (error) throw new Error(`deleteFrontierPath(${path}): ${error.message}`)
+/**
+ * Atomically complete one backlog folder visit under holder+fence ownership
+ * (migration 061 `specs_backlog_commit_folder`): enqueue children (idempotent)
+ * + delete the parent in ONE transaction, or mutate nothing if the lease is
+ * stale. Returns true iff it committed; false means the lease was lost and the
+ * caller must stop (the parent stays for the real owner to re-visit).
+ */
+export async function commitBacklogFolder(holder, fence, parent, children) {
+  const { data, error } = await db().rpc('specs_backlog_commit_folder', {
+    p_holder: holder,
+    p_fence: fence,
+    p_parent: parent,
+    p_children: children || [],
+  })
+  if (error) throw new Error(`commitBacklogFolder(${parent}): ${error.message}`)
+  return !!data
+}
+
+/**
+ * Atomically mark the backlog complete ONLY when the caller owns the lease AND
+ * the frontier is empty, both checked in the same transaction (migration 061
+ * `specs_backlog_mark_complete_if_empty`). Returns true iff it was set — never
+ * completes while any frontier row remains, and a stale caller changes nothing.
+ */
+export async function markBacklogCompleteIfEmpty(holder, fence) {
+  const { data, error } = await db().rpc('specs_backlog_mark_complete_if_empty', {
+    p_holder: holder,
+    p_fence: fence,
+  })
+  if (error) throw new Error(`markBacklogCompleteIfEmpty: ${error.message}`)
+  return !!data
 }
