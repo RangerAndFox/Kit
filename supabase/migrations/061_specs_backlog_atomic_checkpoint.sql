@@ -85,9 +85,11 @@ end;
 $$;
 
 -- Backend-only: these mutate scan state, so lock them to the service role
--- (SECURITY INVOKER — they run as the caller, which bypasses RLS). anon /
--- authenticated must not be able to invoke them.
-revoke execute on function public.specs_backlog_commit_folder(text, bigint, text, text[]) from public;
-revoke execute on function public.specs_backlog_mark_complete_if_empty(text, bigint) from public;
+-- (SECURITY INVOKER — they run as the caller, which bypasses RLS). Supabase's
+-- default privileges grant EXECUTE to anon/authenticated EXPLICITLY on new
+-- public functions, so revoking from PUBLIC alone is not enough — anon and
+-- authenticated must be revoked by name too (verified on a Supabase branch).
+revoke execute on function public.specs_backlog_commit_folder(text, bigint, text, text[]) from public, anon, authenticated;
+revoke execute on function public.specs_backlog_mark_complete_if_empty(text, bigint) from public, anon, authenticated;
 grant execute on function public.specs_backlog_commit_folder(text, bigint, text, text[]) to service_role;
 grant execute on function public.specs_backlog_mark_complete_if_empty(text, bigint) to service_role;
