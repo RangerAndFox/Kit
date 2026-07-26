@@ -8,6 +8,7 @@ import { brainDeadlineSweep, brainScavengerScan, brainConsolidate } from '@/lib/
 import { driveTranscriptScan } from '@/lib/inngest/drive-transcripts'
 import { healthWatchdog } from '@/lib/inngest/health-cron'
 import { projectControlSync } from '@/lib/inngest/project-control-sync'
+import { selectRegisteredFunctions } from '@/lib/inngest/registration'
 
 /**
  * Inngest API route.
@@ -18,6 +19,12 @@ import { projectControlSync } from '@/lib/inngest/project-control-sync'
  *   - Health checks
  *
  * All Kit Inngest functions are registered here.
+ *
+ * WHICH deployments may register them is decided by selectRegisteredFunctions
+ * (see `@/lib/inngest/registration`): a Vercel Preview deployment registers
+ * ZERO functions unless it sets KIT_INNGEST_ALLOW_PREVIEW=true, so preview code
+ * can never be scheduled against the production Inngest environment. Production
+ * and local development are unaffected.
  */
 
 // Own the serverless execution limit for this route rather than inheriting an
@@ -28,22 +35,24 @@ import { projectControlSync } from '@/lib/inngest/project-control-sync'
 // (mcp, slack/events = 60).
 export const maxDuration = 60
 
+const inngestFunctions = [
+  preMeetingScan,
+  preMeetingDispatch,
+  deliveryDropboxScan,
+  deliverySpecsScan,
+  deliveryJobNotifier,
+  deliveryStaleSweep,
+  studioKnowledgeAutoSummarize,
+  brainDeadlineSweep,
+  brainScavengerScan,
+  brainConsolidate,
+  driveTranscriptScan,
+  healthWatchdog,
+  projectControlSync,
+  // Add new functions here as agents are built
+]
+
 export const { GET, POST, PUT } = serve({
   client: inngest,
-  functions: [
-    preMeetingScan,
-    preMeetingDispatch,
-    deliveryDropboxScan,
-    deliverySpecsScan,
-    deliveryJobNotifier,
-    deliveryStaleSweep,
-    studioKnowledgeAutoSummarize,
-    brainDeadlineSweep,
-    brainScavengerScan,
-    brainConsolidate,
-    driveTranscriptScan,
-    healthWatchdog,
-    projectControlSync,
-    // Add new functions here as agents are built
-  ],
+  functions: selectRegisteredFunctions(inngestFunctions),
 })
