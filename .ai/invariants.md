@@ -151,15 +151,28 @@ mechanism in code before assuming full compliance.
     no universal webhook-auth abstraction and no authorization in
     `src/proxy.ts`, which runs on every `/api/*` request but delegates
     authorization to the handler. **Workspace scope is never selected from
-    arbitrary body, query, or header input**; it is derived from verified
-    identity (e.g. a Slack-signed `team_id`) or the request is denied.
-    *(Verified for the routes named below.)*
+    arbitrary body, query, or header input, and a verified sender is not by
+    itself an authorized workspace actor.** A verified external identity must
+    resolve through an exact persisted binding to exactly one Kit workspace
+    *before* any workspace-dependent side effect — no fallback workspace, no
+    "first workspace", no default configuration. A missing identity, no
+    binding, an ambiguous binding, or a lookup failure is unauthorized for
+    side-effect purposes. *(Verified for the routes named below.)*
     - **Slack HTTP protocol owner:** `src/lib/slack/verify.ts` (HMAC-SHA256 over
       `v0:{ts}:{body}`, length-checked `timingSafeEqual`, absolute ±300 s
       window rejecting both stale and materially future-dated requests).
       Denial response + logging owner: `src/lib/slack/deny.ts`. Consumers:
       `src/app/api/webhooks/slack/{commands,events}/route.ts`, which require
       `SLACK_SIGNING_SECRET`. Covered by route-level allowed/denied tests.
+    - **Slack workspace-binding owner:** `src/lib/slack/events-workspace.ts`.
+      A signed event's `team_id` must resolve to exactly one
+      `workspaces.slack_team_id` row before work is scheduled; the events route
+      orders itself signature → parse → relevance → binding → schedule → side
+      effects. An unbound team gets a fixed `2xx`
+      (`{ok:true,ignored:"workspace_unbound"}`) so Slack does not retry-storm a
+      condition retries cannot fix, and nothing is scheduled. Both the binding
+      lookup and the `after()` scheduler are injectable ports, so "unbound
+      cannot reach scheduling" is asserted in tests rather than reasoned about.
     - **MCP shared-secret owners (pre-existing, unchanged):**
       `src/lib/mcp/auth.ts` (bearer header) and the path-key check in
       `src/app/api/mcp/[key]/route.ts`; the path form exists only because
