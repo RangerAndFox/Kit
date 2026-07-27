@@ -24,7 +24,6 @@ const SCOPES = [
 ].join(' ')
 const SHEETS_BASE = 'https://sheets.googleapis.com/v4/spreadsheets'
 const DRIVE_BASE = 'https://www.googleapis.com/drive/v3/files'
-const A1_LAST_COLUMN = 'Y' // A:Y
 // Bounded: an unbounded Sheets/Drive call could hang past the creation/sync
 // lease and let a reclaiming worker run concurrently.
 const GOOGLE_CALL_TIMEOUT_MS = 15_000
@@ -101,11 +100,8 @@ function api<T>(method: string, url: string, body?: unknown): Promise<T> {
 
 // Narrow shapes of the Google REST responses we read (not the full API types).
 interface DriveFileResponse { version?: string }
-interface DevMetadata { metadataId?: number; location?: { dimensionRange?: { startIndex?: number } } }
+interface DevMetadata { metadataId?: number; location?: { dimensionRange?: { startIndex?: number; sheetId?: number } } }
 interface DevMetadataSearchResponse { matchedDeveloperMetadata?: Array<{ developerMetadata?: DevMetadata }> }
-interface SpreadsheetGetResponse {
-  sheets?: Array<{ data?: Array<{ rowData?: Array<{ values?: SheetCell[] }> }> }>
-}
 /** getByDataFilter response — includes each returned sheet's numeric id so the
  *  caller can pick the CONFIGURED sheet deterministically (never tab order). */
 interface SheetDataFilterResponse {
@@ -114,9 +110,42 @@ interface SheetDataFilterResponse {
     data?: Array<{ rowData?: Array<{ values?: SheetCell[] }> }>
   }>
 }
-interface ValuesGetResponse { values?: string[][] }
 interface BatchUpdateResponse {
   replies?: Array<{ createDeveloperMetadata?: { developerMetadata?: { metadataId?: number } } }>
+}
+
+/**
+ * The ONE mechanism for reading Project Control cell data: a `getByDataFilter`
+ * GridRange keyed by the numeric CONFIGURED sheetId. Unlike an unqualified A1
+ * range (e.g. `A4:Y4`), this can never resolve against the first *visible* tab —
+ * it targets exactly `config.sheetId`, re-selects the returned sheet by
+ * `properties.sheetId`, and fails closed if that sheet is absent. Every row read
+ * (single row, single column, occupancy scan) goes through here so there is no
+ * second Sheet-reading implementation to drift.
+ */
+type GridRange = {
+  startRowIndex?: number
+  endRowIndex?: number
+  startColumnIndex?: number
+  endColumnIndex?: number
+}
+
+async function getGridData(
+  config: WorkbookConfig,
+  range: GridRange,
+  valueFields: string,
+): Promise<Array<{ values?: SheetCell[] }>> {
+  const fields = encodeURIComponent(`sheets(properties.sheetId,data(rowData(values(${valueFields}))))`)
+  const data = await api<SheetDataFilterResponse>(
+    'POST',
+    `${SHEETS_BASE}/${config.spreadsheetId}:getByDataFilter?fields=${fields}`,
+    { dataFilters: [{ gridRange: { sheetId: config.sheetId, ...range } }], includeGridData: true },
+  )
+  const sheet = (data.sheets || []).find((s) => s.properties?.sheetId === config.sheetId)
+  if (!sheet) {
+    throw new Error(`getGridData: configured sheet ${config.sheetId} not found in getByDataFilter response`)
+  }
+  return sheet.data?.[0]?.rowData || []
 }
 
 /** Coarse cursor: the Drive file version of the workbook. */
@@ -129,16 +158,30 @@ export interface RowMetadataMatch {
   metadataId: number
   /** 0-based grid row index. */
   rowIndex: number
+  /** The sheet the metadata (and therefore the bound row) lives on. */
+  sheetId: number
 }
 
 /**
- * Find the row bound to a project via developer metadata. Returns null when no
- * metadata record exists (used both before writing and after an ambiguous
- * response, so a retry never double-creates a row).
+ * Find the row bound to a project via developer metadata, ON THE CONFIGURED
+ * SHEET.
+ *
+ * The developer-metadata search is spreadsheet-wide, so a match can carry a
+ * `dimensionRange.sheetId` for a DIFFERENT tab. The authoritative project row
+ * must live on `sheetId`; a match on any other sheet must never be treated as
+ * authoritative (else sync/creation would read a row number from the wrong tab).
+ *
+ * Behaviour:
+ *   - no metadata anywhere        → null   (unbound; a retry may create the row)
+ *   - a match on `sheetId`        → that match (with its sheetId)
+ *   - matches only on OTHER sheets → THROW (fail closed, visible). Never returns
+ *     a wrong-sheet row number, preserving one-project/one-row on the configured
+ *     sheet. Callers surface this as an error (sync) rather than a canvas edit.
  */
 export async function searchRowMetadata(
   spreadsheetId: string,
   kitProjectId: string,
+  sheetId: number,
 ): Promise<RowMetadataMatch | null> {
   const data = await api<DevMetadataSearchResponse>(
     'POST',
@@ -146,46 +189,61 @@ export async function searchRowMetadata(
     { dataFilters: [{ developerMetadataLookup: { metadataKey: KIT_PROJECT_ID_METADATA_KEY, metadataValue: kitProjectId } }] },
   )
   const matched = data.matchedDeveloperMetadata || []
-  if (matched.length === 0) return null
-  const dm = matched[0].developerMetadata
-  const start = dm?.location?.dimensionRange?.startIndex
-  if (dm?.metadataId == null || start == null) return null
-  return { metadataId: dm.metadataId, rowIndex: start }
+  const parsed: RowMetadataMatch[] = []
+  for (const m of matched) {
+    const dm = m.developerMetadata
+    const start = dm?.location?.dimensionRange?.startIndex
+    const dmSheet = dm?.location?.dimensionRange?.sheetId
+    if (dm?.metadataId == null || start == null || dmSheet == null) continue
+    parsed.push({ metadataId: dm.metadataId, rowIndex: start, sheetId: dmSheet })
+  }
+  if (parsed.length === 0) return null
+  const onSheet = parsed.find((p) => p.sheetId === sheetId)
+  if (onSheet) return onSheet
+  // A match exists, but only on other tab(s). Fail closed, visibly — never read
+  // a matching row number from the wrong sheet.
+  const others = [...new Set(parsed.map((p) => p.sheetId))].join(',')
+  throw new Error(
+    `row metadata for ${kitProjectId} found on sheet(s) ${others}, not the configured sheet ${sheetId}`,
+  )
 }
 
-/** Read one row's cells (A:Y) with the metadata needed to normalize them. */
+/**
+ * Read one row's cells (A:Y) from the CONFIGURED sheet, with the metadata needed
+ * to normalize them. Targets `config.sheetId` deterministically (see
+ * `getGridData`) so it can never read the same row index from the wrong tab.
+ */
 export async function readRow(config: WorkbookConfig, rowIndex: number): Promise<SheetCell[]> {
-  const a1Row = rowIndex + 1 // grid 0-based -> A1 1-based
-  const fields = encodeURIComponent(
-    'sheets(data(rowData(values(formattedValue,effectiveValue,userEnteredValue,hyperlink,effectiveFormat.numberFormat.type))))',
+  const rowData = await getGridData(
+    config,
+    { startRowIndex: rowIndex, endRowIndex: rowIndex + 1, startColumnIndex: 0, endColumnIndex: MASTER_HEADERS.length },
+    'formattedValue,effectiveValue,userEnteredValue,hyperlink,effectiveFormat.numberFormat.type',
   )
-  const range = encodeURIComponent(`A${a1Row}:${A1_LAST_COLUMN}${a1Row}`)
-  const data = await api<SpreadsheetGetResponse>(
-    'GET',
-    `${SHEETS_BASE}/${config.spreadsheetId}?ranges=${range}&includeGridData=true&fields=${fields}`,
-  )
-  const values = data.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values || []
+  const values = rowData[0]?.values || []
   const cells: SheetCell[] = []
   for (let i = 0; i < MASTER_HEADERS.length; i++) cells.push((values[i] as SheetCell) || {})
   return cells
 }
 
 /**
- * Locate the next writable row (0-based grid index): the first fully-empty row
- * at/after the data region, using column A (Project Number) as the occupancy
- * signal. Deterministic and non-destructive — never a blind full-width append.
+ * Locate the next writable row (0-based grid index) ON THE CONFIGURED SHEET:
+ * the first fully-empty row at/after the data region, using column A (Project
+ * Number) as the occupancy signal. Deterministic and non-destructive — never a
+ * blind full-width append. Uses the same sheetId-keyed read as every other row
+ * read, so the creation write-row is chosen from `config.sheetId`, never the
+ * first visible tab (which would place the row against the wrong tab's
+ * occupancy and could overwrite a real row on the configured sheet).
  */
 async function findNextEmptyRowIndex(config: WorkbookConfig): Promise<number> {
-  const firstDataRow = config.headerRow + 1 // A1
-  const range = encodeURIComponent(`A${firstDataRow}:A`)
-  const data = await api<ValuesGetResponse>(
-    'GET',
-    `${SHEETS_BASE}/${config.spreadsheetId}/values/${range}?majorDimension=COLUMNS`,
+  const firstDataRowIndex = config.headerRow // 0-based grid index of the first data row
+  const rowData = await getGridData(
+    config,
+    { startRowIndex: firstDataRowIndex, startColumnIndex: 0, endColumnIndex: 1 },
+    'formattedValue,effectiveValue',
   )
-  const colA = data.values?.[0] || []
-  let offset = colA.findIndex((v) => v == null || String(v).trim() === '')
-  if (offset < 0) offset = colA.length
-  return firstDataRow - 1 /* to 0-based */ + offset
+  let offset = rowData.findIndex((rd) => normalizeCell(rd?.values?.[0]).display.trim() === '')
+  if (offset < 0) offset = rowData.length
+  return firstDataRowIndex + offset
 }
 
 export interface CreateBoundRowResult {
@@ -208,8 +266,8 @@ export async function createBoundRow(
   kitProjectId: string,
   ownedCells: OwnedCell[],
 ): Promise<CreateBoundRowResult> {
-  const existing = await searchRowMetadata(config.spreadsheetId, kitProjectId)
-  if (existing) return { ...existing, alreadyBound: true }
+  const existing = await searchRowMetadata(config.spreadsheetId, kitProjectId, config.sheetId)
+  if (existing) return { metadataId: existing.metadataId, rowIndex: existing.rowIndex, alreadyBound: true }
 
   const rowIndex = await findNextEmptyRowIndex(config)
   const colIndex = (col: string) => col.charCodeAt(0) - 'A'.charCodeAt(0)
@@ -293,31 +351,11 @@ export interface ColumnCell {
 export async function readColumn(config: WorkbookConfig, header: string): Promise<ColumnCell[]> {
   const columnIndex = headerToA1Column(header).charCodeAt(0) - 'A'.charCodeAt(0)
   const firstDataRowIndex = config.headerRow // 0-based grid index of the first data row
-  const fields = encodeURIComponent(
-    'sheets(properties.sheetId,data(rowData(values(formattedValue,effectiveValue,userEnteredValue,hyperlink))))',
+  const rowData = await getGridData(
+    config,
+    { startRowIndex: firstDataRowIndex, startColumnIndex: columnIndex, endColumnIndex: columnIndex + 1 },
+    'formattedValue,effectiveValue,userEnteredValue,hyperlink',
   )
-  const data = await api<SheetDataFilterResponse>(
-    'POST',
-    `${SHEETS_BASE}/${config.spreadsheetId}:getByDataFilter?fields=${fields}`,
-    {
-      dataFilters: [{
-        gridRange: {
-          sheetId: config.sheetId,
-          startRowIndex: firstDataRowIndex,
-          startColumnIndex: columnIndex,
-          endColumnIndex: columnIndex + 1,
-        },
-      }],
-      includeGridData: true,
-    },
-  )
-  // Deterministic selection: the CONFIGURED sheet, by numeric id — never tab
-  // order. Fail closed if the workbook did not return it.
-  const sheet = (data.sheets || []).find((s) => s.properties?.sheetId === config.sheetId)
-  if (!sheet) {
-    throw new Error(`readColumn: sheet ${config.sheetId} not found in getByDataFilter response`)
-  }
-  const rowData = sheet.data?.[0]?.rowData || []
   const out: ColumnCell[] = []
   rowData.forEach((rd, i) => {
     const norm = normalizeCell(rd?.values?.[0])
