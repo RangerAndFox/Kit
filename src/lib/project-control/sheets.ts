@@ -15,7 +15,7 @@
 
 import crypto from 'node:crypto'
 import { KIT_PROJECT_ID_METADATA_KEY, type WorkbookConfig } from './types'
-import { MASTER_HEADERS, type SheetCell, type OwnedCell } from './render'
+import { MASTER_HEADERS, headerToA1Column, normalizeCell, type SheetCell, type OwnedCell } from './render'
 
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 const SCOPES = [
@@ -256,4 +256,65 @@ export async function createBoundRow(
   const metadataId = metaReply?.createDeveloperMetadata?.developerMetadata?.metadataId
   if (metadataId == null) throw new Error('createBoundRow: batchUpdate returned no developer metadata id')
   return { metadataId, rowIndex, alreadyBound: false }
+}
+
+// ─── Narrow single-column read / single-cell write (operator repair only) ─────
+
+export interface ColumnCell {
+  /** 0-based grid row index. */
+  rowIndex: number
+  /** The cell's display/plain value (formattedValue → effectiveValue string). */
+  value: string
+  /** The cell's hyperlink target (explicit or =HYPERLINK), else null. */
+  hyperlink: string | null
+}
+
+/**
+ * Read a single Master Project List column (data rows only, below the header
+ * row). Used by the operator Frame.io URL repair — it inspects ONLY the Frame.io
+ * column and touches nothing else. Reuses the existing service-account auth.
+ */
+export async function readColumn(config: WorkbookConfig, header: string): Promise<ColumnCell[]> {
+  const col = headerToA1Column(header)
+  const firstDataRow = config.headerRow + 1 // A1 1-based
+  const fields = encodeURIComponent(
+    'sheets(data(rowData(values(formattedValue,effectiveValue,userEnteredValue,hyperlink))))',
+  )
+  const range = encodeURIComponent(`${col}${firstDataRow}:${col}`)
+  const data = await api<SpreadsheetGetResponse>(
+    'GET',
+    `${SHEETS_BASE}/${config.spreadsheetId}?ranges=${range}&includeGridData=true&fields=${fields}`,
+  )
+  const rowData = data.sheets?.[0]?.data?.[0]?.rowData || []
+  const out: ColumnCell[] = []
+  rowData.forEach((rd, i) => {
+    const norm = normalizeCell(rd?.values?.[0])
+    out.push({ rowIndex: firstDataRow - 1 + i, value: norm.display, hyperlink: norm.hyperlink })
+  })
+  return out
+}
+
+/**
+ * Write a single plain-string cell in one Master Project List column at a grid
+ * row index. `fields:'userEnteredValue'` preserves the cell's existing format +
+ * data validation (never touches formatting or neighbouring cells). Used by the
+ * Frame.io URL repair.
+ */
+export async function writeCellValue(
+  config: WorkbookConfig,
+  rowIndex: number,
+  header: string,
+  value: string,
+): Promise<void> {
+  const col = headerToA1Column(header)
+  const columnIndex = col.charCodeAt(0) - 'A'.charCodeAt(0)
+  await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, {
+    requests: [{
+      updateCells: {
+        rows: [{ values: [{ userEnteredValue: { stringValue: value } }] }],
+        fields: 'userEnteredValue',
+        start: { sheetId: config.sheetId, rowIndex, columnIndex },
+      },
+    }],
+  })
 }
