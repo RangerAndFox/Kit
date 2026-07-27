@@ -59,7 +59,7 @@ function syncState(driveVersion: string | null): SyncStateRow {
   }
 }
 
-function makeDeps(over: { bindings?: BindingRow[]; cursor?: string | null; versions?: string[]; metaMissing?: boolean; editThrows?: boolean } = {}): { deps: SyncDeps; edits: string[]; posts: string[]; store: FakeSyncStore } {
+function makeDeps(over: { bindings?: BindingRow[]; cursor?: string | null; versions?: string[]; metaMissing?: boolean; metaWrongSheet?: boolean; readThrows?: boolean; editThrows?: boolean } = {}): { deps: SyncDeps; edits: string[]; posts: string[]; store: FakeSyncStore } {
   const edits: string[] = []
   const posts: string[] = []
   const versionQueue = [...(over.versions ?? ['v2', 'v2'])]
@@ -82,8 +82,13 @@ function makeDeps(over: { bindings?: BindingRow[]; cursor?: string | null; versi
   const deps: SyncDeps = {
     sheets: {
       getWorkbookVersion: async () => versionQueue.shift() ?? 'v2',
-      searchRowMetadata: async () => (over.metaMissing ? null : { metadataId: 1, rowIndex: 5 }),
-      readRow: async () => cells(),
+      // The real searchRowMetadata THROWS when the id matches only on another
+      // sheet; the fake models that. metaMissing → null (genuinely unbound).
+      searchRowMetadata: async (_s: string, _p: string, sheetId: number) => {
+        if (over.metaWrongSheet) throw new Error(`row metadata for p1 found on sheet(s) 999, not the configured sheet ${sheetId}`)
+        return over.metaMissing ? null : { metadataId: 1, rowIndex: 5, sheetId }
+      },
+      readRow: async () => { if (over.readThrows) throw new Error('configured sheet 0 not found'); return cells() },
     },
     canvas: { editControlCanvas: async (o) => { if (over.editThrows) throw new Error('edit failed'); edits.push(o.canvasId) } },
     store,
@@ -136,6 +141,24 @@ describe('runProjectControlSync', () => {
     assert.equal(store.bindings[0].sync_status, 'orphaned')
     assert.equal(store.advanced, null)
     assert.equal(posts.length, 1)
+  })
+
+  it('rejects metadata found on ANOTHER sheet: error, no canvas edit, cursor not advanced', async () => {
+    const { deps, edits, store, posts } = makeDeps({ metaWrongSheet: true })
+    await runProjectControlSync(deps)
+    assert.deepEqual(edits, []) // never renders a row from the wrong tab
+    assert.equal(store.bindings[0].sync_status, 'error')
+    assert.match(store.bindings[0].error || '', /not the configured sheet/)
+    assert.equal(store.advanced, null)
+    assert.equal(posts.length, 1) // surfaced visibly
+  })
+
+  it('makes no canvas edit when the configured-sheet row read fails closed', async () => {
+    const { deps, edits, store } = makeDeps({ readThrows: true })
+    await runProjectControlSync(deps)
+    assert.deepEqual(edits, [])
+    assert.equal(store.bindings[0].sync_status, 'error')
+    assert.equal(store.advanced, null)
   })
 
   it('emits an error notification only once across runs (deduped)', async () => {

@@ -6,7 +6,7 @@
 
 import { describe, it, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { createBoundRow, searchRowMetadata, readColumn, __setSheetsTransportForTests } from './sheets'
+import { createBoundRow, searchRowMetadata, readColumn, readRow, __setSheetsTransportForTests } from './sheets'
 import { kitOwnedCreationCells, parseDateToSerial } from './render'
 import type { SheetCell } from './render'
 import type { WorkbookConfig } from './types'
@@ -28,21 +28,26 @@ interface UpdateCellsReq {
   }
 }
 
-/** A fake Google backend that models developer-metadata search-before-write. */
+/** A fake Google backend that models developer-metadata search-before-write.
+ *  CONFIG.sheetId is 0, so the written metadata is located on sheet 0 and the
+ *  empty-row scan (now a getByDataFilter on sheet 0) returns an empty column A. */
 function fakeBackend() {
   const state = { metadataExists: false, batchUpdates: 0, lastRequests: [] as UpdateCellsReq[] }
-  const transport = async <T>(_method: string, url: string, body?: unknown): Promise<T> => {
+  const transport = async <T>(_method: string, url: string, _body?: unknown): Promise<T> => {
     if (url.includes('developerMetadata:search')) {
       return {
         matchedDeveloperMetadata: state.metadataExists
-          ? [{ developerMetadata: { metadataId: 99, location: { dimensionRange: { startIndex: 5 } } } }]
+          ? [{ developerMetadata: { metadataId: 99, location: { dimensionRange: { startIndex: 5, sheetId: 0 } } } }]
           : [],
       } as T
     }
-    if (url.includes('/values/')) return { values: [[]] } as T // empty column A
+    // findNextEmptyRowIndex now reads column A via getByDataFilter on config.sheetId.
+    if (url.includes(':getByDataFilter')) {
+      return { sheets: [{ properties: { sheetId: 0 }, data: [{ rowData: [] }] }] } as T // empty column A
+    }
     if (url.includes(':batchUpdate')) {
       state.batchUpdates++
-      state.lastRequests = (body as { requests: UpdateCellsReq[] }).requests
+      state.lastRequests = (_body as { requests: UpdateCellsReq[] }).requests
       state.metadataExists = true
       return { replies: [{ createDeveloperMetadata: { developerMetadata: { metadataId: 99 } } }] } as T
     }
@@ -95,10 +100,92 @@ describe('createBoundRow date + margin safety', () => {
   })
 })
 
-describe('searchRowMetadata', () => {
-  it('returns null when no metadata matches', async () => {
+describe('searchRowMetadata — sheet-aware ownership', () => {
+  it('returns null when no metadata matches anywhere', async () => {
     __setSheetsTransportForTests(async <T>() => ({ matchedDeveloperMetadata: [] }) as T)
-    assert.equal(await searchRowMetadata('sid', 'nope'), null)
+    assert.equal(await searchRowMetadata('sid', 'nope', 42), null)
+  })
+
+  it('accepts a match on the CONFIGURED sheet and returns its sheetId', async () => {
+    __setSheetsTransportForTests(async <T>() =>
+      ({ matchedDeveloperMetadata: [{ developerMetadata: { metadataId: 7, location: { dimensionRange: { startIndex: 11, sheetId: 42 } } } }] }) as T)
+    const m = await searchRowMetadata('sid', 'proj', 42)
+    assert.deepEqual(m, { metadataId: 7, rowIndex: 11, sheetId: 42 })
+  })
+
+  it('picks the configured-sheet match even when a wrong-sheet match is listed first', async () => {
+    __setSheetsTransportForTests(async <T>() =>
+      ({ matchedDeveloperMetadata: [
+        { developerMetadata: { metadataId: 1, location: { dimensionRange: { startIndex: 5, sheetId: 0 } } } },
+        { developerMetadata: { metadataId: 2, location: { dimensionRange: { startIndex: 11, sheetId: 42 } } } },
+      ] }) as T)
+    const m = await searchRowMetadata('sid', 'proj', 42)
+    assert.deepEqual(m, { metadataId: 2, rowIndex: 11, sheetId: 42 })
+  })
+
+  it('THROWS (fail closed) when the same project id only matches on ANOTHER sheet', async () => {
+    __setSheetsTransportForTests(async <T>() =>
+      ({ matchedDeveloperMetadata: [{ developerMetadata: { metadataId: 1, location: { dimensionRange: { startIndex: 5, sheetId: 0 } } } }] }) as T)
+    await assert.rejects(() => searchRowMetadata('sid', 'proj', 42), /not the configured sheet 42/)
+  })
+})
+
+describe('readRow — targets the CONFIGURED sheetId (not tab order)', () => {
+  interface GridRangeReq {
+    dataFilters: Array<{ gridRange: { sheetId: number; startRowIndex: number; endRowIndex: number; startColumnIndex: number; endColumnIndex: number } }>
+  }
+  // A:Y = 25 columns; put a marker in Client (col B, index 1) per sheet.
+  const rowFor = (client: string): SheetCell[] => {
+    const cells: SheetCell[] = Array.from({ length: 25 }, () => ({}))
+    cells[1] = { formattedValue: client, effectiveValue: { stringValue: client } }
+    return cells
+  }
+  function backend() {
+    const calls: Array<{ url: string; body?: unknown }> = []
+    const rowsBySheet: Record<number, SheetCell[]> = {
+      0: rowFor('WRONG-TAB-CLIENT'),
+      42: rowFor('RIGHT-TAB-CLIENT'),
+    }
+    const transport = async <T>(_m: string, url: string, body?: unknown): Promise<T> => {
+      calls.push({ url, body })
+      if (url.includes(':getByDataFilter')) {
+        const gr = (body as GridRangeReq).dataFilters[0].gridRange
+        const values = rowsBySheet[gr.sheetId]
+        const rowData = values ? [{ values }] : []
+        return { sheets: [{ properties: { sheetId: gr.sheetId }, data: [{ rowData }] }] } as T
+      }
+      throw new Error(`unexpected url ${url}`)
+    }
+    return { calls, transport }
+  }
+
+  it('reads row A:Y from the configured tab even when another tab appears first', async () => {
+    const be = backend()
+    __setSheetsTransportForTests(be.transport)
+    const config: WorkbookConfig = { spreadsheetId: 'sid', sheetId: 42, headerRow: 3, templateChannelId: 'C0' }
+
+    const cells = await readRow(config, 5)
+    assert.equal(cells.length, 25) // full A:Y
+    assert.equal(cells[1].formattedValue, 'RIGHT-TAB-CLIENT') // sheet 42, never sheet 0
+    assert.ok(!cells.some((c) => c.formattedValue === 'WRONG-TAB-CLIENT'))
+
+    // Keyed by numeric sheetId for exactly the requested row, columns A:Y.
+    assert.equal(be.calls.length, 1)
+    assert.match(be.calls[0].url, /:getByDataFilter/)
+    assert.ok(!/ranges=/.test(be.calls[0].url), 'no unqualified A1 range')
+    const gr = (be.calls[0].body as GridRangeReq).dataFilters[0].gridRange
+    assert.equal(gr.sheetId, 42)
+    assert.equal(gr.startRowIndex, 5)
+    assert.equal(gr.endRowIndex, 6)
+    assert.equal(gr.startColumnIndex, 0)
+    assert.equal(gr.endColumnIndex, 25)
+  })
+
+  it('fails closed when the configured sheet is absent from the response', async () => {
+    __setSheetsTransportForTests(async <T>() =>
+      ({ sheets: [{ properties: { sheetId: 999 }, data: [{ rowData: [{ values: [{ formattedValue: 'x' }] }] }] }] }) as T)
+    const config: WorkbookConfig = { spreadsheetId: 'sid', sheetId: 42, headerRow: 3, templateChannelId: 'C0' }
+    await assert.rejects(() => readRow(config, 5), /configured sheet 42 not found/)
   })
 })
 

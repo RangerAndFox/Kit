@@ -62,7 +62,8 @@ function makeStore(initial: Partial<BindingRow> = {}): FakeStore {
 
 const okSheets: CreationSheetsPort = {
   createBoundRow: async () => ({ metadataId: 10, rowIndex: 5, alreadyBound: false }),
-  searchRowMetadata: async () => ({ metadataId: 10, rowIndex: 5 }),
+  // CONFIG.sheetId is 0 — the metadata is on the configured sheet.
+  searchRowMetadata: async (_s, _p, sheetId) => ({ metadataId: 10, rowIndex: 5, sheetId }),
   readRow: async () => rowCells(),
 }
 
@@ -227,7 +228,7 @@ describe('bindProjectControl', () => {
       })
     const sheets: CreationSheetsPort = {
       createBoundRow: async (_c, _p, owned) => { ownedSeen = owned; return { metadataId: 10, rowIndex: 5, alreadyBound: false } },
-      searchRowMetadata: async () => ({ metadataId: 10, rowIndex: 5 }),
+      searchRowMetadata: async (_s, _p, sheetId) => ({ metadataId: 10, rowIndex: 5, sheetId }),
       readRow: async () => authoritativeRow(),
     }
 
@@ -257,5 +258,31 @@ describe('bindProjectControl', () => {
 
     // 2) Initial Canvas: the Contacts value comes from the authoritative Sheet row.
     assert.match(createdMarkdown, /\|\s*### \*\*Contacts\*\*\s*\|\s*Jane Doe — jane@nike\.com\s*\|/)
+  })
+
+  it('resume fails closed (no Canvas) when the row metadata is on another sheet', async () => {
+    // Resuming a binding past pending_sheet re-derives the row index from
+    // metadata. If the id only matches on a different tab, searchRowMetadata
+    // throws — bind must error, never create a Canvas from a wrong-tab row.
+    const store = makeStore({ creation_state: 'pending_canvas', row_metadata_id: 10, template_markdown: TEMPLATE, canvas_id: null })
+    let created = 0
+    const sheets: CreationSheetsPort = {
+      createBoundRow: async () => ({ metadataId: 10, rowIndex: 5, alreadyBound: false }),
+      searchRowMetadata: async (_s, _p, sheetId) => { throw new Error(`row metadata for proj found on sheet(s) 999, not the configured sheet ${sheetId}`) },
+      readRow: async () => rowCells(),
+    }
+    const canvas: CreationCanvasPort = {
+      createControlCanvas: async () => { created++; return { canvasId: 'C1', canvasUrl: 'u' } },
+      editControlCanvas: async () => {},
+      reconcileControlCanvas: async (): Promise<CanvasReconcile> => ({ status: 'absent' }),
+    }
+    const deps: CreationDeps = { sheets, canvas, store, config: CONFIG, enabled: true, now: () => 't' }
+    const r = await bindProjectControl(
+      { projectId: 'proj', submission: { projectNumber: '2601', clientName: 'Nike', projectName: 'S' }, slackResult: slackResult() },
+      deps,
+    )
+    assert.equal(r.status, 'error')
+    assert.match(r.reason || '', /not the configured sheet/)
+    assert.equal(created, 0) // no canvas fabricated from a wrong-tab row
   })
 })

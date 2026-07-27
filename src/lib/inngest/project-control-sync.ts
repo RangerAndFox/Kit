@@ -45,7 +45,7 @@ import {
 
 export interface SyncSheetsPort {
   getWorkbookVersion(spreadsheetId: string): Promise<string>
-  searchRowMetadata(spreadsheetId: string, kitProjectId: string): Promise<{ metadataId: number; rowIndex: number } | null>
+  searchRowMetadata(spreadsheetId: string, kitProjectId: string, sheetId: number): Promise<{ metadataId: number; rowIndex: number; sheetId: number } | null>
   readRow(config: WorkbookConfig, rowIndex: number): Promise<SheetCell[]>
 }
 export interface SyncCanvasPort {
@@ -156,7 +156,11 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
         break
       }
       try {
-        const meta = await deps.sheets.searchRowMetadata(config.spreadsheetId, b.project_id)
+        // Sheet-aware: returns a match ONLY on the configured sheet; a match on
+        // another tab THROWS (caught below → sync_status='error', no canvas edit)
+        // and truly-missing metadata is null → orphaned. Never reads a row number
+        // from the wrong tab.
+        const meta = await deps.sheets.searchRowMetadata(config.spreadsheetId, b.project_id, config.sheetId)
         if (!meta) {
           orphaned++
           allOk = false
@@ -250,8 +254,8 @@ export const projectControlSync = inngest.createFunction(
  * the SAME canonical `runProjectControlSync` core — no second sync
  * implementation, same lease, row-hash, cursor, Canvas identity, and edit path.
  *
- * Two independent protections (event-level `id` does NOT dedupe a debounced
- * function, so we rely on neither):
+ * Two independent protections (the event-level `id` is not relied upon here —
+ * dedupe is enforced at the function level):
  *   - `idempotency` (function-level), keyed on `event.data.request_id`: a
  *     replayed/retried notification carrying the same Apps Script requestId
  *     collapses to a single run within the idempotency window.
