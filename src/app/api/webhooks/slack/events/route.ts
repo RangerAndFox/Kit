@@ -1,9 +1,13 @@
 // @ts-nocheck
-import { NextResponse, after } from 'next/server'
+import { NextResponse } from 'next/server'
 import { verifySlackSignature } from '@/lib/slack/verify'
 import { slackAuthDenied } from '@/lib/slack/deny'
+import {
+  resolveBoundWorkspace,
+  scheduleSlackWork,
+  slackWorkspaceUnbound,
+} from '@/lib/slack/events-workspace'
 import { routeWebhook } from '@/lib/managed-agents/webhook-router'
-import { createAdminClient } from '@/lib/supabase/admin'
 import { messageHasFrameIoLink, handleFrameIoLink } from '@/lib/frameio/slack-handler'
 import { isTimeEntryMessage, handleTimeEntry } from '@/lib/harvest/slack-handler'
 
@@ -68,9 +72,17 @@ export async function POST(request: Request) {
         return NextResponse.json({ ok: true, ignored: event.type })
       }
 
-      // Look up the Slack team_id → workspace mapping
-      const teamId = payload.team_id as string
-      const workspaceId = await resolveWorkspaceId(teamId)
+      // Authorize the workspace BEFORE scheduling anything. A valid Slack
+      // signature proves Slack sent this; it does not entitle the sending team
+      // to act in a Kit workspace. Only an exact workspaces.slack_team_id
+      // binding does — there is no fallback and no default workspace. An
+      // unbound team gets a 2xx acknowledgement and no work is scheduled.
+      const teamId = payload.team_id
+      const workspace = await resolveBoundWorkspace(teamId)
+      if (!workspace.ok) {
+        return slackWorkspaceUnbound({ route: ROUTE, reason: workspace.reason, request })
+      }
+      const workspaceId = workspace.workspaceId
 
       // Fire-and-forget dispatch (Slack expects a response within 3s).
       // After the agent produces a response, we post it back to Slack
@@ -79,8 +91,12 @@ export async function POST(request: Request) {
       const threadTs = event.thread_ts || event.ts
 
       // Run the agent dispatch AFTER the response is returned to Slack.
-      // Vercel's `after()` keeps the serverless function alive for background work.
-      after(async () => {
+      // scheduleSlackWork wraps Vercel's `after()`, which keeps the serverless
+      // function alive for background work, and carries the resolved workspace
+      // so the scheduling boundary is observable and testable.
+      scheduleSlackWork({
+        workspaceId,
+        run: async () => {
         try {
           // ── Frame.io link detection ──────────────────────────
           // If the message contains a Frame.io review/player link,
@@ -151,6 +167,7 @@ export async function POST(request: Request) {
             )
           }
         }
+        },
       })
 
       return NextResponse.json({ ok: true })
@@ -261,34 +278,5 @@ async function postSlackMessage(
     }
   } catch (err) {
     console.error('[Slack] Post failed:', err)
-  }
-}
-
-/**
- * Resolve a Slack team_id to a Kit workspace_id.
- * Falls back to the first workspace if no mapping exists (single-tenant dev setup).
- */
-async function resolveWorkspaceId(teamId: string): Promise<string> {
-  try {
-    const supabase = createAdminClient()
-    const { data } = await supabase
-      .from('workspaces' as any)
-      .select('id, slack_team_id')
-      .eq('slack_team_id', teamId)
-      .limit(1)
-      .single()
-
-    if (data?.id) return data.id as string
-
-    // Fallback: return first workspace
-    const { data: first } = await supabase
-      .from('workspaces' as any)
-      .select('id')
-      .limit(1)
-      .single()
-
-    return (first?.id as string) || ''
-  } catch {
-    return ''
   }
 }
