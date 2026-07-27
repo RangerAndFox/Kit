@@ -243,3 +243,28 @@ export const projectControlSync = inngest.createFunction(
     return step.run('sync', () => runProjectControlSync())
   },
 )
+
+/**
+ * Event-driven refresh: a human edit to the Master Project List (delivered by
+ * the authenticated Sheet-edit webhook → `project-control/sheet.edited`) runs
+ * the SAME canonical `runProjectControlSync` core — no second sync
+ * implementation, same lease, row-hash, cursor, Canvas identity, and edit path.
+ *
+ * `debounce` coalesces a burst of quick edits into ONE trailing run keyed on the
+ * workbook, so the FINAL Sheet state always reaches the Canvas (trailing edge —
+ * never suppresses the last edit) without fanning out one run per keystroke. A
+ * missed/dropped event is still corrected by the 10-minute cron, which stays
+ * enabled as the convergence/recovery mechanism.
+ */
+export const projectControlSyncOnEdit = inngest.createFunction(
+  {
+    id: 'project-control-sync-on-edit',
+    name: 'Project Control — Sheet edit refresh',
+    retries: 1,
+    debounce: { period: '20s', key: 'event.data.spreadsheet_id' },
+    triggers: [{ event: 'project-control/sheet.edited' }],
+  },
+  async ({ step }: { step: { run: <T>(id: string, fn: () => Promise<T> | T) => Promise<T> } }) => {
+    return step.run('sync', () => runProjectControlSync())
+  },
+)

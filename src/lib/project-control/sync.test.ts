@@ -6,7 +6,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { runProjectControlSync, type SyncDeps } from '../inngest/project-control-sync'
+import { runProjectControlSync, projectControlSync, projectControlSyncOnEdit, type SyncDeps } from '../inngest/project-control-sync'
 import { MASTER_HEADERS, normalizeRow, sourceRowHash, type SheetCell } from './render'
 import type { WorkbookConfig } from './types'
 import type { BindingRow, SyncStateRow } from './store'
@@ -160,5 +160,41 @@ describe('runProjectControlSync', () => {
     assert.notEqual(store.claimHolders[0], store.claimHolders[1]) // unique per run
     assert.ok(store.claimHolders[0].startsWith('sync:'))
     assert.deepEqual(store.claimHolders, store.releaseHolders) // exact token released
+  })
+})
+
+describe('projectControlSync functions — cron + event share ONE core', () => {
+  const cron = projectControlSync as unknown as { opts: any; fn: (...a: any[]) => Promise<unknown> }
+  const onEdit = projectControlSyncOnEdit as unknown as { opts: any; fn: (...a: any[]) => Promise<unknown> }
+
+  it('cron is a 10-minute schedule', () => {
+    assert.equal(cron.opts.id, 'project-control-sync')
+    assert.deepEqual(cron.opts.triggers, [{ cron: '*/10 * * * *' }])
+  })
+
+  it('on-edit is triggered by the named event, debounced/coalesced per workbook', () => {
+    assert.equal(onEdit.opts.id, 'project-control-sync-on-edit')
+    assert.deepEqual(onEdit.opts.triggers, [{ event: 'project-control/sheet.edited' }])
+    // Debounce (trailing edge) coalesces bursts but never drops the final edit.
+    assert.equal(onEdit.opts.debounce.key, 'event.data.spreadsheet_id')
+    assert.ok(onEdit.opts.debounce.period, 'has a debounce period')
+  })
+
+  it('both handlers are the IDENTICAL thin wrapper (no second sync implementation)', () => {
+    // Same source ⇒ the event-triggered run and cron-triggered run execute the
+    // exact same orchestration (runProjectControlSync).
+    assert.equal(cron.fn.toString(), onEdit.fn.toString())
+  })
+
+  it('both delegate their work to a single step.run("sync", …)', async () => {
+    for (const f of [cron, onEdit]) {
+      const ids: string[] = []
+      // A fake step that records the id and does NOT execute the callback, so the
+      // real (DB-backed) core never runs here — we only prove the wrapper shape.
+      const step = { run: (id: string, _cb: () => unknown) => { ids.push(id); return 'SENTINEL' } }
+      const out = await f.fn({ step } as any)
+      assert.equal(out, 'SENTINEL')
+      assert.deepEqual(ids, ['sync'])
+    }
   })
 })

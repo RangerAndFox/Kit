@@ -20,6 +20,7 @@ import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { dropboxHeaders } from '../../../src/lib/dropbox/client'
 import { frameioHeaders } from '../../../src/lib/frameio/auth'
+import { frameioProjectUrl } from '../../../src/lib/frameio/url'
 import { isFrameioUploadEnabled } from '../../../src/lib/projects/settings'
 import { processSrtFile } from '../../../src/lib/delivery/subtitle-watcher'
 
@@ -801,7 +802,7 @@ async function discoverAndBackfillProject(safeName: string): Promise<any | null>
       project_code: projectCode,
       status: 'active',
       external_ids: { dropbox_safe_name: safeName },
-      external_links: { frameio_id: found.id, frameio: `https://app.frame.io/projects/${found.id}` },
+      external_links: { frameio_id: found.id, frameio: frameioProjectUrl(found.id) },
     })
     .select(
       'id, name, client, project_code, project_manager_slack_id, external_links, external_ids',
