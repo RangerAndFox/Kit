@@ -250,17 +250,27 @@ export const projectControlSync = inngest.createFunction(
  * the SAME canonical `runProjectControlSync` core — no second sync
  * implementation, same lease, row-hash, cursor, Canvas identity, and edit path.
  *
- * `debounce` coalesces a burst of quick edits into ONE trailing run keyed on the
- * workbook, so the FINAL Sheet state always reaches the Canvas (trailing edge —
- * never suppresses the last edit) without fanning out one run per keystroke. A
- * missed/dropped event is still corrected by the 10-minute cron, which stays
- * enabled as the convergence/recovery mechanism.
+ * Two independent protections (event-level `id` does NOT dedupe a debounced
+ * function, so we rely on neither):
+ *   - `idempotency` (function-level), keyed on `event.data.request_id`: a
+ *     replayed/retried notification carrying the same Apps Script requestId
+ *     collapses to a single run within the idempotency window.
+ *   - `debounce`, keyed on the workbook (`event.data.spreadsheet_id`): a burst
+ *     of DISTINCT quick edits coalesces into ONE trailing run, so the FINAL
+ *     Sheet state always reaches the Canvas (trailing edge — never suppresses
+ *     the last edit) without fanning out one run per keystroke.
+ *
+ * These are belt-and-suspenders over the core's own safety: the workbook lease
+ * + per-row hash already make repeated runs harmless (an unchanged row is a
+ * no-op). A missed/dropped event is still corrected by the 10-minute cron,
+ * which stays enabled as the convergence/recovery mechanism.
  */
 export const projectControlSyncOnEdit = inngest.createFunction(
   {
     id: 'project-control-sync-on-edit',
     name: 'Project Control — Sheet edit refresh',
     retries: 1,
+    idempotency: 'event.data.request_id',
     debounce: { period: '20s', key: 'event.data.spreadsheet_id' },
     triggers: [{ event: 'project-control/sheet.edited' }],
   },

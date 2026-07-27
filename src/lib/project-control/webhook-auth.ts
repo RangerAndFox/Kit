@@ -117,10 +117,19 @@ export function authorizeSheetEditWebhook(args: AuthorizeArgs): AuthResult {
   return { ok: true, notification }
 }
 
-/** The Inngest event payload derived from an authorized notification. */
+/**
+ * The Inngest event payload derived from an authorized notification.
+ *
+ * Replay dedupe is enforced at the FUNCTION level via `idempotency:
+ * 'event.data.request_id'` on `projectControlSyncOnEdit` — Inngest's event-level
+ * `id` does NOT deduplicate a debounced function. `data.request_id` is therefore
+ * the field that actually collapses a replayed/retried notification to one run;
+ * `id` is preserved as a conventional event id, not relied on for dedupe.
+ */
 export interface SheetEditEvent {
   name: typeof SHEET_EDITED_EVENT
-  /** Preserved request id ⇒ Inngest send-level dedupe of replayed notifications. */
+  /** Conventional event id (the Apps Script requestId). Dedupe is enforced at
+   *  the function level on `data.request_id`, not via this field. */
   id: string
   data: { spreadsheet_id: string; sheet_id: number; request_id: string; ts: number }
 }

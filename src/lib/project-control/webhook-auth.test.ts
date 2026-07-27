@@ -155,13 +155,18 @@ describe('handleSheetEditNotification — exactly-one-send on success, zero on d
     assert.equal(denials.length, 0)
   })
 
-  it('repeated identical notifications each carry the SAME dedupe id (safe to replay)', async () => {
+  it('repeated identical notifications carry the SAME request_id (function-level idempotency key)', async () => {
     const raw = body()
     const c = counter()
     await handleSheetEditNotification({ rawBody: raw, signature: sign(raw), secret: SECRET, config: CONFIG, now, send: c.send })
     await handleSheetEditNotification({ rawBody: raw, signature: sign(raw), secret: SECRET, config: CONFIG, now, send: c.send })
     assert.equal(c.sent.length, 2)
-    assert.equal(c.sent[0].id, c.sent[1].id) // Inngest dedupes on this id
+    // Dedupe of the DEBOUNCED function is enforced at the function level on
+    // event.data.request_id (NOT the event-level id, which Inngest ignores for
+    // debounced functions). Both replays carry the same request_id ⇒ they
+    // collapse to one run.
+    assert.equal(c.sent[0].data.request_id, c.sent[1].data.request_id)
+    assert.equal(c.sent[0].id, c.sent[1].id) // id preserved too (conventional, not the dedupe mechanism)
   })
 
   it('returns a retryable 500 (no send success) when the event enqueue throws', async () => {
