@@ -33,7 +33,9 @@ export async function POST(request: NextRequest): Promise<Response> {
     signature,
     secret: process.env.PROJECT_CONTROL_WEBHOOK_SECRET,
     config: workbookConfigFromEnv(),
-    // The event `id` is the notification's requestId ⇒ Inngest dedupes replays.
+    // Replay dedupe is enforced at the FUNCTION level (idempotency on
+    // event.data.request_id); the event `id` is preserved conventionally but
+    // Inngest ignores event-level id for the debounced function.
     send: (event: SheetEditEvent) => inngest.send({ name: event.name, id: event.id, data: event.data }),
   })
 

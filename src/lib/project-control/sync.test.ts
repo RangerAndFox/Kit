@@ -172,12 +172,17 @@ describe('projectControlSync functions — cron + event share ONE core', () => {
     assert.deepEqual(cron.opts.triggers, [{ cron: '*/10 * * * *' }])
   })
 
-  it('on-edit is triggered by the named event, debounced/coalesced per workbook', () => {
+  it('on-edit is triggered by the named event, debounced per workbook AND idempotent per request', () => {
     assert.equal(onEdit.opts.id, 'project-control-sync-on-edit')
     assert.deepEqual(onEdit.opts.triggers, [{ event: 'project-control/sheet.edited' }])
-    // Debounce (trailing edge) coalesces bursts but never drops the final edit.
+    // Debounce (trailing edge) coalesces DISTINCT bursts but never drops the
+    // final edit. Keyed on the workbook.
     assert.equal(onEdit.opts.debounce.key, 'event.data.spreadsheet_id')
     assert.ok(onEdit.opts.debounce.period, 'has a debounce period')
+    // Function-level idempotency dedupes REPLAYED notifications — the event-level
+    // `id` does NOT dedupe a debounced function, so this is what actually
+    // collapses a retried requestId to one run.
+    assert.equal(onEdit.opts.idempotency, 'event.data.request_id')
   })
 
   it('both handlers are the IDENTICAL thin wrapper (no second sync implementation)', () => {

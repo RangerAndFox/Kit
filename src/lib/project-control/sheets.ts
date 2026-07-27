@@ -106,6 +106,14 @@ interface DevMetadataSearchResponse { matchedDeveloperMetadata?: Array<{ develop
 interface SpreadsheetGetResponse {
   sheets?: Array<{ data?: Array<{ rowData?: Array<{ values?: SheetCell[] }> }> }>
 }
+/** getByDataFilter response — includes each returned sheet's numeric id so the
+ *  caller can pick the CONFIGURED sheet deterministically (never tab order). */
+interface SheetDataFilterResponse {
+  sheets?: Array<{
+    properties?: { sheetId?: number }
+    data?: Array<{ rowData?: Array<{ values?: SheetCell[] }> }>
+  }>
+}
 interface ValuesGetResponse { values?: string[][] }
 interface BatchUpdateResponse {
   replies?: Array<{ createDeveloperMetadata?: { developerMetadata?: { metadataId?: number } } }>
@@ -271,25 +279,49 @@ export interface ColumnCell {
 
 /**
  * Read a single Master Project List column (data rows only, below the header
- * row). Used by the operator Frame.io URL repair — it inspects ONLY the Frame.io
- * column and touches nothing else. Reuses the existing service-account auth.
+ * row) from the CONFIGURED sheet. Used by the operator Frame.io URL repair — it
+ * inspects ONLY the Frame.io column and touches nothing else, and reuses the
+ * existing service-account auth.
+ *
+ * Targets `config.sheetId` deterministically via a `getByDataFilter` GridRange
+ * keyed by the numeric sheet id — NOT an unqualified A1 range like `R4:R`, which
+ * resolves to the first *visible* tab and could read a different sheet than the
+ * one `writeCellValue` writes to (`config.sheetId`). The returned sheet is then
+ * re-selected by `properties.sheetId` and the read fails closed if the
+ * configured sheet is absent, so a read/write tab mismatch is impossible.
  */
 export async function readColumn(config: WorkbookConfig, header: string): Promise<ColumnCell[]> {
-  const col = headerToA1Column(header)
-  const firstDataRow = config.headerRow + 1 // A1 1-based
+  const columnIndex = headerToA1Column(header).charCodeAt(0) - 'A'.charCodeAt(0)
+  const firstDataRowIndex = config.headerRow // 0-based grid index of the first data row
   const fields = encodeURIComponent(
-    'sheets(data(rowData(values(formattedValue,effectiveValue,userEnteredValue,hyperlink))))',
+    'sheets(properties.sheetId,data(rowData(values(formattedValue,effectiveValue,userEnteredValue,hyperlink))))',
   )
-  const range = encodeURIComponent(`${col}${firstDataRow}:${col}`)
-  const data = await api<SpreadsheetGetResponse>(
-    'GET',
-    `${SHEETS_BASE}/${config.spreadsheetId}?ranges=${range}&includeGridData=true&fields=${fields}`,
+  const data = await api<SheetDataFilterResponse>(
+    'POST',
+    `${SHEETS_BASE}/${config.spreadsheetId}:getByDataFilter?fields=${fields}`,
+    {
+      dataFilters: [{
+        gridRange: {
+          sheetId: config.sheetId,
+          startRowIndex: firstDataRowIndex,
+          startColumnIndex: columnIndex,
+          endColumnIndex: columnIndex + 1,
+        },
+      }],
+      includeGridData: true,
+    },
   )
-  const rowData = data.sheets?.[0]?.data?.[0]?.rowData || []
+  // Deterministic selection: the CONFIGURED sheet, by numeric id — never tab
+  // order. Fail closed if the workbook did not return it.
+  const sheet = (data.sheets || []).find((s) => s.properties?.sheetId === config.sheetId)
+  if (!sheet) {
+    throw new Error(`readColumn: sheet ${config.sheetId} not found in getByDataFilter response`)
+  }
+  const rowData = sheet.data?.[0]?.rowData || []
   const out: ColumnCell[] = []
   rowData.forEach((rd, i) => {
     const norm = normalizeCell(rd?.values?.[0])
-    out.push({ rowIndex: firstDataRow - 1 + i, value: norm.display, hyperlink: norm.hyperlink })
+    out.push({ rowIndex: firstDataRowIndex + i, value: norm.display, hyperlink: norm.hyperlink })
   })
   return out
 }

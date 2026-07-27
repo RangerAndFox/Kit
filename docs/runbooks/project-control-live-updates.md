@@ -36,7 +36,10 @@ Human edits Master Project List row
 | Apps Script → Script Properties | `SPREADSHEET_ID`, `SHEET_ID`, `HEADER_ROW` | `SHEET_ID` is the numeric tab gid; `HEADER_ROW` defaults to 3. |
 
 Endpoint (POST only): `/api/webhooks/project-control/sheet-edited`
-Inngest event: `project-control/sheet.edited` (dedupe id = the Apps Script `requestId`).
+Inngest event: `project-control/sheet.edited`. Replay dedupe is enforced by
+**function-level idempotency** on `event.data.request_id` (the Apps Script
+`requestId`) — Inngest's event-level `id` does not dedupe a debounced function;
+`debounce` (keyed on `spreadsheet_id`) separately coalesces distinct bursts.
 
 ## Apps Script setup
 

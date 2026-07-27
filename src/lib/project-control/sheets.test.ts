@@ -6,8 +6,9 @@
 
 import { describe, it, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { createBoundRow, searchRowMetadata, __setSheetsTransportForTests } from './sheets'
+import { createBoundRow, searchRowMetadata, readColumn, __setSheetsTransportForTests } from './sheets'
 import { kitOwnedCreationCells, parseDateToSerial } from './render'
+import type { SheetCell } from './render'
 import type { WorkbookConfig } from './types'
 
 const CONFIG: WorkbookConfig = {
@@ -98,5 +99,84 @@ describe('searchRowMetadata', () => {
   it('returns null when no metadata matches', async () => {
     __setSheetsTransportForTests(async <T>() => ({ matchedDeveloperMetadata: [] }) as T)
     assert.equal(await searchRowMetadata('sid', 'nope'), null)
+  })
+})
+
+describe('readColumn — targets the CONFIGURED sheetId (not tab order)', () => {
+  const cell = (v: string): SheetCell => (v ? { formattedValue: v, effectiveValue: { stringValue: v } } : {})
+
+  interface GridRangeReq {
+    dataFilters: Array<{ gridRange: { sheetId: number; startRowIndex: number; startColumnIndex: number; endColumnIndex: number } }>
+    includeGridData?: boolean
+  }
+
+  /**
+   * A workbook with TWO tabs: sheet 0 is the first/visible tab (an unqualified
+   * A1 range like R4:R would read THIS one) and carries a decoy value; sheet 42
+   * is the configured target. The transport returns ONLY the sheet whose id the
+   * caller filtered on — so a correct read of sheet 42 can never surface sheet
+   * 0's decoy.
+   */
+  function multiSheetBackend() {
+    const calls: Array<{ method: string; url: string; body?: unknown }> = []
+    const rowsBySheet: Record<number, SheetCell[][]> = {
+      0: [[cell('https://app.frame.io/projects/WRONG-TAB')]],
+      42: [
+        [cell('https://app.frame.io/projects/RIGHT-1')],
+        [cell('')],
+        [cell('https://app.frame.io/projects/RIGHT-2')],
+      ],
+    }
+    const transport = async <T>(method: string, url: string, body?: unknown): Promise<T> => {
+      calls.push({ method, url, body })
+      if (url.includes(':getByDataFilter')) {
+        const gr = (body as GridRangeReq).dataFilters[0].gridRange
+        const rowData = (rowsBySheet[gr.sheetId] || []).map((values) => ({ values }))
+        return { sheets: [{ properties: { sheetId: gr.sheetId }, data: [{ rowData }] }] } as T
+      }
+      throw new Error(`unexpected url ${url}`)
+    }
+    return { calls, transport }
+  }
+
+  it('reads the configured tab via getByDataFilter keyed by numeric sheetId', async () => {
+    const be = multiSheetBackend()
+    __setSheetsTransportForTests(be.transport)
+    const config: WorkbookConfig = { spreadsheetId: 'sid', sheetId: 42, headerRow: 3, templateChannelId: 'C0' }
+
+    const cells = await readColumn(config, 'Frame.io')
+
+    // Values come from sheet 42, NOT the first/visible sheet 0.
+    assert.deepEqual(cells.map((c) => c.value), [
+      'https://app.frame.io/projects/RIGHT-1',
+      '',
+      'https://app.frame.io/projects/RIGHT-2',
+    ])
+    assert.ok(!cells.some((c) => c.value.includes('WRONG-TAB')), 'never reads the first-visible tab')
+
+    // Row indices are 0-based grid indices starting at the first data row (headerRow).
+    assert.deepEqual(cells.map((c) => c.rowIndex), [3, 4, 5])
+
+    // Exactly one request: a getByDataFilter POST keyed by the numeric sheetId,
+    // targeting the Frame.io column (R = index 17). No unqualified A1 GET.
+    assert.equal(be.calls.length, 1)
+    const [call] = be.calls
+    assert.equal(call.method, 'POST')
+    assert.match(call.url, /:getByDataFilter/)
+    assert.ok(!/ranges=/.test(call.url), 'does not use an unqualified A1 range')
+    const gr = (call.body as GridRangeReq).dataFilters[0].gridRange
+    assert.equal(gr.sheetId, 42)
+    assert.equal(gr.startRowIndex, 3)
+    assert.equal(gr.startColumnIndex, 17)
+    assert.equal(gr.endColumnIndex, 18)
+  })
+
+  it('fails closed when the configured sheet is not returned (never reads a fallback tab)', async () => {
+    // Transport returns some OTHER sheet id → the read must throw, not silently
+    // read the wrong tab.
+    __setSheetsTransportForTests(async <T>() =>
+      ({ sheets: [{ properties: { sheetId: 999 }, data: [{ rowData: [[{ formattedValue: 'x' }]] }] }] }) as T)
+    const config: WorkbookConfig = { spreadsheetId: 'sid', sheetId: 42, headerRow: 3, templateChannelId: 'C0' }
+    await assert.rejects(() => readColumn(config, 'Frame.io'), /sheet 42 not found/)
   })
 })
