@@ -50,6 +50,23 @@ fact.
 - **Trigger model:** Inngest invokes functions on their schedules/events. A
   function must be listed in `route.ts` *and* synced to Inngest to run.
   *(`route.ts` list is Verified; the Inngest sync state is Needs verification.)*
+- **Only production may register scheduled functions.** The app id is a constant
+  (`kit`) and the Inngest environment is chosen solely by the injected
+  `INNGEST_SIGNING_KEY` / `INNGEST_EVENT_KEY`; there is no `INNGEST_ENV`. So any
+  deployment holding the production keys joins the **production** Inngest
+  environment. Preview deployments were therefore invoked on production cron
+  schedules and executed scheduled work with production credentials (observed:
+  stale previews refreshing Frame.io/Adobe tokens, reading production Supabase,
+  and consuming the Dropbox rate limit). Two controls, neither relying on app
+  naming: (a) **credential scoping** — the Inngest keys belong to the Production
+  environment only, and preview syncing stays disabled in the Inngest–Vercel
+  integration (the real boundary); (b) **fail-closed registration** —
+  `selectRegisteredFunctions` (`src/lib/inngest/registration.ts`) serves an empty
+  function list when `VERCEL_ENV === 'preview'` unless that specific deployment
+  sets `KIT_INNGEST_ALLOW_PREVIEW=true`. The boundary keys off `VERCEL_ENV`, not
+  `NODE_ENV` (preview builds also run `NODE_ENV=production`). Never set the
+  preview opt-in in shared/production project settings. *(Guard Verified by unit
+  tests; credential scoping is a Vercel-dashboard fact — Needs verification.)*
 - **Build source / deployed branch:** *Needs verification.*
 - **Health mechanism:** `healthWatchdog` (Inngest) + the `/status` page. The
   `/status` API is `src/app/api/status/route.ts`. *(Verified files exist.)*
