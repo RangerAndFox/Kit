@@ -116,6 +116,26 @@ describe('kitOwnedCreationCells', () => {
     assert.equal(byCol['C'], undefined) // Client Contact not supplied
   })
 
+  it('writes the producer-entered Client Contact verbatim to column C', () => {
+    const cells = kitOwnedCreationCells({
+      projectNumber: '2601',
+      clientName: 'Nike',
+      clientContact: 'Jane Doe — jane@nike.com',
+      projectName: 'Summer',
+    })
+    const c = cells.find((x) => x.column === 'C')
+    assert.equal(c?.header, 'Client Contact')
+    assert.equal(c?.kind, 'string')
+    assert.equal(c?.value, 'Jane Doe — jane@nike.com') // exact, not inferred from client
+  })
+
+  it('omits Client Contact for old/blank submissions (never fabricated from client name)', () => {
+    // A pre-field persisted submission has no clientContact at all.
+    assert.equal(kitOwnedCreationCells({ clientName: 'Nike' }).find((c) => c.column === 'C'), undefined)
+    // An explicit blank string is also omitted (stays Sheet-owned), never text.
+    assert.equal(kitOwnedCreationCells({ clientName: 'Nike', clientContact: '   ' }).find((c) => c.column === 'C'), undefined)
+  })
+
   it('never emits Current Margin (U) or Projected Margin (V)', () => {
     const cells = kitOwnedCreationCells({ projectNumber: '1', clientName: 'x', projectName: 'y' })
     const cols = cells.map((c) => c.column)
@@ -197,6 +217,16 @@ describe('renderProjectControlCanvas', () => {
 
   it('fills Client from the authoritative row', () => {
     assert.match(out, /\|\s*### \*\*Client\*\*\s*\|\s*Nike\s*\|/)
+  })
+
+  it('fills the Contacts row from the authoritative Client Contact column', () => {
+    const rowWithContact = normalizeRow(MASTER_HEADERS, MASTER_HEADERS.map((h) =>
+      h === 'Client Contact'
+        ? { formattedValue: 'Jane Doe — jane@nike.com', effectiveValue: { stringValue: 'Jane Doe — jane@nike.com' } }
+        : {},
+    ))
+    const rendered = renderProjectControlCanvas(TEMPLATE, rowWithContact)
+    assert.match(rendered, /\|\s*### \*\*Contacts\*\*\s*\|\s*Jane Doe — jane@nike\.com\s*\|/)
   })
 
   it('renders a hyperlink cell as [display](target)', () => {

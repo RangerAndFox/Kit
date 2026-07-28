@@ -18,6 +18,25 @@
 export const FRAMEIO_API_BASE = 'https://api.frame.io/v4'
 
 /**
+ * The current Frame.io (Adobe-era) browser host + path for a project. The old
+ * `https://app.frame.io/projects/{id}` host now redirects/breaks; the live
+ * browser URL is `https://next.frame.io/project/{id}` (singular `project`).
+ *
+ * This is the ONE place a browser-facing project link is constructed. It is NOT
+ * the API base (`FRAMEIO_API_BASE`, `/accounts/{acct}/projects/{id}`) — never
+ * use this for API calls.
+ *
+ * Fails closed on an empty/blank id (same discipline as
+ * `normalizeFrameioNextLink`): a link to `.../project/` with no id is worse than
+ * an error, because it would be silently stored/rendered as if valid.
+ */
+export function frameioProjectUrl(projectId: string): string {
+  const id = typeof projectId === 'string' ? projectId.trim() : ''
+  if (!id) throw new Error('frameioProjectUrl: empty project id')
+  return `https://next.frame.io/project/${id}`
+}
+
+/**
  * Canonicalize a `links.next` value to a rooted, base-relative path
  * (`/accounts/...`), preserving the query string.
  *

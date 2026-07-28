@@ -14,7 +14,7 @@
 
 import { withRetry } from '@/lib/provisioner/retry'
 import { frameioHeaders } from '@/lib/frameio/auth'
-import { normalizeFrameioNextLink, FRAMEIO_API_BASE } from '@/lib/frameio/url'
+import { normalizeFrameioNextLink, FRAMEIO_API_BASE, frameioProjectUrl } from '@/lib/frameio/url'
 import folderStructure from '@/lib/provisioner/folder-structure.json'
 import type { AgentDefinition, AgentResult } from './types'
 
@@ -370,7 +370,7 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       agent: 'frameio',
       action: 'provision',
       success: true,
-      url: `https://app.frame.io/projects/${project.id}`,
+      url: frameioProjectUrl(project.id),
       id: project.id,
       message: `Created Frame.io project "${projectLabel}" with ${foldersCreated}/${foldersTotal} folders (${mode})`,
       data: { rootFolderId: parentId, foldersCreated, foldersTotal, mode },
@@ -424,7 +424,7 @@ async function getProject(payload: Record<string, unknown>): Promise<AgentResult
       agent: 'frameio',
       action: 'get_project',
       success: true,
-      url: `https://app.frame.io/projects/${project.id}`,
+      url: frameioProjectUrl(project.id),
       message: `Project: ${project.name}`,
       data: {
         id: project.id,

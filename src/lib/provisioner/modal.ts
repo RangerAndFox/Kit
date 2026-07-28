@@ -49,6 +49,14 @@ export function buildNewProjectModal(
       },
       {
         type: 'input',
+        block_id: 'client_contact',
+        optional: true,
+        label: { type: 'plain_text', text: 'Client Contact' },
+        hint: { type: 'plain_text', text: 'The client-side point of contact (name and/or email). Written verbatim to the Master Project List.' },
+        element: { type: 'plain_text_input', action_id: 'val', placeholder: { type: 'plain_text', text: 'e.g. Jane Doe — jane@nike.com' } },
+      },
+      {
+        type: 'input',
         block_id: 'project_name',
         label: { type: 'plain_text', text: 'Project Name' },
         element: { type: 'plain_text_input', action_id: 'val', placeholder: { type: 'plain_text', text: 'e.g. Summer Campaign' } },
