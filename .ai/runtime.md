@@ -38,13 +38,28 @@ fact.
   `preMeetingDispatch`, `deliveryDropboxScan`, `deliverySpecsScan`,
   `deliveryJobNotifier`, `deliveryStaleSweep`, `studioKnowledgeAutoSummarize`,
   `brainDeadlineSweep`, `brainScavengerScan`, `brainConsolidate`,
-  `driveTranscriptScan`, `healthWatchdog`, `projectControlSync`.
-- **`projectControlSync` (Verified):** the one-way Master Project List →
-  Project Control Canvas sync (every 10m), gated on
-  `PROJECT_CONTROL_SYNC_ENABLED`. It owns the workbook Drive-version cursor +
-  sync lease. The *creation-side* binding (Sheet row + Canvas) runs on **Railway**
-  inside the provisioner (`src/lib/project-control/creation.ts`), gated on
-  `PROJECT_CONTROL_CREATION_ENABLED` — a separate control. Both reuse the
+  `driveTranscriptScan`, `healthWatchdog`, `projectControlSync`,
+  `projectControlSyncOnEdit`.
+- **Project Control Sheet → Canvas sync (Verified):** two Inngest functions that
+  run the SAME `runProjectControlSync` core (`src/lib/inngest/project-control-sync.ts`),
+  both gated on `PROJECT_CONTROL_SYNC_ENABLED`:
+  - **`projectControlSync`** — the ten-minute cron (`*/10`); the authoritative
+    one-way Master Project List → Canvas convergence/recovery path (also the only
+    path that catches API/script-originated Sheet changes). It owns the workbook
+    Drive-version cursor + sync lease.
+  - **`projectControlSyncOnEdit`** — triggered by the authenticated
+    `project-control/sheet.edited` event (from the Sheet-edit webhook →
+    `inngest.send`), giving a near-immediate refresh after a human Master Project
+    List edit. Debounced per workbook + idempotent per `request_id`; it delegates
+    to the same core, so it reuses the same lease, row-hash, cursor, and Canvas
+    identity — no second sync implementation.
+  Both are registered INSIDE the fail-closed `selectRegisteredFunctions`
+  boundary (see below), so a Vercel Preview deployment registers **zero**
+  functions — including the event refresh — unless it sets the exact
+  `KIT_INNGEST_ALLOW_PREVIEW=true` opt-in. The *creation-side* binding (Sheet row
+  + Canvas) runs on **Railway** inside the provisioner
+  (`src/lib/project-control/creation.ts`), gated on
+  `PROJECT_CONTROL_CREATION_ENABLED` — a separate control. All reuse the
   `GOOGLE_SERVICE_ACCOUNT_JSON` service account (raw REST; googleapis is not in
   the Bolt image).
 - **Trigger model:** Inngest invokes functions on their schedules/events. A

@@ -35,7 +35,7 @@ import { selectRegisteredFunctions } from '@/lib/inngest/registration'
 // (mcp, slack/events = 60).
 export const maxDuration = 60
 
-const inngestFunctions = [
+export const inngestFunctions = [
   preMeetingScan,
   preMeetingDispatch,
   deliveryDropboxScan,
@@ -56,7 +56,12 @@ const inngestFunctions = [
   // Add new functions here as agents are built
 ]
 
+// The EXACT list serve() registers: the one canonical list run through the
+// fail-closed #119 boundary. Exported (alongside the canonical list) purely so
+// tests can assert the wiring structurally — never a second/raw list.
+export const registeredFunctions = selectRegisteredFunctions(inngestFunctions)
+
 export const { GET, POST, PUT } = serve({
   client: inngest,
-  functions: selectRegisteredFunctions(inngestFunctions),
+  functions: registeredFunctions,
 })
