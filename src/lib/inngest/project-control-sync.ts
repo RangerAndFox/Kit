@@ -45,7 +45,7 @@ import {
 
 export interface SyncSheetsPort {
   getWorkbookVersion(spreadsheetId: string): Promise<string>
-  searchRowMetadata(spreadsheetId: string, kitProjectId: string): Promise<{ metadataId: number; rowIndex: number } | null>
+  searchRowMetadata(spreadsheetId: string, kitProjectId: string, sheetId: number): Promise<{ metadataId: number; rowIndex: number; sheetId: number } | null>
   readRow(config: WorkbookConfig, rowIndex: number): Promise<SheetCell[]>
 }
 export interface SyncCanvasPort {
@@ -156,7 +156,11 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
         break
       }
       try {
-        const meta = await deps.sheets.searchRowMetadata(config.spreadsheetId, b.project_id)
+        // Sheet-aware: returns a match ONLY on the configured sheet; a match on
+        // another tab THROWS (caught below → sync_status='error', no canvas edit)
+        // and truly-missing metadata is null → orphaned. Never reads a row number
+        // from the wrong tab.
+        const meta = await deps.sheets.searchRowMetadata(config.spreadsheetId, b.project_id, config.sheetId)
         if (!meta) {
           orphaned++
           allOk = false
@@ -238,6 +242,41 @@ export const projectControlSync = inngest.createFunction(
     name: 'Project Control — Sheet→Canvas sync',
     retries: 1,
     triggers: [{ cron: '*/10 * * * *' }],
+  },
+  async ({ step }: { step: { run: <T>(id: string, fn: () => Promise<T> | T) => Promise<T> } }) => {
+    return step.run('sync', () => runProjectControlSync())
+  },
+)
+
+/**
+ * Event-driven refresh: a human edit to the Master Project List (delivered by
+ * the authenticated Sheet-edit webhook → `project-control/sheet.edited`) runs
+ * the SAME canonical `runProjectControlSync` core — no second sync
+ * implementation, same lease, row-hash, cursor, Canvas identity, and edit path.
+ *
+ * Two independent protections (the event-level `id` is not relied upon here —
+ * dedupe is enforced at the function level):
+ *   - `idempotency` (function-level), keyed on `event.data.request_id`: a
+ *     replayed/retried notification carrying the same Apps Script requestId
+ *     collapses to a single run within the idempotency window.
+ *   - `debounce`, keyed on the workbook (`event.data.spreadsheet_id`): a burst
+ *     of DISTINCT quick edits coalesces into ONE trailing run, so the FINAL
+ *     Sheet state always reaches the Canvas (trailing edge — never suppresses
+ *     the last edit) without fanning out one run per keystroke.
+ *
+ * These are belt-and-suspenders over the core's own safety: the workbook lease
+ * + per-row hash already make repeated runs harmless (an unchanged row is a
+ * no-op). A missed/dropped event is still corrected by the 10-minute cron,
+ * which stays enabled as the convergence/recovery mechanism.
+ */
+export const projectControlSyncOnEdit = inngest.createFunction(
+  {
+    id: 'project-control-sync-on-edit',
+    name: 'Project Control — Sheet edit refresh',
+    retries: 1,
+    idempotency: 'event.data.request_id',
+    debounce: { period: '20s', key: 'event.data.spreadsheet_id' },
+    triggers: [{ event: 'project-control/sheet.edited' }],
   },
   async ({ step }: { step: { run: <T>(id: string, fn: () => Promise<T> | T) => Promise<T> } }) => {
     return step.run('sync', () => runProjectControlSync())

@@ -7,7 +7,7 @@ import { studioKnowledgeAutoSummarize } from '@/lib/inngest/studio-knowledge-cro
 import { brainDeadlineSweep, brainScavengerScan, brainConsolidate } from '@/lib/inngest/brain-crons'
 import { driveTranscriptScan } from '@/lib/inngest/drive-transcripts'
 import { healthWatchdog } from '@/lib/inngest/health-cron'
-import { projectControlSync } from '@/lib/inngest/project-control-sync'
+import { projectControlSync, projectControlSyncOnEdit } from '@/lib/inngest/project-control-sync'
 import { selectRegisteredFunctions } from '@/lib/inngest/registration'
 
 /**
@@ -35,7 +35,7 @@ import { selectRegisteredFunctions } from '@/lib/inngest/registration'
 // (mcp, slack/events = 60).
 export const maxDuration = 60
 
-const inngestFunctions = [
+export const inngestFunctions = [
   preMeetingScan,
   preMeetingDispatch,
   deliveryDropboxScan,
@@ -49,10 +49,19 @@ const inngestFunctions = [
   driveTranscriptScan,
   healthWatchdog,
   projectControlSync,
+  // Event-driven Project Control refresh — same canonical core as the cron.
+  // Inside the guarded list, so a Vercel Preview deployment registers it as
+  // ZERO functions too (never scheduled against the production environment).
+  projectControlSyncOnEdit,
   // Add new functions here as agents are built
 ]
 
+// The EXACT list serve() registers: the one canonical list run through the
+// fail-closed #119 boundary. Exported (alongside the canonical list) purely so
+// tests can assert the wiring structurally — never a second/raw list.
+export const registeredFunctions = selectRegisteredFunctions(inngestFunctions)
+
 export const { GET, POST, PUT } = serve({
   client: inngest,
-  functions: selectRegisteredFunctions(inngestFunctions),
+  functions: registeredFunctions,
 })

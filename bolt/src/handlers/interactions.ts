@@ -615,6 +615,7 @@ export function registerInteractionHandlers(app: App) {
       projectNumber: values.project_number?.val?.value || '',
       projectName: values.project_name?.val?.value || '',
       clientName: values.client_name?.val?.value || '',
+      clientContact: values.client_contact?.val?.value || undefined,
       projectType: values.project_type?.val?.selected_option?.value || 'Other',
       projectManager: values.project_manager?.val?.selected_user || userId,
       creativeDirector: values.creative_director?.val?.selected_user || undefined,
@@ -1108,6 +1109,7 @@ export function registerInteractionHandlers(app: App) {
             submission: {
               projectNumber: form.projectNumber,
               clientName: form.clientName,
+              clientContact: form.clientContact,
               projectName: form.projectName,
               startDate: form.startDate,
               deadline: form.deadline,
@@ -1347,6 +1349,9 @@ async function rebindIncompleteBinding(
     submission: {
       projectNumber: form.projectNumber || String(project.project_code || '').split('-')[0] || '',
       clientName: form.clientName || project.client || '',
+      // Preserve the producer-entered contact across recovery; pre-field
+      // submissions simply lack it (undefined → left blank, never fabricated).
+      clientContact: form.clientContact || undefined,
       projectName: form.projectName || project.name || '',
       startDate: form.startDate || project.start_date || undefined,
       deadline: form.deadline || project.target_delivery || undefined,
