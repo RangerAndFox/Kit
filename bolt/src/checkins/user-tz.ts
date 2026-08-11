@@ -15,7 +15,16 @@ import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { checkinTimezone } from './date'
 
-const TTL_MS = 12 * 60 * 60 * 1000
+// The check-in cron ticks HOURLY and only acts on the 17:00-local boundary, so
+// the timezone used for that decision must reflect the person's CURRENT Slack
+// profile — not a value cached up to 12h earlier. A 12h TTL let a single bad or
+// transient users.info read (e.g. a mobile client momentarily reporting a
+// travel timezone) mistime a whole day's check-in: the DM fired at the wrong
+// local hour and the person never completed it. Keeping the TTL under the cron
+// interval means every hourly tick re-resolves fresh, bounding the blast radius
+// of any one bad read to that tick. users.info is a high-tier Slack endpoint and
+// the check-in roster is small, so per-tick resolution is well within limits.
+const TTL_MS = 50 * 60 * 1000
 const cache = new Map<string, { tz: string; at: number }>()
 
 /** Loose IANA-name sanity check ("America/New_York", "Etc/UTC"). */
@@ -30,12 +39,20 @@ export async function resolveUserTimezone(opts: {
   const { app, slackUserId } = opts
   const hit = cache.get(slackUserId)
   if (hit && Date.now() - hit.at < TTL_MS) return hit.tz
+  // Last value we resolved (possibly expired) — used only to surface flips.
+  const prevTz = hit?.tz
 
   // Fresh from Slack — and persist for the src/lib side.
   try {
     const res = await app.client.users.info({ user: slackUserId })
     const tz = (res.user as any)?.tz
     if (looksLikeTz(tz)) {
+      // A changed timezone is the exact signal that mistimes a check-in — make
+      // it visible so a recurring flip (travel, a stale client, a bad read) is
+      // diagnosable from the logs instead of only from the send-time forensics.
+      if (prevTz && prevTz !== tz) {
+        console.log(`[user-tz] ${slackUserId} timezone changed ${prevTz} → ${tz}`)
+      }
       cache.set(slackUserId, { tz, at: Date.now() })
       const sb = createAdminClient()
       sb.from('staff')
@@ -66,5 +83,11 @@ export async function resolveUserTimezone(opts: {
     /* fall through to studio default */
   }
 
+  // No fresh Slack tz and no usable last-known value: this person has no
+  // resolvable timezone, so their check-in fires on the studio default and may
+  // be mistimed. Surface it — it's a real misconfiguration, not a quiet default.
+  console.warn(
+    `[user-tz] no resolvable timezone for ${slackUserId}; using studio default ${checkinTimezone()}`,
+  )
   return checkinTimezone()
 }
