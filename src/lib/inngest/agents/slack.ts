@@ -14,7 +14,7 @@ import {
   duplicateTemplateCanvases,
 } from '@/lib/mcp/slack'
 import { workbookConfigFromEnv, projectControlCreationEnabled } from '@/lib/project-control/types'
-import { resolveControlTemplate } from '@/lib/project-control/canvas'
+import { resolveControlTemplate, type ControlTemplateResolution } from '@/lib/project-control/canvas'
 import type { AgentDefinition, AgentResult } from './types'
 
 const SLACK_API = 'https://slack.com/api'
@@ -111,11 +111,16 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
           // generically clone (an unread candidate could be control-like).
           if (!r.cloneSafe) skipGenericClone = true
         } else {
-          controlTemplateError = r.reason
+          // Explicit Extract: bolt's tsconfig is `strict: false`, so it does not
+          // negatively-narrow the `ok: false` arm of this union in the else branch
+          // (only the positive `if (r.ok)` arm narrows). Cast so both the strict
+          // (root) and non-strict (bolt) compilers resolve the error-arm fields.
+          const err = r as Extract<ControlTemplateResolution, { ok: false }>
+          controlTemplateError = err.reason
           // Exclude every matched (and configured) candidate from generic clone…
-          excludeFileIds.push(...r.excludeFileIds)
+          excludeFileIds.push(...err.excludeFileIds)
           // …and if resolution was uncertain, don't clone anything at all.
-          if (!r.cloneSafe) skipGenericClone = true
+          if (!err.cloneSafe) skipGenericClone = true
         }
       } catch (e: any) {
         controlTemplateError = `resolve_failed: ${e.message}`

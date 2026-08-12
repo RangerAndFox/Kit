@@ -203,7 +203,7 @@ async function existingChildFolders(acct: string, parentId: string): Promise<Map
     const children = (resp.data || resp || []) as Array<Record<string, unknown>>
     for (const c of children) {
       const t = c?.type || c?.resource_type
-      if ((t === 'folder' || t === undefined) && c?.name && c?.id) out.set(c.name, c.id)
+      if ((t === 'folder' || t === undefined) && c?.name && c?.id) out.set(String(c.name), String(c.id))
     }
   } catch {
     /* treat as none */
