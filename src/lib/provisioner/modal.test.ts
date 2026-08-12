@@ -111,11 +111,12 @@ describe('buildUpdateProjectModal — pre-fill', () => {
     assert.equal(ids.project_type.element.initial_option, undefined)
   })
 
-  it('marks Producer and Project Type optional so a Harvest-synced (null-those-fields) project is still submittable', () => {
-    // syncProjectsFromHarvest inserts active projects with null project_manager
-    // and null project_type; a required select with no pre-selection would make
-    // Slack reject ANY edit to such a project.
+  it('marks Producer/Project Type/Client optional so a Harvest-synced (null-those-fields) project is still submittable', () => {
+    // syncProjectsFromHarvest inserts active projects with null project_manager,
+    // null project_type, and a possibly-null client; a required field with no
+    // value would make Slack reject ANY edit to such a project.
     assert.equal(byId.project_manager.optional, true)
     assert.equal(byId.project_type.optional, true)
+    assert.equal(byId.client_name.optional, true)
   })
 })

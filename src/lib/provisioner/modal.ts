@@ -275,7 +275,11 @@ export function buildUpdateProjectModal(opts: {
         elements: [{ type: 'mrkdwn', text: ':pencil2: Edit any field. The next step previews exactly what will change across Slack, Dropbox, Harvest, Frame.io, and the Master Project List before anything is applied.' }],
       },
       textInput('project_number', 'Project ID', s.projectNumber),
-      textInput('client_name', 'Client', s.clientName),
+      // Optional: a Harvest-synced project can have a NULL client (project-sync
+      // inserts `client: hp.client?.name ?? null`), and a required field with no
+      // value would block any unrelated edit. An unchanged blank stays a no-op;
+      // filling it in rings through as a real client change.
+      textInput('client_name', 'Client', s.clientName, {}, true),
       textInput('client_contact', 'Client Contact', s.clientContact, {}, true),
       textInput('project_name', 'Project Name', s.projectName),
       {
