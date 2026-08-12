@@ -19,6 +19,7 @@ import {
   getAvailableAgents,
 } from '../../../src/lib/inngest/agents/registry'
 import type { ServiceKey } from '../../../src/lib/provisioner/types'
+import { projectNumberKey } from '../../../src/lib/studio-knowledge/project-sync'
 import { buildNewProjectModal, buildUpdateProjectModal } from '../../../src/lib/provisioner/modal'
 import { deriveProjectCode, deriveDropboxSafeName } from '../../../src/lib/provisioner/identifiers'
 import { computeUpdatePlan } from '../../../src/lib/provisioner/update-diff'
@@ -2019,7 +2020,9 @@ function takePendingProvision(token: string): PendingProvision | null {
 const EDITABLE_PROJECT_STATUSES = ['active', 'partial', 'paused']
 
 function projectOptionLabel(row: { project_code?: string | null; client?: string | null; name?: string | null }): string {
-  const number = row.project_code ? String(row.project_code).split('-')[0] : ''
+  // Regex extraction (not split('-')[0]) so a synced project's arbitrary Harvest
+  // code shows the real studio number in the picker, not a leading fragment.
+  const number = projectNumberKey(row.project_code) || ''
   return [number, row.client, row.name].filter(Boolean).join(' — ') || (row.name || 'Untitled project')
 }
 
@@ -2051,7 +2054,14 @@ async function loadUpdateSnapshot(
     if (!data) return null
     const ext = (data as any).external_ids || {}
     const links = (data as any).external_links || {}
-    const projectNumber = ext.project_number || (data.project_code ? String(data.project_code).split('-')[0] : '')
+    // Fall back to a REGEX extraction (projectNumberKey), not split('-')[0]:
+    // external_ids.project_number is only backfilled at create time, so a synced
+    // (/kit sync-projects) or pre-existing project relies on this fallback — and its
+    // project_code may be an arbitrary Harvest code that doesn't lead with the number
+    // (or has a hyphenated one). split('-')[0] would truncate/misread it and poison
+    // the modal pre-fill + diff baseline; projectNumberKey pulls the studio number
+    // (3-4 digits + optional letter) from anywhere in the string.
+    const projectNumber = ext.project_number || projectNumberKey(data.project_code) || ''
     return {
       status: (data as any).status,
       snapshot: {
