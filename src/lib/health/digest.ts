@@ -66,6 +66,12 @@ export function unavailableCheckinSummary(): CheckinSummary {
 // which scopes replied_but_unlogged to the non-terminal, non-failed statuses).
 const BACKLOG_EXCLUDE = new Set(['logged', 'skipped', 'failed'])
 
+// Open (awaiting a reply) statuses. A row here is unanswered even if it carries
+// a stale reply_ts — reply.ts's reopen() reverts a non-hours/unparseable reply
+// back to 'sent' and historically left reply_ts set — so it must count as
+// sent-no-reply, never as a lost-hours "reply", regardless of that timestamp.
+const OPEN_STATUSES = new Set(['sent', 'nudged'])
+
 function hasHarvestIds(v: unknown): boolean {
   return Array.isArray(v) && v.length > 0
 }
@@ -104,7 +110,7 @@ export function summarizeCheckins(rows: CheckinRow[], todayISO: string): Checkin
     if (r.check_in_date === todayISO && logged) s.loggedToday++
 
     if (past && !BACKLOG_EXCLUDE.has(r.status)) {
-      if (replied) {
+      if (replied && !OPEN_STATUSES.has(r.status)) {
         s.repliedUnlogged++
         if (!s.oldestUnlogged || r.check_in_date < s.oldestUnlogged) s.oldestUnlogged = r.check_in_date
       } else {
