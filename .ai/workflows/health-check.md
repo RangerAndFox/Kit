@@ -10,6 +10,12 @@ Cadence: once daily. Read-only by default — this check **diagnoses**, it does
 not write to Harvest or mutate state. Any remediation is a separate, confirmed
 action (see "If something is red").
 
+Kit runs an automated version of this itself: the `healthDailyDigest` Inngest
+cron (`src/lib/inngest/health-digest.ts`) DMs the owner a one-glance digest at
+09:00 America/New_York — the same probes plus the time-logging roll-up below.
+This runbook is the deeper manual pass (for when the digest flags something, or
+for an on-demand check); the digest is the daily heartbeat.
+
 ## What to check
 
 Run these top to bottom. Each names the exact tool and what "green" looks like.
