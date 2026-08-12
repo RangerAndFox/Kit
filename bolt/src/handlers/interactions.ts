@@ -19,8 +19,28 @@ import {
   getAvailableAgents,
 } from '../../../src/lib/inngest/agents/registry'
 import type { ServiceKey } from '../../../src/lib/provisioner/types'
-import { buildNewProjectModal } from '../../../src/lib/provisioner/modal'
-import { deriveProjectCode, deriveDropboxSafeName } from '../../../src/lib/provisioner/identifiers'
+import { buildNewProjectModal, buildUpdateProjectModal } from '../../../src/lib/provisioner/modal'
+import { deriveProjectCode, deriveDropboxSafeName, deriveProjectIdentifiers } from '../../../src/lib/provisioner/identifiers'
+import { computeUpdatePlan } from '../../../src/lib/provisioner/update-diff'
+import { runProjectUpdate } from '../../../src/lib/provisioner/update'
+import {
+  getOrCreateUpdateRequest,
+  loadUpdateRequest,
+  updateUpdateRequest,
+  commitUpdateDecision,
+  claimUpdateRequestFenced,
+  renewUpdateRequestLease,
+  listRecoverableUpdateRequests,
+  getUpdateSteps,
+  claimUpdateStep,
+  recordUpdateStepExternalId,
+  completeUpdateStep,
+  listUpdateRequestsWithIncompleteSteps,
+} from '../../../src/lib/provisioner/update-store'
+import { updateBoundRow } from '../../../src/lib/project-control/sheets'
+import { kitOwnedCreationCells } from '../../../src/lib/project-control/render'
+import { claimWorkbookLeaseFenced, renewWorkbookLease, releaseWorkbookLease } from '../../../src/lib/project-control/store'
+import { buildUpdateProjectCard } from './updateproject-card'
 import {
   getOrCreateCreationRequest,
   loadCreationRequest,
@@ -359,6 +379,58 @@ export function registerInteractionHandlers(app: App) {
     await ack()
     if (typeof respond === 'function') {
       await respond({ replace_original: true, text: '_New project cancelled._' })
+    }
+  })
+
+  // ─── Update Project: open the pre-filled modal ────────────
+  // Both entry points (the inferred-project button and the picker select) carry
+  // the JSON `{p: projectId, c: channelId, t: threadTs}` in their value, so we
+  // can load the current values and open the modal with a fresh trigger_id.
+  const openUpdateModalFromValue = async (raw: string, body: any, client: any) => {
+    let projectId = '', channelId = '', threadTs: string | undefined
+    try {
+      const parsed = JSON.parse(raw)
+      projectId = parsed.p || ''
+      channelId = parsed.c || ''
+      threadTs = parsed.t || undefined
+    } catch {
+      projectId = raw
+    }
+    if (!projectId) return
+    const workspaceId = await resolveWorkspaceId(body?.team?.id || '')
+    const snap = await loadUpdateSnapshot(projectId, workspaceId)
+    if (!snap) {
+      await client.chat.postMessage({ channel: channelId || body?.user?.id, text: ':warning: I couldn\'t load that project to edit — it may have been archived.' })
+      return
+    }
+    if (snap.status === 'provisioning') {
+      await client.chat.postMessage({ channel: channelId || body?.user?.id, text: `:hourglass_flowing_sand: *${snap.snapshot.projectName}* is still being provisioned — try updating it once it\'s active.` })
+      return
+    }
+    try {
+      await client.views.open({
+        trigger_id: body.trigger_id,
+        view: buildUpdateProjectModal({ projectId, workspaceId, channelId, threadTs, snapshot: snap.snapshot }) as any,
+      })
+    } catch (err: any) {
+      console.error('[Bolt] update modal open failed:', err.data?.error || err.message)
+    }
+  }
+
+  app.action('kit_open_updateproject_modal', async ({ ack, body, client }) => {
+    await ack()
+    await openUpdateModalFromValue((body as any).actions?.[0]?.value || '', body, client)
+  })
+
+  app.action('kit_pick_update_project', async ({ ack, body, client }) => {
+    await ack()
+    await openUpdateModalFromValue((body as any).actions?.[0]?.selected_option?.value || '', body, client)
+  })
+
+  app.action('kit_cancel_updateproject', async ({ ack, respond }) => {
+    await ack()
+    if (typeof respond === 'function') {
+      await respond({ replace_original: true, text: '_Update cancelled._' })
     }
   })
 
@@ -1261,12 +1333,256 @@ export function registerInteractionHandlers(app: App) {
   // request never double-provisions and a re-driven bind never double-creates.
   // Returned to app.ts, which schedules it (cron ownership stays in app.ts) but
   // needs this closure for the shared provisioning path.
+  // ─── Update Project: modal submission → preview ───────────
+  app.view('kit_update_project', async ({ ack, view, body, client }) => {
+    await ack()
+    const userId = body.user.id
+    const meta = JSON.parse(view.private_metadata || '{}')
+    const projectId = meta.project_id || ''
+    const channelId = meta.channel_id || ''
+    const threadTs = meta.thread_ts || undefined
+    const statusChannel = channelId || userId
+    const workspaceId = meta.workspace_id || (await resolveWorkspaceId(body.team?.id || ''))
+    const values = view.state?.values || {}
+    const form = {
+      projectNumber: values.project_number?.val?.value || '',
+      clientName: values.client_name?.val?.value || '',
+      clientContact: values.client_contact?.val?.value || undefined,
+      projectName: values.project_name?.val?.value || '',
+      projectType: values.project_type?.val?.selected_option?.value || undefined,
+      projectManager: values.project_manager?.val?.selected_user || undefined,
+      creativeDirector: values.creative_director?.val?.selected_user || undefined,
+      startDate: values.start_date?.val?.selected_date || undefined,
+      deadline: values.deadline?.val?.selected_date || undefined,
+      description: values.description?.val?.value || undefined,
+    }
+
+    const snap = await loadUpdateSnapshot(projectId, workspaceId)
+    if (!snap) {
+      await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: ':warning: Could not load that project to update.' })
+      return
+    }
+    const plan = computeUpdatePlan({ projectId, ...snap.snapshot } as any, form as any)
+    if (!plan.hasChanges) {
+      await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: ':information_source: No changes detected — nothing to update.' })
+      return
+    }
+
+    // Identity-collision guard: a new number that already belongs to a DIFFERENT
+    // project is surfaced (never silently proceeded).
+    let collision: { id: string; name: string } | null = null
+    if (plan.identityChanged && form.projectNumber && form.projectNumber !== snap.snapshot.projectNumber) {
+      const other = await findExistingProject(workspaceId, form.projectNumber)
+      if (other && other.id !== projectId) collision = { id: other.id, name: other.name }
+    }
+
+    const requestKey = view.id
+    await getOrCreateUpdateRequest({
+      requestKey,
+      workspaceId,
+      projectId,
+      requestedBy: userId,
+      submission: { form, userId, statusChannel, threadTs, workspaceId, current: snap.current },
+      plan,
+    })
+    await updateUpdateRequest(requestKey, { status: 'awaiting_confirm' })
+    await client.chat.postMessage(buildUpdatePreview(statusChannel, threadTs, snap.snapshot, form, plan, requestKey, collision))
+  })
+
+  // ─── Update Project: confirm / cancel buttons ─────────────
+  app.action('kit_update_confirm', async ({ ack, body, client, respond }) => {
+    await ack()
+    const requestKey = (body as any).actions?.[0]?.value || ''
+    const req = await loadUpdateRequest(requestKey)
+    if (!req) {
+      await respond({ replace_original: true, text: ':warning: That update request expired — re-open the update form.' })
+      return
+    }
+    const actingWorkspaceId = await resolveWorkspaceId((body as any).team?.id || '')
+    // Authoritative one-winner gate: only the original requester, in the same
+    // workspace, and only the FIRST click transitions out of awaiting_confirm.
+    const won = await commitUpdateDecision({ requestKey, actingUserId: (body as any).user?.id, workspaceId: actingWorkspaceId, decision: 'apply' })
+    if (!won) {
+      await respond({ replace_original: true, text: ':information_source: That update was already handled.' })
+      return
+    }
+    const projectName = (req.submission as any)?.form?.projectName || 'the project'
+    await respond({ replace_original: true, text: `:arrows_counterclockwise: Applying updates for *${projectName}*…` })
+    await runUpdateRipple({ client, requestKey })
+  })
+
+  app.action('kit_update_cancel', async ({ ack, body, respond }) => {
+    await ack()
+    const requestKey = (body as any).actions?.[0]?.value || ''
+    const actingWorkspaceId = await resolveWorkspaceId((body as any).team?.id || '')
+    await commitUpdateDecision({ requestKey, actingUserId: (body as any).user?.id, workspaceId: actingWorkspaceId, decision: 'cancel' }).catch(() => {})
+    await respond({ replace_original: true, text: '_Update cancelled — nothing was changed._' })
+  })
+
+  /**
+   * Drive the durable update ripple for a confirmed request. Builds the injected
+   * deps (agent dispatch, the Dropbox-move DB write, the Sheet row update under
+   * the workbook lease, the Supabase row update) and the update-step ledger,
+   * then finalizes projects.status + the request + posts a summary. Idempotent
+   * and resume-safe (the recovery sweep calls it with preClaimed).
+   */
+  async function runUpdateRipple(args: { client: any; requestKey: string; preClaimed?: boolean; leaseHolder?: string }) {
+    const { client, requestKey } = args
+    const req = await loadUpdateRequest(requestKey)
+    if (!req) return
+    const sub: any = req.submission || {}
+    const form = sub.form
+    const plan = req.plan as any
+    const projectId = req.project_id
+    const workspaceId = req.workspace_id || sub.workspaceId || ''
+    const statusChannel = sub.statusChannel || sub.userId || ''
+    const threadTs = sub.threadTs
+    const current = sub.current || {}
+    if (!form || !plan || !projectId) return
+
+    const leaseHolder = args.leaseHolder || `update:${requestKey}:${randomUUID()}`
+    if (!args.preClaimed) {
+      const claim = await claimUpdateRequestFenced(requestKey, leaseHolder)
+      if (!claim.ok) return // a live worker (or the sweep) owns it
+    }
+
+    const config = workbookConfigFromEnv()
+    const supabase = createAdminClient()
+
+    const outcome = await runProjectUpdate(
+      { requestKey, projectId, submission: form, plan, current },
+      {
+        dispatch: (service, action, payload) => dispatch(service, action, payload) as any,
+        // Keep the projects row's Dropbox identity in lockstep with the moved
+        // folder (delivery matching keys off dropbox_safe_name). Read-modify-write
+        // so other external_ids/external_links keys are preserved.
+        persistDropboxMove: async (pid, o) => {
+          const { data } = await supabase.from('projects').select('external_ids, external_links').eq('id', pid).maybeSingle()
+          const external_ids = { ...((data as any)?.external_ids || {}), dropbox_safe_name: o.safeName }
+          const external_links = { ...((data as any)?.external_links || {}), dropbox_id: o.path, ...(o.url ? { dropbox: o.url } : {}) }
+          await supabase.from('projects').update({ external_ids, external_links }).eq('id', pid)
+        },
+        updateSheet: async (pid, f) => {
+          if (!config) return { success: true } // no workbook configured → no-op
+          const holder = `${leaseHolder}:sheet`
+          const claim = await claimWorkbookLeaseFenced(config.spreadsheetId, 'creation', holder)
+          if (!claim.ok) return { success: false, error: 'sheet_lease_unavailable' }
+          try {
+            const cells = kitOwnedCreationCells({
+              projectNumber: f.projectNumber,
+              clientName: f.clientName,
+              clientContact: f.clientContact,
+              projectName: f.projectName,
+              startDate: f.startDate,
+              deadline: f.deadline,
+              producerName: await resolveUserDisplayName(client, f.projectManager),
+              creativeDirectorName: await resolveUserDisplayName(client, f.creativeDirector),
+            })
+            const r = await updateBoundRow(config, pid, cells)
+            return { success: true, message: 'skipped' in r ? 'sheet unbound (skipped)' : `sheet row ${(r as any).rowIndex} updated` }
+          } catch (err: any) {
+            return { success: false, error: err.message }
+          } finally {
+            await renewWorkbookLease(config.spreadsheetId, 'creation', holder).catch(() => {})
+            await releaseWorkbookLease(config.spreadsheetId, 'creation', holder).catch(() => {})
+          }
+        },
+        updateProjectRow: async (pid, f, derived) => {
+          // Read fresh so Phase A's dropbox_safe_name write survives (we only
+          // touch scalar columns + merge the CD/number keys of external_ids).
+          const { data } = await supabase.from('projects').select('external_ids').eq('id', pid).maybeSingle()
+          const external_ids: Record<string, unknown> = { ...((data as any)?.external_ids || {}) }
+          if (f.projectNumber) external_ids.project_number = f.projectNumber
+          if (f.creativeDirector) external_ids.creative_director_slack_id = f.creativeDirector
+          else delete external_ids.creative_director_slack_id
+          const patch = {
+            name: f.projectName,
+            client: f.clientName,
+            project_code: derived.projectCode,
+            project_type: f.projectType || null,
+            start_date: f.startDate || null,
+            target_delivery: f.deadline || null,
+            brief_summary: f.description || null,
+            project_manager_slack_id: f.projectManager || null,
+            external_ids,
+          }
+          const { error } = await supabase.from('projects').update(patch).eq('id', pid)
+          if (error) return { success: false, error: error.message }
+          return { success: true }
+        },
+        ledger: {
+          getSteps: (rk) => getUpdateSteps(rk),
+          claimStep: (rk, svc, inputHash) =>
+            claimUpdateStep(rk, projectId, svc, leaseHolder, { inputHash }).then((c) => ({ ok: c.ok, fence: c.fence, status: c.status })),
+          recordExternalId: (rk, svc, fence, o) => recordUpdateStepExternalId(rk, svc, leaseHolder, fence, o),
+          completeStep: (rk, svc, fence, patch) => completeUpdateStep(rk, svc, leaseHolder, fence, patch),
+          renew: () => renewUpdateRequestLease(requestKey, leaseHolder),
+        },
+      },
+    )
+
+    if (outcome.abortedLostLease) {
+      console.warn(`[Bolt] update ripple for ${requestKey} yielded the lease; a newer holder will finish it.`)
+      return
+    }
+
+    if (outcome.allRequiredDone) {
+      await supabase.from('projects').update({ status: 'active' }).eq('id', projectId)
+      await updateUpdateRequest(requestKey, { status: 'completed' })
+      await client.chat.postMessage({
+        channel: statusChannel,
+        ...(threadTs ? { thread_ts: threadTs } : {}),
+        text: `:white_check_mark: *${form.projectName}* updated — changes rippled to ${outcome.ran.concat(outcome.resumed).filter((s: string) => s !== 'supabase' && s !== 'sheet').join(', ') || 'Kit\'s records'}.`,
+      })
+    } else {
+      await supabase.from('projects').update({ status: 'partial' }).eq('id', projectId)
+      await updateUpdateRequest(requestKey, { status: 'error', error: `incomplete: ${outcome.incompleteServices.join(',')}` })
+      const emoji = outcome.anyTerminal ? ':red_circle:' : ':warning:'
+      const tail = outcome.anyTerminal ? 'needs attention — it will not auto-complete' : 'partially applied — Kit will retry the rest'
+      await client.chat.postMessage({
+        channel: statusChannel,
+        ...(threadTs ? { thread_ts: threadTs } : {}),
+        text: `${emoji} *${form.projectName}* update ${tail}. Pending: ${outcome.incompleteServices.join(', ')}.`,
+      })
+    }
+  }
+
+  /**
+   * Recover stalled update ripples: requests left 'applying'/'error' after a
+   * crash, plus step-based discovery of requests with incomplete update steps.
+   * Each is re-driven idempotently (reconcile-by-marker + memoized steps), so a
+   * resumed ripple never double-applies. Runs alongside the create recovery.
+   */
+  async function recoverUpdateRipples() {
+    let recovered = 0
+    const seen = new Set<string>()
+    const drive = async (requestKey: string) => {
+      if (!requestKey || seen.has(requestKey)) return
+      seen.add(requestKey)
+      const holder = `update-recovery:${requestKey}:${randomUUID()}`
+      const claim = await claimUpdateRequestFenced(requestKey, holder)
+      if (!claim.ok) return // a live worker owns it
+      await runUpdateRipple({ client: app.client, requestKey, preClaimed: true, leaseHolder: holder })
+      recovered++
+    }
+    try {
+      for (const r of await listRecoverableUpdateRequests()) await drive(r.request_key)
+      for (const rk of await listUpdateRequestsWithIncompleteSteps()) await drive(rk)
+    } catch (err: any) {
+      console.warn('[Bolt] update recovery sweep failed:', err?.message)
+    }
+    return recovered
+  }
+
   async function runProjectControlRecoverySweep() {
     if (!projectControlCreationEnabled()) return { ran: false, reason: 'disabled' as const }
     const config = workbookConfigFromEnv()
     if (!config) return { ran: false, reason: 'workbook_not_configured' as const }
 
-    return runProjectControlRecovery({
+    // Recover stalled update ripples first (independent of the create recovery).
+    const updatesRecovered = await recoverUpdateRipples()
+
+    const createResult = await runProjectControlRecovery({
       listRecoverableRequests,
       // Step-based discovery: find requests that still own incomplete steps even
       // if the request row looks terminal (inconsistency safety net).
@@ -1312,6 +1628,7 @@ export function registerInteractionHandlers(app: App) {
       rebind: (b) => rebindIncompleteBinding(app.client, b.project_id, config),
       makeHolder: (rk) => `recovery:${rk}:${randomUUID()}`,
     })
+    return { ...createResult, updatesRecovered }
   }
 
   return { runProjectControlRecoverySweep }
@@ -1476,6 +1793,158 @@ function takePendingProvision(token: string): PendingProvision | null {
  * project number (the studio's unique key, encoded as the `{number}-{client}`
  * project_code). Null when there's no clash.
  */
+// ─── Update Project: data helpers ──────────────────────────
+
+function projectOptionLabel(row: { project_code?: string | null; client?: string | null; name?: string | null }): string {
+  const number = row.project_code ? String(row.project_code).split('-')[0] : ''
+  return [number, row.client, row.name].filter(Boolean).join(' — ') || (row.name || 'Untitled project')
+}
+
+/**
+ * Load the current values for the update modal + the external ids a rename needs
+ * (the Slack channel id and the current Dropbox folder path). Kit-owned fields
+ * are read from the projects row (Kit's mirror). NOTE: `clientContact` lives on
+ * the Master Project List, not the projects row, so it opens blank — a blank
+ * entry is a no-op (never clears the Sheet), and a typed one ripples.
+ */
+async function loadUpdateSnapshot(
+  projectId: string,
+  workspaceId: string,
+): Promise<{ status: string; snapshot: any; current: { slackChannelId?: string; dropboxPath?: string } } | null> {
+  if (!projectId) return null
+  try {
+    const sb = createAdminClient()
+    const { data } = await sb
+      .from('projects')
+      .select('id, name, client, project_code, project_type, status, start_date, target_delivery, brief_summary, budget_total, project_manager_slack_id, external_ids, external_links, slack_channel_id')
+      .eq('id', projectId)
+      .eq('workspace_id', workspaceId)
+      .maybeSingle()
+    if (!data) return null
+    const ext = (data as any).external_ids || {}
+    const links = (data as any).external_links || {}
+    const projectNumber = ext.project_number || (data.project_code ? String(data.project_code).split('-')[0] : '')
+    return {
+      status: (data as any).status,
+      snapshot: {
+        projectNumber,
+        clientName: (data as any).client || '',
+        clientContact: undefined,
+        projectName: (data as any).name || '',
+        projectType: (data as any).project_type || undefined,
+        projectManagerSlackId: (data as any).project_manager_slack_id || undefined,
+        creativeDirectorSlackId: ext.creative_director_slack_id || undefined,
+        startDate: (data as any).start_date || undefined,
+        targetDelivery: (data as any).target_delivery || undefined,
+        briefSummary: (data as any).brief_summary || undefined,
+        budgetTotal: (data as any).budget_total ?? null,
+      },
+      current: {
+        slackChannelId: links.slack_id || (data as any).slack_channel_id || undefined,
+        // external_links.dropbox_id stores the folder PATH (the dropbox agent's id).
+        dropboxPath: links.dropbox_id || undefined,
+      },
+    }
+  } catch (err: any) {
+    console.warn('[update] loadUpdateSnapshot failed:', err?.message)
+    return null
+  }
+}
+
+/** The workspace's editable projects (for the picker), newest first. */
+async function listEditableProjects(workspaceId: string): Promise<Array<{ id: string; label: string }>> {
+  if (!workspaceId) return []
+  try {
+    const sb = createAdminClient()
+    const { data } = await sb
+      .from('projects')
+      .select('id, name, client, project_code')
+      .eq('workspace_id', workspaceId)
+      .in('status', ['active', 'partial', 'paused'])
+      .order('created_at', { ascending: false })
+      .limit(100)
+    return (data || []).map((p: any) => ({ id: p.id, label: projectOptionLabel(p) }))
+  } catch (err: any) {
+    console.warn('[update] listEditableProjects failed:', err?.message)
+    return []
+  }
+}
+
+/** Infer the project bound to the Slack channel the flow was launched from. */
+async function findProjectByChannel(workspaceId: string, channelId: string): Promise<{ id: string; label: string } | null> {
+  if (!workspaceId || !channelId) return null
+  try {
+    const sb = createAdminClient()
+    const { data } = await sb
+      .from('projects')
+      .select('id, name, client, project_code, external_links, slack_channel_id, status')
+      .eq('workspace_id', workspaceId)
+      .or(`external_links->>slack_id.eq.${channelId},slack_channel_id.eq.${channelId}`)
+      .not('status', 'in', '("archived","cancelled")')
+      .limit(1)
+      .maybeSingle()
+    if (!data) return null
+    return { id: (data as any).id, label: projectOptionLabel(data as any) }
+  } catch (err: any) {
+    console.warn('[update] findProjectByChannel failed:', err?.message)
+    return null
+  }
+}
+
+/** Build the threaded preview message with the field diff, side-effects, and the
+ *  confirm/cancel buttons (mirrors postProvisionDupPrompt). */
+function buildUpdatePreview(
+  channel: string,
+  threadTs: string | undefined,
+  snapshot: any,
+  form: any,
+  plan: any,
+  requestKey: string,
+  collision: { id: string; name: string } | null,
+): any {
+  const fmt = (v: string | null, isUser?: boolean) => (v == null ? '_(empty)_' : isUser ? `<@${v}>` : `\`${v}\``)
+  const lines = (plan.changes as any[]).map((c) => `• *${c.label}:* ${fmt(c.old, c.isUser)} → ${fmt(c.new, c.isUser)}`)
+
+  const effects: string[] = []
+  if (plan.services.slack) effects.push(':slack: Rename the Slack channel (topic/purpose refreshed; the channel id is unchanged)')
+  if (plan.derived.dropboxSafeName) effects.push(`:file_folder: *Move* the Dropbox folder → \`${plan.derived.dropboxSafeName.new}\` — uploads in progress may be interrupted`)
+  if (plan.services.frameio) effects.push(':clapper: Rename the Frame.io project')
+  if (plan.services.harvest) effects.push(':moneybag: Rename the Harvest project')
+  if (plan.services.sheet) effects.push(':bar_chart: Update the Master Project List row (the Canvas re-renders automatically)')
+
+  const blocks: any[] = [
+    { type: 'section', text: { type: 'mrkdwn', text: `:pencil2: *Review changes to ${snapshot.projectName}*\n${lines.join('\n')}` } },
+    { type: 'section', text: { type: 'mrkdwn', text: `*This will:*\n${(effects.length ? effects : ['Update Kit\'s records only']).map((e) => `• ${e}`).join('\n')}` } },
+  ]
+  if (collision) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `:warning: *Heads up:* project number \`${form.projectNumber}\` already belongs to *${collision.name}*. Applying will leave two active projects sharing that number.` } })
+  }
+  blocks.push({
+    type: 'actions',
+    elements: [
+      { type: 'button', style: 'primary', text: { type: 'plain_text', text: 'Apply update' }, action_id: 'kit_update_confirm', value: requestKey },
+      { type: 'button', text: { type: 'plain_text', text: 'Cancel' }, action_id: 'kit_update_cancel', value: requestKey },
+    ],
+  })
+  return { channel, ...(threadTs ? { thread_ts: threadTs } : {}), text: `Review changes to ${snapshot.projectName}`, blocks }
+}
+
+/**
+ * Resolve the update-project card for a given Slack context: infer the project
+ * from the channel when possible, otherwise offer a picker of editable projects.
+ * Exported so the /kit update command and the DM keyword can post it.
+ */
+export async function buildUpdateProjectCardForContext(opts: {
+  teamId: string
+  channelId: string
+  threadTs?: string
+}): Promise<any> {
+  const workspaceId = await resolveWorkspaceId(opts.teamId)
+  const inferred = await findProjectByChannel(workspaceId, opts.channelId)
+  const candidates = inferred ? [] : await listEditableProjects(workspaceId)
+  return buildUpdateProjectCard({ channelId: opts.channelId, threadTs: opts.threadTs, inferred, candidates })
+}
+
 async function findExistingProject(
   workspaceId: string,
   projectNumber: string,

@@ -6,7 +6,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildNewProjectModal } from './modal'
+import { buildNewProjectModal, buildUpdateProjectModal } from './modal'
 
 interface Block {
   type: string
@@ -48,5 +48,57 @@ describe('buildNewProjectModal — Client Contact input', () => {
       assert.ok(byId[id], `${id} still present`)
       assert.notEqual(byId[id].optional, true) // these remain required
     }
+  })
+})
+
+describe('buildUpdateProjectModal — pre-fill', () => {
+  const modal = buildUpdateProjectModal({
+    projectId: 'P1',
+    workspaceId: 'WS',
+    channelId: 'C1',
+    snapshot: {
+      projectNumber: '2601', clientName: 'Nike', clientContact: 'Jane',
+      projectName: 'Summer Campaign', projectType: 'Brand Video',
+      projectManagerSlackId: 'U_PROD', creativeDirectorSlackId: 'U_CD',
+      startDate: '2026-01-01', targetDelivery: '2026-03-01', briefSummary: 'brief', budgetTotal: 120,
+    },
+  })
+  const byId: Record<string, any> = {}
+  for (const b of modal.blocks as any[]) if (b.block_id) byId[b.block_id] = b
+
+  it('uses the kit_update_project callback and carries the project id in metadata', () => {
+    assert.equal(modal.callback_id, 'kit_update_project')
+    assert.deepEqual(JSON.parse(modal.private_metadata), { project_id: 'P1', workspace_id: 'WS', channel_id: 'C1', thread_ts: '' })
+  })
+
+  it('shares the create modal block_ids so extraction is reusable', () => {
+    for (const id of ['project_number', 'client_name', 'client_contact', 'project_name', 'project_type', 'project_manager', 'creative_director', 'start_date', 'deadline', 'description']) {
+      assert.ok(byId[id], `${id} present`)
+    }
+  })
+
+  it('pre-fills text, user, date, and select fields from the snapshot', () => {
+    assert.equal(byId.project_number.element.initial_value, '2601')
+    assert.equal(byId.client_name.element.initial_value, 'Nike')
+    assert.equal(byId.project_name.element.initial_value, 'Summer Campaign')
+    assert.equal(byId.project_manager.element.initial_user, 'U_PROD')
+    assert.equal(byId.creative_director.element.initial_user, 'U_CD')
+    assert.equal(byId.start_date.element.initial_date, '2026-01-01')
+    assert.equal(byId.deadline.element.initial_date, '2026-03-01')
+    assert.equal(byId.project_type.element.initial_option.value, 'Brand Video')
+  })
+
+  it('omits budget, services, and team_members inputs', () => {
+    assert.equal(byId.budget, undefined)
+    assert.equal(byId.services, undefined)
+    assert.equal(byId.team_members, undefined)
+  })
+
+  it('opens even when optional fields are missing', () => {
+    const m = buildUpdateProjectModal({ projectId: 'P', workspaceId: 'W', channelId: 'C', snapshot: { projectNumber: '1', clientName: 'X', projectName: 'Y' } })
+    const ids: Record<string, any> = {}
+    for (const b of m.blocks as any[]) if (b.block_id) ids[b.block_id] = b
+    assert.equal(ids.creative_director.element.initial_user, undefined) // no CD → no initial_user
+    assert.equal(ids.project_type.element.initial_option, undefined)
   })
 })
