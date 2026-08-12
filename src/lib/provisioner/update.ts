@@ -147,6 +147,12 @@ export async function runProjectUpdate(
     // blind `existing.code !== code` diff would rewrite the invoicing code on a
     // name-only edit. Harvest gates its code PATCH on this flag.
     codeChanged: changed.has('project_number') || changed.has('client'),
+    // DIFF-SCOPE the Harvest CLIENT re-parent for the same reason: Kit's cached
+    // `client` can differ from Harvest's real client (a synced project, or a client
+    // renamed directly in Harvest), so a blind name-diff would findOrCreateClient a
+    // DUPLICATE and re-parent budgets/reporting on an unrelated (name/number) edit.
+    // Harvest only re-parents when the diff actually touched the Client field.
+    clientChanged: changed.has('client'),
   }
 
   const externalServices = (['slack', 'frameio', 'harvest', 'dropbox'] as const).filter(

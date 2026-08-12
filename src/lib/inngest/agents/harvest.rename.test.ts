@@ -90,6 +90,27 @@ describe("harvest 'rename' reconciliation", () => {
     assert.equal('code' in patch.body, false) // …but the code is left untouched
   })
 
+  it('does NOT re-parent the Harvest client on a name-only edit, even when the cached client diverges', async () => {
+    // Kit's cached client ('Nike') differs from Harvest's real client ('Nike, Inc.'),
+    // but the diff didn't touch Client → no findOrCreateClient, no re-parent (which
+    // would create a DUPLICATE client and move budgets/reporting under it).
+    const calls = harvestMock({
+      list: [],
+      byId: { '555': { id: 555, name: 'Old Name', code: '2601-Nike', is_active: true, notes: '', client: { id: 9, name: 'Nike, Inc.' } } },
+      onPatch: (id, b) => ({ id: Number(id), name: b.name ?? 'Old Name', code: '2601-Nike', is_active: true, client: { id: 9, name: 'Nike, Inc.' } }),
+    })
+    const res: any = await harvestAgent.handler('rename', {
+      projectId: 'KP1', harvestProjectId: 555, projectName: 'New Name', client: 'Nike',
+      // clientChanged omitted (Client not in the diff)
+    })
+    assert.equal(res.success, true)
+    // findOrCreateClient was never called (no /clients traffic), and the PATCH
+    // carries no client_id → the project stays under its current Harvest client.
+    assert.equal(calls.some((c) => /\/clients/.test(c.url)), false)
+    const patch = calls.find((c) => c.method === 'PATCH')!
+    assert.equal('client_id' in patch.body, false)
+  })
+
   it('DOES rewrite the code when the diff touched number/client (codeChanged: true)', async () => {
     const calls = harvestMock({
       list: [],

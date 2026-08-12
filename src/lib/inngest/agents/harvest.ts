@@ -132,10 +132,14 @@ async function rename(payload: Record<string, unknown>): Promise<AgentResult> {
     // different provenance, so a blind `existing.code !== code` string diff would
     // rewrite the invoicing code on an unrelated (e.g. name-only) edit.
     const codeChanged = payload.codeChanged === true && code !== undefined && existing.code !== code
-    // Re-parent to the new Harvest client when the client changed, so client-
-    // grouped reporting/budgets follow the rename (find-or-create, mirroring
-    // provision). Compared case-insensitively against the project's current client.
-    const clientChanged = !!client && (existing.client?.name || '').toLowerCase() !== client.toLowerCase()
+    // Re-parent to the new Harvest client ONLY when the diff actually touched the
+    // Client field (payload.clientChanged, set diff-scoped by the executor) AND the
+    // value differs. Without the diff-scope gate, a name/number-only edit on a
+    // project whose Kit-cached client diverges from Harvest's real client (a synced
+    // project, or a client renamed directly in Harvest) would findOrCreateClient a
+    // DUPLICATE and silently re-parent budgets/reporting.
+    const clientChanged =
+      payload.clientChanged === true && !!client && (existing.client?.name || '').toLowerCase() !== client.toLowerCase()
     let clientId: number | undefined
     if (clientChanged) {
       clientId = (await findOrCreateClient(client)).id
