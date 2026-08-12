@@ -16,8 +16,9 @@
 
 import { inngest } from './client'
 import { runAllChecks } from '../health/run'
-import { loadRecentCheckins, studioToday, studioDateLabel } from '../health/checkins-digest'
+import { loadRecentCheckins } from '../health/checkins-digest'
 import { summarizeCheckins, unavailableCheckinSummary, formatHealthDigest } from '../health/digest'
+import { studioToday, studioDateLabel } from '../time/studio-date'
 import { postSlackAsKit } from '../health/notify'
 
 // Steve (rangerandfox) — the "only me" recipient. Overridable without a deploy.
@@ -49,11 +50,21 @@ export const healthDailyDigest = inngest.createFunction(
     const summary = loaded.ok ? summarizeCheckins(loaded.rows, studioToday(now)) : unavailableCheckinSummary()
     const text = formatHealthDigest(checks, summary, studioDateLabel(now))
 
-    const sent = await step.run('dm', () => postSlackAsKit(recipient, text))
+    // Delivery IS the heartbeat, so a dropped DM must not report green.
+    // A configured-but-failed send throws → the step's retries:1 engages for a
+    // transient blip, and a persistent failure (revoked token, stale recipient)
+    // surfaces as a red Inngest run instead of a silent success. No token is a
+    // deliberate no-op (the digest is simply not wired up), not a failure.
+    const delivery = await step.run('dm', async () => {
+      if (!process.env.SLACK_BOT_TOKEN) return 'no-token'
+      const ok = await postSlackAsKit(recipient, text)
+      if (!ok) throw new Error(`health digest DM to ${recipient} failed (chat.postMessage not ok)`)
+      return 'sent'
+    })
 
     return {
       recipient,
-      sent,
+      delivery,
       down: checks.filter((c) => !c.ok).map((c) => c.key),
       checkinsUnavailable: summary.unavailable,
       repliedUnlogged: summary.repliedUnlogged,

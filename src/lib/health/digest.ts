@@ -59,7 +59,12 @@ export function unavailableCheckinSummary(): CheckinSummary {
   }
 }
 
-const TERMINAL = new Set(['logged', 'skipped'])
+// Statuses that are NOT part of the "replied but unlogged" backlog: 'logged'
+// and 'skipped' are genuinely done, and 'failed' is already reported by its own
+// counter — counting a failed row here too would double-report one row as both
+// "N confirms FAILED" and "N replies still unlogged" (matches the runbook SQL,
+// which scopes replied_but_unlogged to the non-terminal, non-failed statuses).
+const BACKLOG_EXCLUDE = new Set(['logged', 'skipped', 'failed'])
 
 function hasHarvestIds(v: unknown): boolean {
   return Array.isArray(v) && v.length > 0
@@ -98,7 +103,7 @@ export function summarizeCheckins(rows: CheckinRow[], todayISO: string): Checkin
 
     if (r.check_in_date === todayISO && logged) s.loggedToday++
 
-    if (past && !TERMINAL.has(r.status)) {
+    if (past && !BACKLOG_EXCLUDE.has(r.status)) {
       if (replied) {
         s.repliedUnlogged++
         if (!s.oldestUnlogged || r.check_in_date < s.oldestUnlogged) s.oldestUnlogged = r.check_in_date
