@@ -82,6 +82,18 @@ describe('summarizeCheckins', () => {
     assert.equal(s.harvestIdButStuck, 0)
   })
 
+  it('a past-day failed row with a reply counts once as failed, not also as backlog', () => {
+    // confirm.ts only reaches 'failed' after a reply, so reply_ts is set; the
+    // row is reported by s.failed and must not also inflate repliedUnlogged.
+    const s = summarizeCheckins(
+      [row({ check_in_date: '2026-08-05', status: 'failed', reply_ts: '1.2', harvest_entry_ids: null })],
+      TODAY,
+    )
+    assert.equal(s.failed, 1)
+    assert.equal(s.repliedUnlogged, 0)
+    assert.equal(s.oldestUnlogged, null)
+  })
+
   it('counts only today rows toward loggedToday and treats today as not-past', () => {
     const s = summarizeCheckins(
       [
