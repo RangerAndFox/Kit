@@ -371,11 +371,13 @@ export async function handleCheckinReply(opts: {
   if (!claimed || claimed.length === 0) return false
 
   // Re-open the check-in (undo the claim) — used on every path where this
-  // message turned out not to complete the check-in.
+  // message turned out not to complete the check-in. Clear reply_ts too: the
+  // row is unanswered again, and a leftover stamp mislabels it as a real reply
+  // downstream (health digest / runbook). Mirrors handleCheckinRedo's revert.
   const reopen = () =>
     sb
       .from('daily_hours_checkins')
-      .update({ status: 'sent', updated_at: new Date().toISOString() })
+      .update({ status: 'sent', reply_ts: null, updated_at: new Date().toISOString() })
       .eq('id', open.id)
       .eq('status', 'replied')
 

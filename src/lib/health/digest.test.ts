@@ -111,6 +111,18 @@ describe('summarizeCheckins', () => {
     const s = summarizeCheckins([row({ status: 'skipped', reply_ts: '1.2', harvest_entry_ids: null })], TODAY)
     assert.equal(s.repliedUnlogged, 0)
   })
+
+  it('a reopened past-day row (status=sent WITH a stale reply_ts) is sent-no-reply, not lost hours', () => {
+    // reply.ts reopen() reverts a non-hours/unparseable reply to 'sent'; an
+    // open status is unanswered regardless of a leftover reply_ts stamp.
+    const s = summarizeCheckins(
+      [row({ check_in_date: '2026-08-05', status: 'sent', reply_ts: '1.2', harvest_entry_ids: null })],
+      TODAY,
+    )
+    assert.equal(s.repliedUnlogged, 0)
+    assert.equal(s.sentNoReply, 1)
+    assert.equal(s.oldestUnlogged, null)
+  })
 })
 
 describe('formatHealthDigest', () => {
