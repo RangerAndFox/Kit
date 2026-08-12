@@ -274,8 +274,14 @@ async function folderExists(path: string): Promise<boolean> {
   try {
     const md = await dropboxPost('/files/get_metadata', { path })
     return !!md && md['.tag'] === 'folder'
-  } catch {
-    return false
+  } catch (err: any) {
+    // Only a GENUINE absence is `false`. Any other error (transient 5xx / timeout /
+    // rate-limit surviving withRetry) is "unknown" → re-throw. moveFolder's collision
+    // guard reads folderExists(fromPath) to tell a completed move ("source gone")
+    // from a live collision; a blip collapsed to `false` would misread a still-live
+    // collision as "source gone" and repoint the project at the wrong folder.
+    if (/not_found|not_a_folder/i.test(err?.message || '')) return false
+    throw err
   }
 }
 

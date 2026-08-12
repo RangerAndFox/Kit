@@ -1709,8 +1709,13 @@ export function registerInteractionHandlers(app: App) {
       // stays 'error' so recovery keeps retrying the transient services.
       const terminalStatus = outcome.unrecoverable ? 'needs_attention' : 'error'
       await updateUpdateRequest(requestKey, { status: terminalStatus, error: `incomplete: ${outcome.incompleteServices.join(',')}` })
-      const emoji = outcome.anyTerminal ? ':red_circle:' : ':warning:'
-      const tail = outcome.anyTerminal ? 'needs attention — it will not auto-complete' : 'partially applied — Kit will retry the rest'
+      // Message keys off `unrecoverable`, NOT `anyTerminal`, so it agrees with the
+      // persisted status: a mix of a terminal service AND a retryable one stays
+      // 'error' (recovery keeps retrying), so say "will retry the rest" — never the
+      // contradictory ":red_circle: will not auto-complete" that would re-post every
+      // recovery cycle while Kit is in fact still retrying.
+      const emoji = outcome.unrecoverable ? ':red_circle:' : ':warning:'
+      const tail = outcome.unrecoverable ? 'needs attention — it will not auto-complete' : 'partially applied — Kit will retry the rest'
       await client.chat.postMessage({
         channel: statusChannel,
         ...(threadTs ? { thread_ts: threadTs } : {}),

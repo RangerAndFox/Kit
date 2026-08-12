@@ -112,5 +112,9 @@ export function buildUpdateProjectCard(opts: {
  */
 export function isUpdateProjectTrigger(text: string): boolean {
   const t = (text || '').trim().toLowerCase()
-  return /^\/?update\s+project\b/.test(t) || /^\/?edit\s+project\b/.test(t)
+  if (t.length > 60) return false // long/conversational messages go to the orchestrator
+  // End-anchored like isNewProjectTrigger/isStoryboardTrigger: only a short, strict
+  // intent fires the bare-keyword shortcut. "update project 2601s deadline to ..."
+  // is left for the orchestrator to parse instead of being hijacked into the picker.
+  return /^\/?(update|edit)\s+project(\s+please)?\.?$/.test(t)
 }

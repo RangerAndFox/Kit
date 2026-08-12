@@ -121,6 +121,21 @@ describe("dropbox 'rename' (move folder)", () => {
     assert.notEqual(res.terminal, true) // dest missing → retryable, not terminal
   })
 
+  it('does NOT treat a TRANSIENT metadata read error as "source gone" (retryable, not false success)', async () => {
+    // move_v2 conflicts; the fromPath read hits a transient 5xx (NOT not_found).
+    // folderExists must re-throw it, so the move never falsely resolves as "done".
+    dropboxMock({
+      '/files/move_v2': () => ({ ok: false, status: 409, text: 'path/conflict/folder/..' }),
+      '/files/get_metadata': () => ({ ok: false, status: 500, text: 'internal_server_error' }),
+    })
+    const res: any = await dropboxAgent.handler('rename', {
+      projectId: 'P', fromPath: '/production/2026/old',
+      projectNumber: '2601', client: 'Adidas', projectName: 'Summer Campaign',
+    })
+    assert.equal(res.success, false) // retryable failure — never a silent success
+    assert.notEqual(res.terminal, true)
+  })
+
   it('is terminal when fromPath is missing', async () => {
     dropboxMock({})
     const res: any = await dropboxAgent.handler('rename', { projectId: 'P', projectNumber: '2601', client: 'Adidas', projectName: 'Summer Campaign' })
