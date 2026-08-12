@@ -77,10 +77,13 @@ async function main() {
   // Per-user DM timeline (ALL statuses) so each row's window ends at that
   // person's NEXT check-in DM — a confirmation typed the next day for the next
   // check-in is never miscredited to this one.
+  // Must cover at least as far back as the stuck rows (SINCE), not a fixed 30d —
+  // otherwise a stuck row older than 30d loses its next-DM boundary and the
+  // history window can sweep in a later, unrelated check-in's reply.
   const { data: allRows } = await sb
     .from('daily_hours_checkins')
     .select('slack_user_id, dm_ts')
-    .gte('check_in_date', defaultSince())
+    .gte('check_in_date', SINCE)
     .not('dm_ts', 'is', null)
   const dmTimeline = new Map<string, number[]>()
   for (const r of allRows || []) {
