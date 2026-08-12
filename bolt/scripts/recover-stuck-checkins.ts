@@ -60,12 +60,6 @@ const USERS = process.argv
 // only ever target one specific check-in, never a bulk replay.
 const DATE = arg('date')
 
-// A reply window can never span more than this many hours after the check-in
-// DM. Check-ins fire daily, so a same-evening / next-morning reply is well
-// within this, while a multi-day gap (a weekend, a vacation) can't pull
-// unrelated DMs into one parse.
-const WINDOW_CAP_HOURS = 20
-
 function defaultSince(): string {
   // 21 days back, computed off the process date; recovery only reaches recent
   // stuck rows (older ones are almost certainly abandoned, not un-processed).
@@ -113,45 +107,34 @@ async function main() {
     `${COMMIT ? 'RECOVER (writing)' : 'PREVIEW (no writes)'} — ${rows.length} stuck check-in(s) ${scope}\n`,
   )
 
-  // Each reply is attributed to the check-in it followed. The window runs from
-  // this check-in's DM up to the user's NEXT check-in of ANY status (not just
-  // the next STUCK one — using only stuck rows let a window span days of
-  // unrelated DMs when check-ins were sparse, so the parser ingested a week of
-  // chatter as one giant entry), and never longer than WINDOW_CAP_HOURS.
-  const boundaryUsers = Array.from(new Set(rows.map((r) => r.slack_user_id)))
-  const { data: allCheckins } = await sb
-    .from('daily_hours_checkins')
-    .select('slack_user_id, dm_ts')
-    .in('slack_user_id', boundaryUsers)
-    .not('dm_ts', 'is', null)
-  const dmTsByUser = new Map<string, number[]>()
-  for (const c of allCheckins || []) {
-    const list = dmTsByUser.get(c.slack_user_id) || []
-    list.push(Number(c.dm_ts))
-    dmTsByUser.set(c.slack_user_id, list)
-  }
-  for (const list of dmTsByUser.values()) list.sort((a, b) => a - b)
-
-  // Slack `latest` bound (unix seconds string) for one check-in's reply window.
-  const windowLatest = (slackUserId: string, dmTs: string): string => {
-    const t = Number(dmTs)
-    const nextAny = (dmTsByUser.get(slackUserId) || []).find((x) => x > t)
-    const cap = t + WINDOW_CAP_HOURS * 3600
-    return (nextAny != null ? Math.min(nextAny, cap) : cap).toFixed(6)
+  // Attribute each reply to the check-in it followed: search from this
+  // check-in's DM up to the same user's NEXT stuck check-in DM (open-ended for
+  // their most recent one). A wide window is deliberate — people often answer a
+  // check-in a day or more later — so recovery finds the reply wherever it
+  // landed. Over-capture (a span that sweeps in unrelated DMs) is a PREVIEW
+  // concern only: it can't cause a bad write, because --commit is restricted to
+  // one eyeballed --user + --date at a time.
+  const nextDmByUser = new Map<string, string[]>()
+  for (const r of rows) {
+    const list = nextDmByUser.get(r.slack_user_id) || []
+    list.push(r.dm_ts)
+    nextDmByUser.set(r.slack_user_id, list)
   }
 
   const summary = { recoverable: 0, logged: 0, noReply: 0, notHours: 0, errors: 0 }
 
   for (const open of rows) {
     const tag = `${open.slack_user_id} ${open.check_in_date}`
-    const latest = windowLatest(open.slack_user_id, open.dm_ts)
+    const userTs = nextDmByUser.get(open.slack_user_id) || []
+    const idx = userTs.indexOf(open.dm_ts)
+    const latest = idx >= 0 && idx + 1 < userTs.length ? userTs[idx + 1] : undefined
 
     let reply: any
     try {
       const hist = await client.conversations.history({
         channel: open.dm_channel_id,
         oldest: open.dm_ts,
-        latest,
+        ...(latest ? { latest } : {}),
         inclusive: false,
         limit: 100,
       })
