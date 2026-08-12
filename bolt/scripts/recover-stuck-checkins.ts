@@ -15,12 +15,21 @@
  * and the script says so — that one genuinely needs a nudge.
  *
  * Run from the bolt/ directory:
- *   npx tsx scripts/recover-stuck-checkins.ts            # PREVIEW only (no writes)
- *   npx tsx scripts/recover-stuck-checkins.ts --commit   # replay + log to Harvest
+ *   # PREVIEW everything (no writes) — survey what's recoverable:
+ *   npx tsx scripts/recover-stuck-checkins.ts
+ *   # PREVIEW one person/day:
+ *   npx tsx scripts/recover-stuck-checkins.ts --user=U012345 --date=2026-08-10
+ *   # COMMIT one verified check-in (must target exactly one user + one day):
+ *   npx tsx scripts/recover-stuck-checkins.ts --user=U012345 --date=2026-08-10 --commit
  *
- * Optional filters:
+ * Writes are deliberately surgical: --commit refuses to run without a single
+ * --user and a single --date, so an LLM misparse can never bulk-write to
+ * Harvest. Preview freely, eyeball the parse, then commit that one day.
+ *
+ * Optional filters (preview):
  *   --since=YYYY-MM-DD   only check-ins on/after this date (default: 21 days ago)
  *   --user=U012345       only this Slack user id (repeatable)
+ *   --date=YYYY-MM-DD    only this exact check-in day (required for --commit)
  *
  * Required env (loaded via dotenv):
  *   SLACK_BOT_TOKEN
@@ -47,6 +56,15 @@ const COMMIT = process.argv.includes('--commit')
 const USERS = process.argv
   .filter((a) => a.startsWith('--user='))
   .map((a) => a.split('=')[1])
+// Optional single-day filter (YYYY-MM-DD). Required for --commit so a write can
+// only ever target one specific check-in, never a bulk replay.
+const DATE = arg('date')
+
+// A reply window can never span more than this many hours after the check-in
+// DM. Check-ins fire daily, so a same-evening / next-morning reply is well
+// within this, while a multi-day gap (a weekend, a vacation) can't pull
+// unrelated DMs into one parse.
+const WINDOW_CAP_HOURS = 20
 
 function defaultSince(): string {
   // 21 days back, computed off the process date; recovery only reaches recent
@@ -58,6 +76,14 @@ const SINCE = arg('since') || defaultSince()
 
 async function main() {
   if (!process.env.SLACK_BOT_TOKEN) throw new Error('SLACK_BOT_TOKEN required')
+  // A write can only ever hit one specific check-in: require a single user and
+  // a single day. Preview stays unrestricted so you can survey everything first.
+  if (COMMIT && (USERS.length !== 1 || !DATE)) {
+    throw new Error(
+      '--commit requires exactly one --user=<slackId> and one --date=YYYY-MM-DD ' +
+        '(targeted recovery only — preview the parse first, then commit that one day).',
+    )
+  }
   const client = new WebClient(process.env.SLACK_BOT_TOKEN)
   const app = { client } // the check-in pipeline only touches app.client
   const sb = createAdminClient()
@@ -68,10 +94,11 @@ async function main() {
       'id, staff_id, slack_user_id, check_in_date, status, dm_channel_id, dm_ts, candidate_projects',
     )
     .in('status', ['sent', 'nudged'])
-    .gte('check_in_date', SINCE)
     .not('dm_channel_id', 'is', null)
     .order('slack_user_id', { ascending: true })
     .order('dm_ts', { ascending: true })
+  // A single --date targets one day exactly; otherwise sweep from --since back.
+  q = DATE ? q.eq('check_in_date', DATE) : q.gte('check_in_date', SINCE)
   if (USERS.length) q = q.in('slack_user_id', USERS)
 
   const { data: rows, error } = await q
@@ -81,34 +108,50 @@ async function main() {
     return
   }
 
+  const scope = DATE ? `on ${DATE}` : `on/after ${SINCE}`
   console.log(
-    `${COMMIT ? 'RECOVER (writing)' : 'PREVIEW (no writes)'} — ${rows.length} stuck check-in(s) on/after ${SINCE}\n`,
+    `${COMMIT ? 'RECOVER (writing)' : 'PREVIEW (no writes)'} — ${rows.length} stuck check-in(s) ${scope}\n`,
   )
 
-  // Attribute each reply to the check-in it followed: search only the window
-  // between this check-in's DM and the same user's NEXT check-in DM, so a reply
-  // is never double-counted across two stuck days.
-  const nextDmByUser = new Map<string, string[]>()
-  for (const r of rows) {
-    const list = nextDmByUser.get(r.slack_user_id) || []
-    list.push(r.dm_ts)
-    nextDmByUser.set(r.slack_user_id, list)
+  // Each reply is attributed to the check-in it followed. The window runs from
+  // this check-in's DM up to the user's NEXT check-in of ANY status (not just
+  // the next STUCK one — using only stuck rows let a window span days of
+  // unrelated DMs when check-ins were sparse, so the parser ingested a week of
+  // chatter as one giant entry), and never longer than WINDOW_CAP_HOURS.
+  const boundaryUsers = Array.from(new Set(rows.map((r) => r.slack_user_id)))
+  const { data: allCheckins } = await sb
+    .from('daily_hours_checkins')
+    .select('slack_user_id, dm_ts')
+    .in('slack_user_id', boundaryUsers)
+    .not('dm_ts', 'is', null)
+  const dmTsByUser = new Map<string, number[]>()
+  for (const c of allCheckins || []) {
+    const list = dmTsByUser.get(c.slack_user_id) || []
+    list.push(Number(c.dm_ts))
+    dmTsByUser.set(c.slack_user_id, list)
+  }
+  for (const list of dmTsByUser.values()) list.sort((a, b) => a - b)
+
+  // Slack `latest` bound (unix seconds string) for one check-in's reply window.
+  const windowLatest = (slackUserId: string, dmTs: string): string => {
+    const t = Number(dmTs)
+    const nextAny = (dmTsByUser.get(slackUserId) || []).find((x) => x > t)
+    const cap = t + WINDOW_CAP_HOURS * 3600
+    return (nextAny != null ? Math.min(nextAny, cap) : cap).toFixed(6)
   }
 
   const summary = { recoverable: 0, logged: 0, noReply: 0, notHours: 0, errors: 0 }
 
   for (const open of rows) {
     const tag = `${open.slack_user_id} ${open.check_in_date}`
-    const userTs = nextDmByUser.get(open.slack_user_id) || []
-    const idx = userTs.indexOf(open.dm_ts)
-    const latest = idx >= 0 && idx + 1 < userTs.length ? userTs[idx + 1] : undefined
+    const latest = windowLatest(open.slack_user_id, open.dm_ts)
 
     let reply: any
     try {
       const hist = await client.conversations.history({
         channel: open.dm_channel_id,
         oldest: open.dm_ts,
-        ...(latest ? { latest } : {}),
+        latest,
         inclusive: false,
         limit: 100,
       })
@@ -217,7 +260,10 @@ async function main() {
     }`,
   )
   if (!COMMIT && summary.recoverable > 0) {
-    console.log('Re-run with --commit to replay these into Harvest.')
+    console.log(
+      'To log ONE verified check-in, re-run targeting it: ' +
+        '--user=<slackId> --date=YYYY-MM-DD --commit',
+    )
   }
 }
 
