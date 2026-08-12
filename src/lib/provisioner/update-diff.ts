@@ -125,9 +125,19 @@ export function computeUpdatePlan(
   next: UpdateForm,
   provisioned?: ProvisionedServices,
 ): UpdatePlan {
+  // Client is identity-bearing (feeds the Slack slug / Dropbox folder / Frame.io
+  // label / Harvest code). client_name is optional in the modal only so a
+  // Harvest-synced NULL-client project stays submittable — NOT so an operator can
+  // CLEAR the client on a provisioned project. A blank client would ripple an empty
+  // client to Slack's rename, which hard-fails on empty and re-fails every recovery
+  // cycle. So a blank client is coerced to the current value here (a no-op for BOTH
+  // the diff AND the derived identity strings); you can change the client, never
+  // clear it. Filling a blank one in is still a real change.
+  const effClientName = norm(next.clientName) === '' ? (current.clientName ?? '') : next.clientName
+
   const specs: FieldSpec[] = [
     { field: 'project_number', label: 'Project Number', current: current.projectNumber, next: next.projectNumber },
-    { field: 'client', label: 'Client', current: current.clientName, next: next.clientName },
+    { field: 'client', label: 'Client', current: current.clientName, next: effClientName },
     { field: 'client_contact', label: 'Client Contact', current: current.clientContact, next: next.clientContact },
     { field: 'project_name', label: 'Project Name', current: current.projectName, next: next.projectName },
     { field: 'project_type', label: 'Project Type', current: current.projectType, next: next.projectType },
@@ -169,7 +179,7 @@ export function computeUpdatePlan(
   const newIds = deriveProjectIdentifiers({
     projectId: current.projectId,
     projectNumber: next.projectNumber,
-    client: next.clientName,
+    client: effClientName,
     projectName: next.projectName,
   })
 

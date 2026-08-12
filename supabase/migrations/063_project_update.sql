@@ -59,9 +59,12 @@ create table if not exists public.project_update_requests (
     check (decision is null or decision in ('apply', 'cancel')),
   -- 'cancelled' is a TERMINAL user cancel, distinct from a retryable 'error', so
   -- the Railway recovery sweep never resumes a ripple the user cancelled.
+  -- 'needs_attention' is a TERMINAL failure: every incomplete service is permanently
+  -- terminal (nothing retryable remains), so recovery must NOT re-drive it — otherwise
+  -- it re-runs and re-posts the ":red_circle: will not auto-complete" message forever.
   status text not null default 'pending'
     constraint project_update_requests_status_check
-    check (status in ('pending', 'awaiting_confirm', 'applying', 'completed', 'error', 'cancelled')),
+    check (status in ('pending', 'awaiting_confirm', 'applying', 'completed', 'error', 'needs_attention', 'cancelled')),
   attempts integer not null default 0,
   -- Lease so only one worker drives a given ripple at a time; an expired lease is
   -- reclaimable after a crash.

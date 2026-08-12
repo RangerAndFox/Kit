@@ -95,6 +95,22 @@ describe('computeUpdatePlan — non-identity scalar change', () => {
     assert.equal(plan.services.supabase, true)
   })
 
+  it('a blank client is a no-op (never a clear) — clearing it would wedge the Slack rename', () => {
+    // client_name is optional only so a Harvest-synced null-client project stays
+    // submittable; blanking it on a provisioned project must NOT ripple an empty
+    // client to Slack (which hard-fails on empty client and re-fails forever).
+    const plan = computeUpdatePlan(BASE, formFrom(BASE, { clientName: '', deadline: '2026-04-01' }))
+    assert.deepEqual(plan.changes.map((c) => c.field), ['deadline'])
+    assert.equal(plan.changes.some((c) => c.field === 'client'), false)
+    assert.equal(plan.services.slack, false)
+  })
+
+  it('changing the client to a new value still ripples', () => {
+    const plan = computeUpdatePlan(BASE, formFrom(BASE, { clientName: 'Adidas' }))
+    assert.equal(plan.changes.some((c) => c.field === 'client'), true)
+    assert.equal(plan.identityChanged, true)
+  })
+
   it('producer change is a user field and ripples to sheet + supabase', () => {
     const plan = computeUpdatePlan(BASE, formFrom(BASE, { projectManager: 'U_NEWPROD' }))
     const change = plan.changes.find((c) => c.field === 'project_manager')

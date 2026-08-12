@@ -1587,6 +1587,7 @@ export function registerInteractionHandlers(app: App) {
               start_date: 'Start Date',
               deadline: 'End Date',
               creative_director: 'Creative Director',
+              project_manager: 'Producer',
             }
             const have = new Set(cells.map((c: any) => c.header))
             for (const ch of (plan.changes as any[])) {
@@ -1610,7 +1611,7 @@ export function registerInteractionHandlers(app: App) {
           const changed = new Set((plan.changes as any[]).map((c) => c.field))
           const patch: Record<string, unknown> = {}
           if (changed.has('project_name')) patch.name = f.projectName
-          if (changed.has('client')) patch.client = f.clientName
+          if (changed.has('client')) patch.client = f.clientName || null
           if (changed.has('project_number') || changed.has('client')) patch.project_code = derived.projectCode
           if (changed.has('project_type')) patch.project_type = f.projectType || null
           if (changed.has('start_date')) patch.start_date = f.startDate || null
@@ -1701,7 +1702,13 @@ export function registerInteractionHandlers(app: App) {
       if (curStatus && curStatus !== 'paused') {
         await supabase.from('projects').update({ status: 'partial' }).eq('id', projectId)
       }
-      await updateUpdateRequest(requestKey, { status: 'error', error: `incomplete: ${outcome.incompleteServices.join(',')}` })
+      // When EVERY incomplete service is permanently terminal, mark the request
+      // 'needs_attention' — a terminal status listRecoverableUpdateRequests excludes
+      // — so the recovery sweep never re-drives it (which would re-post the
+      // "will not auto-complete" message every cycle). A merely-retryable partial
+      // stays 'error' so recovery keeps retrying the transient services.
+      const terminalStatus = outcome.unrecoverable ? 'needs_attention' : 'error'
+      await updateUpdateRequest(requestKey, { status: terminalStatus, error: `incomplete: ${outcome.incompleteServices.join(',')}` })
       const emoji = outcome.anyTerminal ? ':red_circle:' : ':warning:'
       const tail = outcome.anyTerminal ? 'needs attention — it will not auto-complete' : 'partially applied — Kit will retry the rest'
       await client.chat.postMessage({

@@ -90,6 +90,13 @@ export interface UpdateOutcome {
   incompleteServices: string[]
   allRequiredDone: boolean
   anyTerminal: boolean
+  /**
+   * True when the ripple is NOT done and EVERY incomplete service is terminal —
+   * there is no retryable work left, so re-driving can only reproduce the same
+   * permanent failure. The caller persists a non-recoverable status so the
+   * recovery sweep stops re-claiming (and re-spamming) it.
+   */
+  unrecoverable: boolean
   abortedLostLease: boolean
   results: Record<string, UpdateStepRunResult>
   /** Suggested projects.status for the caller to persist. */
@@ -178,12 +185,18 @@ export async function runProjectUpdate(
     deps.ledger,
   )
 
+  const unrecoverable =
+    !outcome.allRequiredDone &&
+    outcome.incompleteServices.length > 0 &&
+    outcome.incompleteServices.every((svc) => outcome.statusByService[svc] === 'terminal')
+
   return {
     ran: outcome.ran,
     resumed: outcome.resumed,
     incompleteServices: outcome.incompleteServices,
     allRequiredDone: outcome.allRequiredDone,
     anyTerminal: outcome.anyTerminal,
+    unrecoverable,
     abortedLostLease: outcome.abortedLostLease,
     results: outcome.results as Record<string, UpdateStepRunResult>,
     finalStatus: outcome.allRequiredDone ? 'active' : 'partial',

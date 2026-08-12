@@ -160,6 +160,25 @@ describe('runProjectUpdate — durability', () => {
     const out = await runProjectUpdate({ updateRequestId: 'R', projectId: SNAP.projectId, submission: f, plan, current: { slackChannelId: 'C1', dropboxPath: '/p/x' } }, deps)
     assert.equal(out.anyTerminal, true)
     assert.equal(out.finalStatus, 'partial')
+    // frameio is the ONLY incomplete service and it's terminal → nothing retryable
+    // remains → unrecoverable (caller persists 'needs_attention', not 'error').
+    assert.equal(out.unrecoverable, true)
+  })
+
+  it('is NOT unrecoverable when a retryable failure sits alongside a terminal one', async () => {
+    const f = form({ clientName: 'Adidas' })
+    const plan = computeUpdatePlan(SNAP, f)
+    const { deps } = fakeDeps({
+      dispatch: async (service): Promise<UpdateStepRunResult> => {
+        if (service === 'frameio') return { success: false, terminal: true, error: 'ambiguous' }
+        if (service === 'harvest') return { success: false, error: 'transient' } // retryable
+        if (service === 'dropbox') return { success: true, id: '/p/new', data: { newSafeName: 'ns', path: '/p/new' } }
+        return { success: true }
+      },
+    })
+    const out = await runProjectUpdate({ updateRequestId: 'R', projectId: SNAP.projectId, submission: f, plan, current: { slackChannelId: 'C1', dropboxPath: '/p/x' } }, deps)
+    assert.equal(out.anyTerminal, true)
+    assert.equal(out.unrecoverable, false) // harvest is retryable → recovery should keep going
   })
 
   it('aborts (no supabase write) when the request lease is lost', async () => {
