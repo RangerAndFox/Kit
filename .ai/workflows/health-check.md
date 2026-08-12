@@ -79,9 +79,11 @@ where check_in_date >= current_date - interval '30 days';
 -- Backlog: replies that never became logged time (lost hours), and any
 -- row that has a Harvest id but a status that never advanced (inconsistency).
 select
-  -- No reply yet: 'sent' OR 'nudged' (a nudge only reminds; it never stamps
-  -- reply_ts, so a still-'nudged' row is unanswered, not lost hours).
-  count(*) filter (where status in ('sent','nudged') and reply_ts is null) as sent_no_reply,
+  -- No reply yet: any 'sent'/'nudged' row is unanswered by definition, even if
+  -- it carries a stale reply_ts from a since-reopened attempt (reply.ts reopen()
+  -- now clears it, but legacy rows predate that). No reply_ts gate here, so it
+  -- mirrors digest.ts's OPEN_STATUSES check and never drops a legacy row.
+  count(*) filter (where status in ('sent','nudged')) as sent_no_reply,
   -- Replied but never logged — gate on reply_ts (matches digest.ts), so an
   -- unanswered nudge can't inflate this.
   count(*) filter (where status in ('replied','parsed','confirmed','logging') and reply_ts is not null) as replied_but_unlogged,
