@@ -398,8 +398,10 @@ export function registerInteractionHandlers(app: App) {
     // The picker option value carries ONLY the project id (Slack caps a
     // static_select option value at 75 chars, which a UUID + channel + thread ts
     // would blow past), so recover the channel/thread from the interaction body.
+    // The thread lives on the source MESSAGE (container has no thread_ts) — mirror
+    // kit_onboard_confirm's `body.message?.thread_ts`.
     channelId = channelId || (body as any)?.channel?.id || (body as any)?.container?.channel_id || ''
-    threadTs = threadTs || (body as any)?.container?.thread_ts || undefined
+    threadTs = threadTs || (body as any)?.message?.thread_ts || undefined
     if (!projectId) return
     const workspaceId = await resolveWorkspaceId(body?.team?.id || '')
     const snap = await loadUpdateSnapshot(projectId, workspaceId)
@@ -407,8 +409,13 @@ export function registerInteractionHandlers(app: App) {
       await client.chat.postMessage({ channel: channelId || body?.user?.id, text: ':warning: I couldn\'t load that project to edit — it may have been archived.' })
       return
     }
-    if (snap.status === 'provisioning') {
-      await client.chat.postMessage({ channel: channelId || body?.user?.id, text: `:hourglass_flowing_sand: *${snap.snapshot.projectName}* is still being provisioned — try updating it once it\'s active.` })
+    // Only editable projects (never a provisioning-in-progress or a decommissioned
+    // archived/cancelled one) can open the update form.
+    if (!EDITABLE_PROJECT_STATUSES.includes(snap.status)) {
+      const why = snap.status === 'provisioning'
+        ? `*${snap.snapshot.projectName}* is still being provisioned — try updating it once it\'s active.`
+        : `*${snap.snapshot.projectName}* is ${snap.status} and can no longer be updated.`
+      await client.chat.postMessage({ channel: channelId || body?.user?.id, text: `:no_entry: ${why}` })
       return
     }
     try {
@@ -1366,7 +1373,18 @@ export function registerInteractionHandlers(app: App) {
       await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: ':warning: Could not load that project to update.' })
       return
     }
-    const plan = computeUpdatePlan({ projectId, ...snap.snapshot } as any, form as any)
+    // Re-verify editability at submit (the project could have been archived while
+    // the modal sat open).
+    if (!EDITABLE_PROJECT_STATUSES.includes(snap.status)) {
+      await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: `:no_entry: *${snap.snapshot.projectName}* is ${snap.status} and can no longer be updated.` })
+      return
+    }
+    // Diff against the OPEN-TIME snapshot embedded in the modal (what the user was
+    // shown), not the current DB row — so a field a concurrent edit changed while
+    // this modal sat open is NOT flagged as this user's change and reverted. Fall
+    // back to the fresh snapshot only for an older modal without an embedded snap.
+    const baseline = meta.snap || snap.snapshot
+    const plan = computeUpdatePlan({ projectId, ...baseline } as any, form as any)
     if (!plan.hasChanges) {
       await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: ':information_source: No changes detected — nothing to update.' })
       return
@@ -1375,7 +1393,7 @@ export function registerInteractionHandlers(app: App) {
     // Identity-collision guard: a new number that already belongs to a DIFFERENT
     // project is surfaced (never silently proceeded).
     let collision: { id: string; name: string } | null = null
-    if (plan.identityChanged && form.projectNumber && form.projectNumber !== snap.snapshot.projectNumber) {
+    if (plan.identityChanged && form.projectNumber && form.projectNumber !== baseline.projectNumber) {
       const other = await findExistingProject(workspaceId, form.projectNumber)
       if (other && other.id !== projectId) collision = { id: other.id, name: other.name }
     }
@@ -1419,8 +1437,15 @@ export function registerInteractionHandlers(app: App) {
     await ack()
     const requestKey = (body as any).actions?.[0]?.value || ''
     const actingWorkspaceId = await resolveWorkspaceId((body as any).team?.id || '')
-    await commitUpdateDecision({ requestKey, actingUserId: (body as any).user?.id, workspaceId: actingWorkspaceId, decision: 'cancel' }).catch(() => {})
-    await respond({ replace_original: true, text: '_Update cancelled — nothing was changed._' })
+    // Mirror kit_update_confirm's one-winner gate: only the original requester
+    // cancels, and only a click that actually transitions the row wins. A
+    // non-requester / stale click (CAS returns false) must NOT overwrite the
+    // shared preview with a false "cancelled" — the request stays as it was.
+    const cancelled = await commitUpdateDecision({ requestKey, actingUserId: (body as any).user?.id, workspaceId: actingWorkspaceId, decision: 'cancel' }).catch(() => false)
+    await respond({
+      replace_original: true,
+      text: cancelled ? '_Update cancelled — nothing was changed._' : ':information_source: That update was already handled.',
+    })
   })
 
   /**
@@ -1453,6 +1478,17 @@ export function registerInteractionHandlers(app: App) {
     const config = workbookConfigFromEnv()
     const supabase = createAdminClient()
 
+    // Final editability gate: the project could have been archived/cancelled
+    // between confirm and here — never ripple a rename to a decommissioned
+    // project. Terminate the request (not retryable) so recovery doesn't re-drive.
+    const { data: liveRow } = await supabase.from('projects').select('status').eq('id', projectId).maybeSingle()
+    const liveStatus = (liveRow as any)?.status
+    if (liveStatus && !EDITABLE_PROJECT_STATUSES.includes(liveStatus)) {
+      await updateUpdateRequest(requestKey, { status: 'cancelled', error: `project ${liveStatus}` }).catch(() => {})
+      await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: `:no_entry: *${form.projectName}* is ${liveStatus} — update not applied.` }).catch(() => {})
+      return
+    }
+
     const outcome = await runProjectUpdate(
       { requestKey, projectId, submission: form, plan, current },
       {
@@ -1464,7 +1500,11 @@ export function registerInteractionHandlers(app: App) {
           const { data } = await supabase.from('projects').select('external_ids, external_links').eq('id', pid).maybeSingle()
           const external_ids = { ...((data as any)?.external_ids || {}), dropbox_safe_name: o.safeName }
           const external_links = { ...((data as any)?.external_links || {}), dropbox_id: o.path, ...(o.url ? { dropbox: o.url } : {}) }
-          await supabase.from('projects').update({ external_ids, external_links }).eq('id', pid)
+          // supabase-js resolves (never throws) on a write failure — THROW on error
+          // so the dropbox step is marked 'failed' (retryable), never memoized
+          // 'done' with dropbox_safe_name silently desynced from the moved folder.
+          const { error } = await supabase.from('projects').update({ external_ids, external_links }).eq('id', pid)
+          if (error) throw new Error(`persistDropboxMove: ${error.message}`)
         },
         updateSheet: async (pid, f) => {
           if (!config) return { success: true } // no workbook configured → no-op
@@ -1474,21 +1514,24 @@ export function registerInteractionHandlers(app: App) {
           // to serialize against, and taking the 'creation' lease would only
           // contend falsely with an unrelated new-project bind.
           try {
-            const cells = kitOwnedCreationCells({
-              projectNumber: f.projectNumber,
-              clientName: f.clientName,
-              clientContact: f.clientContact,
-              projectName: f.projectName,
-              startDate: f.startDate,
-              deadline: f.deadline,
-              producerName: await resolveUserDisplayName(client, f.projectManager),
-              creativeDirectorName: await resolveUserDisplayName(client, f.creativeDirector),
-            })
-            // kitOwnedCreationCells OMITS blank fields (correct for create — leave
-            // the template default). For an UPDATE, a field the producer CLEARED
-            // must actually be wiped in the authoritative Sheet, or it diverges
-            // from the Supabase row (which does clear it). Append an explicit blank
-            // cell for each Kit-owned Sheet field this diff changed to empty.
+            // DIFF-SCOPED, like the Supabase write: build the owned-cell submission
+            // from ONLY the Sheet-owned fields THIS edit changed, so two overlapping
+            // same-project updates don't clobber each other's cells via a full-row
+            // write from a stale snapshot. kitOwnedCreationCells then emits a cell
+            // per populated field; the CLEARABLE loop below adds an explicit blank
+            // for any changed-to-empty field (create's blank-skip would leave the
+            // stale value, diverging from Supabase which clears it).
+            const changed = new Set((plan.changes as any[]).map((c) => c.field))
+            const sub: Record<string, string | undefined> = {}
+            if (changed.has('project_number')) sub.projectNumber = f.projectNumber
+            if (changed.has('client')) sub.clientName = f.clientName
+            if (changed.has('client_contact')) sub.clientContact = f.clientContact
+            if (changed.has('project_name')) sub.projectName = f.projectName
+            if (changed.has('start_date')) sub.startDate = f.startDate
+            if (changed.has('deadline')) sub.deadline = f.deadline
+            if (changed.has('creative_director')) sub.creativeDirectorName = await resolveUserDisplayName(client, f.creativeDirector)
+            if (changed.has('project_manager')) sub.producerName = await resolveUserDisplayName(client, f.projectManager)
+            const cells = kitOwnedCreationCells(sub as any)
             const CLEARABLE: Record<string, MasterHeader> = {
               client_contact: 'Client Contact',
               start_date: 'Start Date',
@@ -1855,6 +1898,10 @@ function takePendingProvision(token: string): PendingProvision | null {
  * project_code). Null when there's no clash.
  */
 // ─── Update Project: data helpers ──────────────────────────
+
+/** Statuses a project can be edited from — never a provisioning-in-progress row
+ *  nor a decommissioned archived/cancelled one. Mirrors listEditableProjects. */
+const EDITABLE_PROJECT_STATUSES = ['active', 'partial', 'paused']
 
 function projectOptionLabel(row: { project_code?: string | null; client?: string | null; name?: string | null }): string {
   const number = row.project_code ? String(row.project_code).split('-')[0] : ''

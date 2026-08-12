@@ -252,11 +252,26 @@ export function buildUpdateProjectModal(opts: {
   return {
     type: 'modal' as const,
     callback_id: 'kit_update_project',
+    // Embed the OPEN-TIME snapshot so the submit handler diffs against what the
+    // user was actually shown — not a fresh DB read, which would flag (and then
+    // revert) any field a concurrent edit changed while this modal sat open.
     private_metadata: JSON.stringify({
       project_id: opts.projectId,
       workspace_id: opts.workspaceId,
       channel_id: opts.channelId,
       thread_ts: opts.threadTs || '',
+      snap: {
+        projectNumber: s.projectNumber,
+        clientName: s.clientName,
+        clientContact: s.clientContact,
+        projectName: s.projectName,
+        projectType: s.projectType,
+        projectManagerSlackId: s.projectManagerSlackId,
+        creativeDirectorSlackId: s.creativeDirectorSlackId,
+        startDate: s.startDate,
+        targetDelivery: s.targetDelivery,
+        briefSummary: s.briefSummary,
+      },
     }),
     title: { type: 'plain_text' as const, text: 'Update Project' },
     submit: { type: 'plain_text' as const, text: 'Review changes' },

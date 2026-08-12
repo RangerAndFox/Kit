@@ -66,9 +66,18 @@ describe('buildUpdateProjectModal — pre-fill', () => {
   const byId: Record<string, any> = {}
   for (const b of modal.blocks as any[]) if (b.block_id) byId[b.block_id] = b
 
-  it('uses the kit_update_project callback and carries the project id in metadata', () => {
+  it('uses the kit_update_project callback and carries id + open-time snapshot in metadata', () => {
     assert.equal(modal.callback_id, 'kit_update_project')
-    assert.deepEqual(JSON.parse(modal.private_metadata), { project_id: 'P1', workspace_id: 'WS', channel_id: 'C1', thread_ts: '' })
+    const meta = JSON.parse(modal.private_metadata)
+    assert.equal(meta.project_id, 'P1')
+    assert.equal(meta.workspace_id, 'WS')
+    assert.equal(meta.channel_id, 'C1')
+    assert.equal(meta.thread_ts, '')
+    // The open-time snapshot is embedded so the submit handler diffs against what
+    // the user was shown, not a fresh DB read.
+    assert.equal(meta.snap.projectName, 'Summer Campaign')
+    assert.equal(meta.snap.creativeDirectorSlackId, 'U_CD')
+    assert.equal(meta.snap.targetDelivery, '2026-03-01')
   })
 
   it('shares the create modal block_ids so extraction is reusable', () => {
