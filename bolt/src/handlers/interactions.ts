@@ -405,7 +405,13 @@ export function registerInteractionHandlers(app: App) {
     threadTs = threadTs || (body as any)?.message?.thread_ts || undefined
     if (!projectId) return
     const workspaceId = await resolveWorkspaceId(body?.team?.id || '')
-    const snap = await loadUpdateSnapshot(projectId, workspaceId)
+    let snap
+    try {
+      snap = await loadUpdateSnapshot(projectId, workspaceId)
+    } catch {
+      await client.chat.postMessage({ channel: channelId || body?.user?.id, text: ':warning: I couldn\'t load that project right now — please try again in a moment.' })
+      return
+    }
     if (!snap) {
       await client.chat.postMessage({ channel: channelId || body?.user?.id, text: ':warning: I couldn\'t load that project to edit — it may have been archived.' })
       return
@@ -1369,7 +1375,13 @@ export function registerInteractionHandlers(app: App) {
       description: values.description?.val?.value || undefined,
     }
 
-    const snap = await loadUpdateSnapshot(projectId, workspaceId)
+    let snap
+    try {
+      snap = await loadUpdateSnapshot(projectId, workspaceId)
+    } catch {
+      await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: ':warning: Could not load that project right now — please try again in a moment.' })
+      return
+    }
     if (!snap) {
       await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: ':warning: Could not load that project to update.' })
       return
@@ -1482,8 +1494,23 @@ export function registerInteractionHandlers(app: App) {
     // could have been archived/cancelled between confirm and here; and (b) the
     // current identity spine + external ids, so an identity field the user did NOT
     // change is renamed to its true current value, not a stale open-time value.
-    const freshSnap = await loadUpdateSnapshot(projectId, workspaceId)
-    const liveStatus = freshSnap?.status
+    // Fail CLOSED, never fall through with an undefined spine (that would revert an
+    // untouched identity field to its stale open-time value and skip the gate):
+    //  - a transient read error → leave the request for the recovery sweep to re-drive;
+    //  - a genuine not-found (null) → the project is gone; cancel (not retryable).
+    let freshSnap: Awaited<ReturnType<typeof loadUpdateSnapshot>>
+    try {
+      freshSnap = await loadUpdateSnapshot(projectId, workspaceId)
+    } catch (err: any) {
+      console.warn('[Bolt] update ripple: snapshot load failed, leaving for recovery:', err?.message)
+      return
+    }
+    if (!freshSnap) {
+      await updateUpdateRequest(requestKey, { status: 'cancelled', error: 'project not found' }).catch(() => {})
+      await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: `:no_entry: *${form.projectName}* could not be found — update not applied.` }).catch(() => {})
+      return
+    }
+    const liveStatus = freshSnap.status
     if (liveStatus && !EDITABLE_PROJECT_STATUSES.includes(liveStatus)) {
       await updateUpdateRequest(requestKey, { status: 'cancelled', error: `project ${liveStatus}` }).catch(() => {})
       await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: `:no_entry: *${form.projectName}* is ${liveStatus} — update not applied.` }).catch(() => {})
@@ -1491,10 +1518,10 @@ export function registerInteractionHandlers(app: App) {
     }
     const current = {
       ...(sub.current || {}),
-      ...(freshSnap?.current || {}),
-      projectNumber: freshSnap?.snapshot?.projectNumber,
-      clientName: freshSnap?.snapshot?.clientName,
-      projectName: freshSnap?.snapshot?.projectName,
+      ...freshSnap.current,
+      projectNumber: freshSnap.snapshot.projectNumber,
+      clientName: freshSnap.snapshot.clientName,
+      projectName: freshSnap.snapshot.projectName,
     }
 
     const outcome = await runProjectUpdate(
@@ -1946,14 +1973,19 @@ async function loadUpdateSnapshot(
   workspaceId: string,
 ): Promise<{ status: string; snapshot: any; current: { slackChannelId?: string; dropboxPath?: string }; provisioned: { slack: boolean; frameio: boolean; harvest: boolean; dropbox: boolean } } | null> {
   if (!projectId) return null
-  try {
-    const sb = createAdminClient()
-    const { data } = await sb
-      .from('projects')
-      .select('id, name, client, project_code, project_type, status, start_date, target_delivery, brief_summary, budget_total, project_manager_slack_id, external_ids, external_links, slack_channel_id, harvest_project_id')
-      .eq('id', projectId)
-      .eq('workspace_id', workspaceId)
-      .maybeSingle()
+  const sb = createAdminClient()
+  const { data, error } = await sb
+    .from('projects')
+    .select('id, name, client, project_code, project_type, status, start_date, target_delivery, brief_summary, budget_total, project_manager_slack_id, external_ids, external_links, slack_channel_id, harvest_project_id')
+    .eq('id', projectId)
+    .eq('workspace_id', workspaceId)
+    .maybeSingle()
+  // Distinguish a genuine not-found (null → caller decides) from a transient read
+  // error (throw → RETRYABLE). Never collapse a read blip to null: at ripple time
+  // a null spine would silently revert an untouched identity field to its stale
+  // open-time value and skip the editability re-check.
+  if (error) throw new Error(`loadUpdateSnapshot read failed: ${error.message}`)
+  {
     if (!data) return null
     const ext = (data as any).external_ids || {}
     const links = (data as any).external_links || {}
@@ -1988,9 +2020,6 @@ async function loadUpdateSnapshot(
         dropbox: !!links.dropbox_id,
       },
     }
-  } catch (err: any) {
-    console.warn('[update] loadUpdateSnapshot failed:', err?.message)
-    return null
   }
 }
 

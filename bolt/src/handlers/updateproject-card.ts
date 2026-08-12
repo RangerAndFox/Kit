@@ -112,10 +112,5 @@ export function buildUpdateProjectCard(opts: {
  */
 export function isUpdateProjectTrigger(text: string): boolean {
   const t = (text || '').trim().toLowerCase()
-  return (
-    /^\/?update\s+project\b/.test(t) ||
-    /^\/?edit\s+project\b/.test(t) ||
-    t === 'update project' ||
-    t === 'edit project'
-  )
+  return /^\/?update\s+project\b/.test(t) || /^\/?edit\s+project\b/.test(t)
 }
