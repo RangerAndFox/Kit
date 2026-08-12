@@ -79,6 +79,22 @@ describe('computeUpdatePlan — non-identity scalar change', () => {
     assert.equal(plan.services.harvest, false)
   })
 
+  it('a blank project_type (NULL/legacy type, no canonical match) is NOT a change', () => {
+    // Harvest-synced project: stored type is NULL/non-canonical, so the modal
+    // shows no pre-selection and an optional blank comes back. A blank must never
+    // diff as a clear-to-null while the user edits an unrelated field.
+    const legacy: ProjectSnapshot = { ...BASE, projectType: 'Sizzle Reel' }
+    const plan = computeUpdatePlan(legacy, formFrom(legacy, { projectType: undefined, deadline: '2026-04-01' }))
+    assert.deepEqual(plan.changes.map((c) => c.field), ['deadline'])
+    assert.equal(plan.changes.some((c) => c.field === 'project_type'), false)
+  })
+
+  it('picking a real project_type still flags it as a change', () => {
+    const plan = computeUpdatePlan(BASE, formFrom(BASE, { projectType: 'Explainer' }))
+    assert.deepEqual(plan.changes.map((c) => c.field), ['project_type'])
+    assert.equal(plan.services.supabase, true)
+  })
+
   it('producer change is a user field and ripples to sheet + supabase', () => {
     const plan = computeUpdatePlan(BASE, formFrom(BASE, { projectManager: 'U_NEWPROD' }))
     const change = plan.changes.find((c) => c.field === 'project_manager')

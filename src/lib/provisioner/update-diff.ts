@@ -141,6 +141,11 @@ export function computeUpdatePlan(
   const changes: FieldChange[] = []
   const changed = new Set<string>()
   for (const s of specs) {
+    // Project Type is a static_select with no clear affordance: a blank selection
+    // means "not set / no match" (e.g. a NULL or legacy non-canonical type that
+    // couldn't be pre-selected), NOT an intent to clear it. Never diff a blank
+    // project_type as a change — that would silently null out the stored value.
+    if (s.field === 'project_type' && norm(s.next) === '') continue
     if (norm(s.current) !== norm(s.next)) {
       changed.add(s.field)
       changes.push({

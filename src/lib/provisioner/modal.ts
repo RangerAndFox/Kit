@@ -281,6 +281,11 @@ export function buildUpdateProjectModal(opts: {
       {
         type: 'input',
         block_id: 'project_type',
+        // Optional like every other non-identity field: a Harvest-synced project
+        // (project_type NULL) or a legacy non-canonical type has no initial_option,
+        // and a required select with nothing pre-selected would block Slack from
+        // accepting ANY edit (e.g. a deadline fix) until a type is forced.
+        optional: true,
         label: { type: 'plain_text', text: 'Project Type' },
         element: {
           type: 'static_select',

@@ -1524,7 +1524,9 @@ export function registerInteractionHandlers(app: App) {
       projectName: freshSnap.snapshot.projectName,
     }
 
-    const outcome = await runProjectUpdate(
+    let outcome: Awaited<ReturnType<typeof runProjectUpdate>>
+    try {
+     outcome = await runProjectUpdate(
       { updateRequestId: req.id, projectId, submission: form, plan, current },
       {
         dispatch: (service, action, payload) => dispatch(service, action, payload) as any,
@@ -1645,7 +1647,17 @@ export function registerInteractionHandlers(app: App) {
           renew: () => renewUpdateRequestLease(requestKey, leaseHolder),
         },
       },
-    )
+     )
+    } catch (err: any) {
+      // A transient store error (e.g. a ledger getSteps/claimStep throw) must not
+      // leave the interaction silent with the lease held for the full timeout.
+      // Give the user immediate feedback and FREE the lease (lease_expires_at:null)
+      // so the recovery sweep re-drives on its very next cycle, not ~5 min later.
+      console.warn(`[Bolt] update ripple threw for ${requestKey}:`, err?.message)
+      await updateUpdateRequest(requestKey, { status: 'error', error: `ripple threw: ${err?.message}`, lease_expires_at: null }).catch(() => {})
+      await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: `:warning: *${form.projectName}* update hit a transient error — Kit will retry automatically.` }).catch(() => {})
+      return
+    }
 
     if (outcome.abortedLostLease) {
       console.warn(`[Bolt] update ripple for ${requestKey} yielded the lease; a newer holder will finish it.`)
@@ -1704,27 +1716,40 @@ export function registerInteractionHandlers(app: App) {
    */
   async function recoverUpdateRipples() {
     let recovered = 0
+    let failed = 0
     const seen = new Set<string>()
+    // Per-item isolation (mirrors the create-side runProjectControlRecovery): a
+    // single request that throws — a transient store blip or a poison-pill row —
+    // must never abort the sweep and starve every other recoverable request or
+    // the step-based discovery pass. Each drive() catches its own failure.
     const drive = async (requestKey: string) => {
       if (!requestKey || seen.has(requestKey)) return
       seen.add(requestKey)
-      const holder = `update-recovery:${requestKey}:${randomUUID()}`
-      const claim = await claimUpdateRequestFenced(requestKey, holder)
-      if (!claim.ok) return // a live worker owns it
-      await runUpdateRipple({ client: app.client, requestKey, preClaimed: true, leaseHolder: holder })
-      recovered++
+      try {
+        const holder = `update-recovery:${requestKey}:${randomUUID()}`
+        const claim = await claimUpdateRequestFenced(requestKey, holder)
+        if (!claim.ok) return // a live worker owns it
+        await runUpdateRipple({ client: app.client, requestKey, preClaimed: true, leaseHolder: holder })
+        recovered++
+      } catch (err: any) {
+        failed++
+        console.warn(`[Bolt] update recovery: request ${requestKey} failed, continuing:`, err?.message)
+      }
     }
     try {
       for (const r of await listRecoverableUpdateRequests()) await drive(r.request_key)
       // Step-based discovery returns update_request_id (uuid); resolve each to its
       // request_key (the text key drive()/claimUpdateRequestFenced filter on).
       for (const id of await listUpdateRequestsWithIncompleteSteps()) {
-        const row = await loadUpdateRequestById(id)
+        const row = await loadUpdateRequestById(id).catch(() => null)
         if (row?.request_key) await drive(row.request_key)
       }
     } catch (err: any) {
-      console.warn('[Bolt] update recovery sweep failed:', err?.message)
+      // Only the list queries themselves can reach here now (per-item throws are
+      // caught in drive()); a failed enumeration just retries next cron cycle.
+      console.warn('[Bolt] update recovery sweep enumeration failed:', err?.message)
     }
+    if (failed > 0) console.warn(`[Bolt] update recovery: ${recovered} re-driven, ${failed} failed`)
     return recovered
   }
 

@@ -873,6 +873,7 @@ export function registerCommandHandlers(app: App) {
           text:
             '*Kit Commands*\n\n' +
             '`/kit newproject` — Post the new-project card (pick services, fill in details)\n' +
+            '`/kit update` — Edit an established project and ripple the change across every outlet\n' +
             '`/kit onboard` — Onboard a freelancer to a project (Slack/Dropbox/Frame.io/Harvest)\n' +
             '`/kit status <name>` — Quick project lookup\n' +
             '`/kit note [project | body]` — Save a freeform note to a project (or current channel\'s project)\n' +
@@ -891,7 +892,7 @@ export function registerCommandHandlers(app: App) {
             '`/kit meme` — Admin only: post this week’s timesheet meme to the team channel now\n' +
             '`/kit backfill-time` — Admin only: preview confirmable back-dated check-ins; `run` to log them to Harvest\n' +
             '`/kit help` — Show this message\n\n' +
-            'You can also DM me and type *new project* or *new storyboard* to get the same cards. Or @mention me to ask about projects, budgets, files, reviews, or to log time.',
+            'You can also DM me and type *new project*, *update project*, or *new storyboard* to get the same cards. Or @mention me to ask about projects, budgets, files, reviews, or to log time.',
         })
         break
       }
