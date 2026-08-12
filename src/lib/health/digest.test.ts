@@ -10,6 +10,7 @@ import {
   summarizeCheckins,
   checkinsUrgent,
   formatHealthDigest,
+  unavailableCheckinSummary,
   type CheckinRow,
   type CheckinSummary,
 } from './digest'
@@ -73,6 +74,14 @@ describe('summarizeCheckins', () => {
     assert.equal(checkinsUrgent(s), true)
   })
 
+  it('a partial-failure row (status=failed WITH Harvest ids) counts once as failed, not also as stuck', () => {
+    // confirm.ts logs matched entries and fails the rest, writing the succeeded
+    // ids on a 'failed' row — a known, already-explained shape, not the anomaly.
+    const s = summarizeCheckins([row({ status: 'failed', harvest_entry_ids: [555] })], TODAY)
+    assert.equal(s.failed, 1)
+    assert.equal(s.harvestIdButStuck, 0)
+  })
+
   it('counts only today rows toward loggedToday and treats today as not-past', () => {
     const s = summarizeCheckins(
       [
@@ -115,6 +124,15 @@ describe('formatHealthDigest', () => {
     const msg = formatHealthDigest(allGreenChecks, s, 'Tue Aug 12')
     assert.match(msg, /1 issue\b/)
     assert.match(msg, /Time logging:.*migration-048 signature/)
+  })
+
+  it('unavailable check-in data escalates the header and never reads as a clean zero', () => {
+    const msg = formatHealthDigest(allGreenChecks, unavailableCheckinSummary(), 'Tue Aug 12')
+    assert.equal(checkinsUrgent(unavailableCheckinSummary()), true)
+    assert.match(msg, /1 issue\b/)
+    assert.match(msg, /Time logging:.*could not be read/)
+    assert.doesNotMatch(msg, /all systems go/)
+    assert.doesNotMatch(msg, /no replies waiting/)
   })
 
   it('a non-urgent backlog shows a warning but does not raise the issue count', () => {
