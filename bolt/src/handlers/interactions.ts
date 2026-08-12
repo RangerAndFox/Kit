@@ -38,7 +38,7 @@ import {
   listUpdateRequestsWithIncompleteSteps,
 } from '../../../src/lib/provisioner/update-store'
 import { updateBoundRow } from '../../../src/lib/project-control/sheets'
-import { kitOwnedCreationCells } from '../../../src/lib/project-control/render'
+import { kitOwnedCreationCells, headerToA1Column, type MasterHeader } from '../../../src/lib/project-control/render'
 import { buildUpdateProjectCard } from './updateproject-card'
 import {
   getOrCreateCreationRequest,
@@ -395,6 +395,11 @@ export function registerInteractionHandlers(app: App) {
     } catch {
       projectId = raw
     }
+    // The picker option value carries ONLY the project id (Slack caps a
+    // static_select option value at 75 chars, which a UUID + channel + thread ts
+    // would blow past), so recover the channel/thread from the interaction body.
+    channelId = channelId || (body as any)?.channel?.id || (body as any)?.container?.channel_id || ''
+    threadTs = threadTs || (body as any)?.container?.thread_ts || undefined
     if (!projectId) return
     const workspaceId = await resolveWorkspaceId(body?.team?.id || '')
     const snap = await loadUpdateSnapshot(projectId, workspaceId)
@@ -1479,6 +1484,24 @@ export function registerInteractionHandlers(app: App) {
               producerName: await resolveUserDisplayName(client, f.projectManager),
               creativeDirectorName: await resolveUserDisplayName(client, f.creativeDirector),
             })
+            // kitOwnedCreationCells OMITS blank fields (correct for create — leave
+            // the template default). For an UPDATE, a field the producer CLEARED
+            // must actually be wiped in the authoritative Sheet, or it diverges
+            // from the Supabase row (which does clear it). Append an explicit blank
+            // cell for each Kit-owned Sheet field this diff changed to empty.
+            const CLEARABLE: Record<string, MasterHeader> = {
+              client_contact: 'Client Contact',
+              start_date: 'Start Date',
+              deadline: 'End Date',
+              creative_director: 'Creative Director',
+            }
+            const have = new Set(cells.map((c: any) => c.header))
+            for (const ch of (plan.changes as any[])) {
+              const header = CLEARABLE[ch.field]
+              if (header && ch.new == null && !have.has(header)) {
+                cells.push({ header, column: headerToA1Column(header), kind: 'string', value: '' })
+              }
+            }
             const r = await updateBoundRow(config, pid, cells)
             return { success: true, message: 'skipped' in r ? 'sheet unbound (skipped)' : `sheet row ${(r as any).rowIndex} updated` }
           } catch (err: any) {
@@ -1486,24 +1509,38 @@ export function registerInteractionHandlers(app: App) {
           }
         },
         updateProjectRow: async (pid, f, derived) => {
-          // Read fresh so Phase A's dropbox_safe_name write survives (we only
-          // touch scalar columns + merge the CD/number keys of external_ids).
-          const { data } = await supabase.from('projects').select('external_ids').eq('id', pid).maybeSingle()
-          const external_ids: Record<string, unknown> = { ...((data as any)?.external_ids || {}) }
-          if (f.projectNumber) external_ids.project_number = f.projectNumber
-          if (f.creativeDirector) external_ids.creative_director_slack_id = f.creativeDirector
-          else delete external_ids.creative_director_slack_id
-          const patch = {
-            name: f.projectName,
-            client: f.clientName,
-            project_code: derived.projectCode,
-            project_type: f.projectType || null,
-            start_date: f.startDate || null,
-            target_delivery: f.deadline || null,
-            brief_summary: f.description || null,
-            project_manager_slack_id: f.projectManager || null,
-            external_ids,
+          // DIFF-SCOPED write: only the columns THIS edit actually changed, so two
+          // overlapping updates to the same project (each a separate request) don't
+          // clobber each other's unrelated fields via a full-row overwrite from a
+          // stale form snapshot — a non-overlapping pair (A edits deadline, B edits
+          // name) both survive regardless of commit order.
+          const changed = new Set((plan.changes as any[]).map((c) => c.field))
+          const patch: Record<string, unknown> = {}
+          if (changed.has('project_name')) patch.name = f.projectName
+          if (changed.has('client')) patch.client = f.clientName
+          if (changed.has('project_number') || changed.has('client')) patch.project_code = derived.projectCode
+          if (changed.has('project_type')) patch.project_type = f.projectType || null
+          if (changed.has('start_date')) patch.start_date = f.startDate || null
+          if (changed.has('deadline')) patch.target_delivery = f.deadline || null
+          if (changed.has('description')) patch.brief_summary = f.description || null
+          if (changed.has('project_manager')) patch.project_manager_slack_id = f.projectManager || null
+          // external_ids is a jsonb blob — only read-modify-write it when a key it
+          // owns (project_number / creative_director) changed, preserving every
+          // other key (esp. Phase A's fresh dropbox_safe_name).
+          if (changed.has('project_number') || changed.has('creative_director')) {
+            const { data } = await supabase.from('projects').select('external_ids').eq('id', pid).maybeSingle()
+            const external_ids: Record<string, unknown> = { ...((data as any)?.external_ids || {}) }
+            if (changed.has('project_number')) {
+              if (f.projectNumber) external_ids.project_number = f.projectNumber
+              else delete external_ids.project_number
+            }
+            if (changed.has('creative_director')) {
+              if (f.creativeDirector) external_ids.creative_director_slack_id = f.creativeDirector
+              else delete external_ids.creative_director_slack_id
+            }
+            patch.external_ids = external_ids
           }
+          if (Object.keys(patch).length === 0) return { success: true } // nothing scalar to write
           const { error } = await supabase.from('projects').update(patch).eq('id', pid)
           if (error) return { success: false, error: error.message }
           return { success: true }
@@ -1532,10 +1569,17 @@ export function registerInteractionHandlers(app: App) {
     const curStatus = (curRow as any)?.status as string | undefined
 
     if (outcome.allRequiredDone) {
-      // A successful edit does not advance lifecycle status. Only clear a leftover
-      // 'provisioning' placeholder (the update modal already refuses to open on a
-      // provisioning project, so this is just belt-and-suspenders).
-      if (curStatus === 'provisioning') {
+      // Restore 'active' only when this ripple actually VERIFIED external health:
+      //   - a leftover 'provisioning' placeholder → clear it; or
+      //   - a 'partial' project whose repair touched the external services (a
+      //     full-success identity ripple genuinely fixes them).
+      // Never advance a 'partial' via a metadata-only edit (that wouldn't verify
+      // the unhealthy service), and never un-pause a 'paused' project.
+      const planTouchedExternal =
+        plan.services?.slack || plan.services?.frameio || plan.services?.harvest || plan.services?.dropbox
+      const shouldRestoreActive =
+        curStatus === 'provisioning' || (curStatus === 'partial' && planTouchedExternal)
+      if (shouldRestoreActive) {
         await supabase.from('projects').update({ status: 'active' }).eq('id', projectId)
       }
       await updateUpdateRequest(requestKey, { status: 'completed' })
@@ -1896,7 +1940,10 @@ async function findProjectByChannel(workspaceId: string, channelId: string): Pro
       .from('projects')
       .select('id, name, client, project_code, external_links, slack_channel_id, status')
       .eq('workspace_id', workspaceId)
-      .or(`external_links->>slack_id.eq.${channelId},slack_channel_id.eq.${channelId}`)
+      // Same three-key resolution order the other channel→project lookups use
+      // (messages.ts / brain/seed.ts / notes / participation / delivery), incl.
+      // the legacy external_links.slack_channel_id key for older/manual rows.
+      .or(`external_links->>slack_id.eq.${channelId},slack_channel_id.eq.${channelId},external_links->>slack_channel_id.eq.${channelId}`)
       .not('status', 'in', '("archived","cancelled")')
       .limit(1)
       .maybeSingle()

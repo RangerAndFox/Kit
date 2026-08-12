@@ -68,9 +68,10 @@ export function buildUpdateProjectCard(opts: {
 
   const options = (candidates || []).slice(0, 100).map((c) => ({
     text: { type: 'plain_text', text: clip(c.label) },
-    // Pack the routing context INTO the option value so the select action can
-    // open the modal for the chosen project with a fresh trigger_id.
-    value: ctx(c.id),
+    // ONLY the project id — Slack caps a static_select option value at 75 chars,
+    // which a full {p,c,t} JSON with a UUID would exceed. The pick handler
+    // recovers channel/thread from the interaction body instead.
+    value: JSON.stringify({ p: c.id }),
   }))
 
   if (options.length === 0) {
