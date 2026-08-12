@@ -1693,8 +1693,12 @@ export function registerInteractionHandlers(app: App) {
       })
     } else {
       // This ripple left external state inconsistent → flag 'partial', but never
-      // override an intentional 'paused'.
-      if (curStatus !== 'paused') {
+      // override an intentional 'paused'. Require a KNOWN status: a transient read
+      // failure (or missing row) leaves curStatus undefined, and `undefined !==
+      // 'paused'` would fail open and silently un-pause a paused project — so skip
+      // the downgrade on an unreadable status (the request is marked 'error' and
+      // the recovery sweep re-drives, re-reading the status then).
+      if (curStatus && curStatus !== 'paused') {
         await supabase.from('projects').update({ status: 'partial' }).eq('id', projectId)
       }
       await updateUpdateRequest(requestKey, { status: 'error', error: `incomplete: ${outcome.incompleteServices.join(',')}` })

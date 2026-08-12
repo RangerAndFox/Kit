@@ -295,7 +295,7 @@ export function buildUpdateProjectModal(opts: {
           options: PROJECT_TYPE_OPTIONS.map(opt),
         },
       },
-      userSelect('project_manager', 'Producer', s.projectManagerSlackId),
+      userSelect('project_manager', 'Producer', s.projectManagerSlackId, true),
       userSelect('creative_director', 'Creative Director', s.creativeDirectorSlackId, true),
       dateInput('start_date', 'Start Date', s.startDate),
       dateInput('deadline', 'Deadline', s.targetDelivery),
