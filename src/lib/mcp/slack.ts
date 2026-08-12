@@ -519,24 +519,33 @@ export async function renameProjectSlackChannel(opts: {
     throw new Error('renameProjectSlackChannel: client and projectName are required')
   }
 
-  // Read the channel and verify Kit ownership by the purpose marker BEFORE any
-  // mutation — never rename a channel that isn't this project's.
+  // Read the channel and verify Kit ownership BEFORE any mutation — never rename
+  // a channel that isn't this project's.
   const info = await slackGet('conversations.info', { channel: channelId })
   const marker = kitChannelMarker(projectId)
   const purpose: string = info.channel?.purpose?.value || ''
-  if (!purpose.includes(marker)) {
-    throw new SlackRenameTerminalError(
-      `channel ${channelId} does not carry the Kit marker for ${projectId}; refusing to rename`,
-    )
-  }
+  const currentName: string = info.channel?.name || ''
 
-  const { slackSlug: target } = deriveSlackSlug({
+  const { slackSlug: target, slackShortId } = deriveSlackSlug({
     projectId,
     projectNumber: projectNumber || '',
     client,
     projectName,
   })
-  const currentName: string = info.channel?.name || ''
+
+  // Ownership is proven by EITHER signal. The purpose marker is primary, but it's
+  // written via a best-effort (swallowed) setPurpose at create time and can be
+  // absent after a transient failure. The deterministic channel NAME embeds a
+  // stable short id derived from the project id — create's true reconciliation
+  // identity — so a name whose suffix matches is equally proof of ownership. The
+  // setPurpose call below backfills the marker, so this self-heals.
+  const ownedByMarker = purpose.includes(marker)
+  const ownedByName = !!slackShortId && (currentName === slackShortId || currentName.endsWith(`-${slackShortId}`))
+  if (!ownedByMarker && !ownedByName) {
+    throw new SlackRenameTerminalError(
+      `channel ${channelId} is not Kit-owned for ${projectId} (no purpose marker, name suffix mismatch); refusing to rename`,
+    )
+  }
 
   let channelName = currentName
   if (currentName !== target) {

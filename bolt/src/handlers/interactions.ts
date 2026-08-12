@@ -20,7 +20,7 @@ import {
 } from '../../../src/lib/inngest/agents/registry'
 import type { ServiceKey } from '../../../src/lib/provisioner/types'
 import { buildNewProjectModal, buildUpdateProjectModal } from '../../../src/lib/provisioner/modal'
-import { deriveProjectCode, deriveDropboxSafeName, deriveProjectIdentifiers } from '../../../src/lib/provisioner/identifiers'
+import { deriveProjectCode, deriveDropboxSafeName } from '../../../src/lib/provisioner/identifiers'
 import { computeUpdatePlan } from '../../../src/lib/provisioner/update-diff'
 import { runProjectUpdate } from '../../../src/lib/provisioner/update'
 import {
@@ -39,7 +39,6 @@ import {
 } from '../../../src/lib/provisioner/update-store'
 import { updateBoundRow } from '../../../src/lib/project-control/sheets'
 import { kitOwnedCreationCells } from '../../../src/lib/project-control/render'
-import { claimWorkbookLeaseFenced, renewWorkbookLease, releaseWorkbookLease } from '../../../src/lib/project-control/store'
 import { buildUpdateProjectCard } from './updateproject-card'
 import {
   getOrCreateCreationRequest,
@@ -1464,9 +1463,11 @@ export function registerInteractionHandlers(app: App) {
         },
         updateSheet: async (pid, f) => {
           if (!config) return { success: true } // no workbook configured → no-op
-          const holder = `${leaseHolder}:sheet`
-          const claim = await claimWorkbookLeaseFenced(config.spreadsheetId, 'creation', holder)
-          if (!claim.ok) return { success: false, error: 'sheet_lease_unavailable' }
+          // No workbook lease: updateBoundRow resolves the row via developer
+          // metadata (never allocates one) and writes only the Kit-owned cells in
+          // one atomic, idempotent batchUpdate — so it has no row-allocation race
+          // to serialize against, and taking the 'creation' lease would only
+          // contend falsely with an unrelated new-project bind.
           try {
             const cells = kitOwnedCreationCells({
               projectNumber: f.projectNumber,
@@ -1482,9 +1483,6 @@ export function registerInteractionHandlers(app: App) {
             return { success: true, message: 'skipped' in r ? 'sheet unbound (skipped)' : `sheet row ${(r as any).rowIndex} updated` }
           } catch (err: any) {
             return { success: false, error: err.message }
-          } finally {
-            await renewWorkbookLease(config.spreadsheetId, 'creation', holder).catch(() => {})
-            await releaseWorkbookLease(config.spreadsheetId, 'creation', holder).catch(() => {})
           }
         },
         updateProjectRow: async (pid, f, derived) => {
@@ -1526,8 +1524,20 @@ export function registerInteractionHandlers(app: App) {
       return
     }
 
+    // Read the current lifecycle status so this edit never CLOBBERS an unrelated
+    // signal. `allRequiredDone` only covers the services THIS diff touched, so an
+    // unrelated edit must not (a) upgrade a project a prior failure left 'partial',
+    // hiding that outage, nor (b) un-pause a project a producer set 'paused'.
+    const { data: curRow } = await supabase.from('projects').select('status').eq('id', projectId).maybeSingle()
+    const curStatus = (curRow as any)?.status as string | undefined
+
     if (outcome.allRequiredDone) {
-      await supabase.from('projects').update({ status: 'active' }).eq('id', projectId)
+      // A successful edit does not advance lifecycle status. Only clear a leftover
+      // 'provisioning' placeholder (the update modal already refuses to open on a
+      // provisioning project, so this is just belt-and-suspenders).
+      if (curStatus === 'provisioning') {
+        await supabase.from('projects').update({ status: 'active' }).eq('id', projectId)
+      }
       await updateUpdateRequest(requestKey, { status: 'completed' })
       await client.chat.postMessage({
         channel: statusChannel,
@@ -1535,7 +1545,11 @@ export function registerInteractionHandlers(app: App) {
         text: `:white_check_mark: *${form.projectName}* updated — changes rippled to ${outcome.ran.concat(outcome.resumed).filter((s: string) => s !== 'supabase' && s !== 'sheet').join(', ') || 'Kit\'s records'}.`,
       })
     } else {
-      await supabase.from('projects').update({ status: 'partial' }).eq('id', projectId)
+      // This ripple left external state inconsistent → flag 'partial', but never
+      // override an intentional 'paused'.
+      if (curStatus !== 'paused') {
+        await supabase.from('projects').update({ status: 'partial' }).eq('id', projectId)
+      }
       await updateUpdateRequest(requestKey, { status: 'error', error: `incomplete: ${outcome.incompleteServices.join(',')}` })
       const emoji = outcome.anyTerminal ? ':red_circle:' : ':warning:'
       const tail = outcome.anyTerminal ? 'needs attention — it will not auto-complete' : 'partially applied — Kit will retry the rest'
@@ -1575,12 +1589,15 @@ export function registerInteractionHandlers(app: App) {
   }
 
   async function runProjectControlRecoverySweep() {
-    if (!projectControlCreationEnabled()) return { ran: false, reason: 'disabled' as const }
-    const config = workbookConfigFromEnv()
-    if (!config) return { ran: false, reason: 'workbook_not_configured' as const }
-
-    // Recover stalled update ripples first (independent of the create recovery).
+    // Update-ripple recovery is INDEPENDENT of the create feature flag and the
+    // workbook config — the update flow runs regardless of either — so it must
+    // run BEFORE the create-recovery guards below, or a Railway restart mid-ripple
+    // would leave the update permanently stuck in the default configuration.
     const updatesRecovered = await recoverUpdateRipples()
+
+    if (!projectControlCreationEnabled()) return { ran: false, reason: 'disabled' as const, updatesRecovered }
+    const config = workbookConfigFromEnv()
+    if (!config) return { ran: false, reason: 'workbook_not_configured' as const, updatesRecovered }
 
     const createResult = await runProjectControlRecovery({
       listRecoverableRequests,
