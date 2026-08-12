@@ -46,7 +46,10 @@ export const healthDailyDigest = inngest.createFunction(
       }
     })
 
-    const now = new Date()
+    // Memoize wall-clock time in a step so a retry classifies the (memoized)
+    // rows against the same day boundary the original attempt used, not the
+    // retry's clock — the canonical Inngest idiom for acquiring time.
+    const now = new Date(await step.run('now', () => Date.now()))
     const summary = loaded.ok ? summarizeCheckins(loaded.rows, studioToday(now)) : unavailableCheckinSummary()
     const text = formatHealthDigest(checks, summary, studioDateLabel(now))
 
