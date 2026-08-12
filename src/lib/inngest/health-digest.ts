@@ -17,7 +17,7 @@
 import { inngest } from './client'
 import { runAllChecks } from '../health/run'
 import { loadRecentCheckins, studioToday, studioDateLabel } from '../health/checkins-digest'
-import { summarizeCheckins, formatHealthDigest } from '../health/digest'
+import { summarizeCheckins, unavailableCheckinSummary, formatHealthDigest } from '../health/digest'
 import { postSlackAsKit } from '../health/notify'
 
 // Steve (rangerandfox) — the "only me" recipient. Overridable without a deploy.
@@ -34,10 +34,19 @@ export const healthDailyDigest = inngest.createFunction(
     const recipient = process.env.KIT_HEALTH_DIGEST_USER_ID || DEFAULT_RECIPIENT
 
     const checks = await step.run('run-checks', () => runAllChecks())
-    const rows = await step.run('load-checkins', () => loadRecentCheckins().catch(() => []))
+    // Distinguish "no backlog" from "couldn't read the backlog": a swallowed
+    // query error must not render as a healthy zero (a fabricated all-clear for
+    // the very failure class this digest exists to catch).
+    const loaded = await step.run('load-checkins', async () => {
+      try {
+        return { ok: true, rows: await loadRecentCheckins() }
+      } catch (err) {
+        return { ok: false, rows: [], error: String(err?.message || err) }
+      }
+    })
 
     const now = new Date()
-    const summary = summarizeCheckins(rows, studioToday(now))
+    const summary = loaded.ok ? summarizeCheckins(loaded.rows, studioToday(now)) : unavailableCheckinSummary()
     const text = formatHealthDigest(checks, summary, studioDateLabel(now))
 
     const sent = await step.run('dm', () => postSlackAsKit(recipient, text))
@@ -46,6 +55,7 @@ export const healthDailyDigest = inngest.createFunction(
       recipient,
       sent,
       down: checks.filter((c) => !c.ok).map((c) => c.key),
+      checkinsUnavailable: summary.unavailable,
       repliedUnlogged: summary.repliedUnlogged,
       failed: summary.failed,
       stuckLogging: summary.stuckLogging,
