@@ -106,14 +106,24 @@ async function rename(payload: Record<string, unknown>): Promise<AgentResult> {
     }
     const name = (payload.projectName as string) || undefined
     const code = (payload.projectCode as string) || undefined
+    const client = (payload.client as string) || (payload.clientName as string) || ''
     const nameChanged = name !== undefined && existing.name !== name
     const codeChanged = code !== undefined && existing.code !== code
+    // Re-parent to the new Harvest client when the client changed, so client-
+    // grouped reporting/budgets follow the rename (find-or-create, mirroring
+    // provision). Compared case-insensitively against the project's current client.
+    const clientChanged = !!client && (existing.client?.name || '').toLowerCase() !== client.toLowerCase()
+    let clientId: number | undefined
+    if (clientChanged) {
+      clientId = (await findOrCreateClient(client)).id
+    }
     // Idempotent resume: if already at target, skip the PATCH.
-    const project = nameChanged || codeChanged
+    const project = nameChanged || codeChanged || clientChanged
       ? await updateHarvestProject({
           projectId: existing.id,
           ...(nameChanged ? { name } : {}),
           ...(codeChanged ? { code } : {}),
+          ...(clientId !== undefined ? { clientId } : {}),
         })
       : existing
     return {

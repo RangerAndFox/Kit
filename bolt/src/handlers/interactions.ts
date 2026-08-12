@@ -1384,7 +1384,7 @@ export function registerInteractionHandlers(app: App) {
     // this modal sat open is NOT flagged as this user's change and reverted. Fall
     // back to the fresh snapshot only for an older modal without an embedded snap.
     const baseline = meta.snap || snap.snapshot
-    const plan = computeUpdatePlan({ projectId, ...baseline } as any, form as any)
+    const plan = computeUpdatePlan({ projectId, ...baseline } as any, form as any, snap.provisioned)
     if (!plan.hasChanges) {
       await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: ':information_source: No changes detected — nothing to update.' })
       return
@@ -1529,8 +1529,21 @@ export function registerInteractionHandlers(app: App) {
             if (changed.has('project_name')) sub.projectName = f.projectName
             if (changed.has('start_date')) sub.startDate = f.startDate
             if (changed.has('deadline')) sub.deadline = f.deadline
-            if (changed.has('creative_director')) sub.creativeDirectorName = await resolveUserDisplayName(client, f.creativeDirector)
-            if (changed.has('project_manager')) sub.producerName = await resolveUserDisplayName(client, f.projectManager)
+            // For a CD/Producer CHANGED to a real user, a failed display-name
+            // lookup returns undefined — indistinguishable from a clear, which
+            // would silently leave the Sheet's old name. Fail the step (retryable)
+            // instead so a transient users.info blip self-heals; a genuine clear
+            // (empty id) falls through to the CLEARABLE blank-write below.
+            if (changed.has('creative_director') && f.creativeDirector) {
+              const nm = await resolveUserDisplayName(client, f.creativeDirector)
+              if (!nm) return { success: false, error: 'could not resolve creative director display name' }
+              sub.creativeDirectorName = nm
+            }
+            if (changed.has('project_manager') && f.projectManager) {
+              const nm = await resolveUserDisplayName(client, f.projectManager)
+              if (!nm) return { success: false, error: 'could not resolve producer display name' }
+              sub.producerName = nm
+            }
             const cells = kitOwnedCreationCells(sub as any)
             const CLEARABLE: Record<string, MasterHeader> = {
               client_contact: 'Client Contact',
@@ -1918,13 +1931,13 @@ function projectOptionLabel(row: { project_code?: string | null; client?: string
 async function loadUpdateSnapshot(
   projectId: string,
   workspaceId: string,
-): Promise<{ status: string; snapshot: any; current: { slackChannelId?: string; dropboxPath?: string } } | null> {
+): Promise<{ status: string; snapshot: any; current: { slackChannelId?: string; dropboxPath?: string }; provisioned: { slack: boolean; frameio: boolean; harvest: boolean; dropbox: boolean } } | null> {
   if (!projectId) return null
   try {
     const sb = createAdminClient()
     const { data } = await sb
       .from('projects')
-      .select('id, name, client, project_code, project_type, status, start_date, target_delivery, brief_summary, budget_total, project_manager_slack_id, external_ids, external_links, slack_channel_id')
+      .select('id, name, client, project_code, project_type, status, start_date, target_delivery, brief_summary, budget_total, project_manager_slack_id, external_ids, external_links, slack_channel_id, harvest_project_id')
       .eq('id', projectId)
       .eq('workspace_id', workspaceId)
       .maybeSingle()
@@ -1952,6 +1965,15 @@ async function loadUpdateSnapshot(
         // external_links.dropbox_id stores the folder PATH (the dropbox agent's id).
         dropboxPath: links.dropbox_id || undefined,
       },
+      // Which external services the project actually has — so an identity edit
+      // never dispatches a rename to a service it was created without (that would
+      // wedge it 'partial' forever).
+      provisioned: {
+        slack: !!(links.slack_id || (data as any).slack_channel_id),
+        frameio: !!links.frameio_id,
+        harvest: !!(links.harvest_id || (data as any).harvest_project_id),
+        dropbox: !!links.dropbox_id,
+      },
     }
   } catch (err: any) {
     console.warn('[update] loadUpdateSnapshot failed:', err?.message)
@@ -1968,7 +1990,7 @@ async function listEditableProjects(workspaceId: string): Promise<Array<{ id: st
       .from('projects')
       .select('id, name, client, project_code')
       .eq('workspace_id', workspaceId)
-      .in('status', ['active', 'partial', 'paused'])
+      .in('status', EDITABLE_PROJECT_STATUSES)
       .order('created_at', { ascending: false })
       .limit(100)
     return (data || []).map((p: any) => ({ id: p.id, label: projectOptionLabel(p) }))

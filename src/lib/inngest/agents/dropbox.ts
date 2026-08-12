@@ -14,6 +14,17 @@ import type { AgentDefinition, AgentResult } from './types'
 
 const DROPBOX_API = 'https://api.dropboxapi.com/2'
 
+/** Recover the project number from an agent payload: explicit projectNumber,
+ *  else the leading segment of a legacy `{number}-{client}` projectCode. Shared
+ *  by provision() and moveFolder() so the fallback lives in one place. */
+function getProjectNumber(payload: Record<string, unknown>): string {
+  return (
+    (payload.projectNumber as string) ||
+    (typeof payload.projectCode === 'string' ? (payload.projectCode as string).split('-')[0] : '') ||
+    ''
+  )
+}
+
 async function dropboxPost(endpoint: string, body: Record<string, unknown>): Promise<any> {
   return withRetry(async () =>
     fetch(`${DROPBOX_API}${endpoint}`, {
@@ -58,10 +69,7 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
   // a parseable projectCode like "2655-Microsoft". Match the {ID}_{Client}_{Project} spine.
   const client = (payload.client as string) || (payload.clientName as string) || ''
   const projectName = (payload.projectName as string) || ''
-  const projectNumber =
-    (payload.projectNumber as string) ||
-    (typeof payload.projectCode === 'string' ? (payload.projectCode as string).split('-')[0] : '') ||
-    ''
+  const projectNumber = getProjectNumber(payload)
 
   const labelParts = [projectNumber, client, projectName]
     .map((p) => (p ? String(p).trim() : ''))
@@ -318,10 +326,7 @@ async function moveFolder(payload: Record<string, unknown>): Promise<AgentResult
   try {
     const client = (payload.client as string) || (payload.clientName as string) || ''
     const projectName = (payload.projectName as string) || ''
-    const projectNumber =
-      (payload.projectNumber as string) ||
-      (typeof payload.projectCode === 'string' ? (payload.projectCode as string).split('-')[0] : '') ||
-      ''
+    const projectNumber = getProjectNumber(payload)
     // The folder's CURRENT path — persisted at create as external_links.dropbox_id.
     // Without it we cannot know what to move (or which year folder it lives in).
     const fromPath = (payload.fromPath as string) || (payload.dropboxPath as string) || ''

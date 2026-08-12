@@ -135,6 +135,29 @@ describe('computeUpdatePlan — project number change', () => {
   })
 })
 
+describe('computeUpdatePlan — provisioned-service gating', () => {
+  it('never flags a service the project was created without', () => {
+    // Project has no Frame.io / Dropbox; a client change would otherwise ripple to all.
+    const plan = computeUpdatePlan(BASE, formFrom(BASE, { clientName: 'Adidas' }), {
+      slack: true, harvest: true, frameio: false, dropbox: false,
+    })
+    assert.equal(plan.identityChanged, true)
+    assert.equal(plan.services.frameio, false) // not provisioned → never required
+    assert.equal(plan.services.dropbox, false)
+    assert.equal(plan.services.slack, true)
+    assert.equal(plan.services.harvest, true)
+    // The derived strings still move — gating is independent of the diff itself.
+    assert.ok(plan.derived.dropboxSafeName)
+  })
+
+  it('defaults every service present when provisioning is unknown', () => {
+    const plan = computeUpdatePlan(BASE, formFrom(BASE, { clientName: 'Adidas' }))
+    assert.deepEqual(plan.services, {
+      slack: true, frameio: true, harvest: true, dropbox: true, sheet: true, supabase: true,
+    })
+  })
+})
+
 describe('computeUpdatePlan — multiple simultaneous changes', () => {
   it('collects every changed field in order', () => {
     const plan = computeUpdatePlan(

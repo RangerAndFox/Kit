@@ -280,10 +280,14 @@ export async function updateHarvestProject(opts: {
   projectId: number
   name?: string
   code?: string
+  /** Re-parent the project to a different Harvest client (on a client rename), so
+   *  client-grouped reporting/budgets follow the change. */
+  clientId?: number
 }): Promise<HarvestProject> {
   const body: Record<string, unknown> = {}
   if (opts.name !== undefined) body.name = opts.name
   if (opts.code !== undefined) body.code = opts.code
+  if (opts.clientId !== undefined) body.client_id = opts.clientId
   const data = await harvestPatch(`/projects/${opts.projectId}`, body)
   return {
     id: data.id,

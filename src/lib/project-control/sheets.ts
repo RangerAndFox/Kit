@@ -253,30 +253,18 @@ export interface CreateBoundRowResult {
 }
 
 /**
- * Atomically create/prepare the row, write only Kit-owned cells, and attach the
- * kit_project_id developer metadata — all in ONE spreadsheets.batchUpdate so a
- * partial write is impossible. Searches metadata first for idempotency.
+ * Build the per-cell `updateCells` batchUpdate requests for a set of owned cells
+ * at a row. Shared by createBoundRow and updateBoundRow so the date-vs-string
+ * handling and `fields` masks live in ONE place.
  *
- * `updateCells` with fields:'userEnteredValue' writes values without touching
- * cell formatting or data validation. Margin formula columns are never in
- * `ownedCells` (guaranteed by kitOwnedCreationCells).
+ * Date cells: write the serial number AND explicitly set a DATE number format in
+ * the same atomic request, so the value is a real date (never locale text).
+ * String cells: write value only (`fields:'userEnteredValue'` preserves the
+ * cell's existing format + validation).
  */
-export async function createBoundRow(
-  config: WorkbookConfig,
-  kitProjectId: string,
-  ownedCells: OwnedCell[],
-): Promise<CreateBoundRowResult> {
-  const existing = await searchRowMetadata(config.spreadsheetId, kitProjectId, config.sheetId)
-  if (existing) return { metadataId: existing.metadataId, rowIndex: existing.rowIndex, alreadyBound: true }
-
-  const rowIndex = await findNextEmptyRowIndex(config)
+function buildCellRequests(config: WorkbookConfig, rowIndex: number, ownedCells: OwnedCell[]): unknown[] {
   const colIndex = (col: string) => col.charCodeAt(0) - 'A'.charCodeAt(0)
-
-  // Date cells: write the serial number AND explicitly set a DATE number format
-  // in the same atomic request, so the value is a real date (never locale text).
-  // String cells: write value only (fields:'userEnteredValue' preserves the
-  // cell's existing format + validation).
-  const requests: unknown[] = ownedCells.map((cell) => {
+  return ownedCells.map((cell) => {
     const start = { sheetId: config.sheetId, rowIndex, columnIndex: colIndex(cell.column) }
     if (cell.kind === 'date' && typeof cell.serial === 'number') {
       return {
@@ -298,6 +286,28 @@ export async function createBoundRow(
       },
     }
   })
+}
+
+/**
+ * Atomically create/prepare the row, write only Kit-owned cells, and attach the
+ * kit_project_id developer metadata — all in ONE spreadsheets.batchUpdate so a
+ * partial write is impossible. Searches metadata first for idempotency.
+ *
+ * `updateCells` with fields:'userEnteredValue' writes values without touching
+ * cell formatting or data validation. Margin formula columns are never in
+ * `ownedCells` (guaranteed by kitOwnedCreationCells).
+ */
+export async function createBoundRow(
+  config: WorkbookConfig,
+  kitProjectId: string,
+  ownedCells: OwnedCell[],
+): Promise<CreateBoundRowResult> {
+  const existing = await searchRowMetadata(config.spreadsheetId, kitProjectId, config.sheetId)
+  if (existing) return { metadataId: existing.metadataId, rowIndex: existing.rowIndex, alreadyBound: true }
+
+  const rowIndex = await findNextEmptyRowIndex(config)
+
+  const requests: unknown[] = buildCellRequests(config, rowIndex, ownedCells)
   requests.push({
     createDeveloperMetadata: {
       developerMetadata: {
@@ -348,30 +358,8 @@ export async function updateBoundRow(
   const existing = await searchRowMetadata(config.spreadsheetId, kitProjectId, config.sheetId)
   if (!existing) return { skipped: 'unbound' }
   const rowIndex = existing.rowIndex
-  const colIndex = (col: string) => col.charCodeAt(0) - 'A'.charCodeAt(0)
 
-  const requests: unknown[] = ownedCells.map((cell) => {
-    const start = { sheetId: config.sheetId, rowIndex, columnIndex: colIndex(cell.column) }
-    if (cell.kind === 'date' && typeof cell.serial === 'number') {
-      return {
-        updateCells: {
-          rows: [{ values: [{
-            userEnteredValue: { numberValue: cell.serial },
-            userEnteredFormat: { numberFormat: { type: 'DATE' } },
-          }] }],
-          fields: 'userEnteredValue,userEnteredFormat.numberFormat',
-          start,
-        },
-      }
-    }
-    return {
-      updateCells: {
-        rows: [{ values: [{ userEnteredValue: { stringValue: cell.value } }] }],
-        fields: 'userEnteredValue',
-        start,
-      },
-    }
-  })
+  const requests: unknown[] = buildCellRequests(config, rowIndex, ownedCells)
 
   if (requests.length > 0) {
     await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests })

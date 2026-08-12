@@ -42,6 +42,17 @@ describe('updateHarvestProject', () => {
     assert.equal(p.code, '2601-Adidas')
   })
 
+  it('sends client_id when re-parenting to a new client', async () => {
+    let body: any = null
+    globalThis.fetch = (async (_url: any, init: any) => {
+      body = JSON.parse(init?.body || '{}')
+      return { ok: true, json: async () => ({ id: 55, name: 'N', code: '2601-Adidas', is_active: true }) }
+    }) as any
+    await updateHarvestProject({ projectId: 55, code: '2601-Adidas', clientId: 88 })
+    assert.equal(body.client_id, 88)
+    assert.equal(body.code, '2601-Adidas')
+  })
+
   it('omits code when only the name changes', async () => {
     let body: any = null
     globalThis.fetch = (async (_url: any, init: any) => {

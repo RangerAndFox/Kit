@@ -107,7 +107,24 @@ interface FieldSpec {
   next: string | null | undefined
 }
 
-export function computeUpdatePlan(current: ProjectSnapshot, next: UpdateForm): UpdatePlan {
+/** Which external services the project ACTUALLY has provisioned. A service the
+ *  project was created without (unchecked in the new-project modal) must never be
+ *  added to the rename plan — its rename handler would find no resource to
+ *  reconcile, return terminal, and wedge the project in 'partial' forever. When
+ *  omitted, every service is treated as present (the pure-diff default, used by
+ *  unit tests). */
+export interface ProvisionedServices {
+  slack?: boolean
+  frameio?: boolean
+  harvest?: boolean
+  dropbox?: boolean
+}
+
+export function computeUpdatePlan(
+  current: ProjectSnapshot,
+  next: UpdateForm,
+  provisioned?: ProvisionedServices,
+): UpdatePlan {
   const specs: FieldSpec[] = [
     { field: 'project_number', label: 'Project Number', current: current.projectNumber, next: next.projectNumber },
     { field: 'client', label: 'Client', current: current.clientName, next: next.clientName },
@@ -160,16 +177,25 @@ export function computeUpdatePlan(current: ProjectSnapshot, next: UpdateForm): U
   const nameChanged = changed.has('project_name')
   const clientChanged = changed.has('client')
 
+  // Gate each external service on whether the project actually has it (default
+  // present when the caller doesn't know).
+  const has = {
+    slack: provisioned?.slack ?? true,
+    frameio: provisioned?.frameio ?? true,
+    harvest: provisioned?.harvest ?? true,
+    dropbox: provisioned?.dropbox ?? true,
+  }
+
   const services: UpdateServiceFlags = {
     // Dropbox folder moves only when its safe-name string moves.
-    dropbox: !!derived.dropboxSafeName,
+    dropbox: has.dropbox && !!derived.dropboxSafeName,
     // Frame.io project name is the business label.
-    frameio: !!derived.frameioBusinessLabel,
+    frameio: has.frameio && !!derived.frameioBusinessLabel,
     // Harvest project name = project name; code = project code.
-    harvest: nameChanged || !!derived.projectCode,
+    harvest: has.harvest && (nameChanged || !!derived.projectCode),
     // Slack: rename when the slug base moves, or refresh topic/purpose text
     // (which embeds `${client} — ${projectName}`) when either moves.
-    slack: !!derived.slackSlug || clientChanged || nameChanged,
+    slack: has.slack && (!!derived.slackSlug || clientChanged || nameChanged),
     // Master Project List: any Kit-owned cell changed.
     sheet:
       changed.has('project_number') ||
