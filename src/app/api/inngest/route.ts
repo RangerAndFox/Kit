@@ -7,6 +7,7 @@ import { studioKnowledgeAutoSummarize } from '@/lib/inngest/studio-knowledge-cro
 import { brainDeadlineSweep, brainScavengerScan, brainConsolidate } from '@/lib/inngest/brain-crons'
 import { driveTranscriptScan } from '@/lib/inngest/drive-transcripts'
 import { healthWatchdog } from '@/lib/inngest/health-cron'
+import { healthDailyDigest } from '@/lib/inngest/health-digest'
 import { projectControlSync, projectControlSyncOnEdit } from '@/lib/inngest/project-control-sync'
 import { selectRegisteredFunctions } from '@/lib/inngest/registration'
 
@@ -48,6 +49,7 @@ export const inngestFunctions = [
   brainConsolidate,
   driveTranscriptScan,
   healthWatchdog,
+  healthDailyDigest,
   projectControlSync,
   // Event-driven Project Control refresh — same canonical core as the cron.
   // Inside the guarded list, so a Vercel Preview deployment registers it as
