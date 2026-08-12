@@ -72,6 +72,28 @@ describe("harvest 'rename' reconciliation", () => {
     assert.equal(patch.body.name, 'New Name')
   })
 
+  it('does NOT wedge terminal on a TRANSIENT get-by-id error (retryable, not false-gone)', async () => {
+    // No marker → fall back to getHarvestProjectById(555), which hits a 500. That
+    // must NOT be read as "project gone" (terminal); it's a retryable failure.
+    harvestMock({
+      list: [],
+      // byId omitted → but override with a 500 for /projects/555:
+      byId: {},
+    })
+    // Re-point the byId GET to a 500 explicitly.
+    const orig = globalThis.fetch
+    globalThis.fetch = (async (url: any, init: any) => {
+      const u = String(url)
+      if (/\/projects\/555/.test(u)) return { ok: false, status: 500, text: async () => 'internal_error' }
+      return orig(url, init)
+    }) as any
+    const res: any = await harvestAgent.handler('rename', {
+      projectId: 'KP1', harvestProjectId: 555, projectName: 'New Name',
+    })
+    assert.equal(res.success, false)
+    assert.notEqual(res.terminal, true) // transient → retryable, not terminal
+  })
+
   it('is terminal when there is no marker AND no harvest_project_id to fall back to', async () => {
     harvestMock({ list: [] })
     const res: any = await harvestAgent.handler('rename', {

@@ -239,8 +239,12 @@ export async function getHarvestProjectById(projectId: number): Promise<HarvestP
       client: data.client ? { id: data.client.id, name: data.client.name } : undefined,
       notes: data.notes || '',
     }
-  } catch {
-    return null
+  } catch (err: any) {
+    // Return null ONLY for a genuine 404 (project gone). Re-throw a transient 5xx /
+    // rate-limit / timeout so the caller's retry/recovery path handles it — never
+    // collapse "couldn't tell" into "gone", which would wedge the rename terminal.
+    if (/404|not_found/i.test(err?.message || '')) return null
+    throw err
   }
 }
 

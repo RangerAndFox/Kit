@@ -1568,13 +1568,14 @@ export function registerInteractionHandlers(app: App) {
             // for any changed-to-empty field (create's blank-skip would leave the
             // stale value, diverging from Supabase which clears it).
             const changed = new Set((plan.changes as any[]).map((c) => c.field))
-            const sub: Record<string, string | undefined> = {}
-            if (changed.has('project_number')) sub.projectNumber = f.projectNumber
-            if (changed.has('client')) sub.clientName = f.clientName
-            if (changed.has('client_contact')) sub.clientContact = f.clientContact
-            if (changed.has('project_name')) sub.projectName = f.projectName
-            if (changed.has('start_date')) sub.startDate = f.startDate
-            if (changed.has('deadline')) sub.deadline = f.deadline
+            // Renamed from `sub` to avoid shadowing the outer submission `sub`.
+            const ownedFields: Record<string, string | undefined> = {}
+            if (changed.has('project_number')) ownedFields.projectNumber = f.projectNumber
+            if (changed.has('client')) ownedFields.clientName = f.clientName
+            if (changed.has('client_contact')) ownedFields.clientContact = f.clientContact
+            if (changed.has('project_name')) ownedFields.projectName = f.projectName
+            if (changed.has('start_date')) ownedFields.startDate = f.startDate
+            if (changed.has('deadline')) ownedFields.deadline = f.deadline
             // For a CD/Producer CHANGED to a real user, a failed display-name
             // lookup returns undefined — indistinguishable from a clear, which
             // would silently leave the Sheet's old name. Fail the step (retryable)
@@ -1583,14 +1584,14 @@ export function registerInteractionHandlers(app: App) {
             if (changed.has('creative_director') && f.creativeDirector) {
               const nm = await resolveUserDisplayName(client, f.creativeDirector)
               if (!nm) return { success: false, error: 'could not resolve creative director display name' }
-              sub.creativeDirectorName = nm
+              ownedFields.creativeDirectorName = nm
             }
             if (changed.has('project_manager') && f.projectManager) {
               const nm = await resolveUserDisplayName(client, f.projectManager)
               if (!nm) return { success: false, error: 'could not resolve producer display name' }
-              sub.producerName = nm
+              ownedFields.producerName = nm
             }
-            const cells = kitOwnedCreationCells(sub as any)
+            const cells = kitOwnedCreationCells(ownedFields as any)
             const CLEARABLE: Record<string, MasterHeader> = {
               client_contact: 'Client Contact',
               start_date: 'Start Date',
@@ -1769,9 +1770,16 @@ export function registerInteractionHandlers(app: App) {
       for (const r of await listRecoverableUpdateRequests()) await drive(r.request_key)
       // Step-based discovery returns update_request_id (uuid); resolve each to its
       // request_key (the text key drive()/claimUpdateRequestFenced filter on).
+      // SKIP a request already in a TERMINAL status: a request that went terminal
+      // via runUpdateRipple's early-return branches (project not-found / archived)
+      // returns before terminalizing its step rows, so a leftover incomplete step
+      // from a prior partial cycle would otherwise re-drive the cancelled request
+      // forever (re-posting ":no_entry: ... not applied" every sweep). The request-
+      // status recovery above already excludes these; the step path must too.
+      const TERMINAL_REQ_STATUSES = new Set(['cancelled', 'completed', 'needs_attention'])
       for (const id of await listUpdateRequestsWithIncompleteSteps()) {
         const row = await loadUpdateRequestById(id).catch(() => null)
-        if (row?.request_key) await drive(row.request_key)
+        if (row?.request_key && !TERMINAL_REQ_STATUSES.has(row.status)) await drive(row.request_key)
       }
     } catch (err: any) {
       // Only the list queries themselves can reach here now (per-item throws are
