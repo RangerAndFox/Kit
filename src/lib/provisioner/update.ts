@@ -46,6 +46,9 @@ export interface UpdateCurrentIds {
   slackChannelId?: string | null
   /** The current Dropbox folder path `/production/{year}/{safeName}` (move source). */
   dropboxPath?: string | null
+  /** The numeric Harvest project id — the rename fallback for a sync-linked project
+   *  whose Harvest notes never received the Kit marker (reconcile-by-marker finds 0). */
+  harvestProjectId?: string | number | null
   /** Current identity spine (fresh DB values) — used for fields NOT in the diff. */
   projectNumber?: string | null
   clientName?: string | null
@@ -135,6 +138,8 @@ export async function runProjectUpdate(
     clientName: spineClient,
     projectNumber: spineNumber,
     projectCode: ids.projectCode,
+    // Harvest rename fallback for a sync-linked (marker-less) project.
+    harvestProjectId: current.harvestProjectId ?? undefined,
   }
 
   const externalServices = (['slack', 'frameio', 'harvest', 'dropbox'] as const).filter(

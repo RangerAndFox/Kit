@@ -221,6 +221,30 @@ export async function findHarvestProjectByKitId(kitProjectId: string): Promise<H
 }
 
 /**
+ * Fetch a single Harvest project by its numeric id — marker-independent. The
+ * rename fallback for a project LINKED via `/kit sync-projects`: sync only writes
+ * the `harvest_project_id` FK onto the Kit row and never PATCHes the Kit marker
+ * into the Harvest notes, so reconcile-by-marker finds nothing. Returns null if
+ * the project is gone (404).
+ */
+export async function getHarvestProjectById(projectId: number): Promise<HarvestProject | null> {
+  if (!projectId) return null
+  try {
+    const data = await harvestGet(`/projects/${projectId}`)
+    return {
+      id: data.id,
+      name: data.name,
+      code: data.code || '',
+      is_active: data.is_active,
+      client: data.client ? { id: data.client.id, name: data.client.name } : undefined,
+      notes: data.notes || '',
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
  * Search projects by code, client, name, or keywords — fuzzy and
  * separator-insensitive ("2611", "crunchy roll", "magic quadrant" all
  * resolve). Returns a single project when one clearly wins, otherwise the

@@ -11,6 +11,7 @@ import {
   createHarvestProject,
   updateHarvestProject,
   findHarvestProjectsByKitId,
+  getHarvestProjectById,
   assignDefaultTasks,
   assignAllUsersToProject,
   listProjects,
@@ -112,9 +113,14 @@ async function rename(payload: Record<string, unknown>): Promise<AgentResult> {
     if (matches.length > 1) {
       return { agent: 'harvest', action: 'rename', success: false, terminal: true, error: `ambiguous_harvest_projects: ${matches.map((m) => m.id).join(',')} share kit marker` }
     }
-    const existing = matches[0]
+    // Fall back to the known numeric harvest id when reconcile-by-marker finds
+    // nothing: a project LINKED via /kit sync-projects has a harvest_project_id but
+    // no Kit marker in its notes, so the marker search returns 0. Kit still knows
+    // exactly which project to rename. (Mirrors Slack's name-suffix fallback.)
+    const harvestId = Number(payload.harvestProjectId) || 0
+    const existing = matches[0] || (harvestId ? await getHarvestProjectById(harvestId) : null)
     if (!existing) {
-      return { agent: 'harvest', action: 'rename', success: false, terminal: true, error: `No Harvest project carries the Kit marker for ${kitProjectId}; nothing to rename` }
+      return { agent: 'harvest', action: 'rename', success: false, terminal: true, error: `No Harvest project found for ${kitProjectId} (no Kit marker match and no resolvable harvest_project_id); nothing to rename` }
     }
     const name = (payload.projectName as string) || undefined
     const code = (payload.projectCode as string) || undefined

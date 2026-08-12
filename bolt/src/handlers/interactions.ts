@@ -1534,7 +1534,12 @@ export function registerInteractionHandlers(app: App) {
         // folder (delivery matching keys off dropbox_safe_name). Read-modify-write
         // so other external_ids/external_links keys are preserved.
         persistDropboxMove: async (pid, o) => {
-          const { data } = await supabase.from('projects').select('external_ids, external_links').eq('id', pid).maybeSingle()
+          // Check the READ error too (supabase-js resolves, never throws): a
+          // transient read blip returns data:null, and rebuilding external_ids/
+          // external_links from {} would WIPE sibling keys (slack_id/harvest_id/…)
+          // on the write below. Throw so the step is retryable — fail closed.
+          const { data, error: readErr } = await supabase.from('projects').select('external_ids, external_links').eq('id', pid).maybeSingle()
+          if (readErr) throw new Error(`persistDropboxMove read: ${readErr.message}`)
           const external_ids = { ...((data as any)?.external_ids || {}), dropbox_safe_name: o.safeName }
           const external_links = { ...((data as any)?.external_links || {}), dropbox_id: o.path, ...(o.url ? { dropbox: o.url } : {}) }
           // supabase-js resolves (never throws) on a write failure — THROW on error
@@ -1622,7 +1627,11 @@ export function registerInteractionHandlers(app: App) {
           // owns (project_number / creative_director) changed, preserving every
           // other key (esp. Phase A's fresh dropbox_safe_name).
           if (changed.has('project_number') || changed.has('creative_director')) {
-            const { data } = await supabase.from('projects').select('external_ids').eq('id', pid).maybeSingle()
+            // Check the READ error (fail closed): a transient blip returning
+            // data:null would rebuild external_ids from {} and wipe sibling keys
+            // (dropbox_safe_name / the other provenance ids) on the write below.
+            const { data, error: readErr } = await supabase.from('projects').select('external_ids').eq('id', pid).maybeSingle()
+            if (readErr) throw new Error(`updateProjectRow external_ids read: ${readErr.message}`)
             const external_ids: Record<string, unknown> = { ...((data as any)?.external_ids || {}) }
             if (changed.has('project_number')) {
               if (f.projectNumber) external_ids.project_number = f.projectNumber
@@ -2050,6 +2059,8 @@ async function loadUpdateSnapshot(
         slackChannelId: links.slack_id || (data as any).slack_channel_id || undefined,
         // external_links.dropbox_id stores the folder PATH (the dropbox agent's id).
         dropboxPath: links.dropbox_id || undefined,
+        // Numeric Harvest id — the rename fallback for a sync-linked (marker-less) project.
+        harvestProjectId: links.harvest_id || (data as any).harvest_project_id || undefined,
       },
       // Which external services the project actually has — so an identity edit
       // never dispatches a rename to a service it was created without (that would
