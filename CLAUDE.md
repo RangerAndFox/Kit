@@ -28,6 +28,7 @@ read every `.ai/` document — select only the smallest reference the task needs
 | Build a feature | `.ai/workflows/feature.md` |
 | Refactor without behavior change | `.ai/workflows/refactor.md` |
 | Deploy or reason about a deploy | `.ai/workflows/deployment.md` |
+| Check Kit is healthy / run the daily check | `.ai/workflows/health-check.md` |
 | Document a subsystem / write an audit | `.ai/templates/` |
 | Understand Kit's Atlas layer | `.ai/README.md` |
 
