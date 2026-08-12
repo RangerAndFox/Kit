@@ -16,6 +16,7 @@ import { withRetry } from '@/lib/provisioner/retry'
 import { frameioHeaders } from '@/lib/frameio/auth'
 import { normalizeFrameioNextLink, FRAMEIO_API_BASE, frameioProjectUrl } from '@/lib/frameio/url'
 import folderStructure from '@/lib/provisioner/folder-structure.json'
+import { deriveFrameioBusinessLabel } from '@/lib/provisioner/identifiers'
 import type { AgentDefinition, AgentResult } from './types'
 
 const FRAMEIO_API = FRAMEIO_API_BASE
@@ -269,9 +270,7 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
   // Business label + embedded Kit UUID marker. The marker (not the business
   // fields, which intentional duplicates share) is the reconciliation identity.
   const kitProjectId = (payload.projectId as string) || ''
-  const businessLabel = [projectNumber, client, projectName]
-    .filter((part) => part && part.trim())
-    .join('_')
+  const businessLabel = deriveFrameioBusinessLabel(projectNumber, client, projectName)
   const projectLabel = kitProjectId ? `${businessLabel} ${frameioKitMarker(kitProjectId)}` : businessLabel
 
   if (!businessLabel) {

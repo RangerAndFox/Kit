@@ -8,6 +8,7 @@
  */
 
 import { withRetry } from '@/lib/provisioner/retry'
+import { deriveDropboxSafeName } from '@/lib/provisioner/identifiers'
 import { dropboxHeaders } from '@/lib/dropbox/client'
 import type { AgentDefinition, AgentResult } from './types'
 
@@ -73,8 +74,9 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       error: 'Dropbox provision needs at least one of projectNumber, client, projectName',
     }
   }
-  const slug = labelParts.join('_')
-  const safeName = slug.replace(/[^\w\s-]/g, '').replace(/\s+/g, '_')
+  // Shared derivation (see identifiers.ts) — identical output to the create
+  // handler and the update flow, so reconciliation-by-path never diverges.
+  const safeName = deriveDropboxSafeName(projectNumber, client, projectName)
   // Bot's Dropbox home namespace is already the team folder root, so paths
   // are relative to it. Prefixing /Ranger & Fox/ would create a duplicate
   // top-level folder inside the team folder. Same logic for DROPBOX_TEMPLATE_PATH.

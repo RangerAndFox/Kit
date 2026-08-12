@@ -7,6 +7,7 @@
 
 import TurndownService from 'turndown'
 import { gfm } from 'turndown-plugin-gfm'
+import { deriveSlackSlug } from '../provisioner/identifiers'
 
 const SLACK_API = 'https://slack.com/api'
 
@@ -395,16 +396,14 @@ export async function createProjectSlackChannel(opts: {
   // crash after conversations.create is reconciled by exact name (no second
   // channel), and an unrelated readable-name collision (same base, no suffix)
   // can never be adopted — it simply has a different name.
-  const shortId = String(projectId).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toLowerCase()
-  const base = [projectNumber, client, projectName]
-    .filter((part) => part && String(part).trim())
-    .join('-')
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 80 - (shortId.length + 1))
-  const slug = shortId ? `${base}-${shortId}` : base
+  // Shared derivation (see identifiers.ts) so the update flow's channel rename
+  // targets the exact same slug this create path produced.
+  const { slackSlug: slug } = deriveSlackSlug({
+    projectId,
+    projectNumber: projectNumber || '',
+    client,
+    projectName,
+  })
 
   // Try to create the channel
   let channelId: string

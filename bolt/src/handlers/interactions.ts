@@ -20,6 +20,7 @@ import {
 } from '../../../src/lib/inngest/agents/registry'
 import type { ServiceKey } from '../../../src/lib/provisioner/types'
 import { buildNewProjectModal } from '../../../src/lib/provisioner/modal'
+import { deriveProjectCode, deriveDropboxSafeName } from '../../../src/lib/provisioner/identifiers'
 import {
   getOrCreateCreationRequest,
   loadCreationRequest,
@@ -843,17 +844,16 @@ export function registerInteractionHandlers(app: App) {
     // No after(), no Inngest, no 60s ceiling. Just do the work.
 
     try {
-      // Build the project code
-      const projectCode = `${form.projectNumber}-${form.clientName.replace(/\s+/g, '')}`
+      // Build the project code (shared derivation — see identifiers.ts).
+      const projectCode = deriveProjectCode(form.projectNumber, form.clientName)
 
       // Same shape the Dropbox provisioner uses (`/production/{year}/{safeName}`).
       // Persisted so the file watcher can reverse-match Dropbox paths to projects.
-      const dropboxSafeName = [form.projectNumber, form.clientName, form.projectName]
-        .map((p) => (p ? String(p).trim() : ''))
-        .filter(Boolean)
-        .join('_')
-        .replace(/[^\w\s-]/g, '')
-        .replace(/\s+/g, '_')
+      const dropboxSafeName = deriveDropboxSafeName(
+        form.projectNumber,
+        form.clientName,
+        form.projectName,
+      )
 
       // ── Create project record (idempotent, resume-safe) ────
       // When creation is ENABLED, resolveCreationProject owns the exclusive
@@ -883,6 +883,9 @@ export function registerInteractionHandlers(app: App) {
             ...(creationEnabled && requestKey ? { creation_request_id: requestKey } : {}),
             external_ids: {
               dropbox_safe_name: dropboxSafeName,
+              // Persisted so the update flow round-trips the number losslessly
+              // (project_code.split('-')[0] is lossy if the client has a hyphen).
+              ...(form.projectNumber ? { project_number: form.projectNumber } : {}),
               ...(form.creativeDirector ? { creative_director_slack_id: form.creativeDirector } : {}),
             },
           })

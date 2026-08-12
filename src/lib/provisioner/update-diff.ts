@@ -1,0 +1,191 @@
+/**
+ * Pure diff/plan logic for the "update project" flow.
+ *
+ * `computeUpdatePlan(current, next)` compares the project's current authoritative
+ * values against the values submitted in the update modal and produces:
+ *   - `changes`  — the human-facing field-level diff (for the preview message)
+ *   - `derived`  — the recomputed identity strings that changed (project code,
+ *                  Dropbox safe-name, Slack slug, Frame.io label) so the preview
+ *                  can show old → new and the executor knows the rename targets
+ *   - `services` — which outlets must ripple (slack/frameio/harvest/dropbox/
+ *                  sheet/supabase)
+ *   - `identityChanged` — whether a spine field (number/client/name) moved,
+ *                  which is what forces the external renames
+ *
+ * All identity derivations go through `deriveProjectIdentifiers` so the rename
+ * targets are byte-identical to what create produced. This module has no I/O.
+ */
+
+import { deriveProjectIdentifiers } from './identifiers'
+
+/** The current authoritative state of a project (assembled from the Master
+ *  Project List row for Kit-owned fields + the Supabase row for the rest). */
+export interface ProjectSnapshot {
+  projectId: string
+  projectNumber: string
+  clientName: string
+  clientContact?: string | null
+  projectName: string
+  projectType?: string | null
+  projectManagerSlackId?: string | null
+  creativeDirectorSlackId?: string | null
+  startDate?: string | null
+  targetDelivery?: string | null
+  briefSummary?: string | null
+}
+
+/** The extracted update-modal form (new values). Field names match the create
+ *  handler's extraction so the same extraction code can be reused. */
+export interface UpdateForm {
+  projectNumber: string
+  clientName: string
+  clientContact?: string
+  projectName: string
+  projectType?: string
+  projectManager?: string // slack user id
+  creativeDirector?: string // slack user id
+  startDate?: string
+  deadline?: string
+  description?: string
+}
+
+export interface FieldChange {
+  /** Stable key, e.g. 'project_name'. */
+  field: string
+  /** Human label for the preview, e.g. 'Project Name'. */
+  label: string
+  /** True when old/new are Slack user ids (render as <@id> in the preview). */
+  isUser?: boolean
+  old: string | null
+  new: string | null
+}
+
+export interface DerivedChange {
+  old: string
+  new: string
+}
+
+export interface UpdateServiceFlags {
+  slack: boolean
+  frameio: boolean
+  harvest: boolean
+  dropbox: boolean
+  sheet: boolean
+  supabase: boolean
+}
+
+export interface UpdatePlan {
+  changes: FieldChange[]
+  derived: {
+    projectCode?: DerivedChange
+    dropboxSafeName?: DerivedChange
+    slackSlug?: DerivedChange
+    frameioBusinessLabel?: DerivedChange
+  }
+  services: UpdateServiceFlags
+  /** A spine field (number / client / name) moved — external renames required. */
+  identityChanged: boolean
+  hasChanges: boolean
+}
+
+/** Normalize a nullable field for comparison: trim, treat null/undefined as ''. */
+function norm(v: string | null | undefined): string {
+  return (v ?? '').toString().trim()
+}
+
+/** null when empty, else the trimmed value — for a FieldChange side. */
+function side(v: string | null | undefined): string | null {
+  const n = norm(v)
+  return n === '' ? null : n
+}
+
+interface FieldSpec {
+  field: string
+  label: string
+  isUser?: boolean
+  current: string | null | undefined
+  next: string | null | undefined
+}
+
+export function computeUpdatePlan(current: ProjectSnapshot, next: UpdateForm): UpdatePlan {
+  const specs: FieldSpec[] = [
+    { field: 'project_number', label: 'Project Number', current: current.projectNumber, next: next.projectNumber },
+    { field: 'client', label: 'Client', current: current.clientName, next: next.clientName },
+    { field: 'client_contact', label: 'Client Contact', current: current.clientContact, next: next.clientContact },
+    { field: 'project_name', label: 'Project Name', current: current.projectName, next: next.projectName },
+    { field: 'project_type', label: 'Project Type', current: current.projectType, next: next.projectType },
+    { field: 'project_manager', label: 'Producer', isUser: true, current: current.projectManagerSlackId, next: next.projectManager },
+    { field: 'creative_director', label: 'Creative Director', isUser: true, current: current.creativeDirectorSlackId, next: next.creativeDirector },
+    { field: 'start_date', label: 'Start Date', current: current.startDate, next: next.startDate },
+    { field: 'deadline', label: 'Deadline', current: current.targetDelivery, next: next.deadline },
+    { field: 'description', label: 'Brief Description', current: current.briefSummary, next: next.description },
+  ]
+
+  const changes: FieldChange[] = []
+  const changed = new Set<string>()
+  for (const s of specs) {
+    if (norm(s.current) !== norm(s.next)) {
+      changed.add(s.field)
+      changes.push({
+        field: s.field,
+        label: s.label,
+        ...(s.isUser ? { isUser: true } : {}),
+        old: side(s.current),
+        new: side(s.next),
+      })
+    }
+  }
+
+  // Recompute the identity strings from both sides using the SAME project id
+  // (the id is stable across renames and only feeds the Slack short-id suffix).
+  const oldIds = deriveProjectIdentifiers({
+    projectId: current.projectId,
+    projectNumber: current.projectNumber,
+    client: current.clientName,
+    projectName: current.projectName,
+  })
+  const newIds = deriveProjectIdentifiers({
+    projectId: current.projectId,
+    projectNumber: next.projectNumber,
+    client: next.clientName,
+    projectName: next.projectName,
+  })
+
+  const derived: UpdatePlan['derived'] = {}
+  if (oldIds.projectCode !== newIds.projectCode) derived.projectCode = { old: oldIds.projectCode, new: newIds.projectCode }
+  if (oldIds.dropboxSafeName !== newIds.dropboxSafeName) derived.dropboxSafeName = { old: oldIds.dropboxSafeName, new: newIds.dropboxSafeName }
+  if (oldIds.slackSlug !== newIds.slackSlug) derived.slackSlug = { old: oldIds.slackSlug, new: newIds.slackSlug }
+  if (oldIds.frameioBusinessLabel !== newIds.frameioBusinessLabel) derived.frameioBusinessLabel = { old: oldIds.frameioBusinessLabel, new: newIds.frameioBusinessLabel }
+
+  const nameChanged = changed.has('project_name')
+  const clientChanged = changed.has('client')
+
+  const services: UpdateServiceFlags = {
+    // Dropbox folder moves only when its safe-name string moves.
+    dropbox: !!derived.dropboxSafeName,
+    // Frame.io project name is the business label.
+    frameio: !!derived.frameioBusinessLabel,
+    // Harvest project name = project name; code = project code.
+    harvest: nameChanged || !!derived.projectCode,
+    // Slack: rename when the slug base moves, or refresh topic/purpose text
+    // (which embeds `${client} — ${projectName}`) when either moves.
+    slack: !!derived.slackSlug || clientChanged || nameChanged,
+    // Master Project List: any Kit-owned cell changed.
+    sheet:
+      changed.has('project_number') ||
+      changed.has('client') ||
+      changed.has('client_contact') ||
+      changed.has('project_name') ||
+      changed.has('start_date') ||
+      changed.has('deadline') ||
+      changed.has('creative_director') ||
+      changed.has('project_manager'),
+    // Supabase projects row: any tracked scalar changed.
+    supabase: changes.length > 0,
+  }
+
+  const identityChanged =
+    changed.has('project_number') || changed.has('client') || changed.has('project_name')
+
+  return { changes, derived, services, identityChanged, hasChanges: changes.length > 0 }
+}
