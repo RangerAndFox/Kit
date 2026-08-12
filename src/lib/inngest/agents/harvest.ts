@@ -126,7 +126,12 @@ async function rename(payload: Record<string, unknown>): Promise<AgentResult> {
     const code = (payload.projectCode as string) || undefined
     const client = (payload.client as string) || (payload.clientName as string) || ''
     const nameChanged = name !== undefined && existing.name !== name
-    const codeChanged = code !== undefined && existing.code !== code
+    // Only rewrite the Harvest CODE when the diff actually touched number/client
+    // (payload.codeChanged, set diff-scoped by the executor). Kit derives
+    // `{number}-{client}` unconditionally, but a synced project's real code has a
+    // different provenance, so a blind `existing.code !== code` string diff would
+    // rewrite the invoicing code on an unrelated (e.g. name-only) edit.
+    const codeChanged = payload.codeChanged === true && code !== undefined && existing.code !== code
     // Re-parent to the new Harvest client when the client changed, so client-
     // grouped reporting/budgets follow the rename (find-or-create, mirroring
     // provision). Compared case-insensitively against the project's current client.

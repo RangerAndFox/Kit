@@ -72,6 +72,38 @@ describe("harvest 'rename' reconciliation", () => {
     assert.equal(patch.body.name, 'New Name')
   })
 
+  it('does NOT rewrite the Harvest code on a name-only edit (codeChanged not set)', async () => {
+    // Synced project: real Harvest code 'NIKE-BRAND-25' never matches Kit's derived
+    // '2601-Nike'. A name-only edit must PATCH the name but NEVER the invoicing code.
+    const calls = harvestMock({
+      list: [],
+      byId: { '555': { id: 555, name: 'Old Name', code: 'NIKE-BRAND-25', is_active: true, notes: '', client: { id: 1, name: 'Nike' } } },
+      onPatch: (id, b) => ({ id: Number(id), name: b.name ?? 'Old Name', code: b.code ?? 'NIKE-BRAND-25', is_active: true, client: { id: 1, name: 'Nike' } }),
+    })
+    const res: any = await harvestAgent.handler('rename', {
+      projectId: 'KP1', harvestProjectId: 555, projectName: 'New Name', projectCode: '2601-Nike', client: 'Nike',
+      // codeChanged intentionally omitted (number/client not in the diff)
+    })
+    assert.equal(res.success, true)
+    const patch = calls.find((c) => c.method === 'PATCH')!
+    assert.equal(patch.body.name, 'New Name') // name follows the edit
+    assert.equal('code' in patch.body, false) // …but the code is left untouched
+  })
+
+  it('DOES rewrite the code when the diff touched number/client (codeChanged: true)', async () => {
+    const calls = harvestMock({
+      list: [],
+      byId: { '555': { id: 555, name: 'P', code: '2601-Nike', is_active: true, notes: '', client: { id: 1, name: 'Nike' } } },
+      onPatch: (id, b) => ({ id: Number(id), name: b.name ?? 'P', code: b.code ?? '2601-Nike', is_active: true, client: { id: 1, name: 'Nike' } }),
+    })
+    const res: any = await harvestAgent.handler('rename', {
+      projectId: 'KP1', harvestProjectId: 555, projectCode: '2602-Nike', codeChanged: true,
+    })
+    assert.equal(res.success, true)
+    const patch = calls.find((c) => c.method === 'PATCH')!
+    assert.equal(patch.body.code, '2602-Nike')
+  })
+
   it('does NOT wedge terminal on a TRANSIENT get-by-id error (retryable, not false-gone)', async () => {
     // No marker → fall back to getHarvestProjectById(555), which hits a 500. That
     // must NOT be read as "project gone" (terminal); it's a retryable failure.

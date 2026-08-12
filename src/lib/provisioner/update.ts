@@ -140,6 +140,13 @@ export async function runProjectUpdate(
     projectCode: ids.projectCode,
     // Harvest rename fallback for a sync-linked (marker-less) project.
     harvestProjectId: current.harvestProjectId ?? undefined,
+    // DIFF-SCOPE the Harvest CODE write, mirroring updateProjectRow's Supabase
+    // project_code: only rewrite Harvest's code when number/client actually changed.
+    // Kit derives projectCode as `{number}-{client}` unconditionally, but a synced
+    // project's real Harvest code (e.g. 'NIKE-BRAND-25') never matches that — so a
+    // blind `existing.code !== code` diff would rewrite the invoicing code on a
+    // name-only edit. Harvest gates its code PATCH on this flag.
+    codeChanged: changed.has('project_number') || changed.has('client'),
   }
 
   const externalServices = (['slack', 'frameio', 'harvest', 'dropbox'] as const).filter(
