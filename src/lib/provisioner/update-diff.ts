@@ -206,8 +206,12 @@ export function computeUpdatePlan(
     dropbox: has.dropbox && !!derived.dropboxSafeName,
     // Frame.io project name is the business label.
     frameio: has.frameio && !!derived.frameioBusinessLabel,
-    // Harvest project name = project name; code = project code.
-    harvest: has.harvest && (nameChanged || !!derived.projectCode),
+    // Harvest project name = project name; code = project code. OR in the raw
+    // clientChanged flag (like the Slack gate below): deriveProjectCode strips
+    // internal whitespace, so a whitespace-only client rename ('Coca Cola' →
+    // 'CocaCola') leaves projectCode identical yet is a real client change that
+    // must re-parent the Harvest project.
+    harvest: has.harvest && (nameChanged || clientChanged || !!derived.projectCode),
     // Slack: rename when the slug base moves, or refresh topic/purpose text
     // (which embeds `${client} — ${projectName}`) when either moves.
     slack: has.slack && (!!derived.slackSlug || clientChanged || nameChanged),

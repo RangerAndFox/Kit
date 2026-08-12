@@ -111,6 +111,17 @@ describe('computeUpdatePlan — non-identity scalar change', () => {
     assert.equal(plan.identityChanged, true)
   })
 
+  it('a whitespace-only client rename still ripples to Harvest (projectCode collapses whitespace)', () => {
+    // deriveProjectCode strips internal whitespace, so 'Coca Cola' → 'CocaCola'
+    // yields an identical projectCode; the Harvest gate must still catch it via the
+    // raw clientChanged flag, like every other outlet does.
+    const cc = { ...BASE, clientName: 'Coca Cola' }
+    const plan = computeUpdatePlan(cc, formFrom(cc, { clientName: 'CocaCola' }))
+    assert.equal(plan.changes.some((c) => c.field === 'client'), true)
+    assert.equal(plan.derived.projectCode, undefined) // projectCode identical on both sides
+    assert.equal(plan.services.harvest, true) // …yet Harvest still ripples
+  })
+
   it('producer change is a user field and ripples to sheet + supabase', () => {
     const plan = computeUpdatePlan(BASE, formFrom(BASE, { projectManager: 'U_NEWPROD' }))
     const change = plan.changes.find((c) => c.field === 'project_manager')

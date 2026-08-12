@@ -1516,8 +1516,12 @@ export function registerInteractionHandlers(app: App) {
       await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: `:no_entry: *${form.projectName}* is ${liveStatus} — update not applied.` }).catch(() => {})
       return
     }
+    // freshSnap.current is authoritative and defines every key unconditionally
+    // (loadUpdateSnapshot builds them with `|| undefined`), so a `...sub.current`
+    // spread would be fully overwritten — dead. An undefined here means the link
+    // genuinely isn't set (a transient read throws, per loadUpdateSnapshot), so
+    // there's no stale-fallback to preserve.
     const current = {
-      ...(sub.current || {}),
       ...freshSnap.current,
       projectNumber: freshSnap.snapshot.projectNumber,
       clientName: freshSnap.snapshot.clientName,
