@@ -121,6 +121,17 @@ export async function loadUpdateRequest(requestKey: string): Promise<UpdateReque
   return (data as UpdateRequestRow) || null
 }
 
+/** Load a request by its ROW id (uuid) — used by step-based recovery, which
+ *  discovers requests via project_update_steps.update_request_id (a uuid). */
+export async function loadUpdateRequestById(id: string): Promise<UpdateRequestRow | null> {
+  const { data } = await db()
+    .from('project_update_requests')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle()
+  return (data as UpdateRequestRow) || null
+}
+
 export async function updateUpdateRequest(
   requestKey: string,
   patch: Partial<UpdateRequestRow>,

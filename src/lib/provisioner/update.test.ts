@@ -74,7 +74,7 @@ describe('runProjectUpdate — phasing + services', () => {
   it('a description-only change ripples to supabase only', async () => {
     const plan = computeUpdatePlan(SNAP, form({ description: 'new' }))
     const { deps, calls } = fakeDeps()
-    const out = await runProjectUpdate({ requestKey: 'R', projectId: SNAP.projectId, submission: form({ description: 'new' }), plan, current: {} }, deps)
+    const out = await runProjectUpdate({ updateRequestId: 'R', projectId: SNAP.projectId, submission: form({ description: 'new' }), plan, current: {} }, deps)
     assert.deepEqual(calls, ['supabase'])
     assert.equal(out.allRequiredDone, true)
     assert.equal(out.finalStatus, 'active')
@@ -84,7 +84,7 @@ describe('runProjectUpdate — phasing + services', () => {
     const f = form({ clientName: 'Adidas' })
     const plan = computeUpdatePlan(SNAP, f)
     const { deps, calls, dropboxWrites } = fakeDeps()
-    const out = await runProjectUpdate({ requestKey: 'R', projectId: SNAP.projectId, submission: f, plan, current: { slackChannelId: 'C1', dropboxPath: '/production/2026/2601_Nike_Summer_Campaign' } }, deps)
+    const out = await runProjectUpdate({ updateRequestId: 'R', projectId: SNAP.projectId, submission: f, plan, current: { slackChannelId: 'C1', dropboxPath: '/production/2026/2601_Nike_Summer_Campaign' } }, deps)
     // external renames all dispatched
     for (const s of ['slack', 'frameio', 'harvest', 'dropbox']) assert.ok(calls.includes(`dispatch:${s}`), `missing ${s}`)
     // dropbox safe-name persisted, and the supabase step ran AFTER it
@@ -92,6 +92,30 @@ describe('runProjectUpdate — phasing + services', () => {
     assert.ok(calls.indexOf('persistDropbox') < calls.indexOf('supabase'))
     assert.ok(calls.indexOf('sheet') < calls.indexOf('supabase')) // sheet before supabase
     assert.equal(out.allRequiredDone, true)
+  })
+
+  it('renames use the CURRENT value for an identity field the user did not change', async () => {
+    // The user changed only the name; the form still carries the stale open-time
+    // client (Nike), but a concurrent edit moved the DB client to Adidas.
+    const f = form({ projectName: 'Winter Campaign', clientName: 'Nike' })
+    const plan = computeUpdatePlan(SNAP, f) // only project_name is in changes
+    let harvestPayload: any = null
+    const { deps } = fakeDeps({
+      dispatch: async (service, _a, payload): Promise<UpdateStepRunResult> => {
+        if (service === 'harvest') harvestPayload = payload
+        if (service === 'dropbox') return { success: true, id: '/p/new', data: { newSafeName: 'ns', path: '/p/new' } }
+        return { success: true }
+      },
+    })
+    await runProjectUpdate(
+      { updateRequestId: 'R', projectId: SNAP.projectId, submission: f, plan,
+        current: { slackChannelId: 'C1', dropboxPath: '/p/x', clientName: 'Adidas', projectNumber: '2601', projectName: 'Summer Campaign' } },
+      deps,
+    )
+    // client was NOT in the diff → the rename must use the current 'Adidas', not
+    // the stale form 'Nike' (which would revert the concurrent edit).
+    assert.equal(harvestPayload.client, 'Adidas')
+    assert.equal(harvestPayload.projectName, 'Winter Campaign') // changed field → form value
   })
 })
 
@@ -102,7 +126,7 @@ describe('runProjectUpdate — durability', () => {
     // harvest already done from a prior attempt.
     const ledger = fakeLedger([{ service: 'harvest', status: 'done', result: { service: 'harvest', success: true } }])
     const { deps, calls } = fakeDeps({ ledger })
-    await runProjectUpdate({ requestKey: 'R', projectId: SNAP.projectId, submission: f, plan, current: { slackChannelId: 'C1', dropboxPath: '/p/x' } }, deps)
+    await runProjectUpdate({ updateRequestId: 'R', projectId: SNAP.projectId, submission: f, plan, current: { slackChannelId: 'C1', dropboxPath: '/p/x' } }, deps)
     assert.equal(calls.includes('dispatch:harvest'), false) // reused, not re-run
     assert.ok(calls.includes('dispatch:slack'))
   })
@@ -117,7 +141,7 @@ describe('runProjectUpdate — durability', () => {
         return { success: true }
       },
     })
-    const out = await runProjectUpdate({ requestKey: 'R', projectId: SNAP.projectId, submission: f, plan, current: { slackChannelId: 'C1', dropboxPath: '/p/x' } }, deps)
+    const out = await runProjectUpdate({ updateRequestId: 'R', projectId: SNAP.projectId, submission: f, plan, current: { slackChannelId: 'C1', dropboxPath: '/p/x' } }, deps)
     assert.equal(out.allRequiredDone, false)
     assert.equal(out.finalStatus, 'partial')
     assert.ok(out.incompleteServices.includes('frameio'))
@@ -133,7 +157,7 @@ describe('runProjectUpdate — durability', () => {
         return { success: true }
       },
     })
-    const out = await runProjectUpdate({ requestKey: 'R', projectId: SNAP.projectId, submission: f, plan, current: { slackChannelId: 'C1', dropboxPath: '/p/x' } }, deps)
+    const out = await runProjectUpdate({ updateRequestId: 'R', projectId: SNAP.projectId, submission: f, plan, current: { slackChannelId: 'C1', dropboxPath: '/p/x' } }, deps)
     assert.equal(out.anyTerminal, true)
     assert.equal(out.finalStatus, 'partial')
   })
@@ -143,7 +167,7 @@ describe('runProjectUpdate — durability', () => {
     const plan = computeUpdatePlan(SNAP, f)
     const ledger = fakeLedger([], async () => false) // renew always fails → abort at the first phase barrier
     const { deps, calls } = fakeDeps({ ledger })
-    const out = await runProjectUpdate({ requestKey: 'R', projectId: SNAP.projectId, submission: f, plan, current: { slackChannelId: 'C1', dropboxPath: '/p/x' } }, deps)
+    const out = await runProjectUpdate({ updateRequestId: 'R', projectId: SNAP.projectId, submission: f, plan, current: { slackChannelId: 'C1', dropboxPath: '/p/x' } }, deps)
     assert.equal(out.abortedLostLease, true)
     assert.equal(calls.includes('supabase'), false)
   })
@@ -153,10 +177,10 @@ describe('runProjectUpdate — durability', () => {
     const plan = computeUpdatePlan(SNAP, f)
     const ledger = fakeLedger()
     const first = fakeDeps({ ledger })
-    await runProjectUpdate({ requestKey: 'R', projectId: SNAP.projectId, submission: f, plan, current: { slackChannelId: 'C1', dropboxPath: '/p/x' } }, first.deps)
+    await runProjectUpdate({ updateRequestId: 'R', projectId: SNAP.projectId, submission: f, plan, current: { slackChannelId: 'C1', dropboxPath: '/p/x' } }, first.deps)
     // Second run against the SAME ledger: everything is 'done' → nothing re-dispatched.
     const second = fakeDeps({ ledger })
-    const out = await runProjectUpdate({ requestKey: 'R', projectId: SNAP.projectId, submission: f, plan, current: { slackChannelId: 'C1', dropboxPath: '/p/x' } }, second.deps)
+    const out = await runProjectUpdate({ updateRequestId: 'R', projectId: SNAP.projectId, submission: f, plan, current: { slackChannelId: 'C1', dropboxPath: '/p/x' } }, second.deps)
     assert.deepEqual(second.calls, [])
     assert.equal(out.allRequiredDone, true)
   })

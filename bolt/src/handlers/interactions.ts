@@ -26,6 +26,7 @@ import { runProjectUpdate } from '../../../src/lib/provisioner/update'
 import {
   getOrCreateUpdateRequest,
   loadUpdateRequest,
+  loadUpdateRequestById,
   updateUpdateRequest,
   commitUpdateDecision,
   claimUpdateRequestFenced,
@@ -1466,7 +1467,6 @@ export function registerInteractionHandlers(app: App) {
     const workspaceId = req.workspace_id || sub.workspaceId || ''
     const statusChannel = sub.statusChannel || sub.userId || ''
     const threadTs = sub.threadTs
-    const current = sub.current || {}
     if (!form || !plan || !projectId) return
 
     const leaseHolder = args.leaseHolder || `update:${requestKey}:${randomUUID()}`
@@ -1478,19 +1478,27 @@ export function registerInteractionHandlers(app: App) {
     const config = workbookConfigFromEnv()
     const supabase = createAdminClient()
 
-    // Final editability gate: the project could have been archived/cancelled
-    // between confirm and here — never ripple a rename to a decommissioned
-    // project. Terminate the request (not retryable) so recovery doesn't re-drive.
-    const { data: liveRow } = await supabase.from('projects').select('status').eq('id', projectId).maybeSingle()
-    const liveStatus = (liveRow as any)?.status
+    // Load a FRESH snapshot at ripple time: (a) the editability gate — the project
+    // could have been archived/cancelled between confirm and here; and (b) the
+    // current identity spine + external ids, so an identity field the user did NOT
+    // change is renamed to its true current value, not a stale open-time value.
+    const freshSnap = await loadUpdateSnapshot(projectId, workspaceId)
+    const liveStatus = freshSnap?.status
     if (liveStatus && !EDITABLE_PROJECT_STATUSES.includes(liveStatus)) {
       await updateUpdateRequest(requestKey, { status: 'cancelled', error: `project ${liveStatus}` }).catch(() => {})
       await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: `:no_entry: *${form.projectName}* is ${liveStatus} — update not applied.` }).catch(() => {})
       return
     }
+    const current = {
+      ...(sub.current || {}),
+      ...(freshSnap?.current || {}),
+      projectNumber: freshSnap?.snapshot?.projectNumber,
+      clientName: freshSnap?.snapshot?.clientName,
+      projectName: freshSnap?.snapshot?.projectName,
+    }
 
     const outcome = await runProjectUpdate(
-      { requestKey, projectId, submission: form, plan, current },
+      { updateRequestId: req.id, projectId, submission: form, plan, current },
       {
         dispatch: (service, action, payload) => dispatch(service, action, payload) as any,
         // Keep the projects row's Dropbox identity in lockstep with the moved
@@ -1681,7 +1689,12 @@ export function registerInteractionHandlers(app: App) {
     }
     try {
       for (const r of await listRecoverableUpdateRequests()) await drive(r.request_key)
-      for (const rk of await listUpdateRequestsWithIncompleteSteps()) await drive(rk)
+      // Step-based discovery returns update_request_id (uuid); resolve each to its
+      // request_key (the text key drive()/claimUpdateRequestFenced filter on).
+      for (const id of await listUpdateRequestsWithIncompleteSteps()) {
+        const row = await loadUpdateRequestById(id)
+        if (row?.request_key) await drive(row.request_key)
+      }
     } catch (err: any) {
       console.warn('[Bolt] update recovery sweep failed:', err?.message)
     }
@@ -2040,7 +2053,9 @@ function buildUpdatePreview(
 
   const effects: string[] = []
   if (plan.services.slack) effects.push(':slack: Rename the Slack channel (topic/purpose refreshed; the channel id is unchanged)')
-  if (plan.derived.dropboxSafeName) effects.push(`:file_folder: *Move* the Dropbox folder → \`${plan.derived.dropboxSafeName.new}\` — uploads in progress may be interrupted`)
+  // Gate on services.dropbox (whether a move will actually run), not the raw
+  // string diff — a project without a Dropbox folder must not show a move warning.
+  if (plan.services.dropbox) effects.push(`:file_folder: *Move* the Dropbox folder → \`${plan.derived.dropboxSafeName?.new ?? ''}\` — uploads in progress may be interrupted`)
   if (plan.services.frameio) effects.push(':clapper: Rename the Frame.io project')
   if (plan.services.harvest) effects.push(':moneybag: Rename the Harvest project')
   if (plan.services.sheet) effects.push(':bar_chart: Update the Master Project List row (the Canvas re-renders automatically)')

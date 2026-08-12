@@ -86,14 +86,7 @@ export function buildNewProjectModal(
           type: 'static_select',
           action_id: 'val',
           placeholder: { type: 'plain_text', text: 'Select type' },
-          options: [
-            { text: { type: 'plain_text', text: 'Brand Video' }, value: 'Brand Video' },
-            { text: { type: 'plain_text', text: 'Motion Graphics' }, value: 'Motion Graphics' },
-            { text: { type: 'plain_text', text: 'Social Campaign' }, value: 'Social Campaign' },
-            { text: { type: 'plain_text', text: 'Explainer' }, value: 'Explainer' },
-            { text: { type: 'plain_text', text: 'Broadcast' }, value: 'Broadcast' },
-            { text: { type: 'plain_text', text: 'Other' }, value: 'Other' },
-          ],
+          options: PROJECT_TYPE_OPTIONS.map((t) => ({ text: { type: 'plain_text', text: t }, value: t })),
         },
       },
       {

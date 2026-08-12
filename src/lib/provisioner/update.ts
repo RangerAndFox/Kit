@@ -38,17 +38,24 @@ export type UpdateStepRunResult = {
   data?: Record<string, unknown>
 }
 
-/** The current external identifiers a rename needs (reconcile-by-marker aside). */
+/** The current external identifiers a rename needs (reconcile-by-marker aside),
+ *  plus the project's CURRENT identity spine so an unchanged identity field is
+ *  renamed to its true current value, not a stale open-time form value. */
 export interface UpdateCurrentIds {
   /** The project channel id (Slack rename target; id never changes). */
   slackChannelId?: string | null
   /** The current Dropbox folder path `/production/{year}/{safeName}` (move source). */
   dropboxPath?: string | null
+  /** Current identity spine (fresh DB values) — used for fields NOT in the diff. */
+  projectNumber?: string | null
+  clientName?: string | null
+  projectName?: string | null
 }
 
 export interface RunProjectUpdateArgs {
-  /** The update-request id — the OPAQUE ledger key for the step fan-out. */
-  requestKey: string
+  /** The update-request ROW id (uuid) — the durable step-ledger key. Distinct
+   *  from the Slack view.id request_key, which keys the request/lease rows. */
+  updateRequestId: string
   projectId: string
   submission: UpdateForm
   plan: UpdatePlan
@@ -93,23 +100,33 @@ export async function runProjectUpdate(
   args: RunProjectUpdateArgs,
   deps: UpdateDeps,
 ): Promise<UpdateOutcome> {
-  const { requestKey, projectId, submission: form, plan, current } = args
+  const { updateRequestId, projectId, submission: form, plan, current } = args
 
-  // Recompute the identity strings from the NEW values (shared derivation, so
-  // the rename targets match what create produced for these inputs).
+  // Build the identity SPINE diff-scoped, mirroring the Supabase/Sheet writes: a
+  // field the user actually changed comes from the form; an UNCHANGED field comes
+  // from the current DB value — so a concurrent edit to an untouched identity
+  // field isn't reverted on every external rename (the form still carries the
+  // stale open-time value for fields the user never touched).
+  const changed = new Set(plan.changes.map((c) => c.field))
+  const spineNumber = changed.has('project_number') ? form.projectNumber : (current.projectNumber ?? form.projectNumber)
+  const spineClient = changed.has('client') ? form.clientName : (current.clientName ?? form.clientName)
+  const spineName = changed.has('project_name') ? form.projectName : (current.projectName ?? form.projectName)
+
+  // Recompute the identity strings from the spine (shared derivation, so the
+  // rename targets match what create produced for these inputs).
   const ids = deriveProjectIdentifiers({
     projectId,
-    projectNumber: form.projectNumber,
-    client: form.clientName,
-    projectName: form.projectName,
+    projectNumber: spineNumber,
+    client: spineClient,
+    projectName: spineName,
   })
 
   const basePayload: Record<string, unknown> = {
     projectId,
-    projectName: form.projectName,
-    client: form.clientName,
-    clientName: form.clientName,
-    projectNumber: form.projectNumber,
+    projectName: spineName,
+    client: spineClient,
+    clientName: spineClient,
+    projectNumber: spineNumber,
     projectCode: ids.projectCode,
   }
 
@@ -157,7 +174,7 @@ export async function runProjectUpdate(
   }
 
   const outcome = await runDurableProvisioning(
-    { projectId: requestKey, phases, requiredServices: required },
+    { projectId: updateRequestId, phases, requiredServices: required },
     deps.ledger,
   )
 
