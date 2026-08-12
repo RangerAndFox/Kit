@@ -79,15 +79,20 @@ where check_in_date >= current_date - interval '30 days';
 -- Backlog: replies that never became logged time (lost hours), and any
 -- row that has a Harvest id but a status that never advanced (inconsistency).
 select
-  count(*) filter (where status='sent' and reply_ts is null) as sent_no_reply,
-  count(*) filter (where status in ('replied','parsed','confirmed','logging','nudged')) as replied_but_unlogged,
+  -- No reply yet: 'sent' OR 'nudged' (a nudge only reminds; it never stamps
+  -- reply_ts, so a still-'nudged' row is unanswered, not lost hours).
+  count(*) filter (where status in ('sent','nudged') and reply_ts is null) as sent_no_reply,
+  -- Replied but never logged — gate on reply_ts (matches digest.ts), so an
+  -- unanswered nudge can't inflate this.
+  count(*) filter (where status in ('replied','parsed','confirmed','logging') and reply_ts is not null) as replied_but_unlogged,
   count(*) filter (where status='parsed' and harvest_entry_ids is not null) as harvest_id_but_status_stuck
 from daily_hours_checkins
 where check_in_date < current_date;
 ```
 
-- `sent_no_reply` is **soft** — the person never answered their DM; that is
-  their choice, not a Kit fault. Worth a nudge, not an alarm.
+- `sent_no_reply` is **soft** — the person never answered their DM (whether or
+  not it was already nudged); that is their choice, not a Kit fault. Worth a
+  follow-up, not an alarm.
 - `replied_but_unlogged` is the **real** signal: someone typed hours and they
   never reached Harvest. A steadily rising count over days = the pipeline is
   dropping replies again. Pull the detail rows (`id, slack_user_id,
