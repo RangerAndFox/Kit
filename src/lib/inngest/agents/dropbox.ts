@@ -350,14 +350,22 @@ async function moveFolder(payload: Record<string, unknown>): Promise<AgentResult
       await dropboxPost('/files/move_v2', { from_path: fromPath, to_path: toPath, autorename: false })
     } catch (err: any) {
       const msg = err?.message || ''
-      // to_path conflict → a prior attempt already moved it. from lookup/not_found
-      // → the source is gone; if the dest exists the move already landed. Confirm
-      // the destination exists and treat as done; otherwise it's a real failure.
-      if (/conflict/i.test(msg) || /not_found|from_lookup|not_a_folder/i.test(msg)) {
-        if (!(await folderExists(toPath))) throw err
-        console.warn(`[dropbox:rename] ${toPath} already present — treating move as done`)
+      if (!(/conflict/i.test(msg) || /not_found|from_lookup|not_a_folder/i.test(msg))) throw err
+      // Accept the error as an already-completed move ONLY on the true signal a
+      // finished move leaves: the SOURCE is gone AND the destination exists. Folders
+      // carry no Kit marker (unlike Slack/Harvest/Frame.io reconcile-by-marker), so
+      // destination-exists ALONE is not proof it's OUR folder. A to_path conflict
+      // while fromPath still exists means a DIFFERENT folder (a safe-name collision
+      // or a manual scratch folder) occupies toPath — repointing dropbox_safe_name
+      // at it would orphan the real folder. That's terminal: retrying the same
+      // occupied destination can never succeed.
+      const [srcExists, destExists] = await Promise.all([folderExists(fromPath), folderExists(toPath)])
+      if (!srcExists && destExists) {
+        console.warn(`[dropbox:rename] source gone and ${toPath} present — treating move as done`)
+      } else if (srcExists && destExists) {
+        return { agent: 'dropbox', action: 'rename', success: false, terminal: true, error: `dropbox_move_conflict: ${toPath} is occupied by another folder while ${fromPath} still exists` }
       } else {
-        throw err
+        throw err // dest missing (or both gone) → not a completed move; retryable
       }
     }
 

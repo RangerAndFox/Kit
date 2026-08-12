@@ -75,34 +75,40 @@ describe("dropbox 'rename' (move folder)", () => {
     assert.ok(calls.find((c) => c.endpoint === '/files/move_v2')!.body.to_path.startsWith('/production/2025/'))
   })
 
-  it('treats a to_path conflict as done when the destination already exists', async () => {
-    dropboxMock({
-      '/files/move_v2': () => ({ ok: false, status: 409, text: 'path/conflict/folder/..' }),
-      '/files/get_metadata': () => ({ ok: true, json: { '.tag': 'folder' } }),
-      '/sharing/create_shared_link_with_settings': () => link,
-    })
-    const res: any = await dropboxAgent.handler('rename', {
-      projectId: 'P', fromPath: '/production/2026/old',
-      projectNumber: '2601', client: 'Adidas', projectName: 'Summer Campaign',
-    })
-    assert.equal(res.success, true)
-    assert.equal(res.id, `/production/2026/${NEW_SAFE}`)
-  })
-
-  it('treats a from-missing move as done when the destination exists (resumed move)', async () => {
+  it('treats a from-missing move as done ONLY when the source is gone and the destination exists (resumed move)', async () => {
+    const from = '/production/2026/old'
+    const to = `/production/2026/${NEW_SAFE}`
     dropboxMock({
       '/files/move_v2': () => ({ ok: false, status: 409, text: 'path_lookup/not_found/..' }),
-      '/files/get_metadata': () => ({ ok: true, json: { '.tag': 'folder' } }),
+      // source gone, destination present → the move already landed.
+      '/files/get_metadata': (b: any) => (b.path === from ? { ok: false, status: 409, text: 'not_found' } : { ok: true, json: { '.tag': 'folder' } }),
       '/sharing/create_shared_link_with_settings': () => link,
+    })
+    const res: any = await dropboxAgent.handler('rename', {
+      projectId: 'P', fromPath: from,
+      projectNumber: '2601', client: 'Adidas', projectName: 'Summer Campaign',
+    })
+    assert.equal(res.success, true)
+    assert.equal(res.id, to)
+  })
+
+  it('is TERMINAL on a genuine collision — a conflict while the source still exists (another folder occupies the destination)', async () => {
+    // Both the source AND the destination exist: the destination is a DIFFERENT
+    // folder (safe-name collision / scratch folder), never our completed move.
+    dropboxMock({
+      '/files/move_v2': () => ({ ok: false, status: 409, text: 'path/conflict/folder/..' }),
+      '/files/get_metadata': () => ({ ok: true, json: { '.tag': 'folder' } }), // every path exists
     })
     const res: any = await dropboxAgent.handler('rename', {
       projectId: 'P', fromPath: '/production/2026/old',
       projectNumber: '2601', client: 'Adidas', projectName: 'Summer Campaign',
     })
-    assert.equal(res.success, true)
+    assert.equal(res.success, false)
+    assert.equal(res.terminal, true)
+    assert.match(res.error, /dropbox_move_conflict/)
   })
 
-  it('fails when the destination does NOT exist after a move error', async () => {
+  it('fails (retryable) when the destination does NOT exist after a move error', async () => {
     dropboxMock({
       '/files/move_v2': () => ({ ok: false, status: 409, text: 'path/conflict/..' }),
       '/files/get_metadata': () => ({ ok: false, status: 409, text: 'not_found' }),
@@ -112,6 +118,7 @@ describe("dropbox 'rename' (move folder)", () => {
       projectNumber: '2601', client: 'Adidas', projectName: 'Summer Campaign',
     })
     assert.equal(res.success, false)
+    assert.notEqual(res.terminal, true) // dest missing → retryable, not terminal
   })
 
   it('is terminal when fromPath is missing', async () => {
