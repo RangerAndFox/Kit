@@ -23,6 +23,12 @@ fact.
   `healthcheckPath = "/health"` probe the app's real `/health` endpoint
   (Slack-connectivity watchdog), default `PORT` 3001. *(Verified.)*
 - **Which branch deploys:** *Needs verification* — not encoded in the repo.
+- **Recovery sweeps run here:** `runProjectControlRecoverySweep`
+  (`bolt/src/handlers/interactions.ts`, node-cron) recovers BOTH stalled project
+  *creation* and stalled project *update* ripples (`recoverUpdateRipples` +
+  `project_update_requests`/`project_update_steps`, migration 063). Both are
+  idempotent (reconcile-by-marker + memoized durable steps), so a resumed ripple
+  never double-applies. *(Verified in code; live cadence Needs verification.)*
 - **node-cron jobs run here:** *Needs verification* — in-process `node-cron`
   schedules are configured in `bolt/src/app.ts` but were not inspected this
   sprint. Read `app.ts` to confirm any specific schedule before relying on it.
