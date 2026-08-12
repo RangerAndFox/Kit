@@ -16,20 +16,7 @@ import { inngest } from './client'
 import { runAllChecks } from '../health/run'
 import { loadHealthRows, statusMap, saveHealthState } from '../health/state'
 import { diffHealth } from '../health/diff'
-
-async function postSlack(channel: string, text: string): Promise<void> {
-  const token = process.env.SLACK_BOT_TOKEN
-  if (!token || !channel) return
-  await fetch('https://slack.com/api/chat.postMessage', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json; charset=utf-8',
-    },
-    body: JSON.stringify({ channel, text, mrkdwn: true }),
-    signal: AbortSignal.timeout(8_000),
-  }).catch(() => null)
-}
+import { postSlackAsKit } from '../health/notify'
 
 export const healthWatchdog = inngest.createFunction(
   {
@@ -56,7 +43,7 @@ export const healthWatchdog = inngest.createFunction(
         if (diff.recovered.length) {
           for (const r of diff.recovered) lines.push(`:large_green_circle: *${r.label}* recovered`)
         }
-        await postSlack(channel, lines.join('\n'))
+        await postSlackAsKit(channel, lines.join('\n'))
       })
     }
 
