@@ -11,7 +11,7 @@ import {
   findOrCreateClient,
   createHarvestProject,
   updateHarvestProject,
-  findHarvestProjectByKitId,
+  findHarvestProjectsByKitId,
   assignDefaultTasks,
   assignAllUsersToProject,
   listProjects,
@@ -40,7 +40,13 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
     // created a Harvest project (e.g. a prior attempt crashed before the step
     // ledger was updated), reuse it instead of creating a duplicate. Only create
     // when absence is proven.
-    const existing = kitProjectId ? await findHarvestProjectByKitId(kitProjectId) : null
+    const kitMatches = kitProjectId ? await findHarvestProjectsByKitId(kitProjectId) : []
+    if (kitMatches.length > 1) {
+      // Marker collision (e.g. Harvest's 'Duplicate project' copied the notes/
+      // marker) — reusing an arbitrary one would set up tasks on the wrong project.
+      return { agent: 'harvest', action: 'provision', success: false, terminal: true, error: `ambiguous_harvest_projects: ${kitMatches.map((m) => m.id).join(',')} share kit marker` }
+    }
+    const existing = kitMatches[0] || null
     let project: HarvestProject & { task_assignments: HarvestProjectTask[] }
     if (existing) {
       // Complete follow-up setup idempotently against the reused project.
@@ -100,7 +106,14 @@ async function rename(payload: Record<string, unknown>): Promise<AgentResult> {
     }
     // Reconcile by the embedded Kit marker FIRST (never by business name). A
     // missing project is a PERMANENT failure — creating one here would be wrong.
-    const existing = await findHarvestProjectByKitId(kitProjectId)
+    // A marker COLLISION (2+ projects share it — Harvest's 'Duplicate project'
+    // copies the notes/marker verbatim) is also terminal: guessing would rename an
+    // arbitrary project. Mirrors Frame.io's reconciler.
+    const matches = await findHarvestProjectsByKitId(kitProjectId)
+    if (matches.length > 1) {
+      return { agent: 'harvest', action: 'rename', success: false, terminal: true, error: `ambiguous_harvest_projects: ${matches.map((m) => m.id).join(',')} share kit marker` }
+    }
+    const existing = matches[0]
     if (!existing) {
       return { agent: 'harvest', action: 'rename', success: false, terminal: true, error: `No Harvest project carries the Kit marker for ${kitProjectId}; nothing to rename` }
     }

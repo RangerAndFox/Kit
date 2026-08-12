@@ -202,11 +202,22 @@ export async function listProjects(activeOnly = true): Promise<HarvestProject[]>
  * resumed provision safe: a crash after create-but-before-ledger is reconciled
  * here instead of creating a second Harvest project.
  */
-export async function findHarvestProjectByKitId(kitProjectId: string): Promise<HarvestProject | null> {
-  if (!kitProjectId) return null
+export async function findHarvestProjectsByKitId(kitProjectId: string): Promise<HarvestProject[]> {
+  if (!kitProjectId) return []
   const marker = kitProjectMarker(kitProjectId)
   const all = await listProjects(false) // include inactive — a replaced/paused one still counts
-  return all.find((p) => (p.notes || '').includes(marker)) || null
+  return all.filter((p) => (p.notes || '').includes(marker))
+}
+
+/**
+ * First marker match (or null). Convenience wrapper — MUTATING callers (rename /
+ * provision) should use findHarvestProjectsByKitId and fail terminal on 2+ matches
+ * instead of guessing: Harvest's native 'Duplicate project' copies the notes field
+ * (including the Kit marker) verbatim, so a marker collision is reachable and
+ * picking the first would rename an arbitrary project. Mirrors Frame.io's reconciler.
+ */
+export async function findHarvestProjectByKitId(kitProjectId: string): Promise<HarvestProject | null> {
+  return (await findHarvestProjectsByKitId(kitProjectId))[0] || null
 }
 
 /**
