@@ -23,6 +23,13 @@ export interface CheckinRow {
 }
 
 export interface CheckinSummary {
+  /**
+   * True when the check-in data could NOT be read (query/RLS/permission error).
+   * A failed read must never look like a healthy zero backlog — that would
+   * fabricate an all-clear for exactly the silent-failure class this exists to
+   * catch — so this escalates the digest instead.
+   */
+  unavailable: boolean
   loggedToday: number
   /** Past-day rows where the person replied but the hours never logged. */
   repliedUnlogged: number
@@ -35,6 +42,21 @@ export interface CheckinSummary {
   harvestIdButStuck: number
   /** Oldest past-day check_in_date still unlogged (reply present), or null. */
   oldestUnlogged: string | null
+}
+
+/** The summary to use when the check-in data could not be loaded. */
+export function unavailableCheckinSummary(): CheckinSummary {
+  return {
+    unavailable: true,
+    loggedToday: 0,
+    repliedUnlogged: 0,
+    sentNoReply: 0,
+    failed: 0,
+    stuckLogging: 0,
+    loggedWithoutIds: 0,
+    harvestIdButStuck: 0,
+    oldestUnlogged: null,
+  }
 }
 
 const TERMINAL = new Set(['logged', 'skipped'])
@@ -50,6 +72,7 @@ function hasHarvestIds(v: unknown): boolean {
  */
 export function summarizeCheckins(rows: CheckinRow[], todayISO: string): CheckinSummary {
   const s: CheckinSummary = {
+    unavailable: false,
     loggedToday: 0,
     repliedUnlogged: 0,
     sentNoReply: 0,
@@ -67,7 +90,11 @@ export function summarizeCheckins(rows: CheckinRow[], todayISO: string): Checkin
     if (r.status === 'failed') s.failed++
     if (r.status === 'logging') s.stuckLogging++
     if (logged && !hasHarvestIds(r.harvest_entry_ids)) s.loggedWithoutIds++
-    if (!logged && r.status !== 'skipped' && hasHarvestIds(r.harvest_entry_ids)) s.harvestIdButStuck++
+    // Only 'parsed' — a row that never advanced past parsing yet carries a
+    // Harvest id (the real, unexplained inconsistency). A 'failed' row can
+    // legitimately carry ids from a partial success (confirm.ts logs matched
+    // entries, fails the rest); counting it here would double-report one row.
+    if (r.status === 'parsed' && hasHarvestIds(r.harvest_entry_ids)) s.harvestIdButStuck++
 
     if (r.check_in_date === todayISO && logged) s.loggedToday++
 
@@ -85,7 +112,13 @@ export function summarizeCheckins(rows: CheckinRow[], todayISO: string): Checkin
 
 /** True when the check-in state shows the acute, drop-everything failure class. */
 export function checkinsUrgent(s: CheckinSummary): boolean {
-  return s.failed > 0 || s.stuckLogging > 0 || s.loggedWithoutIds > 0 || s.harvestIdButStuck > 0
+  return (
+    s.unavailable ||
+    s.failed > 0 ||
+    s.stuckLogging > 0 ||
+    s.loggedWithoutIds > 0 ||
+    s.harvestIdButStuck > 0
+  )
 }
 
 const INTEGRATION_ORDER = ['dropbox', 'frameio', 'harvest', 'supabase', 'google']
@@ -142,6 +175,9 @@ export function formatHealthDigest(
 }
 
 function formatTimeLoggingLine(s: CheckinSummary): string {
+  if (s.unavailable) {
+    return `*Time logging:* :rotating_light: check-in data could not be read — the daily_hours_checkins query failed. This can mask stuck or unlogged hours; investigate before trusting the rest.`
+  }
   if (checkinsUrgent(s)) {
     const parts: string[] = []
     if (s.failed) parts.push(`${s.failed} confirm${s.failed === 1 ? '' : 's'} FAILED`)
