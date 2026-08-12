@@ -489,6 +489,94 @@ export async function createProjectSlackChannel(opts: {
 }
 
 /**
+ * Thrown when a channel rename cannot safely proceed (the target channel is not
+ * Kit-owned for this project). PERMANENT — the caller marks the step terminal so
+ * it is never silently "succeeded" or blindly retried against the wrong channel.
+ */
+export class SlackRenameTerminalError extends Error {}
+
+/**
+ * Rename an existing project channel when the project is updated. The channel id
+ * NEVER changes (saved links/ids stay valid); only the slug + topic/purpose text
+ * move. Reconciles by the embedded Kit marker in the channel purpose FIRST and
+ * refuses to touch a channel that isn't Kit-owned for this project. Idempotent:
+ * if the channel is already at the target name, the rename is skipped.
+ */
+export async function renameProjectSlackChannel(opts: {
+  projectId: string
+  channelId: string
+  projectName: string
+  client: string
+  /** Project ID (e.g. "2655") — part of the deterministic slug spine. */
+  projectNumber?: string
+}): Promise<SlackChannelResult> {
+  if (!process.env.SLACK_BOT_TOKEN) {
+    throw new Error('SLACK_BOT_TOKEN not configured — cannot rename channel')
+  }
+  const { projectId, channelId, projectName, client, projectNumber } = opts
+  if (!channelId) throw new Error('renameProjectSlackChannel: channelId is required')
+  if (!projectName || !projectName.trim() || !client || !client.trim()) {
+    throw new Error('renameProjectSlackChannel: client and projectName are required')
+  }
+
+  // Read the channel and verify Kit ownership by the purpose marker BEFORE any
+  // mutation — never rename a channel that isn't this project's.
+  const info = await slackGet('conversations.info', { channel: channelId })
+  const marker = kitChannelMarker(projectId)
+  const purpose: string = info.channel?.purpose?.value || ''
+  if (!purpose.includes(marker)) {
+    throw new SlackRenameTerminalError(
+      `channel ${channelId} does not carry the Kit marker for ${projectId}; refusing to rename`,
+    )
+  }
+
+  const { slackSlug: target } = deriveSlackSlug({
+    projectId,
+    projectNumber: projectNumber || '',
+    client,
+    projectName,
+  })
+  const currentName: string = info.channel?.name || ''
+
+  let channelName = currentName
+  if (currentName !== target) {
+    try {
+      const renamed = await slackPost('conversations.rename', { channel: channelId, name: target })
+      channelName = renamed.channel?.name || target
+    } catch (err: any) {
+      // name_taken: if the taker is THIS channel (a prior attempt already renamed
+      // it), treat as done; otherwise surface as a real failure.
+      if (err.message?.includes('name_taken')) {
+        const owned = await findOwnedChannelByName(target, projectId)
+        if (owned === channelId) {
+          channelName = target
+        } else {
+          throw err
+        }
+      } else {
+        throw err
+      }
+    }
+  }
+
+  // Refresh the human-facing purpose/topic text (marker preserved). Non-critical.
+  await slackPost('conversations.setPurpose', {
+    channel: channelId,
+    purpose: `${client} — ${projectName} ${marker}`,
+  }).catch(() => {})
+  await slackPost('conversations.setTopic', {
+    channel: channelId,
+    topic: `${client} — ${projectName}`,
+  }).catch(() => {})
+
+  return {
+    channelId,
+    channelName,
+    url: `https://slack.com/app_redirect?channel=${channelId}`,
+  }
+}
+
+/**
  * Post a summary of all provisioned project links into the project's Slack channel.
  * Called after all external services have been provisioned.
  */

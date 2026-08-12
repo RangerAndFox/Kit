@@ -262,6 +262,106 @@ async function getProjectFolder(payload: Record<string, unknown>): Promise<Agent
   }
 }
 
+async function folderExists(path: string): Promise<boolean> {
+  try {
+    const md = await dropboxPost('/files/get_metadata', { path })
+    return !!md && md['.tag'] === 'folder'
+  } catch {
+    return false
+  }
+}
+
+async function resolveShareLink(path: string): Promise<string | undefined> {
+  try {
+    const linkRes = await dropboxPost('/sharing/create_shared_link_with_settings', {
+      path,
+      settings: { requested_visibility: 'team_only' },
+    })
+    return linkRes.url
+  } catch (err: any) {
+    if (err.message?.includes('shared_link_already_exists')) {
+      try {
+        const existing = await dropboxPost('/sharing/list_shared_links', { path, direct_only: true })
+        return existing.links?.[0]?.url
+      } catch {}
+    }
+    return undefined
+  }
+}
+
+async function moveResult(toPath: string, newSafeName: string, oldPath: string): Promise<AgentResult> {
+  // The shared link is file-id-based and survives a move, so the URL is stable;
+  // resolve it for completeness (create → already_exists → list).
+  const url = await resolveShareLink(toPath)
+  return {
+    agent: 'dropbox',
+    action: 'rename',
+    success: true,
+    ...(url ? { url } : {}),
+    id: toPath,
+    message: `Moved project folder to ${toPath}`,
+    // newSafeName + path let the executor keep external_ids.dropbox_safe_name and
+    // external_links.dropbox in lockstep with the folder (delivery matching keys
+    // off dropbox_safe_name, so this MUST stay consistent).
+    data: { folderName: newSafeName, newSafeName, path: toPath, oldPath },
+  }
+}
+
+/**
+ * Move/rename a project's Dropbox folder when the project is updated. The folder
+ * stays under its OWN year (derived from the current path, not today's year), so
+ * a 2025 project keeps `/production/2025/...`. Idempotent: an already-moved
+ * folder (to_path exists / from_path gone) is treated as success so a resume
+ * never fails on a completed move.
+ */
+async function moveFolder(payload: Record<string, unknown>): Promise<AgentResult> {
+  try {
+    const client = (payload.client as string) || (payload.clientName as string) || ''
+    const projectName = (payload.projectName as string) || ''
+    const projectNumber =
+      (payload.projectNumber as string) ||
+      (typeof payload.projectCode === 'string' ? (payload.projectCode as string).split('-')[0] : '') ||
+      ''
+    // The folder's CURRENT path — persisted at create as external_links.dropbox_id.
+    // Without it we cannot know what to move (or which year folder it lives in).
+    const fromPath = (payload.fromPath as string) || (payload.dropboxPath as string) || ''
+    if (!fromPath) {
+      return { agent: 'dropbox', action: 'rename', success: false, terminal: true, error: 'rename needs the current dropbox folder path (fromPath)' }
+    }
+    const newSafeName =
+      (payload.newSafeName as string) || deriveDropboxSafeName(projectNumber, client, projectName)
+    if (!newSafeName) {
+      return { agent: 'dropbox', action: 'rename', success: false, error: 'rename needs at least one of projectNumber, client, projectName to build the new folder name' }
+    }
+    const segs = fromPath.split('/')
+    const year = segs[2] || String(new Date().getFullYear())
+    const toPath = `/production/${year}/${newSafeName}`
+
+    if (fromPath === toPath) {
+      return moveResult(toPath, newSafeName, fromPath) // already at target
+    }
+
+    try {
+      await dropboxPost('/files/move_v2', { from_path: fromPath, to_path: toPath, autorename: false })
+    } catch (err: any) {
+      const msg = err?.message || ''
+      // to_path conflict → a prior attempt already moved it. from lookup/not_found
+      // → the source is gone; if the dest exists the move already landed. Confirm
+      // the destination exists and treat as done; otherwise it's a real failure.
+      if (/conflict/i.test(msg) || /not_found|from_lookup|not_a_folder/i.test(msg)) {
+        if (!(await folderExists(toPath))) throw err
+        console.warn(`[dropbox:rename] ${toPath} already present — treating move as done`)
+      } else {
+        throw err
+      }
+    }
+
+    return moveResult(toPath, newSafeName, fromPath)
+  } catch (err: any) {
+    return { agent: 'dropbox', action: 'rename', success: false, error: err.message }
+  }
+}
+
 // ─── Agent Definition ──────────────────────────────────────
 
 export const dropboxAgent: AgentDefinition = {
@@ -277,6 +377,12 @@ export const dropboxAgent: AgentDefinition = {
       description: 'Clone the project template folder into a new project directory with a team share link',
       inputDescription:
         'projectName (required), client (required), projectNumber (the project ID, e.g. "2655" — REQUIRED for proper {number}_{client}_{project} folder naming)',
+      mutates: true,
+    },
+    {
+      action: 'rename',
+      description: 'Move/rename a project folder when a project is updated. Stays under its original year; idempotent on resume. Returns the new path + safe-name so callers keep delivery matching in sync.',
+      inputDescription: 'fromPath (required, current /production/{year}/{safeName}), projectName, client, projectNumber (used to build the new folder name), or newSafeName to override',
       mutates: true,
     },
     {
@@ -308,6 +414,8 @@ export const dropboxAgent: AgentDefinition = {
     switch (action) {
       case 'provision':
         return provision(payload)
+      case 'rename':
+        return moveFolder(payload)
       case 'search':
         return searchFiles(payload)
       case 'list_folder':

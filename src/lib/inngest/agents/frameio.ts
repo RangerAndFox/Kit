@@ -79,6 +79,25 @@ async function framePostOnce(path: string, body: Record<string, unknown>): Promi
 }
 
 /**
+ * PATCH — idempotent, so it keeps `withRetry` (unlike the non-idempotent create).
+ * Used to rename an existing project when a Kit project is updated.
+ */
+async function framePatch(path: string, body: Record<string, unknown>): Promise<any> {
+  return withRetry(async () => {
+    const hdrs = await frameioHeaders()
+    return fetch(`${FRAMEIO_API}${path}`, {
+      method: 'PATCH',
+      headers: hdrs,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15_000),
+    }).then(async (r) => {
+      if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
+      return r.json()
+    })
+  })
+}
+
+/**
  * Stable Kit-identity marker embedded in the Frame.io project label. Business
  * fields (number/client/name) are NOT an identity — intentional Kit duplicates
  * share them — so reconciliation keys on this marker (the canonical Kit UUID).
@@ -379,6 +398,49 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
   }
 }
 
+async function rename(payload: Record<string, unknown>): Promise<AgentResult> {
+  try {
+    const client = (payload.client as string) || (payload.clientName as string) || ''
+    const projectName = (payload.projectName as string) || ''
+    const projectNumber = (payload.projectNumber as string) || ''
+    const kitProjectId = (payload.projectId as string) || ''
+    if (!kitProjectId) {
+      return { agent: 'frameio', action: 'rename', success: false, terminal: true, error: 'rename needs projectId (Kit id) to reconcile the Frame.io project' }
+    }
+    const businessLabel = deriveFrameioBusinessLabel(projectNumber, client, projectName)
+    if (!businessLabel) {
+      return { agent: 'frameio', action: 'rename', success: false, error: 'Frame.io rename needs at least one of projectNumber, client, projectName' }
+    }
+    const acct = getAccountId()
+    const ws = getWorkspaceId()
+    // Reconcile by the Kit UUID marker; treat 0 / ≥2 as PERMANENT (terminal) —
+    // never rename by business name, never guess among duplicates.
+    const matches = await findFrameioProjectsByKitId(acct, ws, kitProjectId)
+    if (matches.length === 0) {
+      return { agent: 'frameio', action: 'rename', success: false, terminal: true, error: `No Frame.io project carries the Kit marker for ${kitProjectId}; nothing to rename` }
+    }
+    if (matches.length > 1) {
+      return { agent: 'frameio', action: 'rename', success: false, terminal: true, error: `ambiguous_frameio_projects: ${matches.map((m) => m.id).join(',')} share kit marker` }
+    }
+    const projectId = matches[0].id
+    // Preserve the marker (reconciliation identity) in the new label.
+    const newLabel = `${businessLabel} ${frameioKitMarker(kitProjectId)}`
+    const resp = await framePatch(`/accounts/${acct}/projects/${projectId}`, { data: { name: newLabel } })
+    const project = resp.data || resp
+    return {
+      agent: 'frameio',
+      action: 'rename',
+      success: true,
+      url: frameioProjectUrl(projectId),
+      id: projectId,
+      message: `Renamed Frame.io project to "${newLabel}"`,
+      data: { name: project?.name || newLabel },
+    }
+  } catch (err: any) {
+    return { agent: 'frameio', action: 'rename', success: false, error: err.message }
+  }
+}
+
 async function getComments(payload: Record<string, unknown>): Promise<AgentResult> {
   try {
     const acct = getAccountId()
@@ -538,6 +600,12 @@ export const frameioAgent: AgentDefinition = {
       mutates: true,
     },
     {
+      action: 'rename',
+      description: 'Rename an existing Frame.io project when a project is updated. Reconciles by the Kit marker (preserved in the new name).',
+      inputDescription: 'projectId (required, Kit id), projectName (new), client (new), projectNumber',
+      mutates: true,
+    },
+    {
       action: 'get_comments',
       description: 'Get all review comments on a specific file (video/image)',
       inputDescription: 'fileId (Frame.io file UUID)',
@@ -566,6 +634,8 @@ export const frameioAgent: AgentDefinition = {
     switch (action) {
       case 'provision':
         return provision(payload)
+      case 'rename':
+        return rename(payload)
       case 'get_comments':
         return getComments(payload)
       case 'get_project':

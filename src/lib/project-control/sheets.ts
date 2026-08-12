@@ -324,6 +324,61 @@ export async function createBoundRow(
   return { metadataId, rowIndex, alreadyBound: false }
 }
 
+export type UpdateBoundRowResult = { rowIndex: number } | { skipped: 'unbound' }
+
+/**
+ * Rewrite the Kit-owned cells of an ALREADY-bound row when a project is updated.
+ * Mirrors `createBoundRow`'s per-cell `updateCells` requests (same date/string
+ * handling, same `fields` masks that preserve formatting + validation) but:
+ *   - resolves the row via the durable developer metadata (never a row number);
+ *   - writes NO developer metadata (the binding already exists);
+ *   - returns `{ skipped: 'unbound' }` when the project has no bound row (e.g. it
+ *     was created with Project Control disabled) — the caller treats that as a
+ *     no-op, not a failure.
+ *
+ * Writing the full owned-cell set is idempotent; margin/formula columns are never
+ * included (guaranteed by kitOwnedCreationCells). The Master Project List stays
+ * authoritative and the Canvas re-renders from it via the existing sync.
+ */
+export async function updateBoundRow(
+  config: WorkbookConfig,
+  kitProjectId: string,
+  ownedCells: OwnedCell[],
+): Promise<UpdateBoundRowResult> {
+  const existing = await searchRowMetadata(config.spreadsheetId, kitProjectId, config.sheetId)
+  if (!existing) return { skipped: 'unbound' }
+  const rowIndex = existing.rowIndex
+  const colIndex = (col: string) => col.charCodeAt(0) - 'A'.charCodeAt(0)
+
+  const requests: unknown[] = ownedCells.map((cell) => {
+    const start = { sheetId: config.sheetId, rowIndex, columnIndex: colIndex(cell.column) }
+    if (cell.kind === 'date' && typeof cell.serial === 'number') {
+      return {
+        updateCells: {
+          rows: [{ values: [{
+            userEnteredValue: { numberValue: cell.serial },
+            userEnteredFormat: { numberFormat: { type: 'DATE' } },
+          }] }],
+          fields: 'userEnteredValue,userEnteredFormat.numberFormat',
+          start,
+        },
+      }
+    }
+    return {
+      updateCells: {
+        rows: [{ values: [{ userEnteredValue: { stringValue: cell.value } }] }],
+        fields: 'userEnteredValue',
+        start,
+      },
+    }
+  })
+
+  if (requests.length > 0) {
+    await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests })
+  }
+  return { rowIndex }
+}
+
 // ─── Narrow single-column read / single-cell write (operator repair only) ─────
 
 export interface ColumnCell {

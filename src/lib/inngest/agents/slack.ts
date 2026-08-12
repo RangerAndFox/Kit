@@ -9,6 +9,8 @@
 
 import {
   createProjectSlackChannel,
+  renameProjectSlackChannel,
+  SlackRenameTerminalError,
   postProjectLinks,
   duplicateTemplateCanvases,
 } from '@/lib/mcp/slack'
@@ -173,6 +175,42 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
   }
 }
 
+async function rename(payload: Record<string, unknown>): Promise<AgentResult> {
+  try {
+    const client = (payload.client as string) || (payload.clientName as string) || ''
+    const projectName = (payload.projectName as string) || ''
+    const channelId = (payload.channelId as string) || (payload.slackChannelId as string) || ''
+    const projectId = (payload.projectId as string) || ''
+    if (!channelId) {
+      return { agent: 'slack', action: 'rename', success: false, terminal: true, error: 'rename needs the channelId of the project channel' }
+    }
+    if (!client || !projectName) {
+      return { agent: 'slack', action: 'rename', success: false, error: `Slack rename needs both client and projectName (got client="${client}", projectName="${projectName}")` }
+    }
+    const channel = await renameProjectSlackChannel({
+      projectId,
+      channelId,
+      projectName,
+      client,
+      projectNumber: (payload.projectNumber as string) || undefined,
+    })
+    return {
+      agent: 'slack',
+      action: 'rename',
+      success: true,
+      url: channel.url,
+      id: channel.channelId,
+      message: `Renamed channel to #${channel.channelName}`,
+      data: { channelName: channel.channelName, channelId: channel.channelId },
+    }
+  } catch (err: any) {
+    // A marker mismatch is a PERMANENT failure — never retry blindly against a
+    // channel that isn't Kit-owned for this project.
+    const terminal = err instanceof SlackRenameTerminalError
+    return { agent: 'slack', action: 'rename', success: false, terminal, error: err.message }
+  }
+}
+
 async function sendMessage(payload: Record<string, unknown>): Promise<AgentResult> {
   try {
     const channel = payload.channel as string
@@ -326,6 +364,12 @@ export const slackAgent: AgentDefinition = {
       mutates: true,
     },
     {
+      action: 'rename',
+      description: 'Rename an existing project channel (and refresh its topic/purpose) when a project is updated. The channel id is unchanged; reconciles by the Kit marker.',
+      inputDescription: 'projectId (required, Kit id), channelId (required), projectName (new), client (new), projectNumber',
+      mutates: true,
+    },
+    {
       action: 'send_message',
       description: 'Send a message to a channel or thread',
       inputDescription: 'channel (ID or name), text, threadTs (optional for replies)',
@@ -360,6 +404,8 @@ export const slackAgent: AgentDefinition = {
     switch (action) {
       case 'provision':
         return provision(payload)
+      case 'rename':
+        return rename(payload)
       case 'send_message':
         return sendMessage(payload)
       case 'find_channel':

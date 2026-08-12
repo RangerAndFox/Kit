@@ -10,6 +10,7 @@
 import {
   findOrCreateClient,
   createHarvestProject,
+  updateHarvestProject,
   findHarvestProjectByKitId,
   assignDefaultTasks,
   assignAllUsersToProject,
@@ -86,6 +87,47 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
     }
   } catch (err: any) {
     return { agent: 'harvest', action: 'provision', success: false, error: err.message }
+  }
+}
+
+async function rename(payload: Record<string, unknown>): Promise<AgentResult> {
+  try {
+    const kitProjectId = (payload.projectId as string) || ''
+    if (!kitProjectId) {
+      // Without the Kit id we cannot reconcile the right project — fail
+      // permanently rather than rename by business name (duplicates collide).
+      return { agent: 'harvest', action: 'rename', success: false, terminal: true, error: 'rename needs projectId (Kit id) to reconcile the Harvest project' }
+    }
+    // Reconcile by the embedded Kit marker FIRST (never by business name). A
+    // missing project is a PERMANENT failure — creating one here would be wrong.
+    const existing = await findHarvestProjectByKitId(kitProjectId)
+    if (!existing) {
+      return { agent: 'harvest', action: 'rename', success: false, terminal: true, error: `No Harvest project carries the Kit marker for ${kitProjectId}; nothing to rename` }
+    }
+    const name = (payload.projectName as string) || undefined
+    const code = (payload.projectCode as string) || undefined
+    const nameChanged = name !== undefined && existing.name !== name
+    const codeChanged = code !== undefined && existing.code !== code
+    // Idempotent resume: if already at target, skip the PATCH.
+    const project = nameChanged || codeChanged
+      ? await updateHarvestProject({
+          projectId: existing.id,
+          ...(nameChanged ? { name } : {}),
+          ...(codeChanged ? { code } : {}),
+        })
+      : existing
+    return {
+      agent: 'harvest',
+      action: 'rename',
+      success: true,
+      url: `https://rangerandfox.harvestapp.com/projects/${project.id}`,
+      id: String(project.id),
+      message: nameChanged || codeChanged
+        ? `Renamed Harvest project to "${project.name}"${project.code ? ` (${project.code})` : ''}`
+        : 'Harvest project already up to date',
+    }
+  } catch (err: any) {
+    return { agent: 'harvest', action: 'rename', success: false, error: err.message }
   }
 }
 
@@ -331,6 +373,12 @@ export const harvestAgent: AgentDefinition = {
       mutates: true,
     },
     {
+      action: 'rename',
+      description: 'Rename an existing Harvest project (name/code) when a project is updated. Reconciles by the embedded Kit marker; budget is never changed.',
+      inputDescription: 'projectId (required, Kit id), projectName (new name), projectCode (new code, e.g. "2654-Microsoft")',
+      mutates: true,
+    },
+    {
       action: 'log_time',
       description: 'Log a time entry for a team member on a project. Supports natural project names ("NRG", "Nike campaign") and auto-resolves the right task.',
       inputDescription:
@@ -365,6 +413,8 @@ export const harvestAgent: AgentDefinition = {
     switch (action) {
       case 'provision':
         return provision(payload)
+      case 'rename':
+        return rename(payload)
       case 'log_time':
         return logTime(payload)
       case 'get_budget':

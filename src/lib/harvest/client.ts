@@ -79,6 +79,20 @@ async function harvestPost(path: string, body: Record<string, unknown>): Promise
   return res.json()
 }
 
+async function harvestPatch(path: string, body: Record<string, unknown>): Promise<any> {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    method: 'PATCH',
+    headers: headers(),
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(8_000),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`Harvest PATCH ${path}: ${res.status} ${text}`)
+  }
+  return res.json()
+}
+
 // ─── Types ──────────────────────────────────────────────────
 
 export interface HarvestProject {
@@ -254,6 +268,31 @@ export async function createHarvestProject(opts: {
   const taskAssignments = await assignDefaultTasks(project.id)
 
   return { ...project, task_assignments: taskAssignments }
+}
+
+/**
+ * Rename an existing Harvest project (the "update project" ripple). Only the
+ * display fields move — name and/or code. Harvest budgets are fixed at creation
+ * and are NEVER sent here. The Kit marker lives in the notes and is untouched, so
+ * reconciliation-by-identity keeps working after a rename.
+ */
+export async function updateHarvestProject(opts: {
+  projectId: number
+  name?: string
+  code?: string
+}): Promise<HarvestProject> {
+  const body: Record<string, unknown> = {}
+  if (opts.name !== undefined) body.name = opts.name
+  if (opts.code !== undefined) body.code = opts.code
+  const data = await harvestPatch(`/projects/${opts.projectId}`, body)
+  return {
+    id: data.id,
+    name: data.name,
+    code: data.code || '',
+    is_active: data.is_active,
+    client: data.client ? { id: data.client.id, name: data.client.name } : undefined,
+    notes: data.notes || '',
+  }
 }
 
 /**
