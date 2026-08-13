@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Kit Access Control
  *
@@ -17,6 +16,7 @@
  */
 
 import { createAdminClient } from '@/lib/supabase/admin'
+import type { TablesUpdate } from '@/types/supabase'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -333,14 +333,27 @@ const PRODUCER_FIELDS = new Set([
  * Kit shows it to the user.
  */
 export function filterResultData(
-  data: Record<string, unknown> | undefined,
+  data: unknown,
   user: UserContext,
   projectId?: string
-): Record<string, unknown> | undefined {
-  if (!data) return data
+): unknown {
+  if (data == null) return data
   if (user.tier === 'admin') return data // admins see everything
 
-  const filtered = { ...data }
+  // Top-level array (e.g. delivery.list_profiles, harvest find_projects):
+  // map over items. Spreading an array into `{ ...data }` would turn it into
+  // an index-keyed object, so it must be handled before the object path.
+  if (Array.isArray(data)) {
+    return data.map((item) =>
+      typeof item === 'object' && item !== null
+        ? filterResultData(item, user, projectId)
+        : item
+    )
+  }
+
+  if (typeof data !== 'object') return data
+
+  const filtered: Record<string, unknown> = { ...(data as Record<string, unknown>) }
 
   // Admin-only fields — strip for everyone below admin
   for (const field of ADMIN_ONLY_FIELDS) {
@@ -366,11 +379,11 @@ export function filterResultData(
     if (Array.isArray(value)) {
       filtered[key] = value.map((item) =>
         typeof item === 'object' && item !== null
-          ? filterResultData(item as Record<string, unknown>, user, projectId)
+          ? filterResultData(item, user, projectId)
           : item
       )
     } else if (typeof value === 'object' && value !== null) {
-      filtered[key] = filterResultData(value as Record<string, unknown>, user, projectId)
+      filtered[key] = filterResultData(value, user, projectId)
     }
   }
 
@@ -447,7 +460,7 @@ export async function setTeamMemberRole(
     .maybeSingle()
 
   if (existing?.id) {
-    const patch: Record<string, unknown> = { role }
+    const patch: TablesUpdate<'team_members'> = { role }
     // Backfill a real email/name if the row is missing them and we have them.
     if (opts.email && (!existing.email || existing.email.endsWith('@slack.local'))) patch.email = opts.email
     if (opts.name && (!existing.name || existing.name.startsWith('slack:'))) patch.name = opts.name
@@ -491,7 +504,7 @@ export async function enforceAccess(
   agentId: string,
   action: string,
   payload: Record<string, unknown>,
-  result: { success: boolean; data?: Record<string, unknown>; [key: string]: unknown }
+  result: { success: boolean; data?: unknown; [key: string]: unknown }
 ): Promise<typeof result> {
   // Gateway check
   const projectId = payload.projectId as string | undefined

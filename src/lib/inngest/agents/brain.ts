@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Brain agent — Phase 1 actions.
  *

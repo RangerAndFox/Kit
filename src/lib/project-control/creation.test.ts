@@ -13,7 +13,7 @@ import {
   type CreationCanvasPort,
   type CreationSheetsPort,
 } from './creation'
-import { MASTER_HEADERS, type SheetCell } from './render'
+import { MASTER_HEADERS, type SheetCell, type OwnedCell } from './render'
 import type { WorkbookConfig } from './types'
 import type { BindingRow } from './store'
 import type { CanvasReconcile } from './canvas'
@@ -62,7 +62,8 @@ function makeStore(initial: Partial<BindingRow> = {}): FakeStore {
 
 const okSheets: CreationSheetsPort = {
   createBoundRow: async () => ({ metadataId: 10, rowIndex: 5, alreadyBound: false }),
-  searchRowMetadata: async () => ({ metadataId: 10, rowIndex: 5 }),
+  // CONFIG.sheetId is 0 — the metadata is on the configured sheet.
+  searchRowMetadata: async (_s, _p, sheetId) => ({ metadataId: 10, rowIndex: 5, sheetId }),
   readRow: async () => rowCells(),
 }
 
@@ -206,5 +207,82 @@ describe('bindProjectControl', () => {
     deps.sleep = async () => {}
     const r = await bindProjectControl({ projectId: 'proj', submission: {}, slackResult: slackResult() }, deps)
     assert.equal(r.status, 'deferred')
+  })
+
+  it('writes Client Contact to the Sheet (col C) and renders it in the initial Canvas from the authoritative row', async () => {
+    // Template carries a Contacts row so we can assert the rendered value.
+    const CONTACT_TEMPLATE = '# 🎬 2xxx Client Project\n\n| ### **Client** |  |\n| ### **Contacts** |  |\n'
+    const CONTACT = 'Jane Doe — jane@nike.com'
+
+    // Capture the owned cells the Sheet write receives.
+    let ownedSeen: OwnedCell[] = []
+    // The authoritative row the initial Canvas is rendered FROM — includes the
+    // Client Contact cell as the Sheet would echo it back after the write.
+    const authoritativeRow = (): SheetCell[] =>
+      MASTER_HEADERS.map((h) => {
+        if (h === 'Client') return { formattedValue: 'Nike', effectiveValue: { stringValue: 'Nike' } }
+        if (h === 'Client Contact') return { formattedValue: CONTACT, effectiveValue: { stringValue: CONTACT } }
+        if (h === 'Project Number') return { formattedValue: '2601', effectiveValue: { stringValue: '2601' } }
+        if (h === 'Project Name') return { formattedValue: 'Summer', effectiveValue: { stringValue: 'Summer' } }
+        return {}
+      })
+    const sheets: CreationSheetsPort = {
+      createBoundRow: async (_c, _p, owned) => { ownedSeen = owned; return { metadataId: 10, rowIndex: 5, alreadyBound: false } },
+      searchRowMetadata: async (_s, _p, sheetId) => ({ metadataId: 10, rowIndex: 5, sheetId }),
+      readRow: async () => authoritativeRow(),
+    }
+
+    let createdMarkdown = ''
+    const canvas: CreationCanvasPort = {
+      createControlCanvas: async (o) => { createdMarkdown = o.markdown; return { canvasId: 'C1', canvasUrl: 'u' } },
+      editControlCanvas: async () => {},
+      reconcileControlCanvas: async () => ({ status: 'absent' as const }),
+    }
+
+    const store = makeStore()
+    const deps: CreationDeps = { sheets, canvas, store, config: CONFIG, enabled: true, now: () => 't' }
+    const r = await bindProjectControl(
+      {
+        projectId: 'proj',
+        submission: { projectNumber: '2601', clientName: 'Nike', clientContact: CONTACT, projectName: 'Summer' },
+        slackResult: slackResult({ controlTemplate: { fileId: 'F', markdown: CONTACT_TEMPLATE, hash: 'h' } }),
+      },
+      deps,
+    )
+    assert.equal(r.status, 'connected')
+
+    // 1) Owned-cell mapping: Client Contact reached the Sheet write at column C, verbatim.
+    const cCell = ownedSeen.find((c) => c.column === 'C')
+    assert.equal(cCell?.header, 'Client Contact')
+    assert.equal(cCell?.value, CONTACT)
+
+    // 2) Initial Canvas: the Contacts value comes from the authoritative Sheet row.
+    assert.match(createdMarkdown, /\|\s*### \*\*Contacts\*\*\s*\|\s*Jane Doe — jane@nike\.com\s*\|/)
+  })
+
+  it('resume fails closed (no Canvas) when the row metadata is on another sheet', async () => {
+    // Resuming a binding past pending_sheet re-derives the row index from
+    // metadata. If the id only matches on a different tab, searchRowMetadata
+    // throws — bind must error, never create a Canvas from a wrong-tab row.
+    const store = makeStore({ creation_state: 'pending_canvas', row_metadata_id: 10, template_markdown: TEMPLATE, canvas_id: null })
+    let created = 0
+    const sheets: CreationSheetsPort = {
+      createBoundRow: async () => ({ metadataId: 10, rowIndex: 5, alreadyBound: false }),
+      searchRowMetadata: async (_s, _p, sheetId) => { throw new Error(`row metadata for proj found on sheet(s) 999, not the configured sheet ${sheetId}`) },
+      readRow: async () => rowCells(),
+    }
+    const canvas: CreationCanvasPort = {
+      createControlCanvas: async () => { created++; return { canvasId: 'C1', canvasUrl: 'u' } },
+      editControlCanvas: async () => {},
+      reconcileControlCanvas: async (): Promise<CanvasReconcile> => ({ status: 'absent' }),
+    }
+    const deps: CreationDeps = { sheets, canvas, store, config: CONFIG, enabled: true, now: () => 't' }
+    const r = await bindProjectControl(
+      { projectId: 'proj', submission: { projectNumber: '2601', clientName: 'Nike', projectName: 'S' }, slackResult: slackResult() },
+      deps,
+    )
+    assert.equal(r.status, 'error')
+    assert.match(r.reason || '', /not the configured sheet/)
+    assert.equal(created, 0) // no canvas fabricated from a wrong-tab row
   })
 })

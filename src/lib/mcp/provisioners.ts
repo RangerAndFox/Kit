@@ -15,6 +15,7 @@ import { withRetry } from '../provisioner/retry'
 import folderStructure from '../provisioner/folder-structure.json'
 import { dropboxHeaders, getDropboxAccessToken } from '@/lib/dropbox/client'
 import { frameioHeaders } from '@/lib/frameio/auth'
+import { frameioProjectUrl } from '@/lib/frameio/url'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -163,7 +164,7 @@ export async function provisionFrameIo(input: ProvisionInput): Promise<Provision
       )
     )
 
-    const url = `https://app.frame.io/projects/${projectId}`
+    const url = frameioProjectUrl(projectId)
     console.log(`[Provision:FrameIo] Created project: ${projectLabel} → ${url}`)
     return {
       id: projectId,
