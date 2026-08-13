@@ -559,6 +559,17 @@ export async function renameProjectSlackChannel(opts: {
         const owned = await findOwnedChannelByName(target, projectId)
         if (owned === channelId) {
           channelName = target
+        } else if (owned) {
+          // We POSITIVELY identified a DIFFERENT channel holding the target name.
+          // The target slug is deterministic, so retrying can never succeed —
+          // terminal, matching Dropbox's move conflict and Frame.io/Harvest's
+          // ambiguous-marker cases. (A null `owned` is NOT terminal: it means we
+          // could not tell — the name may belong to a private channel, which
+          // conversations.list can't see, or the list read itself failed — so it
+          // stays retryable rather than wedging on an unknown.)
+          throw new SlackRenameTerminalError(
+            `channel name ${target} is taken by a different channel (${owned}); refusing to rename ${channelId}`,
+          )
         } else {
           throw err
         }

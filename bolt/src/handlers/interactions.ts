@@ -26,6 +26,7 @@ import { computeUpdatePlan } from '../../../src/lib/provisioner/update-diff'
 import { runProjectUpdate } from '../../../src/lib/provisioner/update'
 import {
   getOrCreateUpdateRequest,
+  claimUpdatePreview,
   loadUpdateRequest,
   loadUpdateRequestById,
   updateUpdateRequest,
@@ -1413,7 +1414,7 @@ export function registerInteractionHandlers(app: App) {
     }
 
     const requestKey = view.id
-    const { created, row: existingReq } = await getOrCreateUpdateRequest({
+    await getOrCreateUpdateRequest({
       requestKey,
       workspaceId,
       projectId,
@@ -1421,15 +1422,14 @@ export function registerInteractionHandlers(app: App) {
       submission: { form, userId, statusChannel, threadTs, workspaceId, current: snap.current },
       plan,
     })
-    // Redelivery guard: Slack Socket Mode can re-deliver the same view_submission
-    // with an identical view.id (requestKey). Only (re)post the preview when the row
-    // is still FRESH ('pending' from create) — either this create, or a first
-    // delivery that crashed after inserting the row but before posting. A row that
-    // already advanced (awaiting_confirm = preview posted; or any decided/terminal
-    // status) must NOT be stomped back to awaiting_confirm with a duplicate/stale
-    // prompt. Mirrors routeCreationRequest's state-machine guard on the create side.
-    if (!created && existingReq.status !== 'pending') return
-    await updateUpdateRequest(requestKey, { status: 'awaiting_confirm' })
+    // Redelivery guard, ATOMIC: Slack Socket Mode can re-deliver the same
+    // view_submission (identical view.id = requestKey). claimUpdatePreview is a CAS
+    // on `pending` → `awaiting_confirm`, so exactly one delivery posts the preview —
+    // a read-then-write check would let a concurrent redelivery that arrives while
+    // the row is still `pending` slip through and post a duplicate. A row that
+    // already advanced (preview posted, or decided/terminal) also loses the CAS and
+    // is never stomped back to awaiting_confirm with a stale prompt.
+    if (!(await claimUpdatePreview(requestKey))) return
     await client.chat.postMessage(buildUpdatePreview(statusChannel, threadTs, snap.snapshot, form, plan, requestKey, collision))
   })
 

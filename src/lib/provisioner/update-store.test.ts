@@ -10,6 +10,7 @@ import { describe, it, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   getOrCreateUpdateRequest,
+  claimUpdatePreview,
   updateUpdateRequest,
   commitUpdateDecision,
   claimUpdateRequestFenced,
@@ -131,6 +132,26 @@ describe('getOrCreateUpdateRequest', () => {
     const b = await seedRequest(fake)
     assert.equal(b.created, false)
     assert.equal(b.row.id, a.row.id)
+  })
+})
+
+describe('claimUpdatePreview (one-winner pending → awaiting_confirm)', () => {
+  it('only the FIRST caller wins — a redelivered view_submission posts no duplicate', async () => {
+    const fake = fakeDb()
+    await seedRequest(fake)
+    assert.equal(await claimUpdatePreview('V1'), true) // first delivery posts
+    assert.equal(await claimUpdatePreview('V1'), false) // redelivery: no duplicate
+  })
+
+  it('loses against a row that already advanced past pending (never stomps a decision)', async () => {
+    const fake = fakeDb()
+    await seedRequest(fake)
+    await updateUpdateRequest('V1', { status: 'cancelled', decision: 'cancel' })
+    assert.equal(await claimUpdatePreview('V1'), false)
+    // …and the terminal status is left intact.
+    const row = (fake.tables.get('project_update_requests') || []).find((r: any) => r.request_key === 'V1') as any
+    assert.equal(row.status, 'cancelled')
+    assert.equal(row.decision, 'cancel')
   })
 })
 

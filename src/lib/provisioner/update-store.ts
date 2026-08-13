@@ -112,6 +112,27 @@ export async function getOrCreateUpdateRequest(opts: {
   return { row: data as UpdateRequestRow, created: true }
 }
 
+/**
+ * ATOMIC one-winner transition `pending` → `awaiting_confirm`, returning true only
+ * for the caller that actually made it. A check-then-act read of `status` is not
+ * enough: Slack Socket Mode can redeliver the same view_submission (identical
+ * view.id), and a second delivery that arrives while the row is still `pending`
+ * would pass a read-guard and post a DUPLICATE preview. The CAS closes that window
+ * (and also short-circuits a row that already advanced to a decided/terminal
+ * status). Mirrors commitUpdateDecision's one-winner pattern.
+ */
+export async function claimUpdatePreview(requestKey: string): Promise<boolean> {
+  const { data, error } = await db()
+    .from('project_update_requests')
+    .update({ status: 'awaiting_confirm', updated_at: nowIso() })
+    .eq('request_key', requestKey)
+    .eq('status', 'pending')
+    .select('id')
+    .maybeSingle()
+  if (error) throw new Error(`claimUpdatePreview: ${error.message}`)
+  return !!data
+}
+
 export async function loadUpdateRequest(requestKey: string): Promise<UpdateRequestRow | null> {
   const { data } = await db()
     .from('project_update_requests')
