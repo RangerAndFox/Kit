@@ -355,12 +355,16 @@ let recoverySweepRunning = false
 cron.schedule(
   '*/5 * * * *',
   () => {
-    if (process.env.PROJECT_CONTROL_CREATION_ENABLED !== 'true') return
+    // Always run the sweep: update-ripple recovery is INDEPENDENT of the create
+    // feature flag (the update flow runs regardless), and the sweep internally
+    // gates create-recovery behind PROJECT_CONTROL_CREATION_ENABLED / workbook
+    // config after doing update recovery.
     if (recoverySweepRunning) return
     recoverySweepRunning = true
     Promise.resolve(runProjectControlRecoverySweep())
       .then((res) => {
-        if (res && (res as any).ran !== false) console.log('[cron] project-control-recovery:', res)
+        const r = res as any
+        if (r && (r.ran !== false || r.updatesRecovered)) console.log('[cron] project-control-recovery:', res)
       })
       .catch((err) => console.error('[cron] project-control-recovery failed:', err))
       .finally(() => { recoverySweepRunning = false })

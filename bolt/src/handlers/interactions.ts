@@ -19,7 +19,30 @@ import {
   getAvailableAgents,
 } from '../../../src/lib/inngest/agents/registry'
 import type { ServiceKey } from '../../../src/lib/provisioner/types'
-import { buildNewProjectModal } from '../../../src/lib/provisioner/modal'
+import { projectNumberFromCode } from '../../../src/lib/studio-knowledge/project-sync'
+import { buildNewProjectModal, buildUpdateProjectModal } from '../../../src/lib/provisioner/modal'
+import { deriveProjectCode, deriveDropboxSafeName } from '../../../src/lib/provisioner/identifiers'
+import { computeUpdatePlan } from '../../../src/lib/provisioner/update-diff'
+import { runProjectUpdate } from '../../../src/lib/provisioner/update'
+import {
+  getOrCreateUpdateRequest,
+  claimUpdatePreview,
+  loadUpdateRequest,
+  loadUpdateRequestById,
+  updateUpdateRequest,
+  commitUpdateDecision,
+  claimUpdateRequestFenced,
+  renewUpdateRequestLease,
+  listRecoverableUpdateRequests,
+  getUpdateSteps,
+  claimUpdateStep,
+  recordUpdateStepExternalId,
+  completeUpdateStep,
+  listUpdateRequestsWithIncompleteSteps,
+} from '../../../src/lib/provisioner/update-store'
+import { updateBoundRow } from '../../../src/lib/project-control/sheets'
+import { kitOwnedCreationCells, headerToA1Column, type MasterHeader } from '../../../src/lib/project-control/render'
+import { buildUpdateProjectCard } from './updateproject-card'
 import {
   getOrCreateCreationRequest,
   loadCreationRequest,
@@ -358,6 +381,76 @@ export function registerInteractionHandlers(app: App) {
     await ack()
     if (typeof respond === 'function') {
       await respond({ replace_original: true, text: '_New project cancelled._' })
+    }
+  })
+
+  // ─── Update Project: open the pre-filled modal ────────────
+  // Both entry points (the inferred-project button and the picker select) carry
+  // the JSON `{p: projectId, c: channelId, t: threadTs}` in their value, so we
+  // can load the current values and open the modal with a fresh trigger_id.
+  const openUpdateModalFromValue = async (raw: string, body: any, client: any) => {
+    let projectId = '', channelId = '', threadTs: string | undefined
+    try {
+      const parsed = JSON.parse(raw)
+      projectId = parsed.p || ''
+      channelId = parsed.c || ''
+      threadTs = parsed.t || undefined
+    } catch {
+      projectId = raw
+    }
+    // The picker option value carries ONLY the project id (Slack caps a
+    // static_select option value at 75 chars, which a UUID + channel + thread ts
+    // would blow past), so recover the channel/thread from the interaction body.
+    // The thread lives on the source MESSAGE (container has no thread_ts) — mirror
+    // kit_onboard_confirm's `body.message?.thread_ts`.
+    channelId = channelId || (body as any)?.channel?.id || (body as any)?.container?.channel_id || ''
+    threadTs = threadTs || (body as any)?.message?.thread_ts || undefined
+    if (!projectId) return
+    const workspaceId = await resolveWorkspaceId(body?.team?.id || '')
+    let snap
+    try {
+      snap = await loadUpdateSnapshot(projectId, workspaceId)
+    } catch {
+      await client.chat.postMessage({ channel: channelId || body?.user?.id, text: ':warning: I couldn\'t load that project right now — please try again in a moment.' })
+      return
+    }
+    if (!snap) {
+      await client.chat.postMessage({ channel: channelId || body?.user?.id, text: ':warning: I couldn\'t load that project to edit — it may have been archived.' })
+      return
+    }
+    // Only editable projects (never a provisioning-in-progress or a decommissioned
+    // archived/cancelled one) can open the update form.
+    if (!EDITABLE_PROJECT_STATUSES.includes(snap.status)) {
+      const why = snap.status === 'provisioning'
+        ? `*${snap.snapshot.projectName}* is still being provisioned — try updating it once it\'s active.`
+        : `*${snap.snapshot.projectName}* is ${snap.status} and can no longer be updated.`
+      await client.chat.postMessage({ channel: channelId || body?.user?.id, text: `:no_entry: ${why}` })
+      return
+    }
+    try {
+      await client.views.open({
+        trigger_id: body.trigger_id,
+        view: buildUpdateProjectModal({ projectId, workspaceId, channelId, threadTs, snapshot: snap.snapshot }) as any,
+      })
+    } catch (err: any) {
+      console.error('[Bolt] update modal open failed:', err.data?.error || err.message)
+    }
+  }
+
+  app.action('kit_open_updateproject_modal', async ({ ack, body, client }) => {
+    await ack()
+    await openUpdateModalFromValue((body as any).actions?.[0]?.value || '', body, client)
+  })
+
+  app.action('kit_pick_update_project', async ({ ack, body, client }) => {
+    await ack()
+    await openUpdateModalFromValue((body as any).actions?.[0]?.selected_option?.value || '', body, client)
+  })
+
+  app.action('kit_cancel_updateproject', async ({ ack, respond }) => {
+    await ack()
+    if (typeof respond === 'function') {
+      await respond({ replace_original: true, text: '_Update cancelled._' })
     }
   })
 
@@ -843,17 +936,16 @@ export function registerInteractionHandlers(app: App) {
     // No after(), no Inngest, no 60s ceiling. Just do the work.
 
     try {
-      // Build the project code
-      const projectCode = `${form.projectNumber}-${form.clientName.replace(/\s+/g, '')}`
+      // Build the project code (shared derivation — see identifiers.ts).
+      const projectCode = deriveProjectCode(form.projectNumber, form.clientName)
 
       // Same shape the Dropbox provisioner uses (`/production/{year}/{safeName}`).
       // Persisted so the file watcher can reverse-match Dropbox paths to projects.
-      const dropboxSafeName = [form.projectNumber, form.clientName, form.projectName]
-        .map((p) => (p ? String(p).trim() : ''))
-        .filter(Boolean)
-        .join('_')
-        .replace(/[^\w\s-]/g, '')
-        .replace(/\s+/g, '_')
+      const dropboxSafeName = deriveDropboxSafeName(
+        form.projectNumber,
+        form.clientName,
+        form.projectName,
+      )
 
       // ── Create project record (idempotent, resume-safe) ────
       // When creation is ENABLED, resolveCreationProject owns the exclusive
@@ -883,6 +975,9 @@ export function registerInteractionHandlers(app: App) {
             ...(creationEnabled && requestKey ? { creation_request_id: requestKey } : {}),
             external_ids: {
               dropbox_safe_name: dropboxSafeName,
+              // Persisted so the update flow round-trips the number losslessly
+              // (project_code.split('-')[0] is lossy if the client has a hyphen).
+              ...(form.projectNumber ? { project_number: form.projectNumber } : {}),
               ...(form.creativeDirector ? { creative_director_slack_id: form.creativeDirector } : {}),
             },
           })
@@ -1258,12 +1353,464 @@ export function registerInteractionHandlers(app: App) {
   // request never double-provisions and a re-driven bind never double-creates.
   // Returned to app.ts, which schedules it (cron ownership stays in app.ts) but
   // needs this closure for the shared provisioning path.
-  async function runProjectControlRecoverySweep() {
-    if (!projectControlCreationEnabled()) return { ran: false, reason: 'disabled' as const }
-    const config = workbookConfigFromEnv()
-    if (!config) return { ran: false, reason: 'workbook_not_configured' as const }
+  // ─── Update Project: modal submission → preview ───────────
+  app.view('kit_update_project', async ({ ack, view, body, client }) => {
+    await ack()
+    const userId = body.user.id
+    const meta = JSON.parse(view.private_metadata || '{}')
+    const projectId = meta.project_id || ''
+    const channelId = meta.channel_id || ''
+    const threadTs = meta.thread_ts || undefined
+    const statusChannel = channelId || userId
+    const workspaceId = meta.workspace_id || (await resolveWorkspaceId(body.team?.id || ''))
+    const values = view.state?.values || {}
+    const form = {
+      projectNumber: values.project_number?.val?.value || '',
+      clientName: values.client_name?.val?.value || '',
+      clientContact: values.client_contact?.val?.value || undefined,
+      projectName: values.project_name?.val?.value || '',
+      projectType: values.project_type?.val?.selected_option?.value || undefined,
+      projectManager: values.project_manager?.val?.selected_user || undefined,
+      creativeDirector: values.creative_director?.val?.selected_user || undefined,
+      startDate: values.start_date?.val?.selected_date || undefined,
+      deadline: values.deadline?.val?.selected_date || undefined,
+      description: values.description?.val?.value || undefined,
+    }
 
-    return runProjectControlRecovery({
+    let snap
+    try {
+      snap = await loadUpdateSnapshot(projectId, workspaceId)
+    } catch {
+      await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: ':warning: Could not load that project right now — please try again in a moment.' })
+      return
+    }
+    if (!snap) {
+      await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: ':warning: Could not load that project to update.' })
+      return
+    }
+    // Re-verify editability at submit (the project could have been archived while
+    // the modal sat open).
+    if (!EDITABLE_PROJECT_STATUSES.includes(snap.status)) {
+      await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: `:no_entry: *${snap.snapshot.projectName}* is ${snap.status} and can no longer be updated.` })
+      return
+    }
+    // Diff against the OPEN-TIME snapshot embedded in the modal (what the user was
+    // shown), not the current DB row — so a field a concurrent edit changed while
+    // this modal sat open is NOT flagged as this user's change and reverted. Fall
+    // back to the fresh snapshot only for an older modal without an embedded snap.
+    const baseline = meta.snap || snap.snapshot
+    const plan = computeUpdatePlan({ projectId, ...baseline } as any, form as any, snap.provisioned)
+    if (!plan.hasChanges) {
+      await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: ':information_source: No changes detected — nothing to update.' })
+      return
+    }
+
+    // Identity-collision guard: a new number that already belongs to a DIFFERENT
+    // project is surfaced (never silently proceeded).
+    let collision: { id: string; name: string } | null = null
+    if (plan.identityChanged && form.projectNumber && form.projectNumber !== baseline.projectNumber) {
+      const other = await findExistingProject(workspaceId, form.projectNumber)
+      if (other && other.id !== projectId) collision = { id: other.id, name: other.name }
+    }
+
+    const requestKey = view.id
+    await getOrCreateUpdateRequest({
+      requestKey,
+      workspaceId,
+      projectId,
+      requestedBy: userId,
+      submission: { form, userId, statusChannel, threadTs, workspaceId, current: snap.current },
+      plan,
+    })
+    // Redelivery guard, ATOMIC: Slack Socket Mode can re-deliver the same
+    // view_submission (identical view.id = requestKey). claimUpdatePreview is a CAS
+    // on `pending` → `awaiting_confirm`, so exactly one delivery posts the preview —
+    // a read-then-write check would let a concurrent redelivery that arrives while
+    // the row is still `pending` slip through and post a duplicate. A row that
+    // already advanced (preview posted, or decided/terminal) also loses the CAS and
+    // is never stomped back to awaiting_confirm with a stale prompt.
+    if (!(await claimUpdatePreview(requestKey))) return
+    await client.chat.postMessage(buildUpdatePreview(statusChannel, threadTs, snap.snapshot, form, plan, requestKey, collision))
+  })
+
+  // ─── Update Project: confirm / cancel buttons ─────────────
+  app.action('kit_update_confirm', async ({ ack, body, client, respond }) => {
+    await ack()
+    const requestKey = (body as any).actions?.[0]?.value || ''
+    const req = await loadUpdateRequest(requestKey)
+    if (!req) {
+      await respond({ replace_original: true, text: ':warning: That update request expired — re-open the update form.' })
+      return
+    }
+    const actingWorkspaceId = await resolveWorkspaceId((body as any).team?.id || '')
+    // Authoritative one-winner gate: only the original requester, in the same
+    // workspace, and only the FIRST click transitions out of awaiting_confirm.
+    const won = await commitUpdateDecision({ requestKey, actingUserId: (body as any).user?.id, workspaceId: actingWorkspaceId, decision: 'apply' })
+    if (!won) {
+      await respond({ replace_original: true, text: ':information_source: That update was already handled.' })
+      return
+    }
+    const projectName = (req.submission as any)?.form?.projectName || 'the project'
+    await respond({ replace_original: true, text: `:arrows_counterclockwise: Applying updates for *${projectName}*…` })
+    await runUpdateRipple({ client, requestKey })
+  })
+
+  app.action('kit_update_cancel', async ({ ack, body, respond }) => {
+    await ack()
+    const requestKey = (body as any).actions?.[0]?.value || ''
+    const actingWorkspaceId = await resolveWorkspaceId((body as any).team?.id || '')
+    // Mirror kit_update_confirm's one-winner gate: only the original requester
+    // cancels, and only a click that actually transitions the row wins. A
+    // non-requester / stale click (CAS returns false) must NOT overwrite the
+    // shared preview with a false "cancelled" — the request stays as it was.
+    const cancelled = await commitUpdateDecision({ requestKey, actingUserId: (body as any).user?.id, workspaceId: actingWorkspaceId, decision: 'cancel' }).catch(() => false)
+    await respond({
+      replace_original: true,
+      text: cancelled ? '_Update cancelled — nothing was changed._' : ':information_source: That update was already handled.',
+    })
+  })
+
+  /**
+   * Drive the durable update ripple for a confirmed request. Builds the injected
+   * deps (agent dispatch, the Dropbox-move DB write, the Sheet row update under
+   * the workbook lease, the Supabase row update) and the update-step ledger,
+   * then finalizes projects.status + the request + posts a summary. Idempotent
+   * and resume-safe (the recovery sweep calls it with preClaimed).
+   */
+  async function runUpdateRipple(args: { client: any; requestKey: string; preClaimed?: boolean; leaseHolder?: string }) {
+    const { client, requestKey } = args
+    const req = await loadUpdateRequest(requestKey)
+    if (!req) return
+    const sub: any = req.submission || {}
+    const form = sub.form
+    const plan = req.plan as any
+    const projectId = req.project_id
+    const workspaceId = req.workspace_id || sub.workspaceId || ''
+    const statusChannel = sub.statusChannel || sub.userId || ''
+    const threadTs = sub.threadTs
+    if (!form || !plan || !projectId) return
+
+    const leaseHolder = args.leaseHolder || `update:${requestKey}:${randomUUID()}`
+    if (!args.preClaimed) {
+      const claim = await claimUpdateRequestFenced(requestKey, leaseHolder)
+      if (!claim.ok) return // a live worker (or the sweep) owns it
+    }
+
+    const config = workbookConfigFromEnv()
+    const supabase = createAdminClient()
+
+    // Load a FRESH snapshot at ripple time: (a) the editability gate — the project
+    // could have been archived/cancelled between confirm and here; and (b) the
+    // current identity spine + external ids, so an identity field the user did NOT
+    // change is renamed to its true current value, not a stale open-time value.
+    // Fail CLOSED, never fall through with an undefined spine (that would revert an
+    // untouched identity field to its stale open-time value and skip the gate):
+    //  - a transient read error → leave the request for the recovery sweep to re-drive;
+    //  - a genuine not-found (null) → the project is gone; cancel (not retryable).
+    let freshSnap: Awaited<ReturnType<typeof loadUpdateSnapshot>>
+    try {
+      freshSnap = await loadUpdateSnapshot(projectId, workspaceId)
+    } catch (err: any) {
+      console.warn('[Bolt] update ripple: snapshot load failed, leaving for recovery:', err?.message)
+      return
+    }
+    if (!freshSnap) {
+      await updateUpdateRequest(requestKey, { status: 'cancelled', error: 'project not found' }).catch(() => {})
+      await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: `:no_entry: *${form.projectName}* could not be found — update not applied.` }).catch(() => {})
+      return
+    }
+    const liveStatus = freshSnap.status
+    if (liveStatus && !EDITABLE_PROJECT_STATUSES.includes(liveStatus)) {
+      await updateUpdateRequest(requestKey, { status: 'cancelled', error: `project ${liveStatus}` }).catch(() => {})
+      await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: `:no_entry: *${form.projectName}* is ${liveStatus} — update not applied.` }).catch(() => {})
+      return
+    }
+    // freshSnap.current is authoritative and defines every key unconditionally
+    // (loadUpdateSnapshot builds them with `|| undefined`), so a `...sub.current`
+    // spread would be fully overwritten — dead. An undefined here means the link
+    // genuinely isn't set (a transient read throws, per loadUpdateSnapshot), so
+    // there's no stale-fallback to preserve.
+    const current = {
+      ...freshSnap.current,
+      projectNumber: freshSnap.snapshot.projectNumber,
+      clientName: freshSnap.snapshot.clientName,
+      projectName: freshSnap.snapshot.projectName,
+    }
+
+    let outcome: Awaited<ReturnType<typeof runProjectUpdate>>
+    try {
+     outcome = await runProjectUpdate(
+      { updateRequestId: req.id, projectId, submission: form, plan, current },
+      {
+        dispatch: (service, action, payload) => dispatch(service, action, payload) as any,
+        // Keep the projects row's Dropbox identity in lockstep with the moved
+        // folder (delivery matching keys off dropbox_safe_name). Read-modify-write
+        // so other external_ids/external_links keys are preserved.
+        persistDropboxMove: async (pid, o) => {
+          // Check the READ error too (supabase-js resolves, never throws): a
+          // transient read blip returns data:null, and rebuilding external_ids/
+          // external_links from {} would WIPE sibling keys (slack_id/harvest_id/…)
+          // on the write below. Throw so the step is retryable — fail closed.
+          const { data, error: readErr } = await supabase.from('projects').select('external_ids, external_links').eq('id', pid).maybeSingle()
+          if (readErr) throw new Error(`persistDropboxMove read: ${readErr.message}`)
+          const external_ids = { ...((data as any)?.external_ids || {}), dropbox_safe_name: o.safeName }
+          const external_links = { ...((data as any)?.external_links || {}), dropbox_id: o.path, ...(o.url ? { dropbox: o.url } : {}) }
+          // supabase-js resolves (never throws) on a write failure — THROW on error
+          // so the dropbox step is marked 'failed' (retryable), never memoized
+          // 'done' with dropbox_safe_name silently desynced from the moved folder.
+          const { error } = await supabase.from('projects').update({ external_ids, external_links }).eq('id', pid)
+          if (error) throw new Error(`persistDropboxMove: ${error.message}`)
+        },
+        updateSheet: async (pid, f) => {
+          if (!config) return { success: true } // no workbook configured → no-op
+          // No workbook lease: updateBoundRow resolves the row via developer
+          // metadata (never allocates one) and writes only the Kit-owned cells in
+          // one atomic, idempotent batchUpdate — so it has no row-allocation race
+          // to serialize against, and taking the 'creation' lease would only
+          // contend falsely with an unrelated new-project bind.
+          try {
+            // DIFF-SCOPED, like the Supabase write: build the owned-cell submission
+            // from ONLY the Sheet-owned fields THIS edit changed, so two overlapping
+            // same-project updates don't clobber each other's cells via a full-row
+            // write from a stale snapshot. kitOwnedCreationCells then emits a cell
+            // per populated field; the CLEARABLE loop below adds an explicit blank
+            // for any changed-to-empty field (create's blank-skip would leave the
+            // stale value, diverging from Supabase which clears it).
+            const changed = new Set((plan.changes as any[]).map((c) => c.field))
+            // Renamed from `sub` to avoid shadowing the outer submission `sub`.
+            const ownedFields: Record<string, string | undefined> = {}
+            if (changed.has('project_number')) ownedFields.projectNumber = f.projectNumber
+            if (changed.has('client')) ownedFields.clientName = f.clientName
+            if (changed.has('client_contact')) ownedFields.clientContact = f.clientContact
+            if (changed.has('project_name')) ownedFields.projectName = f.projectName
+            if (changed.has('start_date')) ownedFields.startDate = f.startDate
+            if (changed.has('deadline')) ownedFields.deadline = f.deadline
+            // For a CD/Producer CHANGED to a real user, a failed display-name
+            // lookup returns undefined — indistinguishable from a clear, which
+            // would silently leave the Sheet's old name. Fail the step (retryable)
+            // instead so a transient users.info blip self-heals; a genuine clear
+            // (empty id) falls through to the CLEARABLE blank-write below.
+            if (changed.has('creative_director') && f.creativeDirector) {
+              const nm = await resolveUserDisplayName(client, f.creativeDirector)
+              if (!nm) return { success: false, error: 'could not resolve creative director display name' }
+              ownedFields.creativeDirectorName = nm
+            }
+            if (changed.has('project_manager') && f.projectManager) {
+              const nm = await resolveUserDisplayName(client, f.projectManager)
+              if (!nm) return { success: false, error: 'could not resolve producer display name' }
+              ownedFields.producerName = nm
+            }
+            const cells = kitOwnedCreationCells(ownedFields as any)
+            const CLEARABLE: Record<string, MasterHeader> = {
+              client_contact: 'Client Contact',
+              start_date: 'Start Date',
+              deadline: 'End Date',
+              creative_director: 'Creative Director',
+              project_manager: 'Producer',
+            }
+            const have = new Set(cells.map((c: any) => c.header))
+            for (const ch of (plan.changes as any[])) {
+              const header = CLEARABLE[ch.field]
+              if (header && ch.new == null && !have.has(header)) {
+                cells.push({ header, column: headerToA1Column(header), kind: 'string', value: '' })
+              }
+            }
+            const r = await updateBoundRow(config, pid, cells)
+            return { success: true, message: 'skipped' in r ? 'sheet unbound (skipped)' : `sheet row ${(r as any).rowIndex} updated` }
+          } catch (err: any) {
+            return { success: false, error: err.message }
+          }
+        },
+        updateProjectRow: async (pid, f, derived) => {
+          // DIFF-SCOPED write: only the columns THIS edit actually changed, so two
+          // overlapping updates to the same project (each a separate request) don't
+          // clobber each other's unrelated fields via a full-row overwrite from a
+          // stale form snapshot — a non-overlapping pair (A edits deadline, B edits
+          // name) both survive regardless of commit order.
+          const changed = new Set((plan.changes as any[]).map((c) => c.field))
+          const patch: Record<string, unknown> = {}
+          if (changed.has('project_name')) patch.name = f.projectName
+          if (changed.has('client')) patch.client = f.clientName || null
+          if (changed.has('project_number') || changed.has('client')) patch.project_code = derived.projectCode
+          if (changed.has('project_type')) patch.project_type = f.projectType || null
+          if (changed.has('start_date')) patch.start_date = f.startDate || null
+          if (changed.has('deadline')) patch.target_delivery = f.deadline || null
+          if (changed.has('description')) patch.brief_summary = f.description || null
+          if (changed.has('project_manager')) patch.project_manager_slack_id = f.projectManager || null
+          // external_ids is a jsonb blob — only read-modify-write it when a key it
+          // owns (project_number / creative_director) changed, preserving every
+          // other key (esp. Phase A's fresh dropbox_safe_name).
+          if (changed.has('project_number') || changed.has('creative_director')) {
+            // Check the READ error (fail closed): a transient blip returning
+            // data:null would rebuild external_ids from {} and wipe sibling keys
+            // (dropbox_safe_name / the other provenance ids) on the write below.
+            const { data, error: readErr } = await supabase.from('projects').select('external_ids').eq('id', pid).maybeSingle()
+            if (readErr) throw new Error(`updateProjectRow external_ids read: ${readErr.message}`)
+            const external_ids: Record<string, unknown> = { ...((data as any)?.external_ids || {}) }
+            if (changed.has('project_number')) {
+              if (f.projectNumber) external_ids.project_number = f.projectNumber
+              else delete external_ids.project_number
+            }
+            if (changed.has('creative_director')) {
+              if (f.creativeDirector) external_ids.creative_director_slack_id = f.creativeDirector
+              else delete external_ids.creative_director_slack_id
+            }
+            patch.external_ids = external_ids
+          }
+          if (Object.keys(patch).length === 0) return { success: true } // nothing scalar to write
+          const { error } = await supabase.from('projects').update(patch).eq('id', pid)
+          if (error) return { success: false, error: error.message }
+          return { success: true }
+        },
+        ledger: {
+          getSteps: (rk) => getUpdateSteps(rk),
+          claimStep: (rk, svc, inputHash) =>
+            claimUpdateStep(rk, projectId, svc, leaseHolder, { inputHash }).then((c) => ({ ok: c.ok, fence: c.fence, status: c.status })),
+          recordExternalId: (rk, svc, fence, o) => recordUpdateStepExternalId(rk, svc, leaseHolder, fence, o),
+          completeStep: (rk, svc, fence, patch) => completeUpdateStep(rk, svc, leaseHolder, fence, patch),
+          renew: () => renewUpdateRequestLease(requestKey, leaseHolder),
+        },
+      },
+     )
+    } catch (err: any) {
+      // A transient store error (e.g. a ledger getSteps/claimStep throw) must not
+      // leave the interaction silent with the lease held for the full timeout.
+      // Give the user immediate feedback and FREE the lease (lease_expires_at:null)
+      // so the recovery sweep re-drives on its very next cycle, not ~5 min later.
+      console.warn(`[Bolt] update ripple threw for ${requestKey}:`, err?.message)
+      await updateUpdateRequest(requestKey, { status: 'error', error: `ripple threw: ${err?.message}`, lease_expires_at: null }).catch(() => {})
+      await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: `:warning: *${form.projectName}* update hit a transient error — Kit will retry automatically.` }).catch(() => {})
+      return
+    }
+
+    if (outcome.abortedLostLease) {
+      console.warn(`[Bolt] update ripple for ${requestKey} yielded the lease; a newer holder will finish it.`)
+      return
+    }
+
+    // Read the current lifecycle status so this edit never CLOBBERS an unrelated
+    // signal. `allRequiredDone` only covers the services THIS diff touched, so an
+    // unrelated edit must not (a) upgrade a project a prior failure left 'partial',
+    // hiding that outage, nor (b) un-pause a project a producer set 'paused'.
+    const { data: curRow } = await supabase.from('projects').select('status').eq('id', projectId).maybeSingle()
+    const curStatus = (curRow as any)?.status as string | undefined
+
+    if (outcome.allRequiredDone) {
+      // Restore 'active' only when this ripple actually VERIFIED external health:
+      //   - a leftover 'provisioning' placeholder → clear it; or
+      //   - a 'partial' project whose repair touched the external services (a
+      //     full-success identity ripple genuinely fixes them).
+      // Never advance a 'partial' via a metadata-only edit (that wouldn't verify
+      // the unhealthy service), and never un-pause a 'paused' project.
+      const planTouchedExternal =
+        plan.services?.slack || plan.services?.frameio || plan.services?.harvest || plan.services?.dropbox
+      const shouldRestoreActive =
+        curStatus === 'provisioning' || (curStatus === 'partial' && planTouchedExternal)
+      if (shouldRestoreActive) {
+        await supabase.from('projects').update({ status: 'active' }).eq('id', projectId)
+      }
+      await updateUpdateRequest(requestKey, { status: 'completed' })
+      await client.chat.postMessage({
+        channel: statusChannel,
+        ...(threadTs ? { thread_ts: threadTs } : {}),
+        text: `:white_check_mark: *${form.projectName}* updated — changes rippled to ${outcome.ran.concat(outcome.resumed).filter((s: string) => s !== 'supabase' && s !== 'sheet').join(', ') || 'Kit\'s records'}.`,
+      })
+    } else {
+      // This ripple left external state inconsistent → flag 'partial', but never
+      // override an intentional 'paused'. Require a KNOWN status: a transient read
+      // failure (or missing row) leaves curStatus undefined, and `undefined !==
+      // 'paused'` would fail open and silently un-pause a paused project — so skip
+      // the downgrade on an unreadable status (the request is marked 'error' and
+      // the recovery sweep re-drives, re-reading the status then).
+      if (curStatus && curStatus !== 'paused') {
+        await supabase.from('projects').update({ status: 'partial' }).eq('id', projectId)
+      }
+      // When EVERY incomplete service is permanently terminal, mark the request
+      // 'needs_attention' — a terminal status listRecoverableUpdateRequests excludes
+      // — so the recovery sweep never re-drives it (which would re-post the
+      // "will not auto-complete" message every cycle). A merely-retryable partial
+      // stays 'error' so recovery keeps retrying the transient services.
+      const terminalStatus = outcome.unrecoverable ? 'needs_attention' : 'error'
+      await updateUpdateRequest(requestKey, { status: terminalStatus, error: `incomplete: ${outcome.incompleteServices.join(',')}` })
+      // Message keys off `unrecoverable`, NOT `anyTerminal`, so it agrees with the
+      // persisted status: a mix of a terminal service AND a retryable one stays
+      // 'error' (recovery keeps retrying), so say "will retry the rest" — never the
+      // contradictory ":red_circle: will not auto-complete" that would re-post every
+      // recovery cycle while Kit is in fact still retrying.
+      const emoji = outcome.unrecoverable ? ':red_circle:' : ':warning:'
+      const tail = outcome.unrecoverable ? 'needs attention — it will not auto-complete' : 'partially applied — Kit will retry the rest'
+      await client.chat.postMessage({
+        channel: statusChannel,
+        ...(threadTs ? { thread_ts: threadTs } : {}),
+        text: `${emoji} *${form.projectName}* update ${tail}. Pending: ${outcome.incompleteServices.join(', ')}.`,
+      })
+    }
+  }
+
+  /**
+   * Recover stalled update ripples: requests left 'applying'/'error' after a
+   * crash, plus step-based discovery of requests with incomplete update steps.
+   * Each is re-driven idempotently (reconcile-by-marker + memoized steps), so a
+   * resumed ripple never double-applies. Runs alongside the create recovery.
+   */
+  async function recoverUpdateRipples() {
+    let recovered = 0
+    let failed = 0
+    const seen = new Set<string>()
+    // Per-item isolation (mirrors the create-side runProjectControlRecovery): a
+    // single request that throws — a transient store blip or a poison-pill row —
+    // must never abort the sweep and starve every other recoverable request or
+    // the step-based discovery pass. Each drive() catches its own failure.
+    const drive = async (requestKey: string) => {
+      if (!requestKey || seen.has(requestKey)) return
+      seen.add(requestKey)
+      try {
+        const holder = `update-recovery:${requestKey}:${randomUUID()}`
+        const claim = await claimUpdateRequestFenced(requestKey, holder)
+        if (!claim.ok) return // a live worker owns it
+        await runUpdateRipple({ client: app.client, requestKey, preClaimed: true, leaseHolder: holder })
+        recovered++
+      } catch (err: any) {
+        failed++
+        console.warn(`[Bolt] update recovery: request ${requestKey} failed, continuing:`, err?.message)
+      }
+    }
+    try {
+      for (const r of await listRecoverableUpdateRequests()) await drive(r.request_key)
+      // Step-based discovery returns update_request_id (uuid); resolve each to its
+      // request_key (the text key drive()/claimUpdateRequestFenced filter on).
+      // SKIP a request already in a TERMINAL status: a request that went terminal
+      // via runUpdateRipple's early-return branches (project not-found / archived)
+      // returns before terminalizing its step rows, so a leftover incomplete step
+      // from a prior partial cycle would otherwise re-drive the cancelled request
+      // forever (re-posting ":no_entry: ... not applied" every sweep). The request-
+      // status recovery above already excludes these; the step path must too.
+      const TERMINAL_REQ_STATUSES = new Set(['cancelled', 'completed', 'needs_attention'])
+      for (const id of await listUpdateRequestsWithIncompleteSteps()) {
+        const row = await loadUpdateRequestById(id).catch(() => null)
+        if (row?.request_key && !TERMINAL_REQ_STATUSES.has(row.status)) await drive(row.request_key)
+      }
+    } catch (err: any) {
+      // Only the list queries themselves can reach here now (per-item throws are
+      // caught in drive()); a failed enumeration just retries next cron cycle.
+      console.warn('[Bolt] update recovery sweep enumeration failed:', err?.message)
+    }
+    if (failed > 0) console.warn(`[Bolt] update recovery: ${recovered} re-driven, ${failed} failed`)
+    return recovered
+  }
+
+  async function runProjectControlRecoverySweep() {
+    // Update-ripple recovery is INDEPENDENT of the create feature flag and the
+    // workbook config — the update flow runs regardless of either — so it must
+    // run BEFORE the create-recovery guards below, or a Railway restart mid-ripple
+    // would leave the update permanently stuck in the default configuration.
+    const updatesRecovered = await recoverUpdateRipples()
+
+    if (!projectControlCreationEnabled()) return { ran: false, reason: 'disabled' as const, updatesRecovered }
+    const config = workbookConfigFromEnv()
+    if (!config) return { ran: false, reason: 'workbook_not_configured' as const, updatesRecovered }
+
+    const createResult = await runProjectControlRecovery({
       listRecoverableRequests,
       // Step-based discovery: find requests that still own incomplete steps even
       // if the request row looks terminal (inconsistency safety net).
@@ -1309,6 +1856,7 @@ export function registerInteractionHandlers(app: App) {
       rebind: (b) => rebindIncompleteBinding(app.client, b.project_id, config),
       makeHolder: (rk) => `recovery:${rk}:${randomUUID()}`,
     })
+    return { ...createResult, updatesRecovered }
   }
 
   return { runProjectControlRecoverySweep }
@@ -1473,6 +2021,190 @@ function takePendingProvision(token: string): PendingProvision | null {
  * project number (the studio's unique key, encoded as the `{number}-{client}`
  * project_code). Null when there's no clash.
  */
+// ─── Update Project: data helpers ──────────────────────────
+
+/** Statuses a project can be edited from — never a provisioning-in-progress row
+ *  nor a decommissioned archived/cancelled one. Mirrors listEditableProjects. */
+const EDITABLE_PROJECT_STATUSES = ['active', 'partial', 'paused']
+
+function projectOptionLabel(row: { project_code?: string | null; client?: string | null; name?: string | null }): string {
+  // Regex extraction (not split('-')[0]) so a synced project's arbitrary Harvest
+  // code shows the real studio number in the picker, not a leading fragment.
+  const number = projectNumberFromCode(row.project_code) || ''
+  return [number, row.client, row.name].filter(Boolean).join(' — ') || (row.name || 'Untitled project')
+}
+
+/**
+ * Load the current values for the update modal + the external ids a rename needs
+ * (the Slack channel id and the current Dropbox folder path). Kit-owned fields
+ * are read from the projects row (Kit's mirror). NOTE: `clientContact` lives on
+ * the Master Project List, not the projects row, so it opens blank — a blank
+ * entry is a no-op (never clears the Sheet), and a typed one ripples.
+ */
+async function loadUpdateSnapshot(
+  projectId: string,
+  workspaceId: string,
+): Promise<{ status: string; snapshot: any; current: { slackChannelId?: string; dropboxPath?: string }; provisioned: { slack: boolean; frameio: boolean; harvest: boolean; dropbox: boolean } } | null> {
+  if (!projectId) return null
+  const sb = createAdminClient()
+  const { data, error } = await sb
+    .from('projects')
+    .select('id, name, client, project_code, project_type, status, start_date, target_delivery, brief_summary, budget_total, project_manager_slack_id, external_ids, external_links, slack_channel_id, harvest_project_id')
+    .eq('id', projectId)
+    .eq('workspace_id', workspaceId)
+    .maybeSingle()
+  // Distinguish a genuine not-found (null → caller decides) from a transient read
+  // error (throw → RETRYABLE). Never collapse a read blip to null: at ripple time
+  // a null spine would silently revert an untouched identity field to its stale
+  // open-time value and skip the editability re-check.
+  if (error) throw new Error(`loadUpdateSnapshot read failed: ${error.message}`)
+  {
+    if (!data) return null
+    const ext = (data as any).external_ids || {}
+    const links = (data as any).external_links || {}
+    // Fall back to a case-PRESERVING regex extraction, not split('-')[0]:
+    // external_ids.project_number is only backfilled at create time, so a synced
+    // (/kit sync-projects) or pre-existing project relies on this fallback — and its
+    // project_code may be an arbitrary Harvest code that doesn't lead with the number
+    // (or has a hyphenated one). split('-')[0] would truncate/misread it and poison
+    // the modal pre-fill + diff baseline; projectNumberFromCode pulls the studio
+    // number (3-4 digits + optional letter, casing intact — '2612B' stays '2612B')
+    // from anywhere in the string.
+    const projectNumber = ext.project_number || projectNumberFromCode(data.project_code) || ''
+    return {
+      status: (data as any).status,
+      snapshot: {
+        projectNumber,
+        clientName: (data as any).client || '',
+        clientContact: undefined,
+        projectName: (data as any).name || '',
+        projectType: (data as any).project_type || undefined,
+        projectManagerSlackId: (data as any).project_manager_slack_id || undefined,
+        creativeDirectorSlackId: ext.creative_director_slack_id || undefined,
+        startDate: (data as any).start_date || undefined,
+        targetDelivery: (data as any).target_delivery || undefined,
+        briefSummary: (data as any).brief_summary || undefined,
+        budgetTotal: (data as any).budget_total ?? null,
+      },
+      current: {
+        slackChannelId: links.slack_id || (data as any).slack_channel_id || undefined,
+        // external_links.dropbox_id stores the folder PATH (the dropbox agent's id).
+        dropboxPath: links.dropbox_id || undefined,
+        // Numeric Harvest id — the rename fallback for a sync-linked (marker-less) project.
+        harvestProjectId: links.harvest_id || (data as any).harvest_project_id || undefined,
+      },
+      // Which external services the project actually has — so an identity edit
+      // never dispatches a rename to a service it was created without (that would
+      // wedge it 'partial' forever).
+      provisioned: {
+        slack: !!(links.slack_id || (data as any).slack_channel_id),
+        frameio: !!links.frameio_id,
+        harvest: !!(links.harvest_id || (data as any).harvest_project_id),
+        dropbox: !!links.dropbox_id,
+      },
+    }
+  }
+}
+
+/** The workspace's editable projects (for the picker), newest first. */
+async function listEditableProjects(workspaceId: string): Promise<Array<{ id: string; label: string }>> {
+  if (!workspaceId) return []
+  try {
+    const sb = createAdminClient()
+    const { data } = await sb
+      .from('projects')
+      .select('id, name, client, project_code')
+      .eq('workspace_id', workspaceId)
+      .in('status', EDITABLE_PROJECT_STATUSES)
+      .order('created_at', { ascending: false })
+      .limit(100)
+    return (data || []).map((p: any) => ({ id: p.id, label: projectOptionLabel(p) }))
+  } catch (err: any) {
+    console.warn('[update] listEditableProjects failed:', err?.message)
+    return []
+  }
+}
+
+/** Infer the project bound to the Slack channel the flow was launched from. */
+async function findProjectByChannel(workspaceId: string, channelId: string): Promise<{ id: string; label: string } | null> {
+  if (!workspaceId || !channelId) return null
+  try {
+    const sb = createAdminClient()
+    const { data } = await sb
+      .from('projects')
+      .select('id, name, client, project_code, external_links, slack_channel_id, status')
+      .eq('workspace_id', workspaceId)
+      // Same three-key resolution order the other channel→project lookups use
+      // (messages.ts / brain/seed.ts / notes / participation / delivery), incl.
+      // the legacy external_links.slack_channel_id key for older/manual rows.
+      .or(`external_links->>slack_id.eq.${channelId},slack_channel_id.eq.${channelId},external_links->>slack_channel_id.eq.${channelId}`)
+      .not('status', 'in', '("archived","cancelled")')
+      .limit(1)
+      .maybeSingle()
+    if (!data) return null
+    return { id: (data as any).id, label: projectOptionLabel(data as any) }
+  } catch (err: any) {
+    console.warn('[update] findProjectByChannel failed:', err?.message)
+    return null
+  }
+}
+
+/** Build the threaded preview message with the field diff, side-effects, and the
+ *  confirm/cancel buttons (mirrors postProvisionDupPrompt). */
+function buildUpdatePreview(
+  channel: string,
+  threadTs: string | undefined,
+  snapshot: any,
+  form: any,
+  plan: any,
+  requestKey: string,
+  collision: { id: string; name: string } | null,
+): any {
+  const fmt = (v: string | null, isUser?: boolean) => (v == null ? '_(empty)_' : isUser ? `<@${v}>` : `\`${v}\``)
+  const lines = (plan.changes as any[]).map((c) => `• *${c.label}:* ${fmt(c.old, c.isUser)} → ${fmt(c.new, c.isUser)}`)
+
+  const effects: string[] = []
+  if (plan.services.slack) effects.push(':slack: Rename the Slack channel (topic/purpose refreshed; the channel id is unchanged)')
+  // Gate on services.dropbox (whether a move will actually run), not the raw
+  // string diff — a project without a Dropbox folder must not show a move warning.
+  if (plan.services.dropbox) effects.push(`:file_folder: *Move* the Dropbox folder → \`${plan.derived.dropboxSafeName?.new ?? ''}\` — uploads in progress may be interrupted`)
+  if (plan.services.frameio) effects.push(':clapper: Rename the Frame.io project')
+  if (plan.services.harvest) effects.push(':moneybag: Rename the Harvest project')
+  if (plan.services.sheet) effects.push(':bar_chart: Update the Master Project List row (the Canvas re-renders automatically)')
+
+  const blocks: any[] = [
+    { type: 'section', text: { type: 'mrkdwn', text: `:pencil2: *Review changes to ${snapshot.projectName}*\n${lines.join('\n')}` } },
+    { type: 'section', text: { type: 'mrkdwn', text: `*This will:*\n${(effects.length ? effects : ['Update Kit\'s records only']).map((e) => `• ${e}`).join('\n')}` } },
+  ]
+  if (collision) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `:warning: *Heads up:* project number \`${form.projectNumber}\` already belongs to *${collision.name}*. Applying will leave two active projects sharing that number.` } })
+  }
+  blocks.push({
+    type: 'actions',
+    elements: [
+      { type: 'button', style: 'primary', text: { type: 'plain_text', text: 'Apply update' }, action_id: 'kit_update_confirm', value: requestKey },
+      { type: 'button', text: { type: 'plain_text', text: 'Cancel' }, action_id: 'kit_update_cancel', value: requestKey },
+    ],
+  })
+  return { channel, ...(threadTs ? { thread_ts: threadTs } : {}), text: `Review changes to ${snapshot.projectName}`, blocks }
+}
+
+/**
+ * Resolve the update-project card for a given Slack context: infer the project
+ * from the channel when possible, otherwise offer a picker of editable projects.
+ * Exported so the /kit update command and the DM keyword can post it.
+ */
+export async function buildUpdateProjectCardForContext(opts: {
+  teamId: string
+  channelId: string
+  threadTs?: string
+}): Promise<any> {
+  const workspaceId = await resolveWorkspaceId(opts.teamId)
+  const inferred = await findProjectByChannel(workspaceId, opts.channelId)
+  const candidates = inferred ? [] : await listEditableProjects(workspaceId)
+  return buildUpdateProjectCard({ channelId: opts.channelId, threadTs: opts.threadTs, inferred, candidates })
+}
+
 async function findExistingProject(
   workspaceId: string,
   projectNumber: string,

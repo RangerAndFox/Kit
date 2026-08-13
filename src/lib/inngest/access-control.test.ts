@@ -142,7 +142,7 @@ describe('filterResultData — artist receives a name-only project record', () =
   }
 
   it('strips client / dates / brief / budget / contacts for artists', () => {
-    const filtered = filterResultData(fullProject, artist())!
+    const filtered = filterResultData(fullProject, artist()) as Record<string, unknown>
     assert.ok(!('client' in filtered))
     assert.ok(!('client_email' in filtered))
     assert.ok(!('primary_contacts' in filtered))
@@ -162,7 +162,7 @@ describe('filterResultData — artist receives a name-only project record', () =
   })
 
   it('leaves producer field-set intact for producers (sans admin-only)', () => {
-    const filtered = filterResultData(fullProject, producer())!
+    const filtered = filterResultData(fullProject, producer()) as Record<string, unknown>
     assert.equal(filtered.client, 'Foot Locker')
     assert.equal(filtered.budget_total, 50000)
     assert.equal(filtered.brief_summary, 'Hero sizzle for the new launch.')
@@ -172,13 +172,13 @@ describe('filterResultData — artist receives a name-only project record', () =
   })
 
   it('admins see everything', () => {
-    const filtered = filterResultData(fullProject, admin())!
+    const filtered = filterResultData(fullProject, admin())
     assert.deepEqual(filtered, fullProject)
   })
 
   it('recursively strips inside arrays (e.g. find_projects results)', () => {
     const list = { projects: [fullProject, { ...fullProject, id: 'p-2' }] }
-    const filtered = filterResultData(list, artist())!
+    const filtered = filterResultData(list, artist()) as Record<string, unknown>
     const projects = filtered.projects as any[]
     assert.equal(projects.length, 2)
     for (const p of projects) {
@@ -186,6 +186,25 @@ describe('filterResultData — artist receives a name-only project record', () =
       assert.ok(!('budget_total' in p))
       assert.equal(p.name, 'Sizzle')
     }
+  })
+
+  it('preserves a TOP-LEVEL array (list actions) while scrubbing each item', () => {
+    // delivery.list_profiles / harvest find_projects return data as a bare
+    // array. The old scrubber spread it into `{ ...data }`, turning it into an
+    // index-keyed object for every non-admin caller. Guard against regression.
+    const list = [fullProject, { ...fullProject, id: 'p-2' }]
+    const filtered = filterResultData(list, artist()) as Array<Record<string, unknown>>
+    assert.ok(Array.isArray(filtered), 'top-level array must stay an array')
+    assert.equal(filtered.length, 2)
+    for (const p of filtered) {
+      assert.ok(!('client' in p))
+      assert.ok(!('budget_total' in p))
+      assert.equal(p.name, 'Sizzle')
+    }
+    // Admins get the array back untouched.
+    const adminView = filterResultData(list, admin())
+    assert.ok(Array.isArray(adminView))
+    assert.deepEqual(adminView, list)
   })
 })
 

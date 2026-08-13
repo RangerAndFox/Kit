@@ -43,6 +43,8 @@ import { setThinking, clearThinking } from '../llm/status'
 import { stashIntake } from '../../../src/lib/storyboard/stash'
 import { projectNameFromFilename } from '../../../src/lib/storyboard/parser'
 import { buildNewProjectCard } from './newproject-card'
+import { isUpdateProjectTrigger } from './updateproject-card'
+import { buildUpdateProjectCardForContext } from './interactions'
 import {
   findOpenCheckin,
   handleCheckinReply,
@@ -320,6 +322,14 @@ export function registerMessageHandlers(app: App) {
       await app.client.chat.postMessage(
         buildNewProjectCard(channelId, assistantThreadTs),
       )
+      return
+    }
+
+    // ── Update-project keyword shortcut (DM only) ─────────
+    if (isDM && isUpdateProjectTrigger((msgEvent.text || '').trim())) {
+      const assistantThreadTs = dmThreadTs(msgEvent)
+      const card = await buildUpdateProjectCardForContext({ teamId, channelId, threadTs: assistantThreadTs })
+      await app.client.chat.postMessage(card)
       return
     }
 

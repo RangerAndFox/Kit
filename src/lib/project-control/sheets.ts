@@ -253,30 +253,18 @@ export interface CreateBoundRowResult {
 }
 
 /**
- * Atomically create/prepare the row, write only Kit-owned cells, and attach the
- * kit_project_id developer metadata — all in ONE spreadsheets.batchUpdate so a
- * partial write is impossible. Searches metadata first for idempotency.
+ * Build the per-cell `updateCells` batchUpdate requests for a set of owned cells
+ * at a row. Shared by createBoundRow and updateBoundRow so the date-vs-string
+ * handling and `fields` masks live in ONE place.
  *
- * `updateCells` with fields:'userEnteredValue' writes values without touching
- * cell formatting or data validation. Margin formula columns are never in
- * `ownedCells` (guaranteed by kitOwnedCreationCells).
+ * Date cells: write the serial number AND explicitly set a DATE number format in
+ * the same atomic request, so the value is a real date (never locale text).
+ * String cells: write value only (`fields:'userEnteredValue'` preserves the
+ * cell's existing format + validation).
  */
-export async function createBoundRow(
-  config: WorkbookConfig,
-  kitProjectId: string,
-  ownedCells: OwnedCell[],
-): Promise<CreateBoundRowResult> {
-  const existing = await searchRowMetadata(config.spreadsheetId, kitProjectId, config.sheetId)
-  if (existing) return { metadataId: existing.metadataId, rowIndex: existing.rowIndex, alreadyBound: true }
-
-  const rowIndex = await findNextEmptyRowIndex(config)
+function buildCellRequests(config: WorkbookConfig, rowIndex: number, ownedCells: OwnedCell[]): unknown[] {
   const colIndex = (col: string) => col.charCodeAt(0) - 'A'.charCodeAt(0)
-
-  // Date cells: write the serial number AND explicitly set a DATE number format
-  // in the same atomic request, so the value is a real date (never locale text).
-  // String cells: write value only (fields:'userEnteredValue' preserves the
-  // cell's existing format + validation).
-  const requests: unknown[] = ownedCells.map((cell) => {
+  return ownedCells.map((cell) => {
     const start = { sheetId: config.sheetId, rowIndex, columnIndex: colIndex(cell.column) }
     if (cell.kind === 'date' && typeof cell.serial === 'number') {
       return {
@@ -298,6 +286,28 @@ export async function createBoundRow(
       },
     }
   })
+}
+
+/**
+ * Atomically create/prepare the row, write only Kit-owned cells, and attach the
+ * kit_project_id developer metadata — all in ONE spreadsheets.batchUpdate so a
+ * partial write is impossible. Searches metadata first for idempotency.
+ *
+ * `updateCells` with fields:'userEnteredValue' writes values without touching
+ * cell formatting or data validation. Margin formula columns are never in
+ * `ownedCells` (guaranteed by kitOwnedCreationCells).
+ */
+export async function createBoundRow(
+  config: WorkbookConfig,
+  kitProjectId: string,
+  ownedCells: OwnedCell[],
+): Promise<CreateBoundRowResult> {
+  const existing = await searchRowMetadata(config.spreadsheetId, kitProjectId, config.sheetId)
+  if (existing) return { metadataId: existing.metadataId, rowIndex: existing.rowIndex, alreadyBound: true }
+
+  const rowIndex = await findNextEmptyRowIndex(config)
+
+  const requests: unknown[] = buildCellRequests(config, rowIndex, ownedCells)
   requests.push({
     createDeveloperMetadata: {
       developerMetadata: {
@@ -322,6 +332,39 @@ export async function createBoundRow(
   const metadataId = metaReply?.createDeveloperMetadata?.developerMetadata?.metadataId
   if (metadataId == null) throw new Error('createBoundRow: batchUpdate returned no developer metadata id')
   return { metadataId, rowIndex, alreadyBound: false }
+}
+
+export type UpdateBoundRowResult = { rowIndex: number } | { skipped: 'unbound' }
+
+/**
+ * Rewrite the Kit-owned cells of an ALREADY-bound row when a project is updated.
+ * Mirrors `createBoundRow`'s per-cell `updateCells` requests (same date/string
+ * handling, same `fields` masks that preserve formatting + validation) but:
+ *   - resolves the row via the durable developer metadata (never a row number);
+ *   - writes NO developer metadata (the binding already exists);
+ *   - returns `{ skipped: 'unbound' }` when the project has no bound row (e.g. it
+ *     was created with Project Control disabled) — the caller treats that as a
+ *     no-op, not a failure.
+ *
+ * Writing the full owned-cell set is idempotent; margin/formula columns are never
+ * included (guaranteed by kitOwnedCreationCells). The Master Project List stays
+ * authoritative and the Canvas re-renders from it via the existing sync.
+ */
+export async function updateBoundRow(
+  config: WorkbookConfig,
+  kitProjectId: string,
+  ownedCells: OwnedCell[],
+): Promise<UpdateBoundRowResult> {
+  const existing = await searchRowMetadata(config.spreadsheetId, kitProjectId, config.sheetId)
+  if (!existing) return { skipped: 'unbound' }
+  const rowIndex = existing.rowIndex
+
+  const requests: unknown[] = buildCellRequests(config, rowIndex, ownedCells)
+
+  if (requests.length > 0) {
+    await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests })
+  }
+  return { rowIndex }
 }
 
 // ─── Narrow single-column read / single-cell write (operator repair only) ─────

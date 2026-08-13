@@ -22,12 +22,22 @@
 import { createAdminClient } from '../supabase/admin'
 import { listProjects } from '../harvest/client'
 
-/** Extract the studio project number ("2630a", "2540b", "2611") from a code
- * or name. Prefers a clean code; lowercased. Null when there's no number. */
-export function projectNumberKey(s: string | null | undefined): string | null {
+/** Extract the studio project number ("2630A", "2540b", "2611") from a code or
+ * name, PRESERVING case. The uppercase letter suffix is significant (a documented
+ * studio convention, e.g. '2612B'), so this is the right form for a display or
+ * identity-derivation value. Null when there's no number. */
+export function projectNumberFromCode(s: string | null | undefined): string | null {
   if (!s) return null
   const m = String(s).match(/(\d{3,4}[a-z]?)/i)
-  return m ? m[1].toLowerCase() : null
+  return m ? m[1] : null
+}
+
+/** Case-INSENSITIVE project-number key ("2630a", "2540b", "2611") — for dedup /
+ * matching maps only. For a display or derivation value use projectNumberFromCode
+ * (this lowercases, which would corrupt an uppercase suffix like '2612B'). */
+export function projectNumberKey(s: string | null | undefined): string | null {
+  const n = projectNumberFromCode(s)
+  return n ? n.toLowerCase() : null
 }
 
 export interface ExistingRow {
