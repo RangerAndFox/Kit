@@ -44,10 +44,13 @@ export interface ProjectIdentifiers {
   frameioBusinessLabel: string
 }
 
-/** `${number}-${client}` with whitespace stripped from the client. Mirrors the
- *  create-side `projectCode` in interactions.ts. */
+/** `${number}-${client}` with whitespace stripped from the client and TRIMMED off
+ *  the number (plain_text_input never trims, and the preview shows the trimmed
+ *  value — so an untrimmed number here would write a value the user never
+ *  approved into projects.project_code and Harvest's live invoicing code).
+ *  Mirrors the create-side `projectCode` in interactions.ts. */
 export function deriveProjectCode(projectNumber: string, client: string): string {
-  return `${projectNumber}-${client.replace(/\s+/g, '')}`
+  return `${String(projectNumber ?? '').trim()}-${client.replace(/\s+/g, '')}`
 }
 
 /** `{number}_{client}_{name}` sanitized. Mirrors the Dropbox agent's `safeName`

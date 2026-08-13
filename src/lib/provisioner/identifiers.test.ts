@@ -25,7 +25,7 @@ import {
 
 // interactions.ts: `${form.projectNumber}-${form.clientName.replace(/\s+/g, '')}`
 function oracleProjectCode(projectNumber: string, clientName: string): string {
-  return `${projectNumber}-${clientName.replace(/\s+/g, '')}`
+  return `${String(projectNumber ?? '').trim()}-${clientName.replace(/\s+/g, '')}`
 }
 
 // interactions.ts / dropbox.ts safeName
@@ -78,6 +78,13 @@ describe('deriveProjectCode parity', () => {
       assert.equal(deriveProjectCode(t.projectNumber, t.client), oracleProjectCode(t.projectNumber, t.client))
     })
   }
+
+  it('trims the number too (a stray space must not reach Harvest\'s invoicing code)', () => {
+    // plain_text_input never trims and the preview shows the trimmed value, so an
+    // untrimmed number would write a code the producer never approved.
+    assert.equal(deriveProjectCode(' 2602', 'Nike'), '2602-Nike')
+    assert.equal(deriveProjectCode('2602 ', 'Coca Cola'), '2602-CocaCola')
+  })
 })
 
 describe('deriveDropboxSafeName parity', () => {
