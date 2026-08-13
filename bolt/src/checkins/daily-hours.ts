@@ -15,6 +15,7 @@
 import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { checkinToday, checkinTimezone, isWorkday } from './date'
+import { isOnTimeOff } from '../../../src/lib/staff/time-off'
 import { resolveUserTimezone } from './user-tz'
 import type { ActiveChannel } from './slack-activity'
 
@@ -130,6 +131,19 @@ export async function sendDailyCheckin(opts: {
 
   if (!staff.harvest_user_id) {
     return { status: 'skipped', reason: 'no harvest_user_id mapping' }
+  }
+
+  // On PTO/sick/leave: no check-in. Without this, someone on a week's vacation
+  // got a DM every evening and their unanswered check-ins piled up looking like
+  // a Kit failure. A lookup error is NOT treated as "not on PTO" — it would
+  // resurrect exactly that nagging — so it skips this cycle and retries next.
+  try {
+    if (await isOnTimeOff({ staffId: staff.id, date: today })) {
+      return { status: 'skipped', reason: 'time off' }
+    }
+  } catch (err: any) {
+    console.warn(`[daily-hours] time-off check failed for ${staff.slack_user_id}: ${err.message}`)
+    return { status: 'skipped', reason: `time-off lookup failed: ${err.message}` }
   }
 
   // Open a DM channel and post the message. (No suggested-projects list —
