@@ -7,6 +7,7 @@
 
 import TurndownService from 'turndown'
 import { gfm } from 'turndown-plugin-gfm'
+import { deriveSlackSlug } from '../provisioner/identifiers'
 
 const SLACK_API = 'https://slack.com/api'
 
@@ -395,16 +396,14 @@ export async function createProjectSlackChannel(opts: {
   // crash after conversations.create is reconciled by exact name (no second
   // channel), and an unrelated readable-name collision (same base, no suffix)
   // can never be adopted — it simply has a different name.
-  const shortId = String(projectId).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toLowerCase()
-  const base = [projectNumber, client, projectName]
-    .filter((part) => part && String(part).trim())
-    .join('-')
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 80 - (shortId.length + 1))
-  const slug = shortId ? `${base}-${shortId}` : base
+  // Shared derivation (see identifiers.ts) so the update flow's channel rename
+  // targets the exact same slug this create path produced.
+  const { slackSlug: slug } = deriveSlackSlug({
+    projectId,
+    projectNumber: projectNumber || '',
+    client,
+    projectName,
+  })
 
   // Try to create the channel
   let channelId: string
@@ -481,6 +480,114 @@ export async function createProjectSlackChannel(opts: {
     channel: channelId,
     text: lines.join('\n'),
   }).catch(() => {}) // non-critical
+
+  return {
+    channelId,
+    channelName,
+    url: `https://slack.com/app_redirect?channel=${channelId}`,
+  }
+}
+
+/**
+ * Thrown when a channel rename cannot safely proceed (the target channel is not
+ * Kit-owned for this project). PERMANENT — the caller marks the step terminal so
+ * it is never silently "succeeded" or blindly retried against the wrong channel.
+ */
+export class SlackRenameTerminalError extends Error {}
+
+/**
+ * Rename an existing project channel when the project is updated. The channel id
+ * NEVER changes (saved links/ids stay valid); only the slug + topic/purpose text
+ * move. Reconciles by the embedded Kit marker in the channel purpose FIRST and
+ * refuses to touch a channel that isn't Kit-owned for this project. Idempotent:
+ * if the channel is already at the target name, the rename is skipped.
+ */
+export async function renameProjectSlackChannel(opts: {
+  projectId: string
+  channelId: string
+  projectName: string
+  client: string
+  /** Project ID (e.g. "2655") — part of the deterministic slug spine. */
+  projectNumber?: string
+}): Promise<SlackChannelResult> {
+  if (!process.env.SLACK_BOT_TOKEN) {
+    throw new Error('SLACK_BOT_TOKEN not configured — cannot rename channel')
+  }
+  const { projectId, channelId, projectName, client, projectNumber } = opts
+  if (!channelId) throw new Error('renameProjectSlackChannel: channelId is required')
+  if (!projectName || !projectName.trim() || !client || !client.trim()) {
+    throw new Error('renameProjectSlackChannel: client and projectName are required')
+  }
+
+  // Read the channel and verify Kit ownership BEFORE any mutation — never rename
+  // a channel that isn't this project's.
+  const info = await slackGet('conversations.info', { channel: channelId })
+  const marker = kitChannelMarker(projectId)
+  const purpose: string = info.channel?.purpose?.value || ''
+  const currentName: string = info.channel?.name || ''
+
+  const { slackSlug: target, slackShortId } = deriveSlackSlug({
+    projectId,
+    projectNumber: projectNumber || '',
+    client,
+    projectName,
+  })
+
+  // Ownership is proven by EITHER signal. The purpose marker is primary, but it's
+  // written via a best-effort (swallowed) setPurpose at create time and can be
+  // absent after a transient failure. The deterministic channel NAME embeds a
+  // stable short id derived from the project id — create's true reconciliation
+  // identity — so a name whose suffix matches is equally proof of ownership. The
+  // setPurpose call below backfills the marker, so this self-heals.
+  const ownedByMarker = purpose.includes(marker)
+  const ownedByName = !!slackShortId && (currentName === slackShortId || currentName.endsWith(`-${slackShortId}`))
+  if (!ownedByMarker && !ownedByName) {
+    throw new SlackRenameTerminalError(
+      `channel ${channelId} is not Kit-owned for ${projectId} (no purpose marker, name suffix mismatch); refusing to rename`,
+    )
+  }
+
+  let channelName = currentName
+  if (currentName !== target) {
+    try {
+      const renamed = await slackPost('conversations.rename', { channel: channelId, name: target })
+      channelName = renamed.channel?.name || target
+    } catch (err: any) {
+      // name_taken: if the taker is THIS channel (a prior attempt already renamed
+      // it), treat as done; otherwise surface as a real failure.
+      if (err.message?.includes('name_taken')) {
+        const owned = await findOwnedChannelByName(target, projectId)
+        if (owned === channelId) {
+          channelName = target
+        } else if (owned) {
+          // We POSITIVELY identified a DIFFERENT channel holding the target name.
+          // The target slug is deterministic, so retrying can never succeed —
+          // terminal, matching Dropbox's move conflict and Frame.io/Harvest's
+          // ambiguous-marker cases. (A null `owned` is NOT terminal: it means we
+          // could not tell — the name may belong to a private channel, which
+          // conversations.list can't see, or the list read itself failed — so it
+          // stays retryable rather than wedging on an unknown.)
+          throw new SlackRenameTerminalError(
+            `channel name ${target} is taken by a different channel (${owned}); refusing to rename ${channelId}`,
+          )
+        } else {
+          throw err
+        }
+      } else {
+        throw err
+      }
+    }
+  }
+
+  // Refresh the human-facing purpose/topic text (marker preserved). Non-critical.
+  await slackPost('conversations.setPurpose', {
+    channel: channelId,
+    purpose: `${client} — ${projectName} ${marker}`,
+  }).catch(() => {})
+  await slackPost('conversations.setTopic', {
+    channel: channelId,
+    topic: `${client} — ${projectName}`,
+  }).catch(() => {})
 
   return {
     channelId,

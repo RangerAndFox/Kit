@@ -21,6 +21,7 @@ import type { OnboardingProject } from './types'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { searchProjects as harvestSearchProjects } from '../../../src/lib/harvest/client'
 import { dropboxHeaders } from '../../../src/lib/dropbox/client'
+import { frameioProjectUrl } from '../../../src/lib/frameio/url'
 
 interface RehydrateResult {
   discovered: string[]
@@ -161,7 +162,7 @@ export async function rehydrateProjectExternalLinks(opts: {
 
   // ── Frame.io URL (derived) ───────────────────────────────
   if (!links.frameio_url && links.frameio_id) {
-    links.frameio_url = `https://next.frame.io/project/${links.frameio_id}`
+    links.frameio_url = frameioProjectUrl(links.frameio_id)
     discovered.push('frameio_url')
   }
 

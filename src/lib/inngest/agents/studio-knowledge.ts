@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Studio Knowledge agent — answers questions about the studio's project
  * history, contacts, budgets, and freeform notes via semantic RAG search

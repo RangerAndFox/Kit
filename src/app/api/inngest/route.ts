@@ -7,7 +7,9 @@ import { studioKnowledgeAutoSummarize } from '@/lib/inngest/studio-knowledge-cro
 import { brainDeadlineSweep, brainScavengerScan, brainConsolidate } from '@/lib/inngest/brain-crons'
 import { driveTranscriptScan } from '@/lib/inngest/drive-transcripts'
 import { healthWatchdog } from '@/lib/inngest/health-cron'
-import { projectControlSync } from '@/lib/inngest/project-control-sync'
+import { healthDailyDigest } from '@/lib/inngest/health-digest'
+import { projectControlSync, projectControlSyncOnEdit } from '@/lib/inngest/project-control-sync'
+import { selectRegisteredFunctions } from '@/lib/inngest/registration'
 
 /**
  * Inngest API route.
@@ -18,6 +20,12 @@ import { projectControlSync } from '@/lib/inngest/project-control-sync'
  *   - Health checks
  *
  * All Kit Inngest functions are registered here.
+ *
+ * WHICH deployments may register them is decided by selectRegisteredFunctions
+ * (see `@/lib/inngest/registration`): a Vercel Preview deployment registers
+ * ZERO functions unless it sets KIT_INNGEST_ALLOW_PREVIEW=true, so preview code
+ * can never be scheduled against the production Inngest environment. Production
+ * and local development are unaffected.
  */
 
 // Own the serverless execution limit for this route rather than inheriting an
@@ -28,22 +36,34 @@ import { projectControlSync } from '@/lib/inngest/project-control-sync'
 // (mcp, slack/events = 60).
 export const maxDuration = 60
 
+export const inngestFunctions = [
+  preMeetingScan,
+  preMeetingDispatch,
+  deliveryDropboxScan,
+  deliverySpecsScan,
+  deliveryJobNotifier,
+  deliveryStaleSweep,
+  studioKnowledgeAutoSummarize,
+  brainDeadlineSweep,
+  brainScavengerScan,
+  brainConsolidate,
+  driveTranscriptScan,
+  healthWatchdog,
+  healthDailyDigest,
+  projectControlSync,
+  // Event-driven Project Control refresh — same canonical core as the cron.
+  // Inside the guarded list, so a Vercel Preview deployment registers it as
+  // ZERO functions too (never scheduled against the production environment).
+  projectControlSyncOnEdit,
+  // Add new functions here as agents are built
+]
+
+// The EXACT list serve() registers: the one canonical list run through the
+// fail-closed #119 boundary. Exported (alongside the canonical list) purely so
+// tests can assert the wiring structurally — never a second/raw list.
+export const registeredFunctions = selectRegisteredFunctions(inngestFunctions)
+
 export const { GET, POST, PUT } = serve({
   client: inngest,
-  functions: [
-    preMeetingScan,
-    preMeetingDispatch,
-    deliveryDropboxScan,
-    deliverySpecsScan,
-    deliveryJobNotifier,
-    deliveryStaleSweep,
-    studioKnowledgeAutoSummarize,
-    brainDeadlineSweep,
-    brainScavengerScan,
-    brainConsolidate,
-    driveTranscriptScan,
-    healthWatchdog,
-    projectControlSync,
-    // Add new functions here as agents are built
-  ],
+  functions: registeredFunctions,
 })

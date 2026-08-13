@@ -135,6 +135,10 @@ export function sourceRowHash(row: NormalizedRow): string {
 export interface CreationSubmission {
   projectNumber?: string
   clientName?: string
+  /** The producer-entered client contact — written verbatim to the Sheet's
+   *  "Client Contact" column (col C). Never inferred from the client name.
+   *  Optional: absent for pre-field persisted submissions and blank entries. */
+  clientContact?: string
   projectName?: string
   initialStatus?: string
   startDate?: string
@@ -189,6 +193,7 @@ export function kitOwnedCreationCells(sub: CreationSubmission): OwnedCell[] {
   const map: Array<[MasterHeader, string | undefined]> = [
     ['Project Number', sub.projectNumber],
     ['Client', sub.clientName],
+    ['Client Contact', sub.clientContact],
     ['Project Name', sub.projectName],
     ['Status', sub.initialStatus],
     ['Start Date', sub.startDate],

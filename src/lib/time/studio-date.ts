@@ -24,6 +24,16 @@ export function studioToday(now: Date = new Date(), tz: string = studioTimezone(
   }).format(now)
 }
 
+/** A short human date label in the studio timezone, e.g. "Tue Aug 12". */
+export function studioDateLabel(now: Date = new Date(), tz: string = studioTimezone()): string {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  }).format(now)
+}
+
 /**
  * N days before today (YYYY-MM-DD), anchored to the studio timezone's
  * calendar date so DST shifts can't drift the result.

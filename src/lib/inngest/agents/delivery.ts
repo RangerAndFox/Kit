@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Delivery agent — exposes the delivery pipeline as a Kit Agent (MCP-discoverable).
  *

@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest'
 import { parseRoleIntent } from '../src/roles/keyword'
 import { parseFrameioToggleIntent } from '../src/delivery/frameio-toggle'
 import { looksLikeHoursIntent } from '../src/checkins/adhoc'
+import { isUpdateProjectTrigger } from '../src/handlers/updateproject-card'
 
 describe('looksLikeHoursIntent (ad-hoc hours pre-filter)', () => {
   it('matches hour phrasings', () => {
@@ -91,5 +92,23 @@ describe('parseFrameioToggleIntent (anchor tightening)', () => {
 
   it('still ignores frame-rate/keyframe noise', () => {
     expect(parseFrameioToggleIntent('set the frame rate to 24 and stop the upload')).toBeNull()
+  })
+})
+
+describe('isUpdateProjectTrigger (end-anchored + length-capped, like its siblings)', () => {
+  it('fires on the short, strict intents', () => {
+    for (const t of ['update project', 'edit project', '/update project', 'update project please', 'Update Project.']) {
+      expect(isUpdateProjectTrigger(t)).toBe(true)
+    }
+  })
+
+  it('does NOT hijack a long conversational message (leaves it for the orchestrator)', () => {
+    expect(isUpdateProjectTrigger('update project 2601s deadline to next Friday and rename it to Nike Fall')).toBe(false)
+    expect(isUpdateProjectTrigger('edit project channels are getting noisy, can you mute them?')).toBe(false)
+  })
+
+  it('ignores unrelated / empty text', () => {
+    expect(isUpdateProjectTrigger('new project')).toBe(false)
+    expect(isUpdateProjectTrigger('')).toBe(false)
   })
 })

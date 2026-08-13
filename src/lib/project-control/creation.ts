@@ -54,7 +54,7 @@ import {
 } from './store'
 
 export interface CreationSheetsPort {
-  searchRowMetadata(spreadsheetId: string, kitProjectId: string): Promise<{ metadataId: number; rowIndex: number } | null>
+  searchRowMetadata(spreadsheetId: string, kitProjectId: string, sheetId: number): Promise<{ metadataId: number; rowIndex: number; sheetId: number } | null>
   readRow(config: WorkbookConfig, rowIndex: number): Promise<SheetCell[]>
   createBoundRow(
     config: WorkbookConfig,
@@ -216,8 +216,10 @@ export async function bindProjectControl(
 
     // ── Step 3: render from the authoritative row + create/reconcile canvas ──
     if (rowIndex == null) {
-      // Resuming without the just-created index — re-derive from metadata.
-      const m = await deps.sheets.searchRowMetadata(config.spreadsheetId, opts.projectId)
+      // Resuming without the just-created index — re-derive from metadata on the
+      // CONFIGURED sheet (a match on another tab throws → bind_failed, never a
+      // wrong-tab row index).
+      const m = await deps.sheets.searchRowMetadata(config.spreadsheetId, opts.projectId, config.sheetId)
       rowIndex = m?.rowIndex
     }
     if (rowIndex == null) {
