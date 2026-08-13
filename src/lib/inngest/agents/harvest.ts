@@ -9,7 +9,9 @@
 import {
   findOrCreateClient,
   createHarvestProject,
-  findHarvestProjectByKitId,
+  updateHarvestProject,
+  findHarvestProjectsByKitId,
+  getHarvestProjectById,
   assignDefaultTasks,
   assignAllUsersToProject,
   listProjects,
@@ -38,7 +40,13 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
     // created a Harvest project (e.g. a prior attempt crashed before the step
     // ledger was updated), reuse it instead of creating a duplicate. Only create
     // when absence is proven.
-    const existing = kitProjectId ? await findHarvestProjectByKitId(kitProjectId) : null
+    const kitMatches = kitProjectId ? await findHarvestProjectsByKitId(kitProjectId) : []
+    if (kitMatches.length > 1) {
+      // Marker collision (e.g. Harvest's 'Duplicate project' copied the notes/
+      // marker) — reusing an arbitrary one would set up tasks on the wrong project.
+      return { agent: 'harvest', action: 'provision', success: false, terminal: true, error: `ambiguous_harvest_projects: ${kitMatches.map((m) => m.id).join(',')} share kit marker` }
+    }
+    const existing = kitMatches[0] || null
     let project: HarvestProject & { task_assignments: HarvestProjectTask[] }
     if (existing) {
       // Complete follow-up setup idempotently against the reused project.
@@ -85,6 +93,78 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
     }
   } catch (err: any) {
     return { agent: 'harvest', action: 'provision', success: false, error: err.message }
+  }
+}
+
+async function rename(payload: Record<string, unknown>): Promise<AgentResult> {
+  try {
+    const kitProjectId = (payload.projectId as string) || ''
+    if (!kitProjectId) {
+      // Without the Kit id we cannot reconcile the right project — fail
+      // permanently rather than rename by business name (duplicates collide).
+      return { agent: 'harvest', action: 'rename', success: false, terminal: true, error: 'rename needs projectId (Kit id) to reconcile the Harvest project' }
+    }
+    // Reconcile by the embedded Kit marker FIRST (never by business name). A
+    // missing project is a PERMANENT failure — creating one here would be wrong.
+    // A marker COLLISION (2+ projects share it — Harvest's 'Duplicate project'
+    // copies the notes/marker verbatim) is also terminal: guessing would rename an
+    // arbitrary project. Mirrors Frame.io's reconciler.
+    const matches = await findHarvestProjectsByKitId(kitProjectId)
+    if (matches.length > 1) {
+      return { agent: 'harvest', action: 'rename', success: false, terminal: true, error: `ambiguous_harvest_projects: ${matches.map((m) => m.id).join(',')} share kit marker` }
+    }
+    // Fall back to the known numeric harvest id when reconcile-by-marker finds
+    // nothing: a project LINKED via /kit sync-projects has a harvest_project_id but
+    // no Kit marker in its notes, so the marker search returns 0. Kit still knows
+    // exactly which project to rename. (Mirrors Slack's name-suffix fallback.)
+    const harvestId = Number(payload.harvestProjectId) || 0
+    const existing = matches[0] || (harvestId ? await getHarvestProjectById(harvestId) : null)
+    if (!existing) {
+      return { agent: 'harvest', action: 'rename', success: false, terminal: true, error: `No Harvest project found for ${kitProjectId} (no Kit marker match and no resolvable harvest_project_id); nothing to rename` }
+    }
+    const name = (payload.projectName as string) || undefined
+    const code = (payload.projectCode as string) || undefined
+    const client = (payload.client as string) || (payload.clientName as string) || ''
+    const nameChanged = name !== undefined && existing.name !== name
+    // Only rewrite the Harvest CODE when the diff actually touched number/client
+    // (payload.codeChanged, set diff-scoped by the executor). Kit derives
+    // `{number}-{client}` unconditionally, but a synced project's real code has a
+    // different provenance, so a blind `existing.code !== code` string diff would
+    // rewrite the invoicing code on an unrelated (e.g. name-only) edit.
+    const codeChanged = payload.codeChanged === true && code !== undefined && existing.code !== code
+    // Re-parent to the new Harvest client ONLY when the diff actually touched the
+    // Client field (payload.clientChanged, set diff-scoped by the executor) AND the
+    // value differs. Without the diff-scope gate, a name/number-only edit on a
+    // project whose Kit-cached client diverges from Harvest's real client (a synced
+    // project, or a client renamed directly in Harvest) would findOrCreateClient a
+    // DUPLICATE and silently re-parent budgets/reporting.
+    const clientChanged =
+      payload.clientChanged === true && !!client && (existing.client?.name || '').toLowerCase() !== client.toLowerCase()
+    let clientId: number | undefined
+    if (clientChanged) {
+      clientId = (await findOrCreateClient(client)).id
+    }
+    // Idempotent resume: if already at target, skip the PATCH.
+    const project = nameChanged || codeChanged || clientChanged
+      ? await updateHarvestProject({
+          projectId: existing.id,
+          ...(nameChanged ? { name } : {}),
+          ...(codeChanged ? { code } : {}),
+          ...(clientId !== undefined ? { clientId } : {}),
+        })
+      : existing
+    return {
+      agent: 'harvest',
+      action: 'rename',
+      success: true,
+      url: `https://rangerandfox.harvestapp.com/projects/${project.id}`,
+      id: String(project.id),
+      message: nameChanged || codeChanged
+        ? `Renamed Harvest project to "${project.name}"${project.code ? ` (${project.code})` : ''}`
+        : 'Harvest project already up to date',
+    }
+  } catch (err: any) {
+    return { agent: 'harvest', action: 'rename', success: false, error: err.message }
   }
 }
 
@@ -330,6 +410,12 @@ export const harvestAgent: AgentDefinition = {
       mutates: true,
     },
     {
+      action: 'rename',
+      description: 'Rename an existing Harvest project (name/code) when a project is updated. Reconciles by the embedded Kit marker; budget is never changed.',
+      inputDescription: 'projectId (required, Kit id), projectName (new name), projectCode (new code, e.g. "2654-Microsoft")',
+      mutates: true,
+    },
+    {
       action: 'log_time',
       description: 'Log a time entry for a team member on a project. Supports natural project names ("NRG", "Nike campaign") and auto-resolves the right task.',
       inputDescription:
@@ -364,6 +450,8 @@ export const harvestAgent: AgentDefinition = {
     switch (action) {
       case 'provision':
         return provision(payload)
+      case 'rename':
+        return rename(payload)
       case 'log_time':
         return logTime(payload)
       case 'get_budget':

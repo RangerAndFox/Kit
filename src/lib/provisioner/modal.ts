@@ -14,6 +14,15 @@ const SERVICE_LABELS: Record<string, string> = {
   dropbox: 'Dropbox — project folder',
 }
 
+const PROJECT_TYPE_OPTIONS = [
+  'Brand Video',
+  'Motion Graphics',
+  'Social Campaign',
+  'Explainer',
+  'Broadcast',
+  'Other',
+]
+
 export function buildNewProjectModal(
   channelId: string,
   availableServices: string[] = ['slack', 'frameio', 'harvest', 'dropbox'],
@@ -77,14 +86,7 @@ export function buildNewProjectModal(
           type: 'static_select',
           action_id: 'val',
           placeholder: { type: 'plain_text', text: 'Select type' },
-          options: [
-            { text: { type: 'plain_text', text: 'Brand Video' }, value: 'Brand Video' },
-            { text: { type: 'plain_text', text: 'Motion Graphics' }, value: 'Motion Graphics' },
-            { text: { type: 'plain_text', text: 'Social Campaign' }, value: 'Social Campaign' },
-            { text: { type: 'plain_text', text: 'Explainer' }, value: 'Explainer' },
-            { text: { type: 'plain_text', text: 'Broadcast' }, value: 'Broadcast' },
-            { text: { type: 'plain_text', text: 'Other' }, value: 'Other' },
-          ],
+          options: PROJECT_TYPE_OPTIONS.map((t) => ({ text: { type: 'plain_text', text: t }, value: t })),
         },
       },
       {
@@ -146,6 +148,175 @@ export function buildNewProjectModal(
           {
             type: 'mrkdwn',
             text: ':sparkles: Uncheck anything you don\'t need. Hit *Create Project* to provision.',
+          },
+        ],
+      },
+    ],
+  }
+}
+
+/** The current values used to pre-fill the update modal (Kit-owned fields come
+ *  from the authoritative Master Project List row; the rest from the projects
+ *  row). Every field is optional so a partially-populated project still opens. */
+export interface UpdateProjectSnapshot {
+  projectNumber?: string
+  clientName?: string
+  clientContact?: string
+  projectName?: string
+  projectType?: string
+  projectManagerSlackId?: string
+  creativeDirectorSlackId?: string
+  startDate?: string
+  targetDelivery?: string
+  briefSummary?: string
+  /** Shown read-only — Harvest budgets are fixed at creation. */
+  budgetTotal?: number | null
+}
+
+const plain = (v: string | undefined | null) => (v && String(v).trim() ? String(v) : undefined)
+const isoDate = (v: string | undefined | null) =>
+  v && /^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? String(v) : undefined
+
+/**
+ * Builds the PRE-FILLED "Update Project" modal — the same field block_ids as the
+ * create modal (so the submit-extraction code is shared) with each field's
+ * initial value populated from the current project. `budget`, `services`, and
+ * `team_members` are intentionally omitted (budget is immutable, services are
+ * already provisioned, team membership isn't tracked on the row).
+ *
+ * private_metadata carries the project id + workspace so the submit handler and
+ * the confirm button can rehydrate without a picker round-trip.
+ */
+export function buildUpdateProjectModal(opts: {
+  projectId: string
+  workspaceId: string
+  channelId: string
+  threadTs?: string
+  snapshot: UpdateProjectSnapshot
+}) {
+  const s = opts.snapshot
+  const typeInitial = s.projectType && PROJECT_TYPE_OPTIONS.includes(s.projectType) ? s.projectType : undefined
+  const opt = (text: string) => ({ text: { type: 'plain_text' as const, text }, value: text })
+
+  const textInput = (
+    block_id: string,
+    label: string,
+    value: string | undefined,
+    extra: Record<string, unknown> = {},
+    optional = false,
+  ) => ({
+    type: 'input',
+    block_id,
+    ...(optional ? { optional: true } : {}),
+    label: { type: 'plain_text', text: label },
+    element: {
+      type: 'plain_text_input',
+      action_id: 'val',
+      ...(plain(value) ? { initial_value: plain(value) } : {}),
+      ...extra,
+    },
+  })
+
+  const userSelect = (block_id: string, label: string, user: string | undefined, optional = false) => ({
+    type: 'input',
+    block_id,
+    ...(optional ? { optional: true } : {}),
+    label: { type: 'plain_text', text: label },
+    element: {
+      type: 'users_select',
+      action_id: 'val',
+      ...(plain(user) ? { initial_user: plain(user) } : {}),
+      placeholder: { type: 'plain_text', text: 'Select' },
+    },
+  })
+
+  const dateInput = (block_id: string, label: string, value: string | undefined) => ({
+    type: 'input',
+    block_id,
+    optional: true,
+    label: { type: 'plain_text', text: label },
+    element: {
+      type: 'datepicker',
+      action_id: 'val',
+      ...(isoDate(value) ? { initial_date: isoDate(value) } : {}),
+    },
+  })
+
+  return {
+    type: 'modal' as const,
+    callback_id: 'kit_update_project',
+    // Embed the OPEN-TIME snapshot so the submit handler diffs against what the
+    // user was actually shown — not a fresh DB read, which would flag (and then
+    // revert) any field a concurrent edit changed while this modal sat open.
+    private_metadata: JSON.stringify({
+      project_id: opts.projectId,
+      workspace_id: opts.workspaceId,
+      channel_id: opts.channelId,
+      thread_ts: opts.threadTs || '',
+      snap: {
+        projectNumber: s.projectNumber,
+        clientName: s.clientName,
+        clientContact: s.clientContact,
+        projectName: s.projectName,
+        projectType: s.projectType,
+        projectManagerSlackId: s.projectManagerSlackId,
+        creativeDirectorSlackId: s.creativeDirectorSlackId,
+        startDate: s.startDate,
+        targetDelivery: s.targetDelivery,
+        briefSummary: s.briefSummary,
+      },
+    }),
+    title: { type: 'plain_text' as const, text: 'Update Project' },
+    submit: { type: 'plain_text' as const, text: 'Review changes' },
+    close: { type: 'plain_text' as const, text: 'Cancel' },
+    blocks: [
+      {
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: ':pencil2: Edit any field. The next step previews exactly what will change across Slack, Dropbox, Harvest, Frame.io, and the Master Project List before anything is applied.' }],
+      },
+      // Optional, like Client: a synced/pre-existing project can have an empty
+      // project number (its Harvest code may be null or carry no extractable
+      // number), and a required field with no value would block ANY edit. A blank
+      // is coerced to the current value in computeUpdatePlan (never a clear).
+      textInput('project_number', 'Project ID', s.projectNumber, {}, true),
+      // Optional: a Harvest-synced project can have a NULL client (project-sync
+      // inserts `client: hp.client?.name ?? null`), and a required field with no
+      // value would block any unrelated edit. An unchanged blank stays a no-op;
+      // filling it in rings through as a real client change.
+      textInput('client_name', 'Client', s.clientName, {}, true),
+      textInput('client_contact', 'Client Contact', s.clientContact, {}, true),
+      textInput('project_name', 'Project Name', s.projectName),
+      {
+        type: 'input',
+        block_id: 'project_type',
+        // Optional like every other non-identity field: a Harvest-synced project
+        // (project_type NULL) or a legacy non-canonical type has no initial_option,
+        // and a required select with nothing pre-selected would block Slack from
+        // accepting ANY edit (e.g. a deadline fix) until a type is forced.
+        optional: true,
+        label: { type: 'plain_text', text: 'Project Type' },
+        element: {
+          type: 'static_select',
+          action_id: 'val',
+          placeholder: { type: 'plain_text', text: 'Select type' },
+          ...(typeInitial ? { initial_option: opt(typeInitial) } : {}),
+          options: PROJECT_TYPE_OPTIONS.map(opt),
+        },
+      },
+      userSelect('project_manager', 'Producer', s.projectManagerSlackId, true),
+      userSelect('creative_director', 'Creative Director', s.creativeDirectorSlackId, true),
+      dateInput('start_date', 'Start Date', s.startDate),
+      dateInput('deadline', 'Deadline', s.targetDelivery),
+      textInput('description', 'Brief Description', s.briefSummary, { multiline: true, max_length: 1000 }, true),
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text:
+              typeof s.budgetTotal === 'number'
+                ? `:lock: *Budget:* ${s.budgetTotal} hours — Harvest budgets are fixed at creation and can't be changed here.`
+                : ':lock: Harvest budget is fixed at creation and can\'t be changed here.',
           },
         ],
       },

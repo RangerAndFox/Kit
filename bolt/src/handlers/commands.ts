@@ -16,6 +16,7 @@ import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
 import { stashIntake } from '../../../src/lib/storyboard/stash'
 import { dispatch } from '../../../src/lib/inngest/agents/registry'
 import { buildNewProjectCard } from './newproject-card'
+import { buildUpdateProjectCardForContext } from './interactions'
 import { buildOnboardModal } from '../onboarding/modal'
 import { canOnboard } from '../onboarding/permissions'
 import { handleNoteMessage } from '../notes/handler'
@@ -73,6 +74,29 @@ export function registerCommandHandlers(app: App) {
           await respond({
             response_type: 'ephemeral',
             text: `Couldn't post the new-project card: ${err.data?.error || err.message}`,
+          })
+        }
+        break
+      }
+
+      // ── Update Project ──────────────────────────────────────
+      case 'update':
+      case 'edit': {
+        await ack()
+        // Post the update card: it infers the project from the channel when
+        // possible, otherwise offers a picker. The button/select then opens the
+        // pre-filled modal with a fresh trigger_id.
+        try {
+          const card = await buildUpdateProjectCardForContext({
+            teamId: command.team_id,
+            channelId: command.channel_id,
+          })
+          await client.chat.postMessage(card)
+        } catch (err: any) {
+          console.error('[Bolt] update card post failed:', err.data?.error || err.message)
+          await respond({
+            response_type: 'ephemeral',
+            text: `Couldn't post the update card: ${err.data?.error || err.message}`,
           })
         }
         break
@@ -849,6 +873,7 @@ export function registerCommandHandlers(app: App) {
           text:
             '*Kit Commands*\n\n' +
             '`/kit newproject` — Post the new-project card (pick services, fill in details)\n' +
+            '`/kit update` — Edit an established project and ripple the change across every outlet\n' +
             '`/kit onboard` — Onboard a freelancer to a project (Slack/Dropbox/Frame.io/Harvest)\n' +
             '`/kit status <name>` — Quick project lookup\n' +
             '`/kit note [project | body]` — Save a freeform note to a project (or current channel\'s project)\n' +
@@ -867,7 +892,7 @@ export function registerCommandHandlers(app: App) {
             '`/kit meme` — Admin only: post this week’s timesheet meme to the team channel now\n' +
             '`/kit backfill-time` — Admin only: preview confirmable back-dated check-ins; `run` to log them to Harvest\n' +
             '`/kit help` — Show this message\n\n' +
-            'You can also DM me and type *new project* or *new storyboard* to get the same cards. Or @mention me to ask about projects, budgets, files, reviews, or to log time.',
+            'You can also DM me and type *new project*, *update project*, or *new storyboard* to get the same cards. Or @mention me to ask about projects, budgets, files, reviews, or to log time.',
         })
         break
       }
