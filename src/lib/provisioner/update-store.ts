@@ -175,16 +175,11 @@ export async function commitUpdateDecision(opts: {
   return !!data
 }
 
-/** Compare-and-set lease so only one worker drives a ripple at a time. */
-export async function claimUpdateRequest(requestKey: string, holder: string): Promise<boolean> {
-  return (await claimUpdateRequestFenced(requestKey, holder)).ok
-}
-
 /**
- * Fenced claim: like `claimUpdateRequest` but returns the granted fence token. A
- * reclaim (lease free/expired) bumps the fence monotonically; the claimer keeps
- * that fence for renewals and fenced writes so a stale worker cannot clobber the
- * new holder.
+ * Fenced compare-and-set lease so only one worker drives a ripple at a time, and
+ * returns the granted fence token. A reclaim (lease free/expired) bumps the fence
+ * monotonically; the claimer keeps that fence for renewals and fenced writes so a
+ * stale worker cannot clobber the new holder.
  */
 export async function claimUpdateRequestFenced(
   requestKey: string,
@@ -394,25 +389,6 @@ export async function recordUpdateStepExternalId(
   return !!data
 }
 
-/** Heartbeat a claimed step's lease (holder-conditional). */
-export async function renewUpdateStep(
-  updateRequestId: string,
-  service: string,
-  holder: string,
-): Promise<boolean> {
-  const now = Date.now()
-  const nowStr = new Date(now).toISOString()
-  const { data, error } = await db()
-    .from('project_update_steps')
-    .update({ lease_expires_at: new Date(now + STEP_LEASE_MS).toISOString(), updated_at: nowStr })
-    .eq('update_request_id', updateRequestId)
-    .eq('service', service)
-    .eq('claim_holder', holder)
-    .select('id')
-    .maybeSingle()
-  if (error) throw new Error(`renewUpdateStep: ${error.message}`)
-  return !!data
-}
 
 /**
  * Final result write — CONDITIONAL on the exact holder + fence. Returns whether
