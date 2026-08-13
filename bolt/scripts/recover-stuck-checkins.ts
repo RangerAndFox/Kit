@@ -3,85 +3,78 @@
  * Recover stuck daily-hours check-ins WITHOUT re-nudging.
  *
  * A check-in stuck at status='sent'/'nudged' means Kit sent the DM but never
- * recorded a completed reply (reply_ts is null). If the person DID type their
- * hours — but Kit missed it (a socket drop, a mistimed DM they answered late,
- * an event that never reached the interceptor) — their message is still sitting
- * in the Slack DM history. This script reads that history with the BOT token,
- * finds their reply, and replays it through the exact same parse → resolve →
- * log pipeline the live interceptor uses (no duplicated domain logic), so the
- * hours land in Harvest on their original day without anyone re-typing.
+ * recorded a completed reply. If the person DID type their hours, the message
+ * is still in the Slack DM history: this reads it, resolves the projects, and
+ * logs the hours to Harvest on the original day.
  *
- * If a stuck check-in has no reply in its window, there is nothing to recover
- * and the script says so — that one genuinely needs a nudge.
+ * ── Preview is a contract ──────────────────────────────────────────────────
+ * The preview writes a PLAN file of exactly-resolved entries, and --commit
+ * logs that plan verbatim. It does NOT re-parse. An earlier version re-ran the
+ * LLM at commit time, so what got written was never what was reviewed — a
+ * non-deterministic re-parse of an over-captured message span wrote ~25h and
+ * ~15h days into Harvest. Now: what you review is what is written, or nothing.
+ *
+ * Three independent safeguards, none relied on alone:
+ *   1. Commit logs the reviewed plan (no LLM at commit time).
+ *   2. The plan is re-validated before writing (all projects resolved, day
+ *      total within a sane cap, no duplicate entries) — see src/checkins/recovery.ts.
+ *   3. --commit targets exactly one --user and one --date, and refuses a plan
+ *      whose check-in is no longer stuck (so it can't double-log).
  *
  * Run from the bolt/ directory:
- *   # PREVIEW everything (no writes) — survey what's recoverable:
+ *   # 1. Survey + write the plan (no writes to Harvest/Supabase):
  *   npx tsx scripts/recover-stuck-checkins.ts
- *   # PREVIEW one person/day:
+ *   # 2. Review one day, then log exactly that:
  *   npx tsx scripts/recover-stuck-checkins.ts --user=U012345 --date=2026-08-10
- *   # COMMIT one verified check-in (must target exactly one user + one day):
  *   npx tsx scripts/recover-stuck-checkins.ts --user=U012345 --date=2026-08-10 --commit
  *
- * Writes are deliberately surgical: --commit refuses to run without a single
- * --user and a single --date, so an LLM misparse can never bulk-write to
- * Harvest. Preview freely, eyeball the parse, then commit that one day.
- *
- * Optional filters (preview):
- *   --since=YYYY-MM-DD   only check-ins on/after this date (default: 21 days ago)
- *   --user=U012345       only this Slack user id (repeatable)
- *   --date=YYYY-MM-DD    only this exact check-in day (required for --commit)
+ * Options:
+ *   --since=YYYY-MM-DD    preview check-ins on/after this date (default: 21d ago)
+ *   --user=U012345        restrict to this Slack user (required for --commit)
+ *   --date=YYYY-MM-DD     restrict to this check-in day (required for --commit)
+ *   --plan=<path>         plan file location (default: /tmp/kit-recovery-plan.json)
+ *   --max-hours=N         single-day total that fails validation (default: 16)
+ *   --allow-duplicates    permit repeated (project, hours) entries
  *
  * Required env (loaded via dotenv):
  *   SLACK_BOT_TOKEN
- *   HARVEST_ACCESS_TOKEN, HARVEST_ACCOUNT_ID   (only needed with --commit)
+ *   ANTHROPIC_API_KEY                          (preview only — parses replies)
+ *   HARVEST_ACCESS_TOKEN, HARVEST_ACCOUNT_ID
  *   NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
  */
 
 import 'dotenv/config'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { WebClient } from '@slack/web-api'
 import { createAdminClient } from '../../src/lib/supabase/admin'
-import {
-  parseReplyWithLLM,
-  resolveHarvestProject,
-  handleCheckinReply,
-} from '../src/checkins/reply'
+import { parseReplyWithLLM, resolveHarvestProject } from '../src/checkins/reply'
 import { handleCheckinConfirm } from '../src/checkins/confirm'
+import {
+  extractReplyBurst,
+  validateEntries,
+  DEFAULT_MAX_TOTAL_HOURS,
+} from '../src/checkins/recovery'
 
 function arg(name: string): string | undefined {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`))
-  return hit ? hit.split('=')[1] : undefined
+  return hit ? hit.split('=').slice(1).join('=') : undefined
 }
 
 const COMMIT = process.argv.includes('--commit')
-const USERS = process.argv
-  .filter((a) => a.startsWith('--user='))
-  .map((a) => a.split('=')[1])
-// Optional single-day filter (YYYY-MM-DD). Required for --commit so a write can
-// only ever target one specific check-in, never a bulk replay.
+const ALLOW_DUPLICATES = process.argv.includes('--allow-duplicates')
+const USERS = process.argv.filter((a) => a.startsWith('--user=')).map((a) => a.split('=')[1])
 const DATE = arg('date')
+const PLAN_PATH = arg('plan') || '/tmp/kit-recovery-plan.json'
+const MAX_HOURS = Number(arg('max-hours') || DEFAULT_MAX_TOTAL_HOURS)
 
 function defaultSince(): string {
-  // 21 days back, computed off the process date; recovery only reaches recent
-  // stuck rows (older ones are almost certainly abandoned, not un-processed).
   const d = new Date(Date.now() - 21 * 86_400_000)
   return d.toISOString().slice(0, 10)
 }
 const SINCE = arg('since') || defaultSince()
 
-async function main() {
-  if (!process.env.SLACK_BOT_TOKEN) throw new Error('SLACK_BOT_TOKEN required')
-  // A write can only ever hit one specific check-in: require a single user and
-  // a single day. Preview stays unrestricted so you can survey everything first.
-  if (COMMIT && (USERS.length !== 1 || !DATE)) {
-    throw new Error(
-      '--commit requires exactly one --user=<slackId> and one --date=YYYY-MM-DD ' +
-        '(targeted recovery only — preview the parse first, then commit that one day).',
-    )
-  }
-  const client = new WebClient(process.env.SLACK_BOT_TOKEN)
-  const app = { client } // the check-in pipeline only touches app.client
-  const sb = createAdminClient()
-
+/** Load stuck check-ins, optionally narrowed to one user and/or one day. */
+async function loadStuck(sb: any) {
   let q = sb
     .from('daily_hours_checkins')
     .select(
@@ -91,166 +84,256 @@ async function main() {
     .not('dm_channel_id', 'is', null)
     .order('slack_user_id', { ascending: true })
     .order('dm_ts', { ascending: true })
-  // A single --date targets one day exactly; otherwise sweep from --since back.
   q = DATE ? q.eq('check_in_date', DATE) : q.gte('check_in_date', SINCE)
   if (USERS.length) q = q.in('slack_user_id', USERS)
-
-  const { data: rows, error } = await q
+  const { data, error } = await q
   if (error) throw new Error(`load stuck check-ins failed: ${error.message}`)
-  if (!rows?.length) {
-    console.log(`No stuck check-ins on/after ${SINCE}${USERS.length ? ` for ${USERS.join(', ')}` : ''}.`)
-    return
-  }
+  return data || []
+}
 
+/**
+ * Find the person's reply to one check-in. The SEARCH window is wide (up to
+ * their next check-in DM) because replies often arrive a day or more later;
+ * only the first contiguous burst inside it is taken as the answer.
+ */
+async function findReply(client: any, open: any, nextDmTs: string | undefined) {
+  const hist = await client.conversations.history({
+    channel: open.dm_channel_id,
+    oldest: open.dm_ts,
+    ...(nextDmTs ? { latest: nextDmTs } : {}),
+    inclusive: false,
+    limit: 200,
+  })
+  return extractReplyBurst(hist.messages || [], open.slack_user_id)
+}
+
+async function runPreview(sb: any, client: any, rows: any[]) {
   const scope = DATE ? `on ${DATE}` : `on/after ${SINCE}`
-  console.log(
-    `${COMMIT ? 'RECOVER (writing)' : 'PREVIEW (no writes)'} — ${rows.length} stuck check-in(s) ${scope}\n`,
-  )
+  console.log(`PREVIEW (no writes) — ${rows.length} stuck check-in(s) ${scope}\n`)
 
-  // Attribute each reply to the check-in it followed: search from this
-  // check-in's DM up to the same user's NEXT stuck check-in DM (open-ended for
-  // their most recent one). A wide window is deliberate — people often answer a
-  // check-in a day or more later — so recovery finds the reply wherever it
-  // landed. Over-capture (a span that sweeps in unrelated DMs) is a PREVIEW
-  // concern only: it can't cause a bad write, because --commit is restricted to
-  // one eyeballed --user + --date at a time.
-  const nextDmByUser = new Map<string, string[]>()
-  for (const r of rows) {
-    const list = nextDmByUser.get(r.slack_user_id) || []
-    list.push(r.dm_ts)
-    nextDmByUser.set(r.slack_user_id, list)
+  // Window boundary: the user's next check-in DM of ANY status.
+  const users = Array.from(new Set(rows.map((r: any) => r.slack_user_id)))
+  const { data: allCheckins } = await sb
+    .from('daily_hours_checkins')
+    .select('slack_user_id, dm_ts')
+    .in('slack_user_id', users)
+    .not('dm_ts', 'is', null)
+  const dmsByUser = new Map<string, number[]>()
+  for (const c of allCheckins || []) {
+    const list = dmsByUser.get(c.slack_user_id) || []
+    list.push(Number(c.dm_ts))
+    dmsByUser.set(c.slack_user_id, list)
   }
+  for (const l of dmsByUser.values()) l.sort((a, b) => a - b)
 
-  const summary = { recoverable: 0, logged: 0, noReply: 0, notHours: 0, errors: 0 }
+  const plan: any[] = []
+  const tally = { plannable: 0, blocked: 0, notHours: 0, noReply: 0, errors: 0 }
 
   for (const open of rows) {
     const tag = `${open.slack_user_id} ${open.check_in_date}`
-    const userTs = nextDmByUser.get(open.slack_user_id) || []
-    const idx = userTs.indexOf(open.dm_ts)
-    const latest = idx >= 0 && idx + 1 < userTs.length ? userTs[idx + 1] : undefined
+    const nextTs = (dmsByUser.get(open.slack_user_id) || []).find((t) => t > Number(open.dm_ts))
 
-    let reply: any
+    let burst: any
     try {
-      const hist = await client.conversations.history({
-        channel: open.dm_channel_id,
-        oldest: open.dm_ts,
-        ...(latest ? { latest } : {}),
-        inclusive: false,
-        limit: 100,
-      })
-      // history is newest-first; take the user's own messages in this window,
-      // oldest-first, and join them (people sometimes split hours over lines).
-      const mine = (hist.messages || [])
-        .filter((m: any) => m.user === open.slack_user_id && !m.bot_id && !m.subtype && m.text)
-        .reverse()
-      if (mine.length) {
-        reply = { text: mine.map((m: any) => m.text).join('\n'), ts: mine[0].ts }
-      }
+      burst = await findReply(client, open, nextTs != null ? nextTs.toFixed(6) : undefined)
     } catch (err: any) {
       console.log(`  ✗ ${tag}: history read failed — ${err.data?.error || err.message}`)
-      summary.errors++
+      tally.errors++
       continue
     }
-
-    if (!reply) {
+    if (!burst) {
       console.log(`  – ${tag}: no reply in DM — must re-nudge`)
-      summary.noReply++
+      tally.noReply++
       continue
     }
 
-    const preview = reply.text.replace(/\s+/g, ' ').slice(0, 70)
+    const preview = burst.text.replace(/\s+/g, ' ').slice(0, 70)
+    const extra = burst.excludedCount
+      ? ` [${burst.excludedCount} later msg(s) excluded]`
+      : ''
 
-    if (!COMMIT) {
-      // Pure preview: parse + resolve only, no DB write, no Harvest write.
-      try {
-        const parsed = await parseReplyWithLLM({
-          replyText: reply.text,
-          candidateProjects: open.candidate_projects || [],
-          today: open.check_in_date,
-        })
-        if (parsed.skip) {
-          console.log(`  ○ ${tag}: reply "${preview}" → would mark SKIPPED`)
-          summary.notHours++
-          continue
-        }
-        if (!parsed.entries.length) {
-          console.log(`  ? ${tag}: reply "${preview}" → not an hours message — re-nudge`)
-          summary.notHours++
-          continue
-        }
-        const lines: string[] = []
-        for (const e of parsed.entries) {
-          const r = await resolveHarvestProject(e.projectQuery)
-          const where =
-            r.resolution === 'matched'
-              ? r.project.name
-              : `"${e.projectQuery}" (${r.resolution})`
-          lines.push(`${e.hours}h → ${where}`)
-        }
-        console.log(`  ✓ ${tag}: reply "${preview}"\n      would log: ${lines.join('; ')}`)
-        summary.recoverable++
-      } catch (err: any) {
-        console.log(`  ✗ ${tag}: parse failed — ${err.message}`)
-        summary.errors++
-      }
-      continue
-    }
-
-    // --commit: replay through the real pipeline. handleCheckinReply claims the
-    // 'sent'/'nudged' row, parses, resolves, stores parsed_entries, sets
-    // 'parsed'. handleCheckinConfirm then logs to Harvest (its own CAS on
-    // 'parsed' makes a skipped/non-hours reply a safe no-op).
+    let parsed: any
     try {
-      const handled = await handleCheckinReply({
-        app,
-        open,
-        replyText: reply.text,
-        replyTs: reply.ts,
+      parsed = await parseReplyWithLLM({
+        replyText: burst.text,
+        candidateProjects: open.candidate_projects || [],
+        today: open.check_in_date,
       })
-      if (!handled) {
-        console.log(`  ? ${tag}: reply "${preview}" — not consumed (not hours) — re-nudge`)
-        summary.notHours++
-        continue
-      }
-      await handleCheckinConfirm({ app, client, body: {}, checkinId: open.id })
-      // Re-read to report the outcome the confirm handler landed on.
-      const { data: after } = await sb
-        .from('daily_hours_checkins')
-        .select('status, harvest_entry_ids, error_message')
-        .eq('id', open.id)
-        .maybeSingle()
-      if (after?.status === 'logged') {
-        console.log(`  ✓ ${tag}: logged Harvest #${(after.harvest_entry_ids || []).join(', ')}`)
-        summary.logged++
-      } else if (after?.status === 'skipped') {
-        console.log(`  ○ ${tag}: marked skipped`)
-        summary.notHours++
-      } else {
-        console.log(`  ! ${tag}: status=${after?.status} ${after?.error_message || ''}`)
-        summary.errors++
-      }
     } catch (err: any) {
-      console.log(`  ✗ ${tag}: recover failed — ${err.message}`)
-      summary.errors++
+      console.log(`  ✗ ${tag}: parse failed — ${err.message}`)
+      tally.errors++
+      continue
     }
+
+    if (parsed.skip || !parsed.entries.length) {
+      console.log(`  ○ ${tag}: reply "${preview}"${extra} → not hours (would skip)`)
+      tally.notHours++
+      continue
+    }
+
+    const entries: any[] = []
+    for (const e of parsed.entries) {
+      const r = await resolveHarvestProject(e.projectQuery)
+      entries.push({
+        hours: Number(e.hours),
+        spentDate: open.check_in_date,
+        notes: e.notes || undefined,
+        projectQuery: e.projectQuery,
+        resolution: r.resolution,
+        harvest_project_id: r.project?.id,
+        harvest_project_name: r.project?.name,
+      })
+    }
+
+    const v = validateEntries(entries, {
+      maxTotalHours: MAX_HOURS,
+      allowDuplicates: ALLOW_DUPLICATES,
+    })
+    const lines = entries
+      .map(
+        (e) =>
+          `${e.hours}h → ${
+            e.resolution === 'matched' ? e.harvest_project_name : `"${e.projectQuery}" (${e.resolution})`
+          }`,
+      )
+      .join('; ')
+
+    if (!v.ok) {
+      console.log(`  ⚠ ${tag}: reply "${preview}"${extra}`)
+      console.log(`      parsed (${v.totalHours}h): ${lines}`)
+      console.log(`      NOT PLANNED — ${v.problems.join('; ')}`)
+      console.log(`      → have them enter this day in Harvest directly`)
+      tally.blocked++
+      continue
+    }
+
+    console.log(`  ✓ ${tag}: reply "${preview}"${extra}`)
+    console.log(`      would log (${v.totalHours}h): ${lines}`)
+    plan.push({
+      checkinId: open.id,
+      slackUserId: open.slack_user_id,
+      checkInDate: open.check_in_date,
+      replyTs: burst.ts,
+      totalHours: v.totalHours,
+      entries,
+    })
+    tally.plannable++
   }
 
+  writeFileSync(PLAN_PATH, JSON.stringify({ createdFor: scope, plan }, null, 2))
   console.log(
-    `\nDone. ${
-      COMMIT
-        ? `logged=${summary.logged} skipped/not-hours=${summary.notHours} no-reply=${summary.noReply} errors=${summary.errors}`
-        : `recoverable=${summary.recoverable} not-hours=${summary.notHours} no-reply=${summary.noReply} errors=${summary.errors}`
-    }`,
+    `\nDone. plannable=${tally.plannable} blocked=${tally.blocked} not-hours=${tally.notHours} ` +
+      `no-reply=${tally.noReply} errors=${tally.errors}`,
   )
-  if (!COMMIT && summary.recoverable > 0) {
+  console.log(`Plan written to ${PLAN_PATH}`)
+  if (tally.plannable > 0) {
     console.log(
-      'To log ONE verified check-in, re-run targeting it: ' +
-        '--user=<slackId> --date=YYYY-MM-DD --commit',
+      'To log ONE reviewed check-in exactly as shown above:\n' +
+        '  --user=<slackId> --date=YYYY-MM-DD --commit',
     )
   }
 }
 
+/**
+ * Log one reviewed check-in. Writes the PLANNED entries to the row and calls
+ * the production confirm handler, which logs `parsed_entries` verbatim — the
+ * LLM is never invoked here, so the write cannot differ from the review.
+ */
+async function runCommit(sb: any, client: any, rows: any[]) {
+  const app = { client }
+
+  if (rows.length !== 1) {
+    throw new Error(
+      `--commit expects exactly one stuck check-in for ${USERS[0]} on ${DATE}, found ${rows.length}. ` +
+        'It may already be logged — re-run the preview.',
+    )
+  }
+  const open = rows[0]
+
+  let file: any
+  try {
+    file = JSON.parse(readFileSync(PLAN_PATH, 'utf8'))
+  } catch (err: any) {
+    throw new Error(`could not read plan at ${PLAN_PATH} (${err.message}). Run the preview first.`)
+  }
+  const planned = (file.plan || []).find(
+    (p: any) => p.checkinId === open.id && p.slackUserId === USERS[0] && p.checkInDate === DATE,
+  )
+  if (!planned) {
+    throw new Error(
+      `no reviewed plan for ${USERS[0]} on ${DATE} in ${PLAN_PATH}. ` +
+        'Re-run the preview for that day and review it before committing.',
+    )
+  }
+
+  // Re-validate at write time: the plan file is editable and may be stale.
+  const v = validateEntries(planned.entries, {
+    maxTotalHours: MAX_HOURS,
+    allowDuplicates: ALLOW_DUPLICATES,
+  })
+  if (!v.ok) {
+    throw new Error(`plan failed validation — ${v.problems.join('; ')}`)
+  }
+
+  console.log(`RECOVER (writing) — ${USERS[0]} ${DATE}, ${planned.entries.length} entr(ies), ${v.totalHours}h`)
+  for (const e of planned.entries) {
+    console.log(`  ${e.hours}h → ${e.harvest_project_name}`)
+  }
+
+  // Stage the reviewed entries, then hand off to the production confirm path
+  // (which claims status='parsed' compare-and-set, logs each entry, posts the
+  // DM confirmation, and records the Harvest ids).
+  const { data: staged, error: stageErr } = await sb
+    .from('daily_hours_checkins')
+    .update({
+      status: 'parsed',
+      parsed_entries: planned.entries,
+      reply_ts: planned.replyTs,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', open.id)
+    .in('status', ['sent', 'nudged'])
+    .select('id')
+  if (stageErr) throw new Error(`stage failed: ${stageErr.message}`)
+  if (!staged || staged.length === 0) {
+    throw new Error('check-in is no longer stuck (already handled?) — nothing written')
+  }
+
+  await handleCheckinConfirm({ app, client, body: {}, checkinId: open.id })
+
+  const { data: after } = await sb
+    .from('daily_hours_checkins')
+    .select('status, harvest_entry_ids, error_message')
+    .eq('id', open.id)
+    .maybeSingle()
+  if (after?.status === 'logged') {
+    console.log(`\n✓ Logged Harvest #${(after.harvest_entry_ids || []).join(', ')}`)
+  } else {
+    console.log(`\n! status=${after?.status} ${after?.error_message || ''}`)
+  }
+}
+
+async function main() {
+  if (!process.env.SLACK_BOT_TOKEN) throw new Error('SLACK_BOT_TOKEN required')
+  if (COMMIT && (USERS.length !== 1 || !DATE)) {
+    throw new Error(
+      '--commit requires exactly one --user=<slackId> and one --date=YYYY-MM-DD ' +
+        '(targeted recovery only — preview and review that day first).',
+    )
+  }
+
+  const client = new WebClient(process.env.SLACK_BOT_TOKEN)
+  const sb = createAdminClient()
+  const rows = await loadStuck(sb)
+
+  if (!COMMIT && rows.length === 0) {
+    console.log(`No stuck check-ins ${DATE ? `on ${DATE}` : `on/after ${SINCE}`}.`)
+    return
+  }
+  return COMMIT ? runCommit(sb, client, rows) : runPreview(sb, client, rows)
+}
+
 main().catch((err) => {
-  console.error(err)
+  console.error(String(err.message || err))
   process.exit(1)
 })
