@@ -79,6 +79,20 @@ async function harvestPost(path: string, body: Record<string, unknown>): Promise
   return res.json()
 }
 
+async function harvestPatch(path: string, body: Record<string, unknown>): Promise<any> {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    method: 'PATCH',
+    headers: headers(),
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(8_000),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`Harvest PATCH ${path}: ${res.status} ${text}`)
+  }
+  return res.json()
+}
+
 // ─── Types ──────────────────────────────────────────────────
 
 export interface HarvestProject {
@@ -188,11 +202,50 @@ export async function listProjects(activeOnly = true): Promise<HarvestProject[]>
  * resumed provision safe: a crash after create-but-before-ledger is reconciled
  * here instead of creating a second Harvest project.
  */
-export async function findHarvestProjectByKitId(kitProjectId: string): Promise<HarvestProject | null> {
-  if (!kitProjectId) return null
+export async function findHarvestProjectsByKitId(kitProjectId: string): Promise<HarvestProject[]> {
+  if (!kitProjectId) return []
   const marker = kitProjectMarker(kitProjectId)
   const all = await listProjects(false) // include inactive — a replaced/paused one still counts
-  return all.find((p) => (p.notes || '').includes(marker)) || null
+  return all.filter((p) => (p.notes || '').includes(marker))
+}
+
+/**
+ * First marker match (or null). Convenience wrapper — MUTATING callers (rename /
+ * provision) should use findHarvestProjectsByKitId and fail terminal on 2+ matches
+ * instead of guessing: Harvest's native 'Duplicate project' copies the notes field
+ * (including the Kit marker) verbatim, so a marker collision is reachable and
+ * picking the first would rename an arbitrary project. Mirrors Frame.io's reconciler.
+ */
+export async function findHarvestProjectByKitId(kitProjectId: string): Promise<HarvestProject | null> {
+  return (await findHarvestProjectsByKitId(kitProjectId))[0] || null
+}
+
+/**
+ * Fetch a single Harvest project by its numeric id — marker-independent. The
+ * rename fallback for a project LINKED via `/kit sync-projects`: sync only writes
+ * the `harvest_project_id` FK onto the Kit row and never PATCHes the Kit marker
+ * into the Harvest notes, so reconcile-by-marker finds nothing. Returns null if
+ * the project is gone (404).
+ */
+export async function getHarvestProjectById(projectId: number): Promise<HarvestProject | null> {
+  if (!projectId) return null
+  try {
+    const data = await harvestGet(`/projects/${projectId}`)
+    return {
+      id: data.id,
+      name: data.name,
+      code: data.code || '',
+      is_active: data.is_active,
+      client: data.client ? { id: data.client.id, name: data.client.name } : undefined,
+      notes: data.notes || '',
+    }
+  } catch (err: any) {
+    // Return null ONLY for a genuine 404 (project gone). Re-throw a transient 5xx /
+    // rate-limit / timeout so the caller's retry/recovery path handles it — never
+    // collapse "couldn't tell" into "gone", which would wedge the rename terminal.
+    if (/404|not_found/i.test(err?.message || '')) return null
+    throw err
+  }
 }
 
 /**
@@ -254,6 +307,35 @@ export async function createHarvestProject(opts: {
   const taskAssignments = await assignDefaultTasks(project.id)
 
   return { ...project, task_assignments: taskAssignments }
+}
+
+/**
+ * Rename an existing Harvest project (the "update project" ripple). Only the
+ * display fields move — name and/or code. Harvest budgets are fixed at creation
+ * and are NEVER sent here. The Kit marker lives in the notes and is untouched, so
+ * reconciliation-by-identity keeps working after a rename.
+ */
+export async function updateHarvestProject(opts: {
+  projectId: number
+  name?: string
+  code?: string
+  /** Re-parent the project to a different Harvest client (on a client rename), so
+   *  client-grouped reporting/budgets follow the change. */
+  clientId?: number
+}): Promise<HarvestProject> {
+  const body: Record<string, unknown> = {}
+  if (opts.name !== undefined) body.name = opts.name
+  if (opts.code !== undefined) body.code = opts.code
+  if (opts.clientId !== undefined) body.client_id = opts.clientId
+  const data = await harvestPatch(`/projects/${opts.projectId}`, body)
+  return {
+    id: data.id,
+    name: data.name,
+    code: data.code || '',
+    is_active: data.is_active,
+    client: data.client ? { id: data.client.id, name: data.client.name } : undefined,
+    notes: data.notes || '',
+  }
 }
 
 /**

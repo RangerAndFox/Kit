@@ -11,7 +11,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { createHarvestProject, findHarvestProjectByKitId, kitProjectMarker } from '../harvest/client'
+import { createHarvestProject, findHarvestProjectByKitId, findHarvestProjectsByKitId, kitProjectMarker } from '../harvest/client'
 import { createProjectSlackChannel, kitChannelMarker } from '../mcp/slack'
 import { findFrameioProjectsByKitId, frameioKitMarker, copyFrameioFolderTree } from '../inngest/agents/frameio'
 
@@ -60,6 +60,27 @@ describe('Harvest reconcile (crash-after-create resume)', () => {
     assert.equal(created, 1)
     // A different Kit id does not match.
     assert.equal(await findHarvestProjectByKitId('OTHER'), null)
+  })
+
+  it('returns ALL marker matches so a mutating caller can fail terminal on a collision', async () => {
+    // Harvest's native 'Duplicate project' copies the notes field (with the Kit
+    // marker) verbatim → two live projects share one marker. The reconciler must
+    // surface both, not silently pick the first (which would rename the wrong one).
+    const marker = kitProjectMarker('KP1')
+    const projects = [
+      { id: 100, name: 'Original', code: '2601-Nike', is_active: true, notes: `x ${marker} y`, client: { id: 1, name: 'Nike' } },
+      { id: 101, name: 'Duplicate', code: '2601-Nike-copy', is_active: true, notes: `dup ${marker}`, client: { id: 1, name: 'Nike' } },
+    ]
+    globalThis.fetch = (async (url: string | URL) => {
+      if (String(url).includes('/projects')) return jsonResponse({ projects, next_page: null })
+      return jsonResponse({})
+    }) as unknown as typeof fetch
+
+    const matches = await findHarvestProjectsByKitId('KP1')
+    assert.equal(matches.length, 2)
+    assert.deepEqual(matches.map((m) => m.id).sort(), [100, 101])
+    // The convenience wrapper still returns the first (for non-mutating callers).
+    assert.equal((await findHarvestProjectByKitId('KP1'))!.id, 100)
   })
 })
 

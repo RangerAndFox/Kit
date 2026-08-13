@@ -27,6 +27,13 @@ export interface AgentResult {
   id?: string
   error?: string
   message?: string
+  /**
+   * A PERMANENT failure the durable step ledger must not auto-retry (e.g. an
+   * ambiguous Kit-marker match, or a rename target that can't be reconciled).
+   * Set by the update-ripple rename/provision reconcilers; the provisioning
+   * engine marks such a step `terminal` instead of `failed` (retryable).
+   */
+  terminal?: boolean
 }
 
 // ─── Agent Capability ──────────────────────────────────────

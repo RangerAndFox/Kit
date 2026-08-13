@@ -8,11 +8,13 @@
 
 import {
   createProjectSlackChannel,
+  renameProjectSlackChannel,
+  SlackRenameTerminalError,
   postProjectLinks,
   duplicateTemplateCanvases,
 } from '@/lib/mcp/slack'
 import { workbookConfigFromEnv, projectControlCreationEnabled } from '@/lib/project-control/types'
-import { resolveControlTemplate } from '@/lib/project-control/canvas'
+import { resolveControlTemplate, type ControlTemplateResolution } from '@/lib/project-control/canvas'
 import type { AgentDefinition, AgentResult } from './types'
 
 const SLACK_API = 'https://slack.com/api'
@@ -109,11 +111,16 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
           // generically clone (an unread candidate could be control-like).
           if (!r.cloneSafe) skipGenericClone = true
         } else {
-          controlTemplateError = r.reason
+          // Explicit Extract: bolt's tsconfig is `strict: false`, so it does not
+          // negatively-narrow the `ok: false` arm of this union in the else branch
+          // (only the positive `if (r.ok)` arm narrows). Cast so both the strict
+          // (root) and non-strict (bolt) compilers resolve the error-arm fields.
+          const err = r as Extract<ControlTemplateResolution, { ok: false }>
+          controlTemplateError = err.reason
           // Exclude every matched (and configured) candidate from generic clone…
-          excludeFileIds.push(...r.excludeFileIds)
+          excludeFileIds.push(...err.excludeFileIds)
           // …and if resolution was uncertain, don't clone anything at all.
-          if (!r.cloneSafe) skipGenericClone = true
+          if (!err.cloneSafe) skipGenericClone = true
         }
       } catch (e: any) {
         controlTemplateError = `resolve_failed: ${e.message}`
@@ -169,6 +176,42 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
     }
   } catch (err: any) {
     return { agent: 'slack', action: 'provision', success: false, error: err.message }
+  }
+}
+
+async function rename(payload: Record<string, unknown>): Promise<AgentResult> {
+  try {
+    const client = (payload.client as string) || (payload.clientName as string) || ''
+    const projectName = (payload.projectName as string) || ''
+    const channelId = (payload.channelId as string) || (payload.slackChannelId as string) || ''
+    const projectId = (payload.projectId as string) || ''
+    if (!channelId) {
+      return { agent: 'slack', action: 'rename', success: false, terminal: true, error: 'rename needs the channelId of the project channel' }
+    }
+    if (!client || !projectName) {
+      return { agent: 'slack', action: 'rename', success: false, error: `Slack rename needs both client and projectName (got client="${client}", projectName="${projectName}")` }
+    }
+    const channel = await renameProjectSlackChannel({
+      projectId,
+      channelId,
+      projectName,
+      client,
+      projectNumber: (payload.projectNumber as string) || undefined,
+    })
+    return {
+      agent: 'slack',
+      action: 'rename',
+      success: true,
+      url: channel.url,
+      id: channel.channelId,
+      message: `Renamed channel to #${channel.channelName}`,
+      data: { channelName: channel.channelName, channelId: channel.channelId },
+    }
+  } catch (err: any) {
+    // A marker mismatch is a PERMANENT failure — never retry blindly against a
+    // channel that isn't Kit-owned for this project.
+    const terminal = err instanceof SlackRenameTerminalError
+    return { agent: 'slack', action: 'rename', success: false, terminal, error: err.message }
   }
 }
 
@@ -325,6 +368,12 @@ export const slackAgent: AgentDefinition = {
       mutates: true,
     },
     {
+      action: 'rename',
+      description: 'Rename an existing project channel (and refresh its topic/purpose) when a project is updated. The channel id is unchanged; reconciles by the Kit marker.',
+      inputDescription: 'projectId (required, Kit id), channelId (required), projectName (new), client (new), projectNumber',
+      mutates: true,
+    },
+    {
       action: 'send_message',
       description: 'Send a message to a channel or thread',
       inputDescription: 'channel (ID or name), text, threadTs (optional for replies)',
@@ -359,6 +408,8 @@ export const slackAgent: AgentDefinition = {
     switch (action) {
       case 'provision':
         return provision(payload)
+      case 'rename':
+        return rename(payload)
       case 'send_message':
         return sendMessage(payload)
       case 'find_channel':
