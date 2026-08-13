@@ -1,6 +1,20 @@
 import { describe, it, expect } from 'vitest'
 
-import { projectNumberKey, planProjectSync } from '../../src/lib/studio-knowledge/project-sync'
+import { projectNumberKey, projectNumberFromCode, planProjectSync } from '../../src/lib/studio-knowledge/project-sync'
+
+describe('projectNumberFromCode (case-preserving — for display/derivation)', () => {
+  it('preserves an uppercase letter suffix (a significant studio convention)', () => {
+    expect(projectNumberFromCode('2612B-Nike')).toBe('2612B')
+    expect(projectNumberFromCode('2630A_Internal_Marshmallow_Man')).toBe('2630A')
+    expect(projectNumberFromCode('2601-Nike')).toBe('2601')
+    expect(projectNumberFromCode('NIKE-BRAND-2611')).toBe('2611') // number extracted from anywhere
+    expect(projectNumberFromCode('2540a')).toBe('2540a') // already-lowercase stays lowercase
+  })
+  it('returns null when there is no number', () => {
+    expect(projectNumberFromCode(null)).toBeNull()
+    expect(projectNumberFromCode('Marshmallow Man')).toBeNull()
+  })
+})
 
 describe('projectNumberKey', () => {
   it('extracts the number from various code/name shapes', () => {
