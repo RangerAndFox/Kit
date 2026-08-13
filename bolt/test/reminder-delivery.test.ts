@@ -26,7 +26,7 @@ const STAFF: ReminderStaff = {
 const DATE = '2026-07-31' // Friday
 const PERSONAL = 'C-personal-kit' // the private one-person Kit channel
 
-// ── In-memory ledger + mock Slack, mirroring migration 062's SQL semantics ────
+// ── In-memory ledger + mock Slack, mirroring migration 064's SQL semantics ────
 function makeFakeDeps(cfg: {
   postPlan?: ('ok' | 'ambiguous' | 'ambiguous_lost' | 'failed')[]
   reconcile?: 'auto' | 'unavailable'
