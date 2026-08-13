@@ -111,6 +111,22 @@ describe('computeUpdatePlan — non-identity scalar change', () => {
     assert.equal(plan.identityChanged, true)
   })
 
+  it('a blank project_number is a no-op (synced project with no number stays submittable)', () => {
+    // A synced project can have an empty number; leaving Project ID blank must not
+    // diff as a change and ripple a spurious identity rename.
+    const noNum = { ...BASE, projectNumber: '' }
+    const plan = computeUpdatePlan(noNum, formFrom(noNum, { projectNumber: '', deadline: '2026-04-01' }))
+    assert.deepEqual(plan.changes.map((c) => c.field), ['deadline'])
+    assert.equal(plan.identityChanged, false)
+  })
+
+  it('typing a real project_number in still ripples the identity change', () => {
+    const noNum = { ...BASE, projectNumber: '' }
+    const plan = computeUpdatePlan(noNum, formFrom(noNum, { projectNumber: '2601' }))
+    assert.equal(plan.changes.some((c) => c.field === 'project_number'), true)
+    assert.equal(plan.identityChanged, true)
+  })
+
   it('a whitespace-only client rename still ripples to Harvest (projectCode collapses whitespace)', () => {
     // deriveProjectCode strips internal whitespace, so 'Coca Cola' → 'CocaCola'
     // yields an identical projectCode; the Harvest gate must still catch it via the

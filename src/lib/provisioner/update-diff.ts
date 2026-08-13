@@ -134,9 +134,15 @@ export function computeUpdatePlan(
   // the diff AND the derived identity strings); you can change the client, never
   // clear it. Filling a blank one in is still a real change.
   const effClientName = norm(next.clientName) === '' ? (current.clientName ?? '') : next.clientName
+  // Project number is identity-bearing too (feeds projectCode / Dropbox / Slack /
+  // Frame.io / Harvest code). Its modal field is optional only so a synced/pre-
+  // existing project with an empty number stays submittable — a blank is coerced to
+  // the current value (a no-op for BOTH the diff AND the derived strings), never a
+  // clear. Typing a real number in is still a change.
+  const effProjectNumber = norm(next.projectNumber) === '' ? (current.projectNumber ?? '') : next.projectNumber
 
   const specs: FieldSpec[] = [
-    { field: 'project_number', label: 'Project Number', current: current.projectNumber, next: next.projectNumber },
+    { field: 'project_number', label: 'Project Number', current: current.projectNumber, next: effProjectNumber },
     { field: 'client', label: 'Client', current: current.clientName, next: effClientName },
     { field: 'client_contact', label: 'Client Contact', current: current.clientContact, next: next.clientContact },
     { field: 'project_name', label: 'Project Name', current: current.projectName, next: next.projectName },
@@ -178,7 +184,7 @@ export function computeUpdatePlan(
   })
   const newIds = deriveProjectIdentifiers({
     projectId: current.projectId,
-    projectNumber: next.projectNumber,
+    projectNumber: effProjectNumber,
     client: effClientName,
     projectName: next.projectName,
   })

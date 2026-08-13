@@ -118,5 +118,6 @@ describe('buildUpdateProjectModal — pre-fill', () => {
     assert.equal(byId.project_manager.optional, true)
     assert.equal(byId.project_type.optional, true)
     assert.equal(byId.client_name.optional, true)
+    assert.equal(byId.project_number.optional, true)
   })
 })

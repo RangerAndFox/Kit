@@ -274,7 +274,11 @@ export function buildUpdateProjectModal(opts: {
         type: 'context',
         elements: [{ type: 'mrkdwn', text: ':pencil2: Edit any field. The next step previews exactly what will change across Slack, Dropbox, Harvest, Frame.io, and the Master Project List before anything is applied.' }],
       },
-      textInput('project_number', 'Project ID', s.projectNumber),
+      // Optional, like Client: a synced/pre-existing project can have an empty
+      // project number (its Harvest code may be null or carry no extractable
+      // number), and a required field with no value would block ANY edit. A blank
+      // is coerced to the current value in computeUpdatePlan (never a clear).
+      textInput('project_number', 'Project ID', s.projectNumber, {}, true),
       // Optional: a Harvest-synced project can have a NULL client (project-sync
       // inserts `client: hp.client?.name ?? null`), and a required field with no
       // value would block any unrelated edit. An unchanged blank stays a no-op;

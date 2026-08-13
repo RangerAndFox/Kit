@@ -38,9 +38,10 @@ function oracleDropboxSafeName(n: string, c: string, p: string): string {
     .replace(/\s+/g, '_')
 }
 
-// frameio.ts businessLabel
+// frameio.ts businessLabel — trims each field before joining (mirrors safeName's
+// trim), so a stray leading/trailing space never survives into the Frame.io name.
 function oracleFrameioLabel(n: string, c: string, p: string): string {
-  return [n, c, p].filter((part) => part && part.trim()).join('_')
+  return [n, c, p].map((x) => (x ? String(x).trim() : '')).filter(Boolean).join('_')
 }
 
 // slack.ts shortId + base + slug
@@ -99,6 +100,12 @@ describe('deriveFrameioBusinessLabel parity', () => {
       )
     })
   }
+
+  it('trims leading/trailing whitespace like the Dropbox safe-name (no stray spaces in Frame.io)', () => {
+    // plain_text_input never trims, so a trailing space can reach here; it must not
+    // survive into the live Frame.io rename (the trimmed preview would disagree).
+    assert.equal(deriveFrameioBusinessLabel('2601', ' Nike ', 'Winter Campaign '), '2601_Nike_Winter Campaign')
+  })
 })
 
 describe('deriveSlackSlug parity', () => {

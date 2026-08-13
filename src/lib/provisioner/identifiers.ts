@@ -73,7 +73,8 @@ export function deriveFrameioBusinessLabel(
   projectName: string,
 ): string {
   return [projectNumber, client, projectName]
-    .filter((part) => part && String(part).trim())
+    .map((p) => (p ? String(p).trim() : ''))
+    .filter(Boolean)
     .join('_')
 }
 
