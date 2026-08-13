@@ -279,6 +279,28 @@ export function kitChannelMarker(projectId: string): string {
 }
 
 /**
+ * Write the channel's human-facing purpose + topic, embedding the Kit marker in
+ * the purpose as SUPPORTING identity evidence. Idempotent and non-critical (both
+ * calls swallow errors). Shared by create and rename so the wording/format can't
+ * drift between a freshly-provisioned channel and a renamed one.
+ */
+async function refreshChannelPurposeAndTopic(
+  channelId: string,
+  projectId: string,
+  client: string,
+  projectName: string,
+): Promise<void> {
+  await slackPost('conversations.setPurpose', {
+    channel: channelId,
+    purpose: `${client} — ${projectName} ${kitChannelMarker(projectId)}`,
+  }).catch(() => {})
+  await slackPost('conversations.setTopic', {
+    channel: channelId,
+    topic: `${client} — ${projectName}`,
+  }).catch(() => {})
+}
+
+/**
  * Reconcile a project channel by its EXACT deterministic name (which already
  * embeds the Kit short id, so the name IS the identity). Lets a resumed provision
  * reuse the channel a prior attempt created — including the crash-after-create-
@@ -439,17 +461,7 @@ export async function createProjectSlackChannel(opts: {
 
   // Stamp the embedded Kit marker into the purpose as SUPPORTING evidence (the
   // deterministic name is the primary identity). Idempotent — safe to re-set.
-  await slackPost('conversations.setPurpose', {
-    channel: channelId,
-    purpose: `${client} — ${projectName} ${kitChannelMarker(projectId)}`,
-  }).catch(() => {}) // non-critical
-
-  // Set topic
-  const topic = `${client} — ${projectName}`
-  await slackPost('conversations.setTopic', {
-    channel: channelId,
-    topic,
-  }).catch(() => {}) // non-critical
+  await refreshChannelPurposeAndTopic(channelId, projectId, client, projectName)
 
   // Invite the requesting user, PM, and team so they actually see the channel.
   // Resilient: one bad/deactivated user ID won't block the valid invites.
@@ -580,14 +592,7 @@ export async function renameProjectSlackChannel(opts: {
   }
 
   // Refresh the human-facing purpose/topic text (marker preserved). Non-critical.
-  await slackPost('conversations.setPurpose', {
-    channel: channelId,
-    purpose: `${client} — ${projectName} ${marker}`,
-  }).catch(() => {})
-  await slackPost('conversations.setTopic', {
-    channel: channelId,
-    topic: `${client} — ${projectName}`,
-  }).catch(() => {})
+  await refreshChannelPurposeAndTopic(channelId, projectId, client, projectName)
 
   return {
     channelId,
