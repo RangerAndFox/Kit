@@ -39,7 +39,7 @@ comment on table staff_time_off is
 -- which surfaced as four "stuck" check-ins. Backfilled by email so it does not
 -- depend on a staff row id. Idempotent.
 insert into staff_time_off (staff_id, start_date, end_date, kind, note, created_by)
-select s.id, date '2026-08-03', date '2026-08-07', 'pto', 'Vacation', 'migration_063'
+select s.id, date '2026-08-03', date '2026-08-07', 'pto', 'Vacation', 'migration_064'
 from staff s
 where s.email = 'ted@rangerandfox.tv'
   and not exists (
@@ -50,13 +50,20 @@ where s.email = 'ted@rangerandfox.tv'
   );
 
 -- Those check-ins were never a Kit failure — resolve them so they stop showing
--- up as recoverable/stuck. Scoped to rows that overlap a time-off range.
+-- up as recoverable/stuck.
+--
+-- Deliberately NOT a blanket "any check-in overlapping time off is skipped":
+-- someone on PTO may still reply to back-fill an earlier working day, and that
+-- reply lives in Slack (reply_ts stays null until Kit processes it), so the DB
+-- cannot tell an unanswered check-in from an unprocessed one. A blanket update
+-- would silently discard those hours. This is scoped to the four days verified
+-- to have no reply in the Slack DM; 08-07 is left stuck on purpose because it
+-- carries an unprocessed request to log time against a pre-vacation day.
 update daily_hours_checkins c
 set status = 'skipped',
     updated_at = now()
-where c.status in ('sent', 'nudged')
-  and exists (
-    select 1 from staff_time_off t
-    where t.staff_id = c.staff_id
-      and c.check_in_date between t.start_date and t.end_date
-  );
+from staff s
+where c.staff_id = s.id
+  and s.email = 'ted@rangerandfox.tv'
+  and c.status in ('sent', 'nudged')
+  and c.check_in_date between date '2026-08-03' and date '2026-08-06';
