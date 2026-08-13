@@ -171,6 +171,25 @@ export function ymdAddDays(ymd: string, n: number): string {
   return base.toISOString().split('T')[0]
 }
 
+/**
+ * How long a check-in awaiting confirmation stays actionable.
+ *
+ * Confirmation cards had no expiry: a card from a month earlier still carried a
+ * live "Confirm & log" button, so a tidy-up click could silently write
+ * long-past hours into Harvest. It also bounds how far back the pending-
+ * confirmation reminder reaches — past this the honest advice is to re-enter,
+ * not to resurrect a stale parse.
+ */
+export const CHECKIN_STALE_AFTER_DAYS = 14
+
+/** Whole days from `from` to `to` (YYYY-MM-DD); negative when `to` is earlier. */
+export function ymdDaysBetween(from: string, to: string): number {
+  const a = Date.parse(`${from}T12:00:00Z`)
+  const b = Date.parse(`${to}T12:00:00Z`)
+  if (Number.isNaN(a) || Number.isNaN(b)) return 0
+  return Math.round((b - a) / 86_400_000)
+}
+
 // ─── Holidays ───────────────────────────────────────────────
 // Without holiday awareness, a 3-day studio closure (e.g. Thanksgiving week)
 // counted as three "missing" working days and false-flagged everyone.
