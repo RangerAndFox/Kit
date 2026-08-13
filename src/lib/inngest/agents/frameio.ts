@@ -106,6 +106,25 @@ export function frameioKitMarker(kitProjectId: string): string {
 }
 
 /**
+ * The terminal result for a Kit-marker collision (2+ Frame.io projects carry the
+ * same marker). Reconciling by guessing would mutate an arbitrary project, so
+ * both provision and rename refuse permanently. One builder so the error code and
+ * shape can't drift between the two call sites.
+ */
+function frameioAmbiguousMarkerError(
+  action: 'provision' | 'rename',
+  matches: Array<{ id: string }>,
+): AgentResult {
+  return {
+    agent: 'frameio',
+    action,
+    success: false,
+    terminal: true,
+    error: `ambiguous_frameio_projects: ${matches.map((m) => m.id).join(',')} share kit marker`,
+  }
+}
+
+/**
  * Extract a recognizable project array from a v4 list response, or null when the
  * payload is NOT a list Kit can trust (a bare array or `{ data: [...] }` are the
  * only accepted shapes). Returning null is a deliberate fail-closed signal — a
@@ -310,13 +329,7 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
     let project: { id: string; root_folder_id?: string; root_asset_id?: string }
     const matches = kitProjectId ? await findFrameioProjectsByKitId(acct, ws, kitProjectId) : []
     if (matches.length > 1) {
-      return {
-        agent: 'frameio',
-        action: 'provision',
-        success: false,
-        terminal: true,
-        error: `ambiguous_frameio_projects: ${matches.map((m) => m.id).join(',')} share kit marker`,
-      } as AgentResult
+      return frameioAmbiguousMarkerError('provision', matches)
     }
     if (matches.length === 1) {
       project = { id: matches[0].id, root_folder_id: matches[0].rootFolderId }
@@ -419,7 +432,7 @@ async function rename(payload: Record<string, unknown>): Promise<AgentResult> {
       return { agent: 'frameio', action: 'rename', success: false, terminal: true, error: `No Frame.io project carries the Kit marker for ${kitProjectId}; nothing to rename` }
     }
     if (matches.length > 1) {
-      return { agent: 'frameio', action: 'rename', success: false, terminal: true, error: `ambiguous_frameio_projects: ${matches.map((m) => m.id).join(',')} share kit marker` }
+      return frameioAmbiguousMarkerError('rename', matches)
     }
     const projectId = matches[0].id
     // Preserve the marker (reconciliation identity) in the new label.

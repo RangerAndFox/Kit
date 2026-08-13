@@ -29,6 +29,26 @@ import { studioToday, studioDateMinusDays } from '@/lib/time/studio-date'
 import { staffProfile } from '@/lib/staff/timezone'
 import type { AgentDefinition, AgentResult } from './types'
 
+/**
+ * The terminal result for a Kit-marker collision (2+ Harvest projects carry the
+ * same marker — Harvest's native "Duplicate project" copies the notes field
+ * verbatim). Guessing would rename/re-parent an arbitrary project, so both
+ * provision and rename refuse permanently. One builder so the error code and
+ * shape can't drift between the two call sites.
+ */
+function harvestAmbiguousMarkerError(
+  action: 'provision' | 'rename',
+  matches: Array<{ id: number }>,
+): AgentResult {
+  return {
+    agent: 'harvest',
+    action,
+    success: false,
+    terminal: true,
+    error: `ambiguous_harvest_projects: ${matches.map((m) => m.id).join(',')} share kit marker`,
+  }
+}
+
 // ─── Action Handlers ───────────────────────────────────────
 
 async function provision(payload: Record<string, unknown>): Promise<AgentResult> {
@@ -44,7 +64,7 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
     if (kitMatches.length > 1) {
       // Marker collision (e.g. Harvest's 'Duplicate project' copied the notes/
       // marker) — reusing an arbitrary one would set up tasks on the wrong project.
-      return { agent: 'harvest', action: 'provision', success: false, terminal: true, error: `ambiguous_harvest_projects: ${kitMatches.map((m) => m.id).join(',')} share kit marker` }
+      return harvestAmbiguousMarkerError('provision', kitMatches)
     }
     const existing = kitMatches[0] || null
     let project: HarvestProject & { task_assignments: HarvestProjectTask[] }
@@ -111,7 +131,7 @@ async function rename(payload: Record<string, unknown>): Promise<AgentResult> {
     // arbitrary project. Mirrors Frame.io's reconciler.
     const matches = await findHarvestProjectsByKitId(kitProjectId)
     if (matches.length > 1) {
-      return { agent: 'harvest', action: 'rename', success: false, terminal: true, error: `ambiguous_harvest_projects: ${matches.map((m) => m.id).join(',')} share kit marker` }
+      return harvestAmbiguousMarkerError('rename', matches)
     }
     // Fall back to the known numeric harvest id when reconcile-by-marker finds
     // nothing: a project LINKED via /kit sync-projects has a harvest_project_id but

@@ -197,42 +197,26 @@ async function listFolder(payload: Record<string, unknown>): Promise<AgentResult
 }
 
 async function getShareLink(payload: Record<string, unknown>): Promise<AgentResult> {
+  const path = payload.path as string
   try {
-    const path = payload.path as string
-    const linkRes = await dropboxPost('/sharing/create_shared_link_with_settings', {
-      path,
-      settings: { requested_visibility: (payload.visibility as string) || 'team_only' },
-    })
-
+    const { url, existing } = await getOrCreateShareLink(path, (payload.visibility as string) || 'team_only')
+    if (url) {
+      return {
+        agent: 'dropbox',
+        action: 'get_share_link',
+        success: true,
+        url,
+        message: existing ? `Existing share link for ${path}` : `Share link created for ${path}`,
+        data: { path, url },
+      }
+    }
     return {
       agent: 'dropbox',
       action: 'get_share_link',
-      success: true,
-      url: linkRes.url,
-      message: `Share link created for ${path}`,
-      data: { path, url: linkRes.url },
+      success: false,
+      error: 'shared_link_already_exists, but no existing link could be listed',
     }
   } catch (err: any) {
-    // If link already exists, try to get existing one
-    if (err.message?.includes('shared_link_already_exists')) {
-      try {
-        const existing = await dropboxPost('/sharing/list_shared_links', {
-          path: payload.path,
-          direct_only: true,
-        })
-        const link = existing.links?.[0]
-        if (link) {
-          return {
-            agent: 'dropbox',
-            action: 'get_share_link',
-            success: true,
-            url: link.url,
-            message: `Existing share link for ${payload.path}`,
-            data: { path: payload.path, url: link.url },
-          }
-        }
-      } catch {}
-    }
     return { agent: 'dropbox', action: 'get_share_link', success: false, error: err.message }
   }
 }
@@ -284,20 +268,40 @@ async function folderExists(path: string): Promise<boolean> {
   }
 }
 
-async function resolveShareLink(path: string): Promise<string | undefined> {
+/**
+ * Create a share link for `path`, or recover the pre-existing one. The single
+ * home for the create → `shared_link_already_exists` → list fallback (callers
+ * previously each re-derived it). Reports `existing` so callers can keep their
+ * own messaging. THROWS on a genuine API failure; `url` is undefined only when
+ * the link exists but couldn't be listed back.
+ */
+async function getOrCreateShareLink(
+  path: string,
+  visibility = 'team_only',
+): Promise<{ url?: string; existing: boolean }> {
   try {
     const linkRes = await dropboxPost('/sharing/create_shared_link_with_settings', {
       path,
-      settings: { requested_visibility: 'team_only' },
+      settings: { requested_visibility: visibility },
     })
-    return linkRes.url
+    return { url: linkRes.url, existing: false }
   } catch (err: any) {
-    if (err.message?.includes('shared_link_already_exists')) {
-      try {
-        const existing = await dropboxPost('/sharing/list_shared_links', { path, direct_only: true })
-        return existing.links?.[0]?.url
-      } catch {}
+    if (!err.message?.includes('shared_link_already_exists')) throw err
+    try {
+      const existing = await dropboxPost('/sharing/list_shared_links', { path, direct_only: true })
+      return { url: existing.links?.[0]?.url, existing: true }
+    } catch {
+      return { existing: true }
     }
+  }
+}
+
+/** Best-effort link for the rename path — never throws (the move already landed;
+ *  a missing link is not worth failing the step over). */
+async function resolveShareLink(path: string): Promise<string | undefined> {
+  try {
+    return (await getOrCreateShareLink(path)).url
+  } catch {
     return undefined
   }
 }
