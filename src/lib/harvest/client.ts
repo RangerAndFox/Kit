@@ -178,21 +178,26 @@ export async function findOrCreateClient(name: string): Promise<HarvestClient> {
 
 // ─── Projects ───────────────────────────────────────────────
 
-/**
- * List all active projects.
- */
+/** Normalize a raw Harvest `/projects` item into HarvestProject. One home for the
+ *  field mapping so listProjects / getHarvestProjectById / updateHarvestProject
+ *  can't drift (a new field or null-handling fix lands in all three at once). */
+function mapHarvestProject(raw: any): HarvestProject {
+  return {
+    id: raw.id,
+    name: raw.name,
+    code: raw.code || '',
+    is_active: raw.is_active,
+    client: raw.client ? { id: raw.client.id, name: raw.client.name } : undefined,
+    notes: raw.notes || '',
+  }
+}
+
+/** List all projects (active only by default). */
 export async function listProjects(activeOnly = true): Promise<HarvestProject[]> {
   const params: Record<string, string> = {}
   if (activeOnly) params.is_active = 'true'
   const projects = await harvestGetAll('/projects', 'projects', params)
-  return projects.map((p: any) => ({
-    id: p.id,
-    name: p.name,
-    code: p.code || '',
-    is_active: p.is_active,
-    client: p.client ? { id: p.client.id, name: p.client.name } : undefined,
-    notes: p.notes || '',
-  }))
+  return projects.map(mapHarvestProject)
 }
 
 /**
@@ -230,15 +235,7 @@ export async function findHarvestProjectByKitId(kitProjectId: string): Promise<H
 export async function getHarvestProjectById(projectId: number): Promise<HarvestProject | null> {
   if (!projectId) return null
   try {
-    const data = await harvestGet(`/projects/${projectId}`)
-    return {
-      id: data.id,
-      name: data.name,
-      code: data.code || '',
-      is_active: data.is_active,
-      client: data.client ? { id: data.client.id, name: data.client.name } : undefined,
-      notes: data.notes || '',
-    }
+    return mapHarvestProject(await harvestGet(`/projects/${projectId}`))
   } catch (err: any) {
     // Return null ONLY for a genuine 404 (project gone). Re-throw a transient 5xx /
     // rate-limit / timeout so the caller's retry/recovery path handles it — never
@@ -327,15 +324,7 @@ export async function updateHarvestProject(opts: {
   if (opts.name !== undefined) body.name = opts.name
   if (opts.code !== undefined) body.code = opts.code
   if (opts.clientId !== undefined) body.client_id = opts.clientId
-  const data = await harvestPatch(`/projects/${opts.projectId}`, body)
-  return {
-    id: data.id,
-    name: data.name,
-    code: data.code || '',
-    is_active: data.is_active,
-    client: data.client ? { id: data.client.id, name: data.client.name } : undefined,
-    notes: data.notes || '',
-  }
+  return mapHarvestProject(await harvestPatch(`/projects/${opts.projectId}`, body))
 }
 
 /**
