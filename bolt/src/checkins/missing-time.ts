@@ -23,6 +23,7 @@ import {
   isWorkday,
   formatShortDate,
 } from './date'
+import { listTimeOffDates } from '../../../src/lib/staff/time-off'
 import { inferActiveProjectChannels, type ActiveChannel } from './slack-activity'
 import { resolvePersonalBriefingChannel } from '../../../src/lib/agent/briefing-channel'
 
@@ -51,6 +52,12 @@ export function computeMissingStreak(opts: {
   through: string
   loggedDates: Set<string>
   skippedDates: Set<string>
+  /**
+   * Approved time off. Treated like a non-working day — passed over rather than
+   * counted as missing, and it does NOT end the streak walk (a Friday absence
+   * shouldn't hide a genuine gap that continues on Thursday).
+   */
+  timeOffDates?: Set<string>
   tz?: string
   lookbackDays?: number
 }): string[] {
@@ -60,6 +67,7 @@ export function computeMissingStreak(opts: {
   let cursor = opts.through
   for (let i = 0; i < lookback; i++, cursor = ymdAddDays(cursor, -1)) {
     if (!isWorkday(cursor, tz)) continue
+    if (opts.timeOffDates?.has(cursor)) continue
     if (opts.loggedDates.has(cursor) || opts.skippedDates.has(cursor)) break
     missing.push(cursor)
   }
@@ -110,7 +118,17 @@ async function evaluateStaff(staff: StaffRow): Promise<{
     .lte('check_in_date', through)
   for (const r of skips || []) skippedDates.add(r.check_in_date)
 
-  const missing = computeMissingStreak({ through, loggedDates, skippedDates, tz })
+  // Approved time off isn't missing time. A lookup failure must not flag
+  // someone who is simply on vacation, so bail rather than judge without it.
+  let timeOffDates = new Set<string>()
+  try {
+    timeOffDates = await listTimeOffDates({ staffId: staff.id, from, to: through })
+  } catch (err: any) {
+    console.warn(`[missing-time] time-off fetch failed for ${staff.slack_user_id}: ${err.message}`)
+    return null
+  }
+
+  const missing = computeMissingStreak({ through, loggedDates, skippedDates, timeOffDates, tz })
   if (missing.length < missingThresholdDays()) return null
   return { missing, lastLogged }
 }
