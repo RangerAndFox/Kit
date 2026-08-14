@@ -136,6 +136,59 @@ mechanism in code before assuming full compliance.
     append-only/generation-guard triggers, and RLS); its structural guarantees
     have been verified against the intended production schema.)*
 
+17. **Externally reachable side-effecting handlers verify the caller before the
+    side-effect boundary, and missing verification configuration fails closed.**
+    Any Vercel route that can write to Supabase, dispatch work, or call an
+    external provider must complete caller verification *before* the first side
+    effect — and before semantic parsing of the request body, so an unverified
+    caller cannot learn how its payload was interpreted. Absent or empty
+    verification configuration **denies**; it never skips verification
+    (`if (secret) { verify }` is the defect shape — it converts missing config
+    into a granted permission). Denial responses are uniform and reveal no
+    configuration state; the reason is a stable code in structured logs only,
+    and no signature, secret, authorization header, or raw body is logged.
+    **Provider protocols keep provider-specific owners** — there is deliberately
+    no universal webhook-auth abstraction and no authorization in
+    `src/proxy.ts`, which runs on every `/api/*` request but delegates
+    authorization to the handler. **Workspace scope is never selected from
+    arbitrary body, query, or header input, and a verified sender is not by
+    itself an authorized workspace actor.** A verified external identity must
+    resolve through an exact persisted binding to exactly one Kit workspace
+    *before* any workspace-dependent side effect — no fallback workspace, no
+    "first workspace", no default configuration. A missing identity, no
+    binding, an ambiguous binding, or a lookup failure is unauthorized for
+    side-effect purposes. *(Verified for the routes named below.)*
+    - **Slack has NO HTTP surface on Vercel.** Slack reaches Kit exclusively over
+      **Socket Mode** on Railway (`bolt/src/app.ts`, `socketMode: true`), where
+      Bolt owns signature verification and workspace scope. The former
+      `src/app/api/webhooks/slack/{commands,events}/route.ts` — and the
+      `verify.ts` / `deny.ts` / `events-workspace.ts` modules that existed only
+      to secure them — were **deleted**: with Socket Mode enabled Slack never
+      delivers over HTTP, so they were unreachable code holding a standing
+      unauthenticated-write risk. Evidence at removal: 24 h of production
+      request logs showed traffic to `/api/inngest` only, and zero to any Slack
+      path. **Do not reintroduce a Slack HTTP route** without first disabling
+      Socket Mode and re-establishing a verified-caller + workspace-binding
+      owner for it.
+    - **MCP shared-secret owners (pre-existing, unchanged):**
+      `src/lib/mcp/auth.ts` (bearer header) and the path-key check in
+      `src/app/api/mcp/[key]/route.ts`; the path form exists only because
+      Anthropic's Managed Agents MCP config cannot send headers.
+    - **Structurally disabled:** `src/app/api/toolkit/dispatch/route.ts` has no
+      caller and returns a fixed 404. The disable is structural, not
+      configuration-gated: it imports only `next/server`, so it cannot reach
+      Supabase, the agent registry, or the session manager, and it never reads
+      the request body. Re-enabling requires establishing a verified caller and
+      a verified-identity workspace derivation in the same change.
+    - **Deleted rather than authenticated** (no caller, no product
+      responsibility, and a live alternative mechanism for each):
+      `/api/webhooks/farm`, `/api/webhooks/generic`,
+      `/api/webhooks/project-ops/created`.
+    - **Not yet covered — `Decision required`:** `/api/toolkit/{sow,workback,script}`
+      were outside the approved scope of this correction and have **no caller
+      verification**. Do not read this invariant as covering the whole Vercel
+      surface until they are dispositioned.
+
 ## How to use these
 
 - **Fixing a bug:** name the invariant it violates first. If none fits, you may
