@@ -26,7 +26,7 @@ const STAFF: ReminderStaff = {
 const DATE = '2026-07-31' // Friday
 const PERSONAL = 'C-personal-kit' // the private one-person Kit channel
 
-// ── In-memory ledger + mock Slack, mirroring migration 064's SQL semantics ────
+// ── In-memory ledger + mock Slack, mirroring migration 065's SQL semantics ────
 function makeFakeDeps(cfg: {
   postPlan?: ('ok' | 'ambiguous' | 'ambiguous_lost' | 'failed')[]
   reconcile?: 'auto' | 'unavailable'
@@ -339,10 +339,51 @@ describe('sweepDailyReminders', () => {
         expired.push(`${staffId}|${localDate}`)
         return true
       },
+      // Nobody is off by default; the time-off cases below override this.
+      // Injected like every other dep so the sweep never reaches Supabase here.
+      isOnTimeOff: async () => false,
       ...overrides,
     }
     return { deps, state, expired, opts }
   }
+
+  // Time off must be honoured by THIS sender. The rule previously lived in
+  // sendDailyCheckin, which this PR deletes — without these cases the deletion
+  // would silently resume DMing people on vacation and stranding their
+  // unanswered check-ins, the exact bug staff_time_off was added to fix.
+  it('does not remind someone on approved time off', async () => {
+    const { state, opts } = harness({
+      // Steve (Eastern) is due at 21:00 UTC, but he is off that day.
+      isOnTimeOff: async (staffId: string) => staffId === STAFF.id,
+    })
+    const tally = await sweepDailyReminders(app, { ...opts, now: new Date('2026-07-31T21:00:00Z') })
+    expect(tally.timeOff).toBe(1)
+    expect(tally.sent).toBe(0)
+    expect(state.posts).toBe(0) // no occurrence created, nothing to chase later
+  })
+
+  it('still reminds a colleague who is not off on the same day', async () => {
+    const { state, opts } = harness({
+      isOnTimeOff: async (staffId: string) => staffId === 'staff-pac',
+    })
+    // 00:00 UTC Aug 1 = 5pm PDT (Pat, off) and 8pm EDT (Steve, past cutoff).
+    const tally = await sweepDailyReminders(app, { ...opts, now: new Date('2026-07-31T21:00:00Z') })
+    expect(tally.timeOff).toBe(0) // Pat isn't due at this instant, so not counted
+    expect(tally.sent).toBe(1) // Steve is due and not off
+    expect(state.posts).toBe(1)
+  })
+
+  it('does not send when the time-off lookup fails (never nags on uncertainty)', async () => {
+    const { state, opts } = harness({
+      isOnTimeOff: async () => {
+        throw new Error('supabase unavailable')
+      },
+    })
+    const tally = await sweepDailyReminders(app, { ...opts, now: new Date('2026-07-31T21:00:00Z') })
+    expect(state.posts).toBe(0)
+    expect(tally.sent).toBe(0)
+    expect(tally.failed).toBe(1) // visible, and retried on the next hourly tick
+  })
 
   it('(11) delivers to whoever is at 5pm local; others are not due', async () => {
     // 21:00 UTC = 5pm EDT (Steve due), 2pm PDT (Pat not due).
@@ -400,6 +441,7 @@ describe('sweepDailyReminders', () => {
       loadStaff: async () => [STAFF],
       resolveTz: async () => 'America/New_York',
       expire: async () => false,
+      isOnTimeOff: async () => false,
       now: new Date('2026-07-31T21:00:00Z'),
     }
     const [t1, t2] = await Promise.all([

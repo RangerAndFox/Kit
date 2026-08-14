@@ -14,6 +14,7 @@ import {
   getDefaultTask,
   type HarvestTimeEntry,
 } from '../../../src/lib/harvest/client'
+import { CHECKIN_STALE_AFTER_DAYS, checkinToday, ymdDaysBetween } from './date'
 
 interface CheckinRow {
   id: string
@@ -94,6 +95,23 @@ export async function handleCheckinConfirm(opts: {
   if (entries.length === 0) return
 
   const sb = createAdminClient()
+
+  // Confirmation cards never expired, so a months-old card kept a live button:
+  // one stray click would write long-past hours to Harvest against a parse
+  // nobody remembers approving. Past the staleness window, decline and say so.
+  const ageDays = ymdDaysBetween(checkin.check_in_date, checkinToday())
+  if (ageDays > CHECKIN_STALE_AFTER_DAYS) {
+    console.log(`[checkin-confirm] ${checkin.id} is ${ageDays}d old — too stale to log`)
+    await postResult({
+      app,
+      channelId: checkin.dm_channel_id || '',
+      threadTs: checkin.dm_ts,
+      text:
+        `:hourglass: That check-in is from ${checkin.check_in_date} (${ageDays} days ago), so I'm not ` +
+        `logging it automatically — please add those hours in Harvest directly.`,
+    })
+    return
+  }
 
   // Claim the row (compare-and-set) BEFORE writing to Harvest. A plain
   // status check is a TOCTOU: two quick clicks (or a Slack action retry)

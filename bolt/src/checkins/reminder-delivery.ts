@@ -37,6 +37,7 @@ import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { resolvePersonalBriefingChannel } from '../../../src/lib/agent/briefing-channel'
 import { resolveUserTimezone } from './user-tz'
 import { checkinToday, isWorkday, isStudioHoliday } from './date'
+import { isOnTimeOff } from '../../../src/lib/staff/time-off'
 import { composeDm } from './daily-hours'
 
 const REMINDER_TYPE = 'daily_hours'
@@ -499,6 +500,8 @@ export interface SweepTally {
   notDue: number
   notWorkday: number
   expired: number
+  /** Recipient has approved time off covering their local day. */
+  timeOff: number
 }
 
 export interface SweepOptions {
@@ -512,6 +515,8 @@ export interface SweepOptions {
   resolveTz?: (slackUserId: string) => Promise<string>
   /** Expire any unresolved occurrence for the day (defaults to the SQL update). */
   expire?: (staffId: string, localDate: string) => Promise<boolean>
+  /** Is this person on approved time off that day? (defaults to staff_time_off). */
+  isOnTimeOff?: (staffId: string, localDate: string) => Promise<boolean>
 }
 
 /**
@@ -542,6 +547,9 @@ export async function sweepDailyReminders(
   const resolveTz =
     options.resolveTz || ((slackUserId: string) => resolveUserTimezone({ app, slackUserId }))
   const expire = options.expire || ((staffId: string, localDate: string) => expireUnresolved(sb(), staffId, localDate))
+  const onTimeOff =
+    options.isOnTimeOff ||
+    ((staffId: string, localDate: string) => isOnTimeOff({ staffId, date: localDate }))
   const loadStaff =
     options.loadStaff ||
     (async () => {
@@ -558,7 +566,7 @@ export async function sweepDailyReminders(
 
   const tally: SweepTally = {
     sent: 0, skipped: 0, failed: 0, unconfirmed: 0, locked: 0,
-    notDue: 0, notWorkday: 0, expired: 0,
+    notDue: 0, notWorkday: 0, expired: 0, timeOff: 0,
   }
 
   for (const s of staff) {
@@ -582,6 +590,18 @@ export async function sweepDailyReminders(
         // day so it's visibly skipped, and never send a stale late-night ping.
         const didExpire = await expire(s.id, localDate)
         if (didExpire) tally.expired += 1
+        continue
+      }
+
+      // Approved time off is a non-working day for THIS person, so no occurrence
+      // is created at all — a week of PTO leaves nothing to chase rather than a
+      // week of unanswered reminders. Checked here, after the due-window gate,
+      // so it costs one lookup only for people actually due this tick rather
+      // than one per person per hour. A lookup FAILURE must never resolve to
+      // "not on PTO" (that resumes nagging someone on vacation), so it throws to
+      // the per-person catch: this cycle is skipped and the next tick retries.
+      if (await onTimeOff(s.id, localDate)) {
+        tally.timeOff += 1
         continue
       }
 
@@ -637,6 +657,7 @@ export interface ReminderDiagnostic {
     local_hour_now: number | null
     is_workday: boolean | null
     is_holiday: boolean | null
+    on_time_off: boolean | null
     due_hour: number
     cutoff_hour: number
     window_phase: 'before' | 'window' | 'after' | null
@@ -670,8 +691,11 @@ export function buildReminderDiagnostic(input: {
   localHour: number | null
   occurrence: any | null
   checkIn: { status: string; origin: string } | null
+  /** Approved time off covering localDate; null when it could not be read. */
+  onTimeOff?: boolean | null
 }): ReminderDiagnostic {
   const { slackUserId, localDate, staff, tz, localHour, occurrence, checkIn } = input
+  const onTimeOff = input.onTimeOff ?? null
   const notes: string[] = []
   if (!staff) notes.push('no staff row for this slack_user_id')
   else {
@@ -682,6 +706,7 @@ export function buildReminderDiagnostic(input: {
   const workday = tz ? isWorkday(localDate, tz) : null
   const holiday = isStudioHoliday(localDate)
   if (workday === false) notes.push('local day is a weekend/holiday — no occurrence expected')
+  if (onTimeOff === true) notes.push('on approved time off — no occurrence expected')
   const phase = localHour != null ? reminderWindowPhase(localHour) : null
   if (!occurrence) notes.push('no occurrence row for this (staff, date)')
 
@@ -696,6 +721,7 @@ export function buildReminderDiagnostic(input: {
       local_hour_now: localHour,
       is_workday: workday,
       is_holiday: holiday,
+      on_time_off: onTimeOff,
       due_hour: dueHour(),
       cutoff_hour: cutoffHour(),
       window_phase: phase,
@@ -765,6 +791,19 @@ export async function diagnoseHoursReminder(opts: {
     checkIn = ci
   }
 
+  // Best-effort: an operator asking "why did X get no reminder?" needs time off
+  // in the answer, otherwise the diagnostic shows a workday with no occurrence
+  // and no reason. null (not false) when it can't be read, so an unreadable
+  // lookup never reads as "definitely not on PTO".
+  let onTimeOff: boolean | null = null
+  if (staff) {
+    try {
+      onTimeOff = await isOnTimeOff({ staffId: staff.id, date: localDate })
+    } catch {
+      onTimeOff = null
+    }
+  }
+
   return buildReminderDiagnostic({
     slackUserId: opts.slackUserId,
     localDate,
@@ -773,5 +812,6 @@ export async function diagnoseHoursReminder(opts: {
     localHour,
     occurrence,
     checkIn,
+    onTimeOff,
   })
 }
