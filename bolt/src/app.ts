@@ -18,7 +18,9 @@ import {
   handleStoryboardKeywordFromAssistant,
   isNewProjectTrigger,
   handleNewProjectKeywordFromAssistant,
+  handleUpdateProjectKeywordFromAssistant,
 } from './handlers/messages'
+import { isUpdateProjectTrigger } from './handlers/updateproject-card'
 import { registerCommandHandlers } from './handlers/commands'
 import { registerInteractionHandlers } from './handlers/interactions'
 import { registerBrainApprovalHandlers } from './brain/approvals'
@@ -93,6 +95,20 @@ const assistant = new Assistant({
     if (isNewProjectTrigger((m.text || '').trim())) {
       await handleNewProjectKeywordFromAssistant(app, {
         channelId: m.channel,
+        assistantThreadTs: m.thread_ts,
+      })
+      return
+    }
+
+    // ── Update-project keyword shortcut in an Assistant thread ─
+    // MUST be registered here as well as in the message handler: with
+    // "Agents & AI Apps" on, a DM reaches Kit through this Assistant callback
+    // and never as a plain message event, so the handler's isDM branch cannot
+    // fire. Without this, "update project" fell through to the orchestrator.
+    if (isUpdateProjectTrigger((m.text || '').trim())) {
+      await handleUpdateProjectKeywordFromAssistant(app, {
+        channelId: m.channel,
+        teamId: m.team || '',
         assistantThreadTs: m.thread_ts,
       })
       return
