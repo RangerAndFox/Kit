@@ -665,6 +665,27 @@ export async function handleNewProjectKeywordFromAssistant(
   )
 }
 
+/**
+ * Post the update-project card from an ASSISTANT thread.
+ *
+ * Required because "Agents & AI Apps" is enabled: a DM to Kit arrives through
+ * the Assistant flow (`app.assistant`), NOT as a plain `message` event, so the
+ * `isDM && isUpdateProjectTrigger(...)` branch in the message handler above
+ * never sees it. Mirrors handleNewProjectKeywordFromAssistant; needs teamId
+ * because the card resolves the project from the current channel/workspace.
+ */
+export async function handleUpdateProjectKeywordFromAssistant(
+  app: App,
+  opts: { channelId: string; teamId: string; assistantThreadTs?: string },
+): Promise<void> {
+  const card = await buildUpdateProjectCardForContext({
+    teamId: opts.teamId,
+    channelId: opts.channelId,
+    threadTs: opts.assistantThreadTs,
+  })
+  await app.client.chat.postMessage(card)
+}
+
 export function isStoryboardTrigger(text: string): boolean {
   if (!text) return false
   const t = text.toLowerCase().trim()
