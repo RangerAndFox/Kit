@@ -18,7 +18,9 @@ import {
   handleStoryboardKeywordFromAssistant,
   isNewProjectTrigger,
   handleNewProjectKeywordFromAssistant,
+  handleUpdateProjectKeywordFromAssistant,
 } from './handlers/messages'
+import { isUpdateProjectTrigger } from './handlers/updateproject-card'
 import { registerCommandHandlers } from './handlers/commands'
 import { registerInteractionHandlers } from './handlers/interactions'
 import { registerBrainApprovalHandlers } from './brain/approvals'
@@ -28,6 +30,7 @@ import {
 } from './watchers/dropbox'
 import cron from 'node-cron'
 import { sweepDailyReminders } from './checkins/reminder-delivery'
+import { nudgePendingCheckins } from './checkins/daily-hours'
 import { scanMissingTime } from './checkins/missing-time'
 import { dispatchAllPendingApprovals } from './brain/approvals'
 
@@ -93,6 +96,20 @@ const assistant = new Assistant({
     if (isNewProjectTrigger((m.text || '').trim())) {
       await handleNewProjectKeywordFromAssistant(app, {
         channelId: m.channel,
+        assistantThreadTs: m.thread_ts,
+      })
+      return
+    }
+
+    // ── Update-project keyword shortcut in an Assistant thread ─
+    // MUST be registered here as well as in the message handler: with
+    // "Agents & AI Apps" on, a DM reaches Kit through this Assistant callback
+    // and never as a plain message event, so the handler's isDM branch cannot
+    // fire. Without this, "update project" fell through to the orchestrator.
+    if (isUpdateProjectTrigger((m.text || '').trim())) {
+      await handleUpdateProjectKeywordFromAssistant(app, {
+        channelId: m.channel,
+        teamId: m.team || '',
         assistantThreadTs: m.thread_ts,
       })
       return
@@ -266,6 +283,25 @@ cron.schedule(
     )
   },
   { timezone: 'UTC' },
+)
+
+// ─── Cron: pending check-in reminder ───────────────────────
+// 9am local Mon–Fri — one reminder per unfinished check-in: never replied, or
+// a confirmation card never clicked. The nudge function existed but had no
+// schedule, so nothing chased an unconfirmed card and reported-but-unlogged
+// hours accumulated silently (the missing-time monitor misses them because it
+// only reports 3+ CONSECUTIVE missing days, and these are scattered singles).
+// Morning, not evening, per the operator's no-after-hours direction. Capped at
+// one nudge per check-in, so re-running is safe.
+
+cron.schedule(
+  '0 9 * * 1-5',
+  () => {
+    nudgePendingCheckins(app).catch((err) =>
+      console.error('[cron] pending-checkin nudge failed:', err),
+    )
+  },
+  { timezone: CHECKIN_TZ },
 )
 
 // ─── Cron: missing-time monitor ────────────────────────────

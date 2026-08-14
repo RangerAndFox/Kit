@@ -1,4 +1,4 @@
--- 064_daily_hours_reminders.sql
+-- 065_daily_hours_reminders.sql
 -- Durable occurrence + delivery ledger for the scheduled 5pm daily-hours reminder.
 --
 -- Incident: Stephen (U4CA7HXT9) received no Friday 2026-07-31 reminder. Root
