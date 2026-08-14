@@ -5,8 +5,10 @@
  * notification to the production Vercel endpoint; the endpoint asks Inngest to
  * run the SAME canonical Project Control sync (never renders a canvas itself).
  *
- * This module owns ALL of the security logic (mirroring `@/lib/slack/verify`)
- * so the route stays thin and the denial paths are unit-tested in isolation.
+ * This module owns ALL of the security logic so the route stays thin and the
+ * denial paths are unit-tested in isolation. It is now the ONLY verified-caller
+ * boundary on the Vercel surface — the Slack HTTP routes it was modelled on were
+ * removed (Slack runs over Socket Mode on Railway; see `.ai/invariants.md`).
  *
  * Discipline (all fail CLOSED — a denial reveals nothing about which check
  * failed, so a probe can't distinguish "no secret" from "bad signature"):
