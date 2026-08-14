@@ -14,7 +14,14 @@
 
 import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
-import { checkinToday, checkinTimezone, isWorkday } from './date'
+import {
+  CHECKIN_STALE_AFTER_DAYS,
+  checkinToday,
+  checkinTimezone,
+  isWorkday,
+  ymdAddDays,
+} from './date'
+import { isOnTimeOff } from '../../../src/lib/staff/time-off'
 import { resolveUserTimezone } from './user-tz'
 import type { ActiveChannel } from './slack-activity'
 
@@ -132,6 +139,19 @@ export async function sendDailyCheckin(opts: {
     return { status: 'skipped', reason: 'no harvest_user_id mapping' }
   }
 
+  // On PTO/sick/leave: no check-in. Without this, someone on a week's vacation
+  // got a DM every evening and their unanswered check-ins piled up looking like
+  // a Kit failure. A lookup error is NOT treated as "not on PTO" — it would
+  // resurrect exactly that nagging — so it skips this cycle and retries next.
+  try {
+    if (await isOnTimeOff({ staffId: staff.id, date: today })) {
+      return { status: 'skipped', reason: 'time off' }
+    }
+  } catch (err: any) {
+    console.warn(`[daily-hours] time-off check failed for ${staff.slack_user_id}: ${err.message}`)
+    return { status: 'skipped', reason: `time-off lookup failed: ${err.message}` }
+  }
+
   // Open a DM channel and post the message. (No suggested-projects list —
   // replies are free-form and the resolver fuzzy-matches code/client/name.)
   let dmChannelId: string
@@ -220,17 +240,28 @@ export async function sendAllDailyCheckins(app: App): Promise<{
 }
 
 /**
- * Send a single nudge to anyone whose check-in from today is still
- * unfinished: no reply yet (status='sent'), or a confirmation card they
- * never clicked (status='parsed'). Called by the cron at 10pm local.
+ * Send a single nudge for each unfinished check-in: no reply yet
+ * (status='sent'), or a confirmation card never clicked (status='parsed').
+ *
+ * This function existed but was never scheduled, so NOTHING chased an
+ * unconfirmed card — hours people had already reported sat parsed-but-unlogged
+ * indefinitely (72h across the team when this was found), and the missing-time
+ * monitor never surfaced them because it only reports 3+ CONSECUTIVE missing
+ * days and these were scattered singles. It now runs each morning (never after
+ * hours, per operator direction).
+ *
+ * Scans back over the staleness window rather than today only: a card that goes
+ * unclicked is exactly the case that needs following up, and it is worth
+ * nothing if the reminder only ever fires on the day it was posted. Still at
+ * most one nudge per check-in (nudged_at), so re-running is safe.
  */
 export async function nudgePendingCheckins(app: App): Promise<{ nudged: number }> {
   const sb = createAdminClient()
   const today = checkinToday()
   const { data: rows, error } = await sb
     .from('daily_hours_checkins')
-    .select('id, slack_user_id, dm_channel_id, dm_ts, status')
-    .eq('check_in_date', today)
+    .select('id, slack_user_id, dm_channel_id, dm_ts, status, check_in_date')
+    .gte('check_in_date', ymdAddDays(today, -CHECKIN_STALE_AFTER_DAYS))
     .in('status', ['sent', 'parsed'])
     .is('nudged_at', null)
   if (error) throw new Error(`load pending failed: ${error.message}`)
@@ -239,10 +270,13 @@ export async function nudgePendingCheckins(app: App): Promise<{ nudged: number }
   for (const r of rows || []) {
     if (!r.dm_channel_id) continue
     try {
+      // Name the day: with the window reaching back, "today's hours" would be
+      // wrong for anything the reminder catches up on.
+      const when = r.check_in_date === today ? 'today' : `*${r.check_in_date}*`
       const text =
         r.status === 'parsed'
-          ? ':wave: Friendly nudge — your hours are parsed but waiting on the *Confirm & log* button above.'
-          : ":wave: Friendly nudge — got a sec to log today's hours? Just reply with what you worked on."
+          ? `:wave: Friendly nudge — your hours for ${when} are parsed but still waiting on the *Confirm & log* button above.`
+          : `:wave: Friendly nudge — got a sec to log your hours for ${when}? Just reply with what you worked on.`
       await app.client.chat.postMessage({
         channel: r.dm_channel_id,
         text,

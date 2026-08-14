@@ -172,6 +172,59 @@ export async function handleParsedCheckinText(opts: {
 }
 
 /**
+ * Pull the first complete JSON object out of a model response.
+ *
+ * Replaces a fence-stripping regex that only matched fences anchored at the
+ * very start/end of the response: any leading prose, or a fence the model
+ * closed differently, produced "LLM returned non-JSON" even though valid JSON
+ * was sitting in the text. Scans with string/escape awareness so braces inside
+ * string values don't end the object early.
+ *
+ * Returns null when no BALANCED object exists — notably when the response was
+ * truncated mid-object. That must stay a hard failure: a partial parse would
+ * log a subset of someone's hours and silently lose the rest. Pure — tested.
+ */
+export function extractJsonObject(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  let s = String(raw).trim()
+  // Prefer a fenced block's contents when one is present anywhere in the text.
+  const fenced = s.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  if (fenced) s = fenced[1].trim()
+
+  const start = s.indexOf('{')
+  if (start === -1) return null
+
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = start; i < s.length; i++) {
+    const c = s[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (c === '\\') escaped = true
+      else if (c === '"') inString = false
+      continue
+    }
+    if (c === '"') {
+      inString = true
+      continue
+    }
+    if (c === '{') depth++
+    else if (c === '}') {
+      depth--
+      if (depth === 0) return s.slice(start, i + 1)
+    }
+  }
+  return null // unbalanced — truncated or malformed
+}
+
+/**
+ * Longest reply we'll hand to the parser. Beyond this it isn't one day's hours,
+ * and long inputs are where the model starts inventing duplicate entries.
+ */
+const MAX_REPLY_CHARS = 4000
+
+/**
  * Parse a natural-language hours reply into structured entries.
  * Uses Claude Haiku — fast, cheap, deterministic enough for this.
  */
@@ -186,6 +239,11 @@ export async function parseReplyWithLLM(opts: {
 }> {
   const { replyText, candidateProjects } = opts
   const today = opts.today || checkinToday()
+  if ((replyText || '').length > MAX_REPLY_CHARS) {
+    throw new Error(
+      `reply is ${replyText.length} chars (limit ${MAX_REPLY_CHARS}) — too long to be one day's hours`,
+    )
+  }
   const candidateList = candidateProjects
     .map((c) => `- ${c.harvest_project_name}`)
     .join('\n')
@@ -209,6 +267,8 @@ Rules:
 - "date": if the user names a day for an entry ("yesterday", "Monday", "last Tuesday", "June 20"), copy that day reference VERBATIM as a short lowercase string (e.g. "monday", "yesterday", "june 20"). Do NOT convert it to a calendar date — we resolve the real date ourselves. If no day is mentioned, use null.
 - Each entry keeps its OWN day. A message can span several days, e.g. "8h ProjectA monday, 6h ProjectB tuesday" → two entries, date "monday" and "tuesday".
 - If the user just gives bare numbers in order matching the candidate list, map them positionally.
+- Report each (project, day) ONCE. Combine repeats into a single entry with the hours summed; never emit the same project/day twice, and never pad the list to reach a total.
+- Extract ONLY what the message actually states. If it names three projects, return exactly three entries.
 
 The user was offered these candidate projects (in order):
 ${candidateList || '(none — they have to name projects themselves)'}
@@ -216,8 +276,11 @@ ${candidateList || '(none — they have to name projects themselves)'}
 Return ONLY the JSON object, no prose, no code fences.`
 
   const res = await anthropic.messages.create({
+    // A multi-project reply needs more than the previous 800-token ceiling:
+    // the JSON was being cut off mid-object, which surfaced as the misleading
+    // "LLM returned non-JSON" on exactly the longest (most valuable) replies.
     model: SPECIALIST_MODEL,
-    max_tokens: 800,
+    max_tokens: 2000,
     system: systemPrompt,
     messages: [{ role: 'user', content: replyText }],
   })
@@ -227,11 +290,20 @@ Return ONLY the JSON object, no prose, no code fences.`
       ?.filter((b: any) => b.type === 'text')
       .map((b: any) => b.text)
       .join('') || ''
-  // Strip code fences if the model added them.
-  const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
+
+  // Truncation is its own failure, named as such. Never salvage a partial
+  // object: logging a subset of someone's hours is worse than not logging.
+  if ((res as any).stop_reason === 'max_tokens') {
+    throw new Error('LLM response was truncated (hit max_tokens) — reply too long to parse reliably')
+  }
+
+  const json = extractJsonObject(text)
+  if (!json) {
+    throw new Error(`LLM returned no complete JSON object: ${text.slice(0, 200)}`)
+  }
   let parsed: any
   try {
-    parsed = JSON.parse(cleaned)
+    parsed = JSON.parse(json)
   } catch {
     throw new Error(`LLM returned non-JSON: ${text.slice(0, 200)}`)
   }

@@ -29,7 +29,7 @@ import {
   processDropboxNotification,
 } from './watchers/dropbox'
 import cron from 'node-cron'
-import { sendAllDailyCheckins } from './checkins/daily-hours'
+import { sendAllDailyCheckins, nudgePendingCheckins } from './checkins/daily-hours'
 import { scanMissingTime } from './checkins/missing-time'
 import { dispatchAllPendingApprovals } from './brain/approvals'
 
@@ -278,6 +278,25 @@ cron.schedule(
     )
   },
   { timezone: 'UTC' },
+)
+
+// ─── Cron: pending check-in reminder ───────────────────────
+// 9am local Mon–Fri — one reminder per unfinished check-in: never replied, or
+// a confirmation card never clicked. The nudge function existed but had no
+// schedule, so nothing chased an unconfirmed card and reported-but-unlogged
+// hours accumulated silently (the missing-time monitor misses them because it
+// only reports 3+ CONSECUTIVE missing days, and these are scattered singles).
+// Morning, not evening, per the operator's no-after-hours direction. Capped at
+// one nudge per check-in, so re-running is safe.
+
+cron.schedule(
+  '0 9 * * 1-5',
+  () => {
+    nudgePendingCheckins(app).catch((err) =>
+      console.error('[cron] pending-checkin nudge failed:', err),
+    )
+  },
+  { timezone: CHECKIN_TZ },
 )
 
 // ─── Cron: missing-time monitor ────────────────────────────
