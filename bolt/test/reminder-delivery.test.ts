@@ -9,6 +9,7 @@ import {
   classifyPostOutcome,
   buildReminderDiagnostic,
   deliverHoursReminder,
+  settleHoursReminderAfterCutoff,
   sweepDailyReminders,
   dueHour,
   cutoffHour,
@@ -56,11 +57,17 @@ function makeFakeDeps(cfg: {
         state.byKey.set(key, id)
         state.rows.set(id, {
           id, status: 'pending', slack_channel_id: null, slack_message_ts: null,
-          lease_expires_at: null,
+          lease_expires_at: null, attempts: 0,
         })
       }
       const r = state.rows.get(id)
-      return { id: r.id, status: r.status, slack_channel_id: r.slack_channel_id, slack_message_ts: r.slack_message_ts }
+      return { id: r.id, status: r.status, slack_channel_id: r.slack_channel_id, slack_message_ts: r.slack_message_ts, attempts: r.attempts }
+    },
+    async findRow(staffId, localDate) {
+      const id = state.byKey.get(`${staffId}|${localDate}`)
+      if (!id) return null
+      const r = state.rows.get(id)
+      return { id: r.id, status: r.status, slack_channel_id: r.slack_channel_id, slack_message_ts: r.slack_message_ts, attempts: r.attempts }
     },
     async claim(id) {
       const r = state.rows.get(id)
@@ -73,6 +80,7 @@ function makeFakeDeps(cfg: {
       if (fresh || stale) {
         r.status = 'claimed'
         r.lease_expires_at = n + 120_000
+        r.attempts += 1
         return true
       }
       return false
@@ -320,6 +328,43 @@ describe('deliverHoursReminder', () => {
     const r2 = await deliverHoursReminder(base, deps) // 'failed' is a fresh claim state
     expect(r2.status).toBe('sent')
     expect(state.posts).toBe(2)
+    const row = state.rows.get(state.byKey.get(`${STAFF.id}|${DATE}`)!)
+    expect(row.attempts).toBe(2)
+  })
+})
+
+describe('settleHoursReminderAfterCutoff', () => {
+  it('reconciles an accepted ambiguous send and creates the reply-compatible check-in', async () => {
+    const { deps, state } = makeFakeDeps({ postPlan: ['ambiguous'] })
+    expect((await deliverHoursReminder(base, deps)).status).toBe('unconfirmed')
+    const r = await settleHoursReminderAfterCutoff({ staff: STAFF, localDate: DATE }, deps)
+    expect(r.status).toBe('sent')
+    expect(state.posts).toBe(1)
+    expect(state.conversations).toHaveLength(1)
+    const row = state.rows.get(state.byKey.get(`${STAFF.id}|${DATE}`)!)
+    expect(row.status).toBe('sent')
+    expect(row.check_in_id).toBe(state.conversations[0].id)
+  })
+
+  it('keeps an ambiguous occurrence unconfirmed when history is unavailable', async () => {
+    const { deps, state } = makeFakeDeps({ postPlan: ['ambiguous'], reconcile: 'unavailable' })
+    await deliverHoursReminder(base, deps)
+    const r = await settleHoursReminderAfterCutoff({ staff: STAFF, localDate: DATE }, deps)
+    expect(r.status).toBe('unconfirmed')
+    expect(state.posts).toBe(1)
+    const row = state.rows.get(state.byKey.get(`${STAFF.id}|${DATE}`)!)
+    expect(row.status).toBe('unconfirmed')
+  })
+
+  it('expires a pending occurrence without posting', async () => {
+    const { deps, state } = makeFakeDeps()
+    await deps.ensureRow(STAFF, DATE, base.tz)
+    const r = await settleHoursReminderAfterCutoff({ staff: STAFF, localDate: DATE }, deps)
+    expect(r.status).toBe('expired')
+    expect(state.posts).toBe(0)
+    const row = state.rows.get(state.byKey.get(`${STAFF.id}|${DATE}`)!)
+    expect(row.status).toBe('skipped')
+    expect(row.skip_reason).toBe('window_closed')
   })
 })
 
@@ -330,21 +375,16 @@ describe('sweepDailyReminders', () => {
 
   function harness(overrides: Partial<Parameters<typeof sweepDailyReminders>[1]> = {}) {
     const { deps, state } = makeFakeDeps()
-    const expired: string[] = []
     const opts = {
       deps,
       loadStaff: async () => [STAFF, staff2],
       resolveTz: async (u: string) => (u === 'UPAC' ? 'America/Los_Angeles' : 'America/New_York'),
-      expire: async (staffId: string, localDate: string) => {
-        expired.push(`${staffId}|${localDate}`)
-        return true
-      },
       // Nobody is off by default; the time-off cases below override this.
       // Injected like every other dep so the sweep never reaches Supabase here.
       isOnTimeOff: async () => false,
       ...overrides,
     }
-    return { deps, state, expired, opts }
+    return { deps, state, opts }
   }
 
   // Time off must be honoured by THIS sender. The rule previously lived in
@@ -406,14 +446,16 @@ describe('sweepDailyReminders', () => {
     // 01:30 UTC Aug 1 = 9:30pm EDT Fri (after 9pm cutoff). Scoped to one Eastern
     // recipient so the assertion isn't muddied by the Pacific staffer (still in
     // window an hour behind).
-    const { state, expired, opts } = harness({
+    const { deps, state, opts } = harness({
       loadStaff: async () => [STAFF],
       resolveTz: async () => 'America/New_York',
     })
+    await deps.ensureRow(STAFF, DATE, 'America/New_York')
     const tally = await sweepDailyReminders(app, { ...opts, now: new Date('2026-08-01T01:30:00Z') })
     expect(tally.expired).toBe(1)
     expect(state.posts).toBe(0)
-    expect(expired).toContain(`${STAFF.id}|2026-07-31`)
+    const row = state.rows.get(state.byKey.get(`${STAFF.id}|${DATE}`)!)
+    expect(row.status).toBe('skipped')
   })
 
   it('(14) weekend is skipped for everyone', async () => {
@@ -440,7 +482,6 @@ describe('sweepDailyReminders', () => {
       deps, // shared ledger across both sweeps
       loadStaff: async () => [STAFF],
       resolveTz: async () => 'America/New_York',
-      expire: async () => false,
       isOnTimeOff: async () => false,
       now: new Date('2026-07-31T21:00:00Z'),
     }

@@ -38,7 +38,7 @@ import { resolvePersonalBriefingChannel } from '../../../src/lib/agent/briefing-
 import { resolveUserTimezone } from './user-tz'
 import { checkinToday, isWorkday, isStudioHoliday } from './date'
 import { isOnTimeOff } from '../../../src/lib/staff/time-off'
-import { composeDm } from './daily-hours'
+import { composeDm, localHourAt } from './daily-hours'
 
 const REMINDER_TYPE = 'daily_hours'
 
@@ -73,11 +73,7 @@ export function leaseMs(): number {
 
 /** The recipient's local hour (0–23) at `now` in `tz`. Pure. */
 export function resolveLocalHour(now: Date, tz: string): number {
-  return Number(
-    new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', hourCycle: 'h23' }).format(
-      now,
-    ),
-  )
+  return localHourAt(now, tz)
 }
 
 /**
@@ -178,11 +174,14 @@ export interface ReminderRow {
   status: string
   slack_channel_id: string | null
   slack_message_ts?: string | null
+  attempts?: number | null
 }
 
 export interface ReminderDeps {
   /** Insert-if-absent the occurrence for (staff, local_date); return the row. */
   ensureRow(staff: ReminderStaff, localDate: string, tz: string): Promise<ReminderRow>
+  /** Read an existing occurrence without creating one (used after cutoff). */
+  findRow(staffId: string, localDate: string): Promise<ReminderRow | null>
   /** Compare-and-set claim; true iff THIS caller won. */
   claim(id: string): Promise<boolean>
   mark(id: string, patch: Record<string, unknown>): Promise<void>
@@ -217,6 +216,13 @@ export type ReminderOutcome =
   | { status: 'failed'; reason: string }
   | { status: 'unconfirmed'; reason: string }
   | { status: 'locked' }
+
+export type AfterCutoffOutcome =
+  | { status: 'sent'; ts: string; reconciled: true }
+  | { status: 'expired' }
+  | { status: 'unconfirmed'; reason: string }
+  | { status: 'locked' }
+  | { status: 'none' }
 
 // ─── The occurrence + delivery state machine ─────────────────────────────────
 
@@ -319,6 +325,83 @@ export async function deliverHoursReminder(
   return { status: 'failed', reason: outcome.error }
 }
 
+/**
+ * Resolve an existing occurrence after the delivery window without ever
+ * posting. Ambiguous prior sends are reconciled first: found deliveries become
+ * normal reply-compatible check-ins, proven absences expire, and unavailable
+ * history remains unconfirmed for a later sweep. This prevents the cutoff from
+ * swallowing a Slack message that was accepted before a timeout.
+ */
+export async function settleHoursReminderAfterCutoff(
+  opts: { staff: ReminderStaff; localDate: string },
+  deps: ReminderDeps,
+): Promise<AfterCutoffOutcome> {
+  const { staff, localDate } = opts
+  const row = await deps.findRow(staff.id, localDate)
+  if (!row || row.status === 'skipped') return { status: 'none' }
+  if (row.status === 'sent') {
+    return { status: 'sent', ts: row.slack_message_ts || '', reconciled: true }
+  }
+
+  const prevStatus = row.status
+  const won = await deps.claim(row.id)
+  if (!won) return { status: 'locked' }
+
+  const mayHavePosted = shouldReconcile(prevStatus) || !!row.slack_channel_id
+  if (!mayHavePosted) {
+    await deps.mark(row.id, { status: 'skipped', skip_reason: 'window_closed', error: null })
+    return { status: 'expired' }
+  }
+
+  let channel = row.slack_channel_id
+  if (!channel) {
+    try {
+      channel = await deps.resolveChannel(staff)
+    } catch (err: any) {
+      const reason = err?.message || String(err)
+      await deps.mark(row.id, {
+        status: 'unconfirmed',
+        error: `reconciliation unavailable — channel resolution failed: ${reason}`,
+      })
+      return { status: 'unconfirmed', reason }
+    }
+  }
+
+  const rec = await deps.reconcile(channel, row.id)
+  if (rec.outcome === 'unavailable') {
+    await deps.mark(row.id, {
+      status: 'unconfirmed',
+      slack_channel_id: channel,
+      error: `reconciliation unavailable after cutoff: ${rec.error}`,
+    })
+    return { status: 'unconfirmed', reason: rec.error }
+  }
+  if (rec.outcome === 'absent') {
+    await deps.mark(row.id, {
+      status: 'skipped',
+      skip_reason: 'window_closed',
+      slack_channel_id: channel,
+      error: null,
+    })
+    return { status: 'expired' }
+  }
+
+  const checkInId = await deps.recordConversation({
+    staff,
+    localDate,
+    channelId: channel,
+    ts: rec.ts,
+  })
+  await deps.mark(row.id, {
+    status: 'sent',
+    slack_message_ts: rec.ts,
+    slack_channel_id: channel,
+    check_in_id: checkInId,
+    error: null,
+  })
+  return { status: 'sent', ts: rec.ts, reconciled: true }
+}
+
 // ─── Production deps (Supabase ledger + Bolt Slack client) ────────────────────
 
 const OPEN_OR_LOGGED = ['logged', 'sent', 'nudged', 'replied', 'parsed', 'logging']
@@ -345,7 +428,7 @@ export function makeDefaultDeps(app: App): ReminderDeps {
         )
       const { data } = await sb
         .from('daily_hours_reminders')
-        .select('id, status, slack_channel_id, slack_message_ts')
+        .select('id, status, slack_channel_id, slack_message_ts, attempts')
         .eq('staff_id', staff.id)
         .eq('local_date', localDate)
         .eq('reminder_type', REMINDER_TYPE)
@@ -353,13 +436,32 @@ export function makeDefaultDeps(app: App): ReminderDeps {
       return data
     },
 
+    async findRow(staffId, localDate) {
+      const { data, error } = await sb
+        .from('daily_hours_reminders')
+        .select('id, status, slack_channel_id, slack_message_ts, attempts')
+        .eq('staff_id', staffId)
+        .eq('local_date', localDate)
+        .eq('reminder_type', REMINDER_TYPE)
+        .maybeSingle()
+      if (error) throw new Error(`findRow: ${error.message}`)
+      return data
+    },
+
     async claim(id) {
       const now = new Date()
       const lease = new Date(now.getTime() + leaseMs())
+      const { data: current, error: readError } = await sb
+        .from('daily_hours_reminders')
+        .select('attempts')
+        .eq('id', id)
+        .maybeSingle()
+      if (readError) throw new Error(`claim(read): ${readError.message}`)
       const patch = {
         status: 'claimed',
         claimed_at: now.toISOString(),
         lease_expires_at: lease.toISOString(),
+        attempts: Number(current?.attempts || 0) + 1,
         updated_at: now.toISOString(),
       }
       // Two CAS attempts: fresh states, then stale-lease reclaim (supabase-js
@@ -513,8 +615,12 @@ export interface SweepOptions {
   loadStaff?: () => Promise<ReminderStaff[]>
   /** Resolve a recipient's timezone (defaults to the Slack-profile resolver). */
   resolveTz?: (slackUserId: string) => Promise<string>
-  /** Expire any unresolved occurrence for the day (defaults to the SQL update). */
-  expire?: (staffId: string, localDate: string) => Promise<boolean>
+  /** Settle an existing occurrence after cutoff without posting. */
+  settleAfterCutoff?: (
+    staff: ReminderStaff,
+    localDate: string,
+    deps: ReminderDeps,
+  ) => Promise<AfterCutoffOutcome>
   /** Is this person on approved time off that day? (defaults to staff_time_off). */
   isOnTimeOff?: (staffId: string, localDate: string) => Promise<boolean>
 }
@@ -546,7 +652,8 @@ export async function sweepDailyReminders(
   const deps = options.deps || makeDefaultDeps(app)
   const resolveTz =
     options.resolveTz || ((slackUserId: string) => resolveUserTimezone({ app, slackUserId }))
-  const expire = options.expire || ((staffId: string, localDate: string) => expireUnresolved(sb(), staffId, localDate))
+  const settleAfterCutoff = options.settleAfterCutoff || ((staff, localDate, injectedDeps) =>
+    settleHoursReminderAfterCutoff({ staff, localDate }, injectedDeps))
   const onTimeOff =
     options.isOnTimeOff ||
     ((staffId: string, localDate: string) => isOnTimeOff({ staffId, date: localDate }))
@@ -586,10 +693,13 @@ export async function sweepDailyReminders(
         continue
       }
       if (phase === 'after') {
-        // Recovered past the cutoff — expire any unresolved occurrence for the
-        // day so it's visibly skipped, and never send a stale late-night ping.
-        const didExpire = await expire(s.id, localDate)
-        if (didExpire) tally.expired += 1
+        // Never send after cutoff. Reconcile an earlier ambiguous send before
+        // deciding whether the occurrence can safely expire.
+        const settled = await settleAfterCutoff(s, localDate, deps)
+        if (settled.status === 'expired') tally.expired += 1
+        else if (settled.status === 'sent') tally.sent += 1
+        else if (settled.status === 'unconfirmed') tally.unconfirmed += 1
+        else if (settled.status === 'locked') tally.locked += 1
         continue
       }
 
@@ -625,23 +735,6 @@ export async function sweepDailyReminders(
     )
   }
   return tally
-}
-
-/** Terminal 'skipped' (window_closed) for any unresolved occurrence for the day. */
-async function expireUnresolved(sb: any, staffId: string, localDate: string): Promise<boolean> {
-  const { data } = await sb
-    .from('daily_hours_reminders')
-    .update({
-      status: 'skipped',
-      skip_reason: 'window_closed',
-      updated_at: new Date().toISOString(),
-    })
-    .eq('staff_id', staffId)
-    .eq('local_date', localDate)
-    .eq('reminder_type', REMINDER_TYPE)
-    .in('status', ['pending', 'claimed', 'posting', 'unconfirmed', 'failed'])
-    .select('id')
-  return (data?.length || 0) > 0
 }
 
 // ─── Read-only operator diagnostic (secret-safe) ─────────────────────────────

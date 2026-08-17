@@ -1,15 +1,7 @@
 // @ts-nocheck
 import { serve } from 'inngest/next'
 import { inngest } from '@/lib/inngest/client'
-import { preMeetingScan, preMeetingDispatch } from '@/lib/inngest/pre-meeting'
-import { deliveryDropboxScan, deliverySpecsScan, deliveryJobNotifier, deliveryStaleSweep } from '@/lib/inngest/delivery-crons'
-import { studioKnowledgeAutoSummarize } from '@/lib/inngest/studio-knowledge-cron'
-import { brainDeadlineSweep, brainScavengerScan, brainConsolidate } from '@/lib/inngest/brain-crons'
-import { driveTranscriptScan } from '@/lib/inngest/drive-transcripts'
-import { healthWatchdog } from '@/lib/inngest/health-cron'
-import { healthDailyDigest } from '@/lib/inngest/health-digest'
-import { projectControlSync, projectControlSyncOnEdit } from '@/lib/inngest/project-control-sync'
-import { selectRegisteredFunctions } from '@/lib/inngest/registration'
+import { registeredFunctions } from '@/lib/inngest/functions'
 
 /**
  * Inngest API route.
@@ -35,33 +27,6 @@ import { selectRegisteredFunctions } from '@/lib/inngest/registration'
 // explicit-ownership convention used by the app's other heavy routes
 // (mcp, slack/events = 60).
 export const maxDuration = 60
-
-export const inngestFunctions = [
-  preMeetingScan,
-  preMeetingDispatch,
-  deliveryDropboxScan,
-  deliverySpecsScan,
-  deliveryJobNotifier,
-  deliveryStaleSweep,
-  studioKnowledgeAutoSummarize,
-  brainDeadlineSweep,
-  brainScavengerScan,
-  brainConsolidate,
-  driveTranscriptScan,
-  healthWatchdog,
-  healthDailyDigest,
-  projectControlSync,
-  // Event-driven Project Control refresh — same canonical core as the cron.
-  // Inside the guarded list, so a Vercel Preview deployment registers it as
-  // ZERO functions too (never scheduled against the production environment).
-  projectControlSyncOnEdit,
-  // Add new functions here as agents are built
-]
-
-// The EXACT list serve() registers: the one canonical list run through the
-// fail-closed #119 boundary. Exported (alongside the canonical list) purely so
-// tests can assert the wiring structurally — never a second/raw list.
-export const registeredFunctions = selectRegisteredFunctions(inngestFunctions)
 
 export const { GET, POST, PUT } = serve({
   client: inngest,
