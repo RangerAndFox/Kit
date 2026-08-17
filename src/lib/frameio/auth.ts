@@ -159,8 +159,8 @@ async function exchangeAndPersist(): Promise<AccessSnapshot> {
     const errText = await res.text().catch(() => '')
     // access_denied here now almost always means the persisted refresh token is
     // genuinely dead (Adobe expired it, or a persist was lost long ago) and a
-    // one-time re-auth via /api/auth/callback is needed — no longer a cross-runtime
-    // race, because the lock guarantees only this caller is exchanging.
+    // one-time out-of-band token bootstrap is needed. The former browser callback
+    // is intentionally disabled until it has operator auth + OAuth state.
     throw new Error(`Adobe IMS token exchange failed: ${res.status} ${errText}`)
   }
 
@@ -189,7 +189,7 @@ async function exchangeAndPersist(): Promise<AccessSnapshot> {
     // runtime would exchange an already-invalidated token. Surface it so it is fixed.
     throw new Error(
       `Frame.io token rotated at Adobe but Supabase persist FAILED (${error.message}). ` +
-        `The refresh token is now out of sync; re-run the OAuth callback to reseed.`,
+        `The refresh token is now out of sync; reseed FRAMEIO_ADOBE_REFRESH_TOKEN through the approved secret-management path.`,
     )
   }
 
@@ -275,7 +275,7 @@ export async function getFrameIoAccessToken(): Promise<string> {
   const lastShared = usableAccess(last)
   if (lastShared) return lastShared
   throw new Error(
-    'Frame.io access token unavailable after coordinated-refresh retries (a refresh is stuck or the refresh token is dead — check /api/auth/callback re-auth).',
+    'Frame.io access token unavailable after coordinated-refresh retries (a refresh is stuck or the refresh token must be reseeded through the approved secret-management path).',
   )
 }
 
