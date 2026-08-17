@@ -83,6 +83,54 @@ async function getBotUserId(app: App): Promise<string | null> {
   return _botUserId
 }
 
+// Each staffer's personal one-person Kit channel id (staff.briefing_channel_id).
+// Scheduled hours reminders now post there (a private channel notifies; the
+// Assistant DM does not), so a reply in that channel must reach the check-in
+// parser — but private-channel messages otherwise early-return unhandled. Cache
+// the id (TTL) so this costs a Map hit, not a Supabase query, per message.
+const personalChannelCache = new Map<string, { channelId: string | null; at: number }>()
+const PERSONAL_CHANNEL_TTL_MS = 10 * 60 * 1000
+
+async function personalKitChannelFor(slackUserId: string): Promise<string | null> {
+  const hit = personalChannelCache.get(slackUserId)
+  if (hit && Date.now() - hit.at < PERSONAL_CHANNEL_TTL_MS) return hit.channelId
+  let channelId: string | null = null
+  try {
+    const sb = createAdminClient()
+    const { data } = await sb
+      .from('staff')
+      .select('briefing_channel_id')
+      .eq('slack_user_id', slackUserId)
+      .maybeSingle()
+    channelId = data?.briefing_channel_id || null
+  } catch (err: any) {
+    console.warn('[Bolt] personalKitChannelFor lookup failed:', err?.message || err)
+  }
+  personalChannelCache.set(slackUserId, { channelId, at: Date.now() })
+  return channelId
+}
+
+/**
+ * Route a message in a user's personal Kit channel through the same check-in
+ * reply path as a DM: an open check-in's reply/skip, then a typed confirm. The
+ * check-in flow is channel-agnostic (it posts to the row's dm_channel_id, which
+ * for a scheduled reminder is this channel). Returns true iff handled.
+ */
+async function handlePersonalChannelCheckinReply(opts: {
+  app: App
+  userId: string
+  messageText: string
+  messageTs: string
+}): Promise<boolean> {
+  const { app, userId, messageText, messageTs } = opts
+  const open = await findOpenCheckin(userId)
+  if (open) {
+    const handled = await handleCheckinReply({ app, open, replyText: messageText, replyTs: messageTs })
+    if (handled) return true
+  }
+  return handleParsedCheckinText({ app, slackUserId: userId, replyText: messageText })
+}
+
 export function registerMessageHandlers(app: App) {
   // ─── @mentions ────────────────────────────────────────────
   app.event('app_mention', async ({ event }) => {
@@ -178,6 +226,36 @@ export function registerMessageHandlers(app: App) {
     const userId = msgEvent.user
     const channelId = msgEvent.channel
     const teamId = msgEvent.team || ''
+
+    // ── Daily-hours reminder reply (personal Kit channel) ──
+    // Scheduled hours reminders post in the recipient's private one-person Kit
+    // channel (it notifies; the Assistant DM does not). A reply there must reach
+    // the check-in parser, but private-channel messages otherwise early-return
+    // below. Gate cheaply: only private channels (not public 'channel', not DMs)
+    // whose id matches this user's cached personal Kit channel. Runs BEFORE
+    // brain ingest so a hours reply isn't also fed to the brain.
+    if (
+      !isDM &&
+      userId &&
+      channelId &&
+      msgEvent.channel_type !== 'channel' &&
+      (msgEvent.text || '').trim().length > 0
+    ) {
+      const personal = await personalKitChannelFor(userId)
+      if (personal && personal === channelId) {
+        try {
+          const handled = await handlePersonalChannelCheckinReply({
+            app,
+            userId,
+            messageText: (msgEvent.text || '').trim(),
+            messageTs: msgEvent.ts,
+          })
+          if (handled) return
+        } catch (err: any) {
+          console.error('[Bolt] personal-channel check-in reply failed:', err?.message || err)
+        }
+      }
+    }
 
     // ── Brain ingest (channel messages only) ──────────────
     // Fire-and-forget: every non-bot, non-subtype channel message goes
