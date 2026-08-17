@@ -29,7 +29,8 @@ import {
   processDropboxNotification,
 } from './watchers/dropbox'
 import cron from 'node-cron'
-import { sendAllDailyCheckins, nudgePendingCheckins } from './checkins/daily-hours'
+import { sweepDailyReminders } from './checkins/reminder-delivery'
+import { nudgePendingCheckins } from './checkins/daily-hours'
 import { scanMissingTime } from './checkins/missing-time'
 import { dispatchAllPendingApprovals } from './brain/approvals'
 
@@ -260,21 +261,25 @@ http
     console.log(`   Health + webhook server: listening on :${PORT}`)
   })
 
-// ─── Cron: daily hours check-in ────────────────────────────
-// HOURLY sweep: each person gets their check-in at 5pm in THEIR timezone
-// (from their Slack profile — the team spans Pacific/Central/Eastern), on
-// their own workday calendar. sendAllDailyCheckins no-ops for anyone whose
-// local hour isn't 17. No evening nudge (after work hours, per operator
-// direction); the 9am missing-time monitor is the follow-up path.
-// CHECKIN_TIMEZONE remains the studio default for anyone without a Slack tz.
+// ─── Cron: daily hours reminder ────────────────────────────
+// HOURLY sweep: each person is delivered their reminder at/after 5pm in THEIR
+// timezone (Slack profile — the team spans Pacific/Central/Eastern), on their
+// own workday calendar, with bounded catch-up to a cutoff. Each (staff, local
+// workday) is a durable claimed occurrence (daily_hours_reminders), so a missed
+// tick, a Railway restart, a transient Slack failure, or a travel-timezone
+// transition no longer permanently loses the reminder — the next in-window
+// sweep recovers it, and reconciliation prevents duplicates. Delivery lands in
+// the recipient's private one-person Kit channel (the Assistant DM does not
+// notify). CHECKIN_TIMEZONE remains the studio default for anyone without a
+// Slack tz. Runs hourly and is idempotent, so frequent ticks are safe.
 
 const CHECKIN_TZ = process.env.CHECKIN_TIMEZONE || 'America/Los_Angeles'
 
 cron.schedule(
   '0 * * * *',
   () => {
-    sendAllDailyCheckins(app).catch((err) =>
-      console.error('[cron] daily-checkins fire failed:', err),
+    sweepDailyReminders(app).catch((err) =>
+      console.error('[cron] daily-hours-reminder sweep failed:', err),
     )
   },
   { timezone: 'UTC' },
