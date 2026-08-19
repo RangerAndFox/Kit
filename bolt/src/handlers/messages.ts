@@ -338,7 +338,7 @@ export function registerMessageHandlers(app: App) {
     // ── Update-project keyword shortcut (DM only) ─────────
     if (isDM && isUpdateProjectTrigger((msgEvent.text || '').trim())) {
       const assistantThreadTs = dmThreadTs(msgEvent)
-      const card = await buildUpdateProjectCardForContext({ teamId, channelId, threadTs: assistantThreadTs })
+      const card = await buildUpdateProjectCardForContext({ teamId, channelId, threadTs: assistantThreadTs, client: app.client })
       await app.client.chat.postMessage(card)
       return
     }
@@ -770,6 +770,7 @@ export async function handleUpdateProjectKeywordFromAssistant(
     teamId: opts.teamId,
     channelId: opts.channelId,
     threadTs: opts.assistantThreadTs,
+    client: app.client,
   })
   await app.client.chat.postMessage(card)
 }
