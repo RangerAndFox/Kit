@@ -135,6 +135,8 @@ export async function handleParsedCheckinText(opts: {
   app: App
   slackUserId: string
   replyText: string
+  /** Channel where the typed decision arrived; defaults to the Assistant DM. */
+  responseChannelId?: string
 }): Promise<boolean> {
   const decision = parseConfirmDecision(opts.replyText)
   if (!decision) return false
@@ -147,7 +149,7 @@ export async function handleParsedCheckinText(opts: {
     // doesn't just vanish into the orchestrator.
     await opts.app.client.chat
       .postMessage({
-        channel: opts.slackUserId,
+        channel: opts.responseChannelId || opts.slackUserId,
         text: "I don't have a pending hours check-in to confirm right now.",
       })
       .catch(() => {})

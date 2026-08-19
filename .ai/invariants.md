@@ -174,20 +174,24 @@ mechanism in code before assuming full compliance.
       `src/lib/mcp/auth.ts` (bearer header) and the path-key check in
       `src/app/api/mcp/[key]/route.ts`; the path form exists only because
       Anthropic's Managed Agents MCP config cannot send headers.
-    - **Structurally disabled:** `src/app/api/toolkit/dispatch/route.ts` has no
-      caller and returns a fixed 404. The disable is structural, not
-      configuration-gated: it imports only `next/server`, so it cannot reach
-      Supabase, the agent registry, or the session manager, and it never reads
-      the request body. Re-enabling requires establishing a verified caller and
-      a verified-identity workspace derivation in the same change.
+    - **Structurally disabled:** `src/app/api/toolkit/{dispatch,sow,workback,script}`
+      have no authorized caller and return a fixed 404. Each disable is
+      structural, not configuration-gated: the route imports only
+      `next/server`, so it cannot reach Supabase, an agent/model, or a session
+      manager, and it never reads the request body. Re-enabling requires
+      establishing a verified caller and a verified-identity workspace
+      derivation in the same change.
+    - **Frame.io browser OAuth callback is structurally disabled:**
+      `src/app/api/auth/callback/route.ts` returns a fixed 404 and never reads
+      query parameters or exchanges/stores tokens. Frame.io runtime access
+      continues through the existing coordinated refresh-token owner. Any
+      future browser bootstrap must add an authorized operator entry point,
+      one-time state validation, and a fixed same-origin redirect before token
+      exchange is restored.
     - **Deleted rather than authenticated** (no caller, no product
       responsibility, and a live alternative mechanism for each):
       `/api/webhooks/farm`, `/api/webhooks/generic`,
       `/api/webhooks/project-ops/created`.
-    - **Not yet covered — `Decision required`:** `/api/toolkit/{sow,workback,script}`
-      were outside the approved scope of this correction and have **no caller
-      verification**. Do not read this invariant as covering the whole Vercel
-      surface until they are dispositioned.
 
 ## How to use these
 
