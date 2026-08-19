@@ -30,6 +30,14 @@
  */
 
 const BASE_URL = 'https://app.boords.com/v1'
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000
+
+function requestTimeoutMs(): number {
+  const configured = Number(process.env.BOORDS_REQUEST_TIMEOUT_MS)
+  return Number.isFinite(configured) && configured >= 15_000
+    ? configured
+    : DEFAULT_REQUEST_TIMEOUT_MS
+}
 
 function headers() {
   const token = process.env.BOORDS_API_KEY
@@ -57,20 +65,34 @@ async function boordsFetch(
   const init: RequestInit = {
     method,
     headers: headers(),
-    signal: AbortSignal.timeout(15_000),
   }
   if (body) init.body = JSON.stringify(body)
 
-  let res = await fetch(url.toString(), init)
+  const fetchOnce = async (): Promise<Response> => {
+    const timeoutMs = requestTimeoutMs()
+    try {
+      return await fetch(url.toString(), {
+        ...init,
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+    } catch (err: any) {
+      if (err?.name === 'TimeoutError' || /aborted due to timeout/i.test(err?.message || '')) {
+        throw new Error(
+          `Boords ${method} ${path} timed out after ${Math.round(timeoutMs / 1000)}s; ` +
+          'the request may have completed, so use the resume command instead of starting over.',
+        )
+      }
+      throw err
+    }
+  }
+
+  let res = await fetchOnce()
 
   // One bounded retry on rate limit, honoring Retry-After.
   if (res.status === 429) {
     const wait = Math.min(parseInt(res.headers.get('Retry-After') || '5', 10) || 5, 30)
     await new Promise((r) => setTimeout(r, wait * 1000))
-    // Fresh timeout signal — the original AbortSignal.timeout(15s) has very
-    // likely fired during the wait (Retry-After up to 30s), which would abort
-    // the retry immediately instead of actually retrying.
-    res = await fetch(url.toString(), { ...init, signal: AbortSignal.timeout(15_000) })
+    res = await fetchOnce()
   }
 
   if (!res.ok) {
@@ -91,6 +113,7 @@ async function boordsFetch(
 export interface BoordsProject {
   id: string
   name: string
+  description?: string
 }
 
 export interface BoordsStoryboard {
@@ -128,6 +151,33 @@ export interface CreateStoryboardInput {
   /** Accepts "16:9" or "16x9" — we normalize to Boords' "16x9" form. */
   aspectRatio?: '16:9' | '9:16' | '1:1' | '4:5' | '21:9' | string
   frames: BoordsFrame[]
+  /** Resume-only: reconcile a possibly-completed timed-out create before writing. */
+  reconcileExisting?: boolean
+}
+
+export function selectResumeProject(
+  projects: BoordsProject[],
+  name: string,
+  description?: string,
+): BoordsProject | null {
+  const target = name.trim().toLowerCase()
+  const exact = projects.filter((project) => project.name.trim().toLowerCase() === target)
+  if (description) {
+    const matchingDescription = exact.filter(
+      (project) => (project.description || '').trim() === description.trim(),
+    )
+    if (matchingDescription.length === 1) return matchingDescription[0]
+  }
+  return exact.length === 1 ? exact[0] : null
+}
+
+export function selectResumeStoryboard(
+  storyboards: BoordsStoryboard[],
+  name: string,
+): BoordsStoryboard | null {
+  const target = name.trim().toLowerCase()
+  const exact = storyboards.filter((storyboard) => storyboard.name.trim().toLowerCase() === target)
+  return exact.length === 1 ? exact[0] : null
 }
 
 // ─── Endpoints ─────────────────────────────────────────────────
@@ -233,10 +283,26 @@ export async function createStoryboard(input: CreateStoryboardInput): Promise<{
   if (explicitProjectId) {
     project = { id: explicitProjectId, name: '' }
   } else {
-    project = await createProject({
-      name: input.name,
-      description: input.description,
-    })
+    const existing = input.reconcileExisting
+      ? selectResumeProject(await listProjects(100), input.name, input.description)
+      : null
+    project = existing || await createProject({ name: input.name, description: input.description })
+  }
+
+  // A timed-out POST can still succeed server-side. On resume, return the
+  // one unambiguous matching storyboard instead of creating a duplicate.
+  if (input.reconcileExisting) {
+    const existingStoryboard = selectResumeStoryboard(
+      await listStoryboards(project.id, 100),
+      input.name,
+    )
+    if (existingStoryboard) {
+      return {
+        storyboard: { ...existingStoryboard, frameCount: input.frames.length },
+        project,
+        fieldKeyMap: {},
+      }
+    }
   }
 
   // ── Create storyboard ────────────────────────────────────────
@@ -299,6 +365,7 @@ export async function listProjects(limit = 50): Promise<BoordsProject[]> {
   return (res?.data || []).map((p: any) => ({
     id: p.id,
     name: p?.attributes?.name || p.id,
+    description: p?.attributes?.description || undefined,
   }))
 }
 
