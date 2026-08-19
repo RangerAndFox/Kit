@@ -19,7 +19,7 @@ import {
   getAvailableAgents,
 } from '../../../src/lib/inngest/agents/registry'
 import type { ServiceKey } from '../../../src/lib/provisioner/types'
-import { projectNumberFromCode } from '../../../src/lib/studio-knowledge/project-sync'
+import { projectNumberFromCode, projectNumberKey } from '../../../src/lib/studio-knowledge/project-sync'
 import { buildNewProjectModal, buildUpdateProjectModal } from '../../../src/lib/provisioner/modal'
 import { deriveProjectCode, deriveDropboxSafeName } from '../../../src/lib/provisioner/identifiers'
 import { computeUpdatePlan } from '../../../src/lib/provisioner/update-diff'
@@ -83,6 +83,7 @@ import { extractScriptFromFile } from '../../../src/lib/storyboard/files'
 import { handleCheckinConfirm, handleCheckinRedo } from '../checkins/confirm'
 import { parseOnboardSubmission } from '../onboarding/modal'
 import { runOnboarding, buildRequesterSummary } from '../onboarding/orchestrator'
+import { rehydrateProjectExternalLinks } from '../onboarding/rehydrate'
 import { registerDeliveryViewHandlers } from '../delivery/submit-handler'
 import {
   NDA_REVIEW_ACTION,
@@ -92,6 +93,13 @@ import {
   parseNdaModalSubmission,
 } from '../onboarding/nda/card'
 import { sendNdaFromModal } from '../onboarding/nda/send'
+import {
+  LIVE_SLACK_PROJECT_PREFIX,
+  parseSlackProjectChannel,
+  reconcileProjectPicker,
+  type PickerProjectRow,
+  type SlackProjectChannel,
+} from './updateproject-reconcile'
 
 export function registerInteractionHandlers(app: App) {
   // ─── Delivery: profile-selection + create-profile modals ──
@@ -407,6 +415,18 @@ export function registerInteractionHandlers(app: App) {
     threadTs = threadTs || (body as any)?.message?.thread_ts || undefined
     if (!projectId) return
     const workspaceId = await resolveWorkspaceId(body?.team?.id || '')
+    if (projectId.startsWith(LIVE_SLACK_PROJECT_PREFIX)) {
+      const liveChannelId = projectId.slice(LIVE_SLACK_PROJECT_PREFIX.length)
+      try {
+        projectId = await adoptLiveSlackProjectChannel(app, client, workspaceId, liveChannelId)
+      } catch (err: any) {
+        await client.chat.postMessage({
+          channel: channelId || body?.user?.id,
+          text: `:warning: I couldn't link that live Slack project to Kit: ${err?.message || 'unknown error'}`,
+        })
+        return
+      }
+    }
     let snap
     try {
       snap = await loadUpdateSnapshot(projectId, workspaceId)
@@ -2106,23 +2126,152 @@ async function loadUpdateSnapshot(
   }
 }
 
-/** The workspace's editable projects (for the picker), newest first. */
-async function listEditableProjects(workspaceId: string): Promise<Array<{ id: string; label: string }>> {
+/** The workspace's editable database rows. Slack reconciliation happens after
+ * this read so a deleted test channel can never survive in the picker merely
+ * because its projects row still says `active`. */
+async function listEditableProjectRows(workspaceId: string): Promise<PickerProjectRow[]> {
   if (!workspaceId) return []
   try {
     const sb = createAdminClient()
     const { data } = await sb
       .from('projects')
-      .select('id, name, client, project_code')
+      .select('id, name, client, project_code, slack_channel_id, external_links')
       .eq('workspace_id', workspaceId)
       .in('status', EDITABLE_PROJECT_STATUSES)
       .order('created_at', { ascending: false })
-      .limit(100)
-    return (data || []).map((p: any) => ({ id: p.id, label: projectOptionLabel(p) }))
+      .limit(500)
+    return (data || []) as PickerProjectRow[]
   } catch (err: any) {
-    console.warn('[update] listEditableProjects failed:', err?.message)
+    console.warn('[update] listEditableProjectRows failed:', err?.message)
     return []
   }
+}
+
+/** List every non-archived Slack channel Kit can see, then retain only channels
+ * that look like Kit-created project channels. This is the picker's live source
+ * of truth; Supabase supplies project metadata, not channel existence. */
+async function listLiveSlackProjectChannels(client: any): Promise<SlackProjectChannel[]> {
+  let kitBotUserId: string | undefined
+  try {
+    const auth = await client.auth.test()
+    kitBotUserId = auth.user_id || undefined
+  } catch (err: any) {
+    console.warn('[update] auth.test failed; relying on Kit purpose markers:', err?.data?.error || err?.message)
+  }
+
+  const result: SlackProjectChannel[] = []
+  let cursor: string | undefined
+  for (let page = 0; page < 10; page++) {
+    const response = await client.conversations.list({
+      types: 'public_channel,private_channel',
+      exclude_archived: true,
+      limit: 200,
+      ...(cursor ? { cursor } : {}),
+    })
+    for (const raw of response.channels || []) {
+      const parsed = parseSlackProjectChannel(raw as any, kitBotUserId)
+      if (parsed) result.push(parsed)
+    }
+    cursor = response.response_metadata?.next_cursor || undefined
+    if (!cursor) break
+  }
+  return result
+}
+
+/**
+ * Adopt (or re-link) a live Slack project channel before opening its update
+ * modal. The click is the user's explicit choice to update that live project;
+ * the picker itself remains read-only.
+ */
+async function adoptLiveSlackProjectChannel(
+  app: App,
+  client: any,
+  workspaceId: string,
+  channelId: string,
+): Promise<string> {
+  const info = await client.conversations.info({ channel: channelId })
+  let kitBotUserId: string | undefined
+  try {
+    const auth = await client.auth.test()
+    kitBotUserId = auth.user_id || undefined
+  } catch {}
+  const live = parseSlackProjectChannel(info.channel as any, kitBotUserId)
+  if (!live) throw new Error('That Slack channel is no longer an active Kit project channel.')
+
+  const sb = createAdminClient()
+  const { data: rows, error: readError } = await sb
+    .from('projects')
+    .select('*')
+    .eq('workspace_id', workspaceId)
+    .limit(500)
+  if (readError) throw new Error(`Could not reconcile the project record: ${readError.message}`)
+
+  const key = projectNumberKey(live.projectNumber)
+  const matches = (rows || []).filter((row: any) =>
+    projectNumberKey(row.project_code) === key || projectNumberKey(row.name) === key,
+  )
+  const directlyLinked = matches.find((row: any) =>
+    row.slack_channel_id === channelId ||
+    row.external_links?.slack_id === channelId ||
+    row.external_links?.slack_channel_id === channelId,
+  )
+  if (!directlyLinked && matches.length > 1) {
+    throw new Error(`Kit found ${matches.length} database records for project ${live.projectNumber}; reconcile the duplicate records before updating.`)
+  }
+
+  const existing = directlyLinked || matches[0]
+  const slackLinks = {
+    ...((existing as any)?.external_links || {}),
+    slack_id: channelId,
+    slack: `https://slack.com/app_redirect?channel=${channelId}`,
+  }
+  let project: any
+  if (existing) {
+    const reconciledStatus = EDITABLE_PROJECT_STATUSES.includes((existing as any).status)
+      ? (existing as any).status
+      : 'active'
+    const { data, error } = await sb
+      .from('projects')
+      .update({
+        status: reconciledStatus,
+        slack_channel_id: channelId,
+        external_links: slackLinks,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', (existing as any).id)
+      .select('*')
+      .single()
+    if (error || !data) throw new Error(`Could not link the live Slack channel: ${error?.message || 'unknown error'}`)
+    project = data
+  } else {
+    const externalIds = {
+      project_number: live.projectNumber,
+      dropbox_safe_name: deriveDropboxSafeName(live.projectNumber, live.client, live.projectName),
+    }
+    const { data, error } = await sb
+      .from('projects')
+      .insert({
+        workspace_id: workspaceId,
+        name: live.projectName,
+        client: live.client,
+        project_code: deriveProjectCode(live.projectNumber, live.client),
+        status: 'active',
+        slack_channel_id: channelId,
+        external_links: slackLinks,
+        external_ids: externalIds,
+      })
+      .select('*')
+      .single()
+    if (error || !data) throw new Error(`Could not adopt the live Slack project: ${error?.message || 'unknown error'}`)
+    project = data
+  }
+
+  // Best-effort recovery of Dropbox + Harvest links for legacy/missing rows.
+  // Slack identity is already durable even if another provider is unavailable.
+  await rehydrateProjectExternalLinks({ app, project }).catch((err: any) => {
+    console.warn(`[update] rehydrate adopted project ${project.id} failed:`, err?.message)
+  })
+  return project.id
 }
 
 /** Infer the project bound to the Slack channel the flow was launched from. */
@@ -2198,11 +2347,29 @@ export async function buildUpdateProjectCardForContext(opts: {
   teamId: string
   channelId: string
   threadTs?: string
+  client: any
 }): Promise<any> {
   const workspaceId = await resolveWorkspaceId(opts.teamId)
   const inferred = await findProjectByChannel(workspaceId, opts.channelId)
-  const candidates = inferred ? [] : await listEditableProjects(workspaceId)
-  return buildUpdateProjectCard({ channelId: opts.channelId, threadTs: opts.threadTs, inferred, candidates })
+  if (inferred) {
+    return buildUpdateProjectCard({ channelId: opts.channelId, threadTs: opts.threadTs, inferred, candidates: [] })
+  }
+
+  const [rows, liveChannels] = await Promise.all([
+    listEditableProjectRows(workspaceId),
+    listLiveSlackProjectChannels(opts.client),
+  ])
+  const currentLiveChannel = liveChannels.find((channel) => channel.id === opts.channelId)
+  const liveInferred = currentLiveChannel
+    ? { id: `${LIVE_SLACK_PROJECT_PREFIX}${currentLiveChannel.id}`, label: currentLiveChannel.label }
+    : null
+  const candidates = liveInferred ? [] : reconcileProjectPicker(rows, liveChannels)
+  return buildUpdateProjectCard({
+    channelId: opts.channelId,
+    threadTs: opts.threadTs,
+    inferred: liveInferred,
+    candidates,
+  })
 }
 
 async function findExistingProject(
