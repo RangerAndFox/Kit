@@ -90,6 +90,7 @@ export function registerCommandHandlers(app: App) {
           const card = await buildUpdateProjectCardForContext({
             teamId: command.team_id,
             channelId: command.channel_id,
+            client,
           })
           await client.chat.postMessage(card)
         } catch (err: any) {
