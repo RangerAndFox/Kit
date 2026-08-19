@@ -5,7 +5,7 @@
  * The CANONICAL scheduled sender is now reminder-delivery.ts (durable occurrence
  * + effectively-once delivery to the private one-person Kit channel). This file
  * keeps the shared, pure pieces it reuses — the message body (composeDm), the
- * local-hour predicate (isLocalCheckinHour), and candidate merging — plus the
+ * local-hour resolver (localHourAt), and candidate merging — plus the
  * (currently dormant) evening nudge. No suggested-projects list (operator
  * direction): replies are free-form and the resolver fuzzy-matches project
  * code, client name, or keywords.
@@ -75,20 +75,15 @@ export function composeDm(opts: { firstName: string }): string {
 }
 
 /**
- * True when it's currently the check-in hour (5pm by default) in the given
- * timezone. Computed per call via Intl so DST is always right. Pure — tested.
+ * Local hour (0-23) at an instant in the given timezone. Computed per call via
+ * Intl so DST is always right. Shared by the durable scheduler and tests.
  */
-export function isLocalCheckinHour(
-  now: Date,
-  tz: string,
-  hour = 17,
-): boolean {
-  const localHour = Number(
+export function localHourAt(now: Date, tz: string): number {
+  return Number(
     new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', hourCycle: 'h23' }).format(
       now,
     ),
   )
-  return localHour === hour
 }
 
 /**

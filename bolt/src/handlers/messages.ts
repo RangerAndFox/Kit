@@ -88,7 +88,7 @@ async function getBotUserId(app: App): Promise<string | null> {
 // Assistant DM does not), so a reply in that channel must reach the check-in
 // parser — but private-channel messages otherwise early-return unhandled. Cache
 // the id (TTL) so this costs a Map hit, not a Supabase query, per message.
-const personalChannelCache = new Map<string, { channelId: string | null; at: number }>()
+const personalChannelCache = new Map<string, { channelId: string; at: number }>()
 const PERSONAL_CHANNEL_TTL_MS = 10 * 60 * 1000
 
 async function personalKitChannelFor(slackUserId: string): Promise<string | null> {
@@ -106,7 +106,10 @@ async function personalKitChannelFor(slackUserId: string): Promise<string | null
   } catch (err: any) {
     console.warn('[Bolt] personalKitChannelFor lookup failed:', err?.message || err)
   }
-  personalChannelCache.set(slackUserId, { channelId, at: Date.now() })
+  // Cache only a positive binding. A newly provisioned channel or a transient
+  // lookup failure must be visible on the very next message, not hidden behind
+  // a ten-minute negative cache that drops the first hours reply.
+  if (channelId) personalChannelCache.set(slackUserId, { channelId, at: Date.now() })
   return channelId
 }
 
@@ -119,16 +122,22 @@ async function personalKitChannelFor(slackUserId: string): Promise<string | null
 async function handlePersonalChannelCheckinReply(opts: {
   app: App
   userId: string
+  channelId: string
   messageText: string
   messageTs: string
 }): Promise<boolean> {
-  const { app, userId, messageText, messageTs } = opts
+  const { app, userId, channelId, messageText, messageTs } = opts
   const open = await findOpenCheckin(userId)
   if (open) {
     const handled = await handleCheckinReply({ app, open, replyText: messageText, replyTs: messageTs })
     if (handled) return true
   }
-  return handleParsedCheckinText({ app, slackUserId: userId, replyText: messageText })
+  return handleParsedCheckinText({
+    app,
+    slackUserId: userId,
+    replyText: messageText,
+    responseChannelId: channelId,
+  })
 }
 
 export function registerMessageHandlers(app: App) {
@@ -247,6 +256,7 @@ export function registerMessageHandlers(app: App) {
           const handled = await handlePersonalChannelCheckinReply({
             app,
             userId,
+            channelId,
             messageText: (msgEvent.text || '').trim(),
             messageTs: msgEvent.ts,
           })

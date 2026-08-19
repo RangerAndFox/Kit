@@ -13,7 +13,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { inngestFunctions, registeredFunctions } from '../../app/api/inngest/route'
+import { inngestFunctions, registeredFunctions } from './functions'
 import { selectRegisteredFunctions } from './registration'
 
 const ids = inngestFunctions.map((f) => (f as { opts: { id: string } }).opts.id)
