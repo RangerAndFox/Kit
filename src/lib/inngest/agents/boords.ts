@@ -214,6 +214,7 @@ async function resume(payload: Record<string, unknown>): Promise<AgentResult> {
         description,
         aspectRatio: aspectRatio as any,
         frames: job.frames,
+        reconcileExisting: true,
       })
       await setJobBoordsId(jobId, storyboard.id, storyboard.url)
       await markJobComplete(jobId, job.frames.length)
