@@ -40,7 +40,9 @@ function slackMock(handlers: Record<string, (body: any, url: URL) => any>) {
   return calls
 }
 
-const target = deriveSlackSlug({ projectId: PROJECT_ID, projectNumber: '2601', client: 'Adidas', projectName: 'Summer Campaign' }).slackSlug
+const targetNames = deriveSlackSlug({ projectId: PROJECT_ID, projectNumber: '2601', client: 'Adidas', projectName: 'Summer Campaign' })
+const target = targetNames.slackSlug
+const collisionTarget = targetNames.slackCollisionSlug
 
 describe('renameProjectSlackChannel', () => {
   it('renames when the marker is present and the slug differs', async () => {
@@ -141,6 +143,32 @@ describe('renameProjectSlackChannel', () => {
     )
   })
 
+  it('refuses a channel marked for another project even when Kit created it', async () => {
+    const calls = slackMock({
+      'conversations.info': () => ({
+        ok: true,
+        channel: {
+          name: '2601-adidas-old-project',
+          creator: 'UKITBOT',
+          purpose: { value: '[kit:ffffffff-ffff-ffff-ffff-ffffffffffff]' },
+        },
+      }),
+      'auth.test': () => ({ ok: true, user_id: 'UKITBOT' }),
+    })
+
+    await assert.rejects(
+      () => renameProjectSlackChannel({
+        projectId: PROJECT_ID,
+        channelId: CHANNEL,
+        projectName: 'Summer Campaign',
+        client: 'Adidas',
+        projectNumber: '2601',
+      }),
+      (err: unknown) => err instanceof SlackRenameTerminalError,
+    )
+    assert.equal(calls.some((c) => c.method === 'auth.test'), false)
+  })
+
   it('is a no-op rename when already at the target slug', async () => {
     const calls = slackMock({
       'conversations.info': () => ({ ok: true, channel: { name: target, purpose: { value: `x ${kitChannelMarker(PROJECT_ID)}` } } }),
@@ -164,5 +192,37 @@ describe('renameProjectSlackChannel', () => {
     const res = await renameProjectSlackChannel({ projectId: PROJECT_ID, channelId: CHANNEL, projectName: 'Summer Campaign', client: 'Adidas', projectNumber: '2601' })
     assert.equal(res.channelName, target)
     assert.equal(res.channelId, CHANNEL)
+  })
+
+  it('uses the suffixed fallback only when another channel genuinely holds the clean name', async () => {
+    const renameNames: string[] = []
+    slackMock({
+      'conversations.info': () => ({
+        ok: true,
+        channel: { name: 'old-name', purpose: { value: `x ${kitChannelMarker(PROJECT_ID)}` } },
+      }),
+      'conversations.rename': (body) => {
+        renameNames.push(body.name)
+        if (body.name === target) return { ok: false, error: 'name_taken' }
+        return { ok: true, channel: { id: CHANNEL, name: body.name } }
+      },
+      'conversations.list': () => ({
+        ok: true,
+        channels: [{ id: 'COTHER', name: target, purpose: { value: '[kit:ffffffff-ffff-ffff-ffff-ffffffffffff]' } }],
+      }),
+      'conversations.setPurpose': () => ({ ok: true }),
+      'conversations.setTopic': () => ({ ok: true }),
+    })
+
+    const res = await renameProjectSlackChannel({
+      projectId: PROJECT_ID,
+      channelId: CHANNEL,
+      projectName: 'Summer Campaign',
+      client: 'Adidas',
+      projectNumber: '2601',
+    })
+
+    assert.deepEqual(renameNames, [target, collisionTarget])
+    assert.equal(res.channelName, collisionTarget)
   })
 })
