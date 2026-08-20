@@ -34,12 +34,14 @@ export interface ProjectIdentifiers {
   /** `{number}_{client}_{name}` sanitized — the `/production/{year}/{safeName}`
    *  leaf, persisted as external_ids.dropbox_safe_name. */
   dropboxSafeName: string
-  /** Slack channel slug base, already length-capped to leave room for the suffix. */
+  /** Clean Slack channel slug, capped at Slack's 80-character limit. */
   slackSlugBase: string
-  /** Stable 8-char id derived from projectId; the deterministic channel suffix. */
+  /** Stable 8-char id derived from projectId; used only for genuine collisions. */
   slackShortId: string
-  /** Full Slack channel slug `${slackSlugBase}-${slackShortId}` (base alone if no id). */
+  /** Normal human-facing Slack channel slug (no internal id). */
   slackSlug: string
+  /** Collision fallback `${truncatedBase}-${slackShortId}`. */
+  slackCollisionSlug: string
   /** Frame.io business label `{number}_{client}_{name}` (join only, no sanitization). */
   frameioBusinessLabel: string
 }
@@ -87,14 +89,15 @@ export function deriveSlackShortId(projectId: string): string {
 }
 
 /**
- * Slack channel slug base + full slug. Mirrors `createProjectSlackChannel` in
- * src/lib/mcp/slack.ts. The base length cap depends on the short-id length, so
- * the base and the short id are derived together.
+ * Human-facing Slack channel slug plus a deterministic collision fallback.
+ * The normal slug never exposes Kit's internal project UUID. The suffixed form
+ * is reserved for a genuine Slack `name_taken` collision.
  */
 export function deriveSlackSlug(input: ProjectIdentityInput): {
   slackShortId: string
   slackSlugBase: string
   slackSlug: string
+  slackCollisionSlug: string
 } {
   const shortId = deriveSlackShortId(input.projectId)
   const base = [input.projectNumber, input.client, input.projectName]
@@ -104,20 +107,27 @@ export function deriveSlackSlug(input: ProjectIdentityInput): {
     .replace(/[^a-z0-9-]/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
-    .slice(0, 80 - (shortId.length + 1))
-  const slackSlug = shortId ? `${base}-${shortId}` : base
-  return { slackShortId: shortId, slackSlugBase: base, slackSlug }
+    .slice(0, 80)
+  const collisionBase = shortId ? base.slice(0, 80 - (shortId.length + 1)).replace(/-$/g, '') : base
+  const slackCollisionSlug = shortId ? `${collisionBase}-${shortId}` : base
+  return {
+    slackShortId: shortId,
+    slackSlugBase: base,
+    slackSlug: base,
+    slackCollisionSlug,
+  }
 }
 
 /** Derive every identity string at once. */
 export function deriveProjectIdentifiers(input: ProjectIdentityInput): ProjectIdentifiers {
-  const { slackShortId, slackSlugBase, slackSlug } = deriveSlackSlug(input)
+  const { slackShortId, slackSlugBase, slackSlug, slackCollisionSlug } = deriveSlackSlug(input)
   return {
     projectCode: deriveProjectCode(input.projectNumber, input.client),
     dropboxSafeName: deriveDropboxSafeName(input.projectNumber, input.client, input.projectName),
     slackSlugBase,
     slackShortId,
     slackSlug,
+    slackCollisionSlug,
     frameioBusinessLabel: deriveFrameioBusinessLabel(
       input.projectNumber,
       input.client,
