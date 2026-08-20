@@ -44,7 +44,7 @@ function oracleFrameioLabel(n: string, c: string, p: string): string {
   return [n, c, p].map((x) => (x ? String(x).trim() : '')).filter(Boolean).join('_')
 }
 
-// slack.ts shortId + base + slug
+// slack.ts clean slug + collision-only short-id fallback
 function oracleSlack(projectId: string, n: string, c: string, p: string) {
   const shortId = String(projectId).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toLowerCase()
   const base = [n, c, p]
@@ -54,9 +54,10 @@ function oracleSlack(projectId: string, n: string, c: string, p: string) {
     .replace(/[^a-z0-9-]/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
-    .slice(0, 80 - (shortId.length + 1))
-  const slug = shortId ? `${base}-${shortId}` : base
-  return { shortId, base, slug }
+    .slice(0, 80)
+  const collisionBase = shortId ? base.slice(0, 80 - (shortId.length + 1)).replace(/-$/g, '') : base
+  const collisionSlug = shortId ? `${collisionBase}-${shortId}` : base
+  return { shortId, base, slug: base, collisionSlug }
 }
 
 // ─── Input matrix ────────────────────────────────────────────────────────────
@@ -124,6 +125,7 @@ describe('deriveSlackSlug parity', () => {
       assert.equal(got.slackShortId, oracle.shortId)
       assert.equal(got.slackSlugBase, oracle.base)
       assert.equal(got.slackSlug, oracle.slug)
+      assert.equal(got.slackCollisionSlug, oracle.collisionSlug)
     })
   }
 })
@@ -139,15 +141,17 @@ describe('deriveProjectIdentifiers aggregates all fields', () => {
       assert.equal(ids.slackShortId, oracle.shortId)
       assert.equal(ids.slackSlugBase, oracle.base)
       assert.equal(ids.slackSlug, oracle.slug)
+      assert.equal(ids.slackCollisionSlug, oracle.collisionSlug)
     })
   }
 })
 
-describe('slug length cap accounts for the short-id suffix', () => {
-  it('full slug never exceeds 80 chars', () => {
+describe('Slack slug length caps', () => {
+  it('clean and collision slugs never exceed 80 chars', () => {
     for (const t of CASES) {
-      const { slackSlug } = deriveSlackSlug(t)
+      const { slackSlug, slackCollisionSlug } = deriveSlackSlug(t)
       assert.ok(slackSlug.length <= 80, `slug too long: ${slackSlug.length}`)
+      assert.ok(slackCollisionSlug.length <= 80, `collision slug too long: ${slackCollisionSlug.length}`)
     }
   })
 })
