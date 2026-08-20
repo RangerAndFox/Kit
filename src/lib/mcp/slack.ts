@@ -301,15 +301,18 @@ async function refreshChannelPurposeAndTopic(
 }
 
 /**
- * Reconcile a project channel by its EXACT deterministic name (which already
- * embeds the Kit short id, so the name IS the identity). Lets a resumed provision
- * reuse the channel a prior attempt created — including the crash-after-create-
- * before-setPurpose window, where the purpose marker may not be written yet. The
- * purpose marker, when present, is logged as corroborating evidence only.
- * Bounded pagination. Returns the channel id or null.
+ * Find a readable public channel by exact name. Ownership is classified
+ * separately from its project marker and creator; exact-name equality alone is
+ * never enough to adopt or mutate a channel. Bounded pagination.
  */
-async function findOwnedChannelByName(slug: string, projectId: string): Promise<string | null> {
-  const marker = kitChannelMarker(projectId)
+type SlackChannelIdentity = {
+  id?: string
+  name?: string
+  creator?: string
+  purpose?: { value?: string }
+}
+
+async function findChannelByName(slug: string): Promise<SlackChannelIdentity | null> {
   let cursor = ''
   for (let page = 0; page < 10; page++) {
     const params: Record<string, string> = {
@@ -320,18 +323,40 @@ async function findOwnedChannelByName(slug: string, projectId: string): Promise<
     if (cursor) params.cursor = cursor
     const res = await slackGet('conversations.list', params).catch(() => null)
     if (!res) return null
-    type ChannelLite = { id?: string; name?: string; purpose?: { value?: string } }
-    const match = ((res.channels || []) as ChannelLite[]).find((c) => c?.name === slug)
-    if (match) {
-      if (projectId && !(match.purpose?.value || '').includes(marker)) {
-        console.warn(`[Slack] reused channel ${slug} by exact name; purpose marker not yet set (crash-before-setPurpose)`)
-      }
-      return match.id ?? null
-    }
+    const match = ((res.channels || []) as SlackChannelIdentity[]).find((c) => c?.name === slug)
+    if (match) return match
     cursor = res.response_metadata?.next_cursor || ''
     if (!cursor) break
   }
   return null
+}
+
+function concreteKitMarker(purpose: string): string | null {
+  return purpose.match(/\[kit:([0-9a-f]{8}-[0-9a-f-]{27,})\]/i)?.[1]?.toLowerCase() || null
+}
+
+async function authenticatedKitBotUserId(): Promise<string | null> {
+  const auth = await slackPost('auth.test', {}).catch(() => null)
+  return typeof auth?.user_id === 'string' && auth.user_id ? auth.user_id : null
+}
+
+/**
+ * Classify a readable channel occupying a desired name. A marker for another
+ * concrete project always wins over creator identity. Marker-less legacy and
+ * crash-before-marker channels are ours only when Slack confirms Kit created
+ * them. `unknown` fails closed so a transient auth/list gap cannot create a
+ * duplicate channel.
+ */
+async function classifyChannelOwnership(
+  channel: SlackChannelIdentity,
+  projectId: string,
+): Promise<'owned' | 'collision' | 'unknown'> {
+  const purpose = channel.purpose?.value || ''
+  if (purpose.includes(kitChannelMarker(projectId))) return 'owned'
+  if (concreteKitMarker(purpose)) return 'collision'
+  const botUserId = await authenticatedKitBotUserId()
+  if (!botUserId) return 'unknown'
+  return channel.creator === botUserId ? 'owned' : 'collision'
 }
 
 
@@ -412,47 +437,59 @@ export async function createProjectSlackChannel(opts: {
     throw new Error('createProjectSlackChannel: client is required')
   }
 
-  // Build a DETERMINISTIC channel name that embeds a stable short Kit project-id
-  // suffix — {number}-{client}-{project}-{shortId}. Because the suffix is part of
-  // the name from the FIRST create, every retry computes the SAME name, so a
-  // crash after conversations.create is reconciled by exact name (no second
-  // channel), and an unrelated readable-name collision (same base, no suffix)
-  // can never be adopted — it simply has a different name.
-  // Shared derivation (see identifiers.ts) so the update flow's channel rename
-  // targets the exact same slug this create path produced.
-  const { slackSlug: slug } = deriveSlackSlug({
+  // Use the clean human-facing name by default. The internal project short id is
+  // reserved for a POSITIVELY CONFIRMED name collision. Crash retries reconcile
+  // the clean name by the project marker or the authenticated Kit bot creator.
+  const { slackSlug: cleanSlug, slackCollisionSlug } = deriveSlackSlug({
     projectId,
     projectNumber: projectNumber || '',
     client,
     projectName,
   })
 
-  // Try to create the channel
+  // Try to create the clean channel name first.
   let channelId: string
   let channelName: string
-  let reused = false
   try {
     const createData = await slackPost('conversations.create', {
-      name: slug,
+      name: cleanSlug,
       is_private: false,
     })
     channelId = createData.channel.id
     channelName = createData.channel.name
   } catch (err: any) {
-    // name_taken on the deterministic name ⇒ a prior attempt of THIS project
-    // already created it (the name embeds our short id). Reconcile by the EXACT
-    // deterministic name and reuse — never spawn a second channel.
+    // A clean name may be either a prior attempt of THIS project or a genuine
+    // collision. Reuse only with positive ownership evidence; use the suffixed
+    // fallback only with positive collision evidence; otherwise fail closed.
     if (err.message?.includes('name_taken')) {
-      const owned = await findOwnedChannelByName(slug, projectId)
-      if (owned) {
-        channelId = owned
-        channelName = slug
-        reused = true
+      const existing = await findChannelByName(cleanSlug)
+      const ownership = existing ? await classifyChannelOwnership(existing, projectId) : 'unknown'
+      if (existing?.id && ownership === 'owned') {
+        channelId = existing.id
+        channelName = cleanSlug
+        console.warn(`[Slack] reused clean channel ${cleanSlug} after a prior create attempt`)
+      } else if (existing?.id && ownership === 'collision' && slackCollisionSlug !== cleanSlug) {
+        try {
+          const collisionCreate = await slackPost('conversations.create', {
+            name: slackCollisionSlug,
+            is_private: false,
+          })
+          channelId = collisionCreate.channel.id
+          channelName = collisionCreate.channel.name
+        } catch (collisionErr: any) {
+          if (!collisionErr.message?.includes('name_taken')) throw collisionErr
+          const collisionExisting = await findChannelByName(slackCollisionSlug)
+          const collisionOwnership = collisionExisting
+            ? await classifyChannelOwnership(collisionExisting, projectId)
+            : 'unknown'
+          if (!collisionExisting?.id || collisionOwnership !== 'owned') {
+            throw new Error(`slack collision channel ${slackCollisionSlug} name_taken but not owned by ${projectId}`)
+          }
+          channelId = collisionExisting.id
+          channelName = slackCollisionSlug
+        }
       } else {
-        // The exact name is taken but we can't read it back (e.g. transient
-        // list failure or a bot-visibility gap). Fail closed rather than create
-        // a divergent duplicate — a retry will reconcile it.
-        throw new Error(`slack channel ${slug} name_taken but not resolvable for reuse`)
+        throw new Error(`slack channel ${cleanSlug} name_taken but ownership could not be verified`)
       }
     } else {
       throw err
@@ -540,7 +577,7 @@ export async function renameProjectSlackChannel(opts: {
   const currentName: string = info.channel?.name || ''
   const channelCreator: string = info.channel?.creator || ''
 
-  const { slackSlug: target, slackShortId } = deriveSlackSlug({
+  const { slackSlug: target, slackCollisionSlug, slackShortId } = deriveSlackSlug({
     projectId,
     projectNumber: projectNumber || '',
     client,
@@ -558,13 +595,14 @@ export async function renameProjectSlackChannel(opts: {
   // auth.test never weakens the guard. The setPurpose call below then backfills
   // the project-specific marker, so the channel self-heals after one rename.
   const ownedByMarker = purpose.includes(marker)
+  const ownedByAnotherMarker = !!concreteKitMarker(purpose) && !ownedByMarker
   const ownedByName = !!slackShortId && (currentName === slackShortId || currentName.endsWith(`-${slackShortId}`))
   let ownedByCreator = false
-  if (!ownedByMarker && !ownedByName && channelCreator) {
-    const auth = await slackPost('auth.test', {}).catch(() => null)
-    ownedByCreator = !!auth?.user_id && auth.user_id === channelCreator
+  if (!ownedByMarker && !ownedByAnotherMarker && !ownedByName && channelCreator) {
+    const botUserId = await authenticatedKitBotUserId()
+    ownedByCreator = !!botUserId && botUserId === channelCreator
   }
-  if (!ownedByMarker && !ownedByName && !ownedByCreator) {
+  if (ownedByAnotherMarker || (!ownedByMarker && !ownedByName && !ownedByCreator)) {
     throw new SlackRenameTerminalError(
       `channel ${channelId} is not Kit-owned for ${projectId} (no purpose marker, name suffix mismatch, creator mismatch); refusing to rename`,
     )
@@ -577,22 +615,32 @@ export async function renameProjectSlackChannel(opts: {
       channelName = renamed.channel?.name || target
     } catch (err: any) {
       // name_taken: if the taker is THIS channel (a prior attempt already renamed
-      // it), treat as done; otherwise surface as a real failure.
+      // it), treat as done. A positively visible different channel is a genuine
+      // collision, so use the deterministic suffixed fallback only then.
       if (err.message?.includes('name_taken')) {
-        const owned = await findOwnedChannelByName(target, projectId)
-        if (owned === channelId) {
+        const occupying = await findChannelByName(target)
+        if (occupying?.id === channelId) {
           channelName = target
-        } else if (owned) {
-          // We POSITIVELY identified a DIFFERENT channel holding the target name.
-          // The target slug is deterministic, so retrying can never succeed —
-          // terminal, matching Dropbox's move conflict and Frame.io/Harvest's
-          // ambiguous-marker cases. (A null `owned` is NOT terminal: it means we
-          // could not tell — the name may belong to a private channel, which
-          // conversations.list can't see, or the list read itself failed — so it
-          // stays retryable rather than wedging on an unknown.)
-          throw new SlackRenameTerminalError(
-            `channel name ${target} is taken by a different channel (${owned}); refusing to rename ${channelId}`,
-          )
+        } else if (occupying?.id && slackCollisionSlug !== target) {
+          try {
+            const renamed = await slackPost('conversations.rename', {
+              channel: channelId,
+              name: slackCollisionSlug,
+            })
+            channelName = renamed.channel?.name || slackCollisionSlug
+          } catch (collisionErr: any) {
+            if (!collisionErr.message?.includes('name_taken')) throw collisionErr
+            const collisionOccupying = await findChannelByName(slackCollisionSlug)
+            if (collisionOccupying?.id === channelId) {
+              channelName = slackCollisionSlug
+            } else if (collisionOccupying?.id) {
+              throw new SlackRenameTerminalError(
+                `channel names ${target} and ${slackCollisionSlug} are taken by other channels; refusing to rename ${channelId}`,
+              )
+            } else {
+              throw collisionErr
+            }
+          }
         } else {
           throw err
         }
