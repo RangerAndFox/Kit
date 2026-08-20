@@ -510,9 +510,10 @@ export class SlackRenameTerminalError extends Error {}
 /**
  * Rename an existing project channel when the project is updated. The channel id
  * NEVER changes (saved links/ids stay valid); only the slug + topic/purpose text
- * move. Reconciles by the embedded Kit marker in the channel purpose FIRST and
- * refuses to touch a channel that isn't Kit-owned for this project. Idempotent:
- * if the channel is already at the target name, the rename is skipped.
+ * move. Reconciles by the embedded Kit marker, the deterministic name suffix,
+ * or (for legacy channels) the authenticated Kit bot as creator, and refuses to
+ * touch a channel that isn't Kit-owned. Idempotent: if the channel is already at
+ * the target name, the rename is skipped.
  */
 export async function renameProjectSlackChannel(opts: {
   projectId: string
@@ -537,6 +538,7 @@ export async function renameProjectSlackChannel(opts: {
   const marker = kitChannelMarker(projectId)
   const purpose: string = info.channel?.purpose?.value || ''
   const currentName: string = info.channel?.name || ''
+  const channelCreator: string = info.channel?.creator || ''
 
   const { slackSlug: target, slackShortId } = deriveSlackSlug({
     projectId,
@@ -545,17 +547,26 @@ export async function renameProjectSlackChannel(opts: {
     projectName,
   })
 
-  // Ownership is proven by EITHER signal. The purpose marker is primary, but it's
+  // Ownership is proven by any of these signals. The purpose marker is primary, but it's
   // written via a best-effort (swallowed) setPurpose at create time and can be
   // absent after a transient failure. The deterministic channel NAME embeds a
   // stable short id derived from the project id — create's true reconciliation
   // identity — so a name whose suffix matches is equally proof of ownership. The
-  // setPurpose call below backfills the marker, so this self-heals.
+  // legacy provisioner also created channels before either signal existed (and
+  // sometimes wrote `[kit:undefined]`). For those only, Slack's immutable creator
+  // is safe proof when it matches the currently authenticated Kit bot. A failed
+  // auth.test never weakens the guard. The setPurpose call below then backfills
+  // the project-specific marker, so the channel self-heals after one rename.
   const ownedByMarker = purpose.includes(marker)
   const ownedByName = !!slackShortId && (currentName === slackShortId || currentName.endsWith(`-${slackShortId}`))
-  if (!ownedByMarker && !ownedByName) {
+  let ownedByCreator = false
+  if (!ownedByMarker && !ownedByName && channelCreator) {
+    const auth = await slackPost('auth.test', {}).catch(() => null)
+    ownedByCreator = !!auth?.user_id && auth.user_id === channelCreator
+  }
+  if (!ownedByMarker && !ownedByName && !ownedByCreator) {
     throw new SlackRenameTerminalError(
-      `channel ${channelId} is not Kit-owned for ${projectId} (no purpose marker, name suffix mismatch); refusing to rename`,
+      `channel ${channelId} is not Kit-owned for ${projectId} (no purpose marker, name suffix mismatch, creator mismatch); refusing to rename`,
     )
   }
 
@@ -969,4 +980,3 @@ export async function duplicateTemplateCanvases(opts: {
   console.log(`[Slack canvas] done — ${out.standaloneCanvasIds.length} canvas(es) created for ${opts.newChannelId}`)
   return out
 }
-
