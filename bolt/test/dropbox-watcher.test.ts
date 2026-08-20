@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isDeniedDeliveryFile } from '../src/watchers/dropbox'
+import { isDeniedDeliveryFile, resolveFrameioIdForProject } from '../src/watchers/dropbox'
 
 describe('isDeniedDeliveryFile', () => {
   it('denies the default .aac and .m4v extensions', () => {
@@ -29,5 +29,56 @@ describe('isDeniedDeliveryFile', () => {
     const deny = new Set(['wav', 'mp3'])
     expect(isDeniedDeliveryFile('stem.wav', deny)).toBe(true)
     expect(isDeniedDeliveryFile('mix.aac', deny)).toBe(false)
+  })
+})
+
+describe('resolveFrameioIdForProject', () => {
+  it('reuses an existing Frame.io id without discovery or writes', async () => {
+    let calls = 0
+    const id = await resolveFrameioIdForProject(
+      { external_links: { frameio_id: 'frame-existing' } },
+      '2637_Microsoft_Fabric_IQ_Sizzle',
+      {
+        findByProjectNumber: async () => { calls++; return null },
+        persistLink: async () => { calls++ },
+      },
+    )
+
+    expect(id).toBe('frame-existing')
+    expect(calls).toBe(0)
+  })
+
+  it('discovers and persists a missing link for an existing synced project', async () => {
+    const searched: string[] = []
+    const persisted: Array<{ id: string; name: string }> = []
+    const found = { id: 'frame-fabric', name: '2637_Microsoft_Fabric IQ Sizzle' }
+
+    const id = await resolveFrameioIdForProject(
+      { external_links: { slack_id: 'C123', dropbox_id: '/production/2026/2637_Microsoft_Fabric_IQ_Sizzle' } },
+      '2637_Microsoft_Fabric_IQ_Sizzle',
+      {
+        findByProjectNumber: async (projectNumber) => { searched.push(projectNumber); return found },
+        persistLink: async (match) => { persisted.push(match) },
+      },
+    )
+
+    expect(id).toBe('frame-fabric')
+    expect(searched).toEqual(['2637'])
+    expect(persisted).toEqual([found])
+  })
+
+  it('returns null without persisting when no Frame.io project can be found', async () => {
+    let persisted = false
+    const id = await resolveFrameioIdForProject(
+      { external_links: { slack_id: 'C123' } },
+      '2637_Microsoft_Fabric_IQ_Sizzle',
+      {
+        findByProjectNumber: async () => null,
+        persistLink: async () => { persisted = true },
+      },
+    )
+
+    expect(id).toBeNull()
+    expect(persisted).toBe(false)
   })
 })

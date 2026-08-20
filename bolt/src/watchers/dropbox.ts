@@ -547,16 +547,51 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
     return
   }
 
-  const frameioId = project.external_links?.frameio_id
-  if (!frameioId) {
-    console.warn(`[dropbox-watcher] project ${project.id} missing external_links.frameio_id`)
-    return
-  }
-
-  // ── Resolve Frame.io destination folder ─────────────────
   const acct = process.env.FRAMEIO_ACCOUNT_ID
   if (!acct) throw new Error('FRAMEIO_ACCOUNT_ID required')
 
+  // Sync/import can create a legitimate projects row before its Frame.io link
+  // is known. Previously that partial row disabled discovery (discovery only ran
+  // when NO project row existed), and returning here also advanced the Dropbox
+  // cursor as though the delivery had succeeded. Self-heal the link by project
+  // number, preserving every sibling external_links key, then continue with the
+  // same delivery in this run.
+  const frameioId = await resolveFrameioIdForProject(project, d.safeName, {
+    findByProjectNumber: async (projectNumber) => {
+      const ws = process.env.FRAMEIO_WORKSPACE_ID
+      if (!ws) throw new Error('FRAMEIO_WORKSPACE_ID required')
+      return findFrameioProjectByNumber(acct, ws, projectNumber)
+    },
+    persistLink: async (found) => {
+      // Re-read immediately before the JSONB write so a concurrent updater does
+      // not lose Slack/Dropbox/Harvest keys that changed after our first lookup.
+      const { data: fresh, error: readErr } = await sb
+        .from('projects')
+        .select('external_links')
+        .eq('id', project.id)
+        .maybeSingle()
+      if (readErr) throw new Error(`Frame.io link read failed: ${readErr.message}`)
+      if (!fresh) throw new Error(`project ${project.id} disappeared while linking Frame.io`)
+
+      const external_links = {
+        ...(fresh.external_links || {}),
+        frameio_id: found.id,
+        frameio: frameioProjectUrl(found.id),
+      }
+      const { error: writeErr } = await sb
+        .from('projects')
+        .update({ external_links })
+        .eq('id', project.id)
+      if (writeErr) throw new Error(`Frame.io link write failed: ${writeErr.message}`)
+    },
+  })
+  if (!frameioId) {
+    // Throw rather than return: processDeltasOnce must count this delivery as a
+    // failure and retain the Dropbox cursor for its retry pass.
+    throw new Error(`project ${project.id} has no discoverable Frame.io project`)
+  }
+
+  // ── Resolve Frame.io destination folder ─────────────────
   const projResp = await frameioGet(`/accounts/${acct}/projects/${frameioId}`)
   const projData = projResp.data || projResp
   const rootFolderId = projData.root_folder_id || projData.root_asset_id
@@ -729,6 +764,34 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
 function extractProjectNumber(safeName: string): string | null {
   const m = safeName.match(/^(\d+[A-Za-z]?)(?=[^A-Za-z0-9]|$)/)
   return m ? m[1] : null
+}
+
+type FrameioProjectMatch = { id: string; name: string }
+
+/**
+ * Return a project's existing Frame.io id or discover and persist the missing
+ * link. Kept dependency-injected so the partial-project regression is covered
+ * without reaching Supabase or Frame.io in unit tests.
+ */
+export async function resolveFrameioIdForProject(
+  project: { external_links?: Record<string, any> | null },
+  safeName: string,
+  deps: {
+    findByProjectNumber: (projectNumber: string) => Promise<FrameioProjectMatch | null>
+    persistLink: (found: FrameioProjectMatch) => Promise<void>
+  },
+): Promise<string | null> {
+  const existing = project.external_links?.frameio_id
+  if (typeof existing === 'string' && existing.trim()) return existing
+
+  const projectNumber = extractProjectNumber(safeName)
+  if (!projectNumber) return null
+
+  const found = await deps.findByProjectNumber(projectNumber)
+  if (!found) return null
+
+  await deps.persistLink(found)
+  return found.id
 }
 
 /**
