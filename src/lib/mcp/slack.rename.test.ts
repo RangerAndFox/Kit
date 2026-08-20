@@ -86,6 +86,61 @@ describe('renameProjectSlackChannel', () => {
     assert.ok(sp && String(sp.body.purpose).includes(kitChannelMarker(PROJECT_ID)))
   })
 
+  it('accepts a legacy channel created by the authenticated Kit bot and backfills its marker', async () => {
+    const calls = slackMock({
+      'conversations.info': () => ({
+        ok: true,
+        channel: {
+          name: '2601-adidas-old-project-undefined',
+          creator: 'UKITBOT',
+          purpose: { value: 'Adidas — Old Project [kit:undefined]' },
+        },
+      }),
+      'auth.test': () => ({ ok: true, user_id: 'UKITBOT' }),
+      'conversations.rename': (b) => ({ ok: true, channel: { id: CHANNEL, name: b.name } }),
+      'conversations.setPurpose': () => ({ ok: true }),
+      'conversations.setTopic': () => ({ ok: true }),
+    })
+
+    const res = await renameProjectSlackChannel({
+      projectId: PROJECT_ID,
+      channelId: CHANNEL,
+      projectName: 'Summer Campaign',
+      client: 'Adidas',
+      projectNumber: '2601',
+    })
+
+    assert.equal(res.channelName, target)
+    assert.ok(calls.some((c) => c.method === 'auth.test'))
+    const sp = calls.find((c) => c.method === 'conversations.setPurpose')
+    assert.ok(sp && String(sp.body.purpose).includes(kitChannelMarker(PROJECT_ID)))
+  })
+
+  it('still refuses a legacy-looking channel created by a different user', async () => {
+    slackMock({
+      'conversations.info': () => ({
+        ok: true,
+        channel: {
+          name: '2601-adidas-old-project-undefined',
+          creator: 'USOMEONEELSE',
+          purpose: { value: 'Adidas — Old Project [kit:undefined]' },
+        },
+      }),
+      'auth.test': () => ({ ok: true, user_id: 'UKITBOT' }),
+    })
+
+    await assert.rejects(
+      () => renameProjectSlackChannel({
+        projectId: PROJECT_ID,
+        channelId: CHANNEL,
+        projectName: 'Summer Campaign',
+        client: 'Adidas',
+        projectNumber: '2601',
+      }),
+      (err: unknown) => err instanceof SlackRenameTerminalError,
+    )
+  })
+
   it('is a no-op rename when already at the target slug', async () => {
     const calls = slackMock({
       'conversations.info': () => ({ ok: true, channel: { name: target, purpose: { value: `x ${kitChannelMarker(PROJECT_ID)}` } } }),
