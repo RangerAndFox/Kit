@@ -26,6 +26,7 @@ import {
 import cron from 'node-cron'
 import { sweepDailyReminders } from './checkins/reminder-delivery'
 import { nudgePendingCheckins } from './checkins/daily-hours'
+import { recoverMissedCheckinReplies } from './checkins/reply-recovery'
 import { scanMissingTime } from './checkins/missing-time'
 import { dispatchAllPendingApprovals } from './brain/approvals'
 
@@ -258,6 +259,17 @@ cron.schedule(
   },
   { timezone: 'UTC' },
 )
+
+// Slack can retain a private-channel reply without delivering the corresponding
+// message.groups event to Socket Mode. Poll only recent open hours check-ins and
+// pass any missed reply through the same CAS-protected parser as the live event
+// path. One-minute cadence keeps the fallback responsive without broad channel
+// scanning; concurrent live delivery is safe because only one claim can win.
+cron.schedule('* * * * *', () => {
+  recoverMissedCheckinReplies(app).catch((err) =>
+    console.error('[cron] missed hours reply recovery failed:', err),
+  )
+})
 
 // ─── Cron: pending check-in reminder ───────────────────────
 // 9am local Mon–Fri — one reminder per unfinished check-in: never replied, or
