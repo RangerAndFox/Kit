@@ -21,7 +21,7 @@ import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { looksLikeHoursIntent } from './adhoc'
 import { checkinDateMinusDays } from './date'
 import { extractReplyBurst, type SlackMessageLike } from './recovery'
-import { handleCheckinReply } from './reply'
+import { handleCheckinReply, handleParsedCheckinText, parseConfirmDecision } from './reply'
 
 export interface RecoverableCheckin {
   id: string
@@ -31,6 +31,7 @@ export interface RecoverableCheckin {
   status: string
   dm_channel_id: string | null
   dm_ts: string | null
+  reply_ts?: string | null
   candidate_projects: any
 }
 
@@ -38,6 +39,7 @@ export interface ReplyRecoveryDeps {
   loadOpen(): Promise<RecoverableCheckin[]>
   readMessages(row: RecoverableCheckin): Promise<SlackMessageLike[]>
   handle(row: RecoverableCheckin, replyText: string, replyTs: string): Promise<boolean>
+  handleParsed(row: RecoverableCheckin, replyText: string): Promise<boolean>
 }
 
 export interface ReplyRecoveryTally {
@@ -62,10 +64,10 @@ export function makeReplyRecoveryDeps(app: App): ReplyRecoveryDeps {
       const { data, error } = await sb
         .from('daily_hours_checkins')
         .select(
-          'id, staff_id, slack_user_id, check_in_date, status, dm_channel_id, dm_ts, candidate_projects',
+          'id, staff_id, slack_user_id, check_in_date, status, dm_channel_id, dm_ts, reply_ts, candidate_projects',
         )
         .gte('check_in_date', checkinDateMinusDays(2))
-        .in('status', ['sent', 'nudged'])
+        .in('status', ['sent', 'nudged', 'parsed'])
         .not('dm_channel_id', 'is', null)
         .not('dm_ts', 'is', null)
         .order('created_at', { ascending: false })
@@ -76,9 +78,12 @@ export function makeReplyRecoveryDeps(app: App): ReplyRecoveryDeps {
     async readMessages(row) {
       const channel = row.dm_channel_id as string
       const rootTs = row.dm_ts as string
+      // A parsed row has already consumed the original hours reply. Start
+      // strictly after it so recovery sees only a later yes/redo decision.
+      const afterTs = row.status === 'parsed' && row.reply_ts ? row.reply_ts : rootTs
       const history: any = await app.client.conversations.history({
         channel,
-        oldest: rootTs,
+        oldest: afterTs,
         inclusive: true,
         limit: 100,
       })
@@ -102,13 +107,22 @@ export function makeReplyRecoveryDeps(app: App): ReplyRecoveryDeps {
 
       const byTs = new Map<string, SlackMessageLike>()
       for (const message of [...(history.messages || []), ...threadMessages]) {
-        if (message?.ts && Number(message.ts) > Number(rootTs)) byTs.set(message.ts, message)
+        if (message?.ts && Number(message.ts) > Number(afterTs)) byTs.set(message.ts, message)
       }
       return [...byTs.values()]
     },
 
     handle(row, replyText, replyTs) {
       return handleCheckinReply({ app, open: row as any, replyText, replyTs })
+    },
+
+    handleParsed(row, replyText) {
+      return handleParsedCheckinText({
+        app,
+        slackUserId: row.slack_user_id,
+        replyText,
+        responseChannelId: row.dm_channel_id || undefined,
+      })
     },
   }
 }
@@ -129,11 +143,16 @@ export async function recoverMissedCheckinReplies(
       }
       const messages = await deps.readMessages(row)
       const burst = extractReplyBurst(messages, row.slack_user_id)
-      if (!burst || !looksLikeRecoverableCheckinReply(burst.text)) {
+      const eligible = row.status === 'parsed'
+        ? !!burst && !!parseConfirmDecision(burst.text)
+        : !!burst && looksLikeRecoverableCheckinReply(burst.text)
+      if (!burst || !eligible) {
         tally.ignored++
         continue
       }
-      const handled = await deps.handle(row, burst.text, burst.ts)
+      const handled = row.status === 'parsed'
+        ? await deps.handleParsed(row, burst.text)
+        : await deps.handle(row, burst.text, burst.ts)
       if (handled) tally.recovered++
       else tally.ignored++
     } catch (err: any) {

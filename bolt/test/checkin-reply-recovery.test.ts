@@ -15,6 +15,7 @@ const ROW: RecoverableCheckin = {
   status: 'sent',
   dm_channel_id: 'C_PERSONAL',
   dm_ts: '1000.000001',
+  reply_ts: null,
   candidate_projects: [],
 }
 
@@ -36,6 +37,7 @@ describe('missed hours reply recovery', () => {
         { ts: '1001.500001', bot_id: 'B_KIT', text: 'bot text' },
       ],
       handle,
+      handleParsed: vi.fn(async () => true),
     }
 
     const result = await recoverMissedCheckinReplies({} as any, deps)
@@ -57,6 +59,7 @@ describe('missed hours reply recovery', () => {
         { ts: '1001.000001', user: 'U_ME', text: 'Can you find the client brief?' },
       ],
       handle,
+      handleParsed: vi.fn(async () => true),
     }
 
     const result = await recoverMissedCheckinReplies({} as any, deps)
@@ -74,10 +77,43 @@ describe('missed hours reply recovery', () => {
         return [{ ts: '1001.000001', user: 'U_TWO', text: '4h on 2637' }]
       },
       handle,
+      handleParsed: vi.fn(async () => true),
     }
 
     const result = await recoverMissedCheckinReplies({} as any, deps)
     expect(result).toEqual({ scanned: 2, recovered: 1, ignored: 0, failed: 1 })
     expect(handle).toHaveBeenCalledOnce()
+  })
+
+  it('recovers a typed confirmation for an already parsed check-in', async () => {
+    const parsed = { ...ROW, status: 'parsed', reply_ts: '1001.000001' }
+    const handle = vi.fn(async () => true)
+    const handleParsed = vi.fn(async () => true)
+    const deps: ReplyRecoveryDeps = {
+      loadOpen: async () => [parsed],
+      readMessages: async () => [{ ts: '1002.000001', user: 'U_ME', text: 'yes' }],
+      handle,
+      handleParsed,
+    }
+
+    const result = await recoverMissedCheckinReplies({} as any, deps)
+    expect(result).toEqual({ scanned: 1, recovered: 1, ignored: 0, failed: 0 })
+    expect(handle).not.toHaveBeenCalled()
+    expect(handleParsed).toHaveBeenCalledWith(parsed, 'yes')
+  })
+
+  it('does not treat an hours message as confirmation after the row is parsed', async () => {
+    const parsed = { ...ROW, status: 'parsed', reply_ts: '1001.000001' }
+    const handleParsed = vi.fn(async () => true)
+    const deps: ReplyRecoveryDeps = {
+      loadOpen: async () => [parsed],
+      readMessages: async () => [{ ts: '1002.000001', user: 'U_ME', text: '4h on 2637' }],
+      handle: vi.fn(async () => true),
+      handleParsed,
+    }
+
+    const result = await recoverMissedCheckinReplies({} as any, deps)
+    expect(result).toEqual({ scanned: 1, recovered: 0, ignored: 1, failed: 0 })
+    expect(handleParsed).not.toHaveBeenCalled()
   })
 })
