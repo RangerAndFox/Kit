@@ -65,6 +65,7 @@ const okSheets: CreationSheetsPort = {
   // CONFIG.sheetId is 0 — the metadata is on the configured sheet.
   searchRowMetadata: async (_s, _p, sheetId) => ({ metadataId: 10, rowIndex: 5, sheetId }),
   readRow: async () => rowCells(),
+  upsertProjectLinks: async () => {},
 }
 
 interface Counters { created: number; edited: number }
@@ -230,6 +231,7 @@ describe('bindProjectControl', () => {
       createBoundRow: async (_c, _p, owned) => { ownedSeen = owned; return { metadataId: 10, rowIndex: 5, alreadyBound: false } },
       searchRowMetadata: async (_s, _p, sheetId) => ({ metadataId: 10, rowIndex: 5, sheetId }),
       readRow: async () => authoritativeRow(),
+      upsertProjectLinks: async () => {},
     }
 
     let createdMarkdown = ''
@@ -270,6 +272,7 @@ describe('bindProjectControl', () => {
       createBoundRow: async () => ({ metadataId: 10, rowIndex: 5, alreadyBound: false }),
       searchRowMetadata: async (_s, _p, sheetId) => { throw new Error(`row metadata for proj found on sheet(s) 999, not the configured sheet ${sheetId}`) },
       readRow: async () => rowCells(),
+      upsertProjectLinks: async () => {},
     }
     const canvas: CreationCanvasPort = {
       createControlCanvas: async () => { created++; return { canvasId: 'C1', canvasUrl: 'u' } },

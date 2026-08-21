@@ -6,8 +6,17 @@
 
 import { describe, it, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { createBoundRow, searchRowMetadata, readColumn, readRow, __setSheetsTransportForTests } from './sheets'
-import { kitOwnedCreationCells, parseDateToSerial } from './render'
+import {
+  createBoundRow,
+  searchRowMetadata,
+  readColumn,
+  readRow,
+  updateBoundRow,
+  upsertProjectLinks,
+  renameProjectLinks,
+  __setSheetsTransportForTests,
+} from './sheets'
+import { kitOwnedCreationCells, parseDateToSerial, MASTER_HEADERS } from './render'
 import type { SheetCell } from './render'
 import type { WorkbookConfig } from './types'
 
@@ -186,6 +195,103 @@ describe('readRow — targets the CONFIGURED sheetId (not tab order)', () => {
       ({ sheets: [{ properties: { sheetId: 999 }, data: [{ rowData: [{ values: [{ formattedValue: 'x' }] }] }] }] }) as T)
     const config: WorkbookConfig = { spreadsheetId: 'sid', sheetId: 42, headerRow: 3, templateChannelId: 'C0' }
     await assert.rejects(() => readRow(config, 5), /configured sheet 42 not found/)
+  })
+})
+
+describe('RF Production workbook adapter', () => {
+  const config: WorkbookConfig = {
+    spreadsheetId: 'sid',
+    sheetId: 1869744848,
+    headerRow: 4,
+    layout: 'rf-production-v1',
+    linksSheetId: 1721636671,
+    linksHeaderRow: 4,
+    templateChannelId: 'C0',
+  }
+  const c = (value: string): SheetCell => value
+    ? { formattedValue: value, effectiveValue: { stringValue: value } }
+    : {}
+
+  it('maps Projects A:O plus normalized Links into the stable Canvas row', async () => {
+    __setSheetsTransportForTests(async <T>(_method: string, url: string, body?: unknown): Promise<T> => {
+      if (!url.includes(':getByDataFilter')) throw new Error(`unexpected url ${url}`)
+      const gr = (body as any).dataFilters[0].gridRange
+      if (gr.sheetId === config.sheetId) {
+        return { sheets: [{ properties: { sheetId: config.sheetId }, data: [{ rowData: [{ values: [
+          c('2637'), c('Microsoft'), c('Michelle | John'), c('Fabric IQ'), c('Design'), c('On track'),
+          c('Creative review'), c('09/10/2026'), c('Steve'), c('Ally'), c('Michelle'), c('08/11/2026'),
+          c('Client'), c('notes'), c(''),
+        ] }] }] }] } as T
+      }
+      if (gr.sheetId === config.linksSheetId) {
+        return { sheets: [{ properties: { sheetId: config.linksSheetId }, data: [{ rowData: [
+          { values: [c('2637'), c('Frame.io'), c('https://next.frame.io/project/fabric')] },
+          { values: [c('2637'), c('Dropbox (client folder)'), c('https://dropbox.com/fabric')] },
+        ] }] }] } as T
+      }
+      throw new Error(`wrong sheet ${gr.sheetId}`)
+    })
+
+    const cells = await readRow(config, 4)
+    const at = (header: string) => cells[(MASTER_HEADERS as readonly string[]).indexOf(header)].formattedValue
+    assert.equal(cells.length, 25)
+    assert.equal(at('Project Number'), '2637')
+    assert.equal(at('Client Contact'), 'Michelle')
+    assert.equal(at('Quick Status'), 'Design')
+    assert.equal(at('Next Share'), 'Creative review')
+    assert.equal(at('Start Date'), '08/11/2026')
+    assert.equal(at('End Date'), '09/10/2026')
+    assert.equal(at('Frame.io'), 'https://next.frame.io/project/fabric')
+    assert.equal(at('Dropbox'), 'https://dropbox.com/fabric')
+  })
+
+  it('writes new-layout fields to their physical Projects columns', async () => {
+    const requests: any[] = []
+    __setSheetsTransportForTests(async <T>(_method: string, url: string, body?: unknown): Promise<T> => {
+      if (url.includes('developerMetadata:search')) {
+        return { matchedDeveloperMetadata: [{ developerMetadata: { metadataId: 9, location: { dimensionRange: { startIndex: 5, sheetId: config.sheetId } } } }] } as T
+      }
+      if (url.includes(':batchUpdate')) {
+        requests.push(...(body as any).requests)
+        return { replies: [] } as T
+      }
+      throw new Error(`unexpected url ${url}`)
+    })
+    const owned = kitOwnedCreationCells({
+      projectNumber: '2637', clientName: 'Microsoft', clientContact: 'Michelle', projectName: 'Fabric IQ',
+      startDate: '2026-08-11', deadline: '2026-09-10', creativeDirectorName: 'Steve', producerName: 'Ally',
+      frameioUrl: 'https://frame.example', dropboxUrl: 'https://dropbox.example',
+    }, 'rf-production-v1')
+    await updateBoundRow(config, 'project-uuid', owned)
+    const cols = requests.map((r) => r.updateCells.start.columnIndex)
+    assert.deepEqual(cols, [0, 1, 10, 3, 11, 7, 8, 9])
+    assert.ok(!owned.some((x) => x.header === 'Frame.io' || x.header === 'Dropbox'))
+  })
+
+  it('upserts provider links and renames every link row without duplicates', async () => {
+    const batches: any[][] = []
+    const linkRows = [
+      { values: [c('2637'), c('Frame.io'), c('old-frame')] },
+      { values: [c('2637'), c('Dropbox (client folder)'), c('old-dropbox')] },
+    ]
+    __setSheetsTransportForTests(async <T>(_method: string, url: string, body?: unknown): Promise<T> => {
+      if (url.includes(':getByDataFilter')) {
+        return { sheets: [{ properties: { sheetId: config.linksSheetId }, data: [{ rowData: linkRows }] }] } as T
+      }
+      if (url.includes(':batchUpdate')) {
+        batches.push((body as any).requests)
+        return { replies: [] } as T
+      }
+      throw new Error(`unexpected url ${url}`)
+    })
+    await upsertProjectLinks(config, '2637', { frameioUrl: 'new-frame', dropboxUrl: 'new-dropbox' })
+    assert.deepEqual(batches[0].map((r) => r.updateCells.start), [
+      { sheetId: config.linksSheetId, rowIndex: 4, columnIndex: 2 },
+      { sheetId: config.linksSheetId, rowIndex: 5, columnIndex: 2 },
+    ])
+    await renameProjectLinks(config, '2637', '2637A')
+    assert.deepEqual(batches[1].map((r) => r.updateCells.start.columnIndex), [0, 0])
+    assert.deepEqual(batches[1].map((r) => r.updateCells.rows[0].values[0].userEnteredValue.stringValue), ['2637A', '2637A'])
   })
 })
 
