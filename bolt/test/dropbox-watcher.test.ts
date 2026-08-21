@@ -3,6 +3,7 @@ import {
   buildFrameioShareRequest,
   isDeniedDeliveryFile,
   resolveFrameioIdForProject,
+  selectFrameioProjectByNumber,
 } from '../src/watchers/dropbox'
 
 describe('buildFrameioShareRequest', () => {
@@ -107,5 +108,34 @@ describe('resolveFrameioIdForProject', () => {
 
     expect(id).toBeNull()
     expect(persisted).toBe(false)
+  })
+})
+
+describe('selectFrameioProjectByNumber', () => {
+  const projects = [
+    { id: 'p2633', name: '2633_Microsoft_Biz Apps' },
+    { id: 'p2637', name: 'Microsoft - 2637 Fabric IQ' },
+  ]
+
+  it('prefers one strict project-number match', () => {
+    expect(selectFrameioProjectByNumber(projects, '2633')).toEqual({
+      match: projects[0],
+      reason: 'strict',
+    })
+  })
+
+  it('uses one boundary-safe lenient match when no strict match exists', () => {
+    expect(selectFrameioProjectByNumber(projects, '2637')).toEqual({
+      match: projects[1],
+      reason: 'lenient',
+    })
+  })
+
+  it('fails closed when the project number is ambiguous', () => {
+    const ambiguous = [...projects, { id: 'p2633b', name: '2633_Microsoft_Second' }]
+    expect(selectFrameioProjectByNumber(ambiguous, '2633')).toEqual({
+      match: null,
+      reason: 'ambiguous',
+    })
   })
 })

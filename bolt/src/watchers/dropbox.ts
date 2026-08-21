@@ -908,6 +908,19 @@ async function findFrameioProjectByNumber(
   ws: string,
   projectNumber: string,
 ): Promise<{ id: string; name: string } | null> {
+  const projects = await listFrameioWorkspaceProjects(acct, ws)
+  const resolved = selectFrameioProjectByNumber(projects, projectNumber)
+  if (resolved.match) return resolved.match
+  console.warn(
+    `[dropbox-watcher] ${resolved.reason} Frame.io match for "${projectNumber}" after scanning ${projects.length}`,
+  )
+  return null
+}
+
+export function selectFrameioProjectByNumber(
+  projects: FrameioProjectMatch[],
+  projectNumber: string,
+): { match: FrameioProjectMatch | null; reason: 'strict' | 'lenient' | 'none' | 'ambiguous' } {
   // Strict: project name starts with the number, followed by a separator
   // or end. Catches 99% of correctly-formatted projects.
   const startMatch = new RegExp(
@@ -923,23 +936,28 @@ async function findFrameioProjectByNumber(
     'i',
   )
 
-  let url: string | null =
-    `/accounts/${acct}/workspaces/${ws}/projects?page_size=100`
+  const strict = projects.filter((p) => p.name && startMatch.test(p.name))
+  if (strict.length === 1) return { match: strict[0], reason: 'strict' }
+  if (strict.length > 1) return { match: null, reason: 'ambiguous' }
+
+  const lenient = projects.filter((p) => p.name && containsMatch.test(p.name))
+  if (lenient.length === 1) return { match: lenient[0], reason: 'lenient' }
+  return { match: null, reason: lenient.length > 1 ? 'ambiguous' : 'none' }
+}
+
+async function listFrameioWorkspaceProjects(
+  acct: string,
+  ws: string,
+): Promise<FrameioProjectMatch[]> {
+  let url: string | null = `/accounts/${acct}/workspaces/${ws}/projects?page_size=100`
   let pages = 0
-  let totalScanned = 0
-  let lenientHit: { id: string; name: string } | null = null
+  const projects: FrameioProjectMatch[] = []
 
   while (url && pages++ < 20) {
     const r = await frameioGet(url)
     const items: any[] = r.data || r.projects || []
     for (const p of items) {
-      totalScanned++
-      if (p.name && startMatch.test(p.name)) {
-        return { id: p.id, name: p.name }
-      }
-      if (!lenientHit && p.name && containsMatch.test(p.name)) {
-        lenientHit = { id: p.id, name: p.name }
-      }
+      if (p?.id && p?.name) projects.push({ id: p.id, name: p.name })
     }
     // Frame.io v4 pagination: try common shapes for the "next" cursor.
     const next =
@@ -960,13 +978,101 @@ async function findFrameioProjectByNumber(
       url = null
     }
   }
+  return projects
+}
 
-  if (lenientHit) return lenientHit
+export interface FrameioLinkReconcileTally {
+  scanned: number
+  linked: number
+  notFound: number
+  ambiguous: number
+  skipped: number
+}
 
-  console.warn(
-    `[dropbox-watcher] no Frame.io project starts with or contains "${projectNumber}" after scanning ${totalScanned}`,
+/**
+ * Reconcile active Kit projects that have a Dropbox identity but no Frame.io
+ * identity. This removes the old dependency on waiting for a real outgoing file
+ * before a partial imported project (for example 2633) becomes fully linked.
+ * The workspace project list is fetched once per pass, and ambiguous project
+ * numbers fail closed rather than attaching the wrong Frame.io project.
+ */
+export async function reconcileMissingFrameioProjectLinks(): Promise<FrameioLinkReconcileTally> {
+  const acct = process.env.FRAMEIO_ACCOUNT_ID
+  const ws = process.env.FRAMEIO_WORKSPACE_ID
+  if (!acct || !ws) throw new Error('FRAMEIO_ACCOUNT_ID/FRAMEIO_WORKSPACE_ID required')
+
+  const sb = createAdminClient()
+  const { data: rows, error } = await sb
+    .from('projects')
+    .select('id, project_code, external_ids, external_links')
+    .in('status', ['active', 'partial', 'paused'])
+  if (error) throw new Error(`Frame.io reconcile project load failed: ${error.message}`)
+
+  const candidates = (rows || []).filter(
+    (row: any) =>
+      row.external_ids?.dropbox_safe_name &&
+      (row.external_links?.dropbox_id || row.external_links?.dropbox) &&
+      !row.external_links?.frameio_id,
   )
-  return null
+  const tally: FrameioLinkReconcileTally = {
+    scanned: candidates.length,
+    linked: 0,
+    notFound: 0,
+    ambiguous: 0,
+    skipped: 0,
+  }
+  if (candidates.length === 0) return tally
+
+  const frameioProjects = await listFrameioWorkspaceProjects(acct, ws)
+  for (const row of candidates) {
+    const safeName = row.external_ids.dropbox_safe_name as string
+    const projectNumber = extractProjectNumber(safeName)
+    if (!projectNumber) {
+      tally.skipped++
+      continue
+    }
+    const resolved = selectFrameioProjectByNumber(frameioProjects, projectNumber)
+    if (!resolved.match) {
+      if (resolved.reason === 'ambiguous') tally.ambiguous++
+      else tally.notFound++
+      continue
+    }
+
+    // Re-read immediately before the JSONB merge so a project update racing
+    // this pass cannot lose sibling provider links or write a stale identity.
+    const { data: fresh, error: readError } = await sb
+      .from('projects')
+      .select('external_links')
+      .eq('id', row.id)
+      .maybeSingle()
+    if (readError) throw new Error(`Frame.io reconcile read failed: ${readError.message}`)
+    if (!fresh || fresh.external_links?.frameio_id) {
+      tally.skipped++
+      continue
+    }
+    const external_links = {
+      ...(fresh.external_links || {}),
+      frameio_id: resolved.match.id,
+      frameio: frameioProjectUrl(resolved.match.id),
+    }
+    const { error: writeError } = await sb
+      .from('projects')
+      .update({ external_links, updated_at: new Date().toISOString() })
+      .eq('id', row.id)
+    if (writeError) throw new Error(`Frame.io reconcile write failed: ${writeError.message}`)
+    tally.linked++
+    console.log(
+      `[dropbox-watcher] reconciled ${row.project_code || row.id} → Frame.io ${resolved.match.id} "${resolved.match.name}"`,
+    )
+  }
+
+  if (tally.linked || tally.ambiguous || tally.notFound) {
+    console.log(
+      `[dropbox-watcher] Frame.io reconcile done — scanned=${tally.scanned} linked=${tally.linked} ` +
+        `notFound=${tally.notFound} ambiguous=${tally.ambiguous} skipped=${tally.skipped}`,
+    )
+  }
+  return tally
 }
 
 // ─── Frame.io helpers ───────────────────────────────────────
