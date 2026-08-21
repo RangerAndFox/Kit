@@ -82,6 +82,46 @@ describe('createBoundRow idempotency', () => {
   })
 })
 
+describe('createBoundRow RF Production placement safety', () => {
+  it('does not overwrite a row whose Project ID is blank but another Projects cell is occupied', async () => {
+    const config: WorkbookConfig = { ...CONFIG, layout: 'rf-production-v1' }
+    let requestedEndColumnIndex: number | undefined
+    let metadataStartIndex: number | undefined
+
+    __setSheetsTransportForTests(async <T>(_method: string, url: string, body?: unknown): Promise<T> => {
+      if (url.includes('developerMetadata:search')) return { matchedDeveloperMetadata: [] } as T
+      if (url.includes(':getByDataFilter')) {
+        const request = body as { dataFilters: Array<{ gridRange: { endColumnIndex: number } }> }
+        requestedEndColumnIndex = request.dataFilters[0].gridRange.endColumnIndex
+        const occupiedWithoutId: SheetCell[] = Array.from({ length: 15 }, () => ({}))
+        occupiedWithoutId[3] = { formattedValue: 'Fabric Branding Assignment' }
+        return {
+          sheets: [{
+            properties: { sheetId: config.sheetId },
+            data: [{ rowData: [{ values: occupiedWithoutId }, { values: [] }] }],
+          }],
+        } as T
+      }
+      if (url.includes(':batchUpdate')) {
+        const requests = (body as { requests: Array<{ createDeveloperMetadata?: { developerMetadata: { location: { dimensionRange: { startIndex: number } } } } }> }).requests
+        metadataStartIndex = requests.find((request) => request.createDeveloperMetadata)
+          ?.createDeveloperMetadata?.developerMetadata.location.dimensionRange.startIndex
+        return { replies: [{ createDeveloperMetadata: { developerMetadata: { metadataId: 101 } } }] } as T
+      }
+      throw new Error(`unexpected url ${url}`)
+    })
+
+    await createBoundRow(
+      config,
+      'proj-rf',
+      kitOwnedCreationCells({ projectNumber: '2640', clientName: 'Microsoft', projectName: 'New project' }, config.layout),
+    )
+
+    assert.equal(requestedEndColumnIndex, 15, 'the RF layout scans every physical Projects column')
+    assert.equal(metadataStartIndex, config.headerRow + 1, 'the occupied ID-less row is skipped')
+  })
+})
+
 describe('createBoundRow date + margin safety', () => {
   it('writes dates as serial numbers with a DATE format, never text; never writes margins', async () => {
     const be = fakeBackend()
