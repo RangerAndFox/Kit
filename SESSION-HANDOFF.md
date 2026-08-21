@@ -1,119 +1,101 @@
-# Kit — Session Handoff (current)
+# Kit — Session handoff
 
-Pick-up notes reflecting the current state of Kit. Supersedes the earlier
-time-tracking-only handoff (that work is all done + merged). For the AE render
-farm specifically, see `AE-RENDER-FARM-HANDOFF.md`.
+Current as of 2026-08-21. Repository: https://github.com/RangerAndFox/Kit. Production Supabase project: `ozsxrcgrezpffnpwlrnq`.
 
-Work is on branch `claude/laughing-ride-htu0dx`, PR'd → squash-merged to `main`
-(deploys: Railway = bolt, Vercel = Inngest). Supabase project `ozsxrcgrezpffnpwlrnq`.
+## Current build state
 
----
+Kit is a Slack-native studio operations system with a persistent Bolt service on Railway, Next.js/Inngest work on Vercel, Supabase as the durable source of truth, and optional studio render workers. Project creation, existing-project updates, outgoing-file Frame.io mirroring, storyboards, hours tracking, meeting briefings, knowledge retrieval, and render coordination are implemented.
 
-## 2026-07-13 session — outages fixed + health monitor
+The main implementation risk is no longer a known code failure; it is deployment/provider verification. Vercel checks passed on the latest merged work. Railway could not be inspected in the final audit because its connector repeatedly restarted authentication.
 
-- **Dropbox was dead on Vercel (~3 months)** — the delivery/specs crons 401'd on
-  `invalid_access_token` because Vercel had only a stale static `DROPBOX_ACCESS_TOKEN`
-  and none of the refresh trio. Fixed: added `DROPBOX_APP_KEY/_APP_SECRET/_REFRESH_TOKEN`
-  (copied from Railway), removed the static token. Live-verified green.
-- **Frame.io was down on Vercel** — `FRAMEIO_ADOBE_REFRESH_TOKEN` was missing (only
-  CLIENT_ID/SECRET present since May). The new health monitor caught it on first run;
-  adding the token fixed it. Green.
-- **Date-awareness fix (PR #101)** — the orchestrator + specialists ran with no notion
-  of "now", so relative dates ("last Thursday") made Kit ask the user the date. Now a
-  current-date system block is injected every LLM turn; ad-hoc hours pre-filter also
-  matches minutes. Live-verified.
-- **Ponytail cleanup finished (PR #101)** — deleted the two dead files the earlier
-  audit batches missed (`new_project_service_module_code/`, `layout-shell.tsx`, −3,071
-  lines). nda tests made Windows-safe.
-- **Health monitor (PR #102) — LIVE.** `/status` page + `/api/status` (200/503) +
-  `health-watchdog` cron (every 10m) posting to `KIT_HEALTH_CHANNEL_ID` only on a
-  down/recover flip. Probes Dropbox/Frame.io/Harvest/Supabase/Google + cron freshness
-  (delivery scans, transcript scan, pre-meeting scan heartbeat on each fire).
-  Migration 052 applied. Field guide links to `/status`.
-- **Briefings — calendar access now working.** Root cause was never the sharing alone:
-  `GOOGLE_CALENDAR_INGEST_ENABLED` was off, and `GOOGLE_CALENDAR_IDS` pointed at personal
-  emails (404) instead of the shared studio calendars (General, Events, …). Fixed: flag
-  on, IDs swapped to the studio calendars, calendars shared with the service account
-  `kit-373@rf-kit-500717.iam.gserviceaccount.com`. `pre-meeting-scan` completes clean,
-  `fetch-events` succeeds, 0 events only when none are imminent. Full classify→DM path
-  not yet seen fire (needs a real meeting within ~30 min, or the smoke test below).
+## Work completed in the August 20–21 sequence
 
-### New issues surfaced today (not yet fixed)
-- **`/Delivery-Queue` 409 `path/not_found`** — Dropbox auth is fixed, but the delivery
-  scan now errors because the queue folder path doesn't resolve. Likely the folder
-  doesn't exist at the Dropbox root, or the watcher's path is off. Low urgency.
-- **Preview deployments receiving cron traffic** — Inngest is firing crons at `main`
-  AND preview branch deployments (`kit-agent-packaging`, `laughing-ride`), causing
-  duplicate/erroring runs. The Inngest↔Vercel sync should target production only.
+### Existing-project updates
 
-### Open / optional
-- **Briefings smoke test** — drop a throwaway event on General ~25 min out with an R&F
-  attendee to watch a real briefing fire (`scanned: 1, scheduled: 1` → DM).
-- **`GOOGLE_CALENDAR_IDS`** currently the studio calendars only — widen if meetings live
-  elsewhere. Briefing recipients still require the R&F person to be an **attendee** on
-  the event (matched to `staff` by email).
+- `update project` and `/kit update` open a card analogous to the new-project provisioner.
+- The selected project's current values prefill the modal.
+- Confirmed edits ripple through the connected services and the Master Project List using durable request/step ledgers.
+- Retryable partial updates recover from Railway's five-minute sweep; unrecoverable failures are surfaced as needing attention.
+- Provider-created suffixes such as `cd227d7a` no longer leak into human-facing project names.
+- The picker reconciles editable Supabase rows with live, non-archived Slack project channels. Live channels missing from Kit can be adopted/relinked; deleted test channels are not shown merely because an old database row exists.
 
----
+### Slack project provisioning/update resilience
 
-## What's LIVE and verified
+- Slack create/rename behavior was hardened and covered by focused tests.
+- Project identity and channel bindings remain stable across updates.
+- Shortcut routing now has one canonical `DM_SHORTCUT_REGISTRY` used by both Slack's Assistant callback and the plain-message fallback. This prevents a strict card command from working on only one inbound path and falling through to a generic answer on the other.
 
-- **Time tracking** — daily per-person-timezone check-ins, multi-day replies,
-  ad-hoc logging, missing-time monitor. 6/8 active staff mapped + on check-ins
-  (2 intentionally off). `/kit backfill-time` and `/kit sync-staff` exist.
-- **Meeting transcripts** — Google Drive ingest (Zapier drops Plaud transcripts;
-  Kit ingests every 15 min). ~25 flowing. The dead Plaud-API path was removed.
-- **Conversational Q&A** — @mention/DM orchestrator; project/codename resolution
-  (keyword → project, incl. Harvest-only internal projects); Frame.io links;
-  in-thread replies stay in-thread.
-- **Provisioning** — `/kit newproject` fans out to Slack/Dropbox/Harvest/Frame.io.
-- **Caption QC** — SRTs in the accessibility folder auto-generate TTML/VTT/TXT
-  **and** get a proofread report (✅/❌) in the project channel.
-- **Weekly timesheet meme** — Friday 9am, @channel, rotating templates (imgflip).
-- **Founder DM access** — Steve + Jared have `team_members` rows (`role='admin'`)
-  → admin tier → full knowledge base (budgets, all projects) in their DMs.
-- Both `src` and `bolt` typecheck clean; bolt suite green.
+### Storyboards
 
-## SET UP but not yet exercised
+- The Railway build includes `mammoth`, restoring `.docx` extraction.
+- Long Boords operations persist resumable job state and return `/storyboard resume <job-id>` on timeout rather than losing progress.
 
-- **AE render farm** — runs on the studio Deadline farm (`RENDER_BACKEND=deadline`;
-  `kit-deadline-relay` on AC-Slater; group `kit_ae`; KitAfterEffects plugin).
-  `render_jobs` is still empty — no live render yet. Test procedure + the
-  unverified bits (OM settings shape in AE 2026, Deadline status parsing) are in
-  `AE-RENDER-FARM-HANDOFF.md`.
+### Dropbox → Frame.io
 
-## NOT yet installed (blocks these)
+- Project outgoing-file mirroring is confirmed working for uploads under `/production/.../09_Outgoing/{01_Client Progress,02_Delivery}`.
+- Share creation was corrected to Adobe's documented Frame.io V4 contract: `POST /accounts/{account}/projects/{project}/shares` with a public asset share and `asset_ids`.
+- A provider-contract regression test locks the endpoint and payload. The existing file-view fallback remains in place.
+- Project `2633-Microsoft / Biz Apps` is a known partial record: Slack, Dropbox, and Harvest are linked; Frame.io is missing. The watcher should discover/backfill it on the next eligible delivery.
 
-- **`kit-render-worker`** isn't installed anywhere. Blocks the delivery/transcode
-  pipeline AND the AE "Add delivery specs" follow-up transcodes. Install on
-  AC-Slater (`install.ps1`, `DROPBOX_SYNC_PATH` = local `/production` root).
-  (AE *rendering* works via Deadline without it; *transcodes* need it.)
+### Hours tracking
 
-## Config flags to flip when wanted
+- Daily reminders are durable per `(staff, local workday)`, delivered by an hourly timezone-aware sweep, reconciled after ambiguous Slack sends, and protected against overlapping-sweep duplicates.
+- The `daily_hours_reminders.check_in_id` lookup now has a production migration/index (PR #136).
+- The historical Allyson July 31/August 10 over-log remediation is already applied. The check-ins point to the corrected 2-entry and 4-entry Harvest sets; do not rerun the one-off repair.
 
-- **Brain scavenger** → `KIT_BRAIN_SCAVENGER_ENABLED=true` on **both** Railway
-  (dispatch) and Vercel (scan).
-- **Timesheet meme images** → `IMGFLIP_USERNAME`/`PASSWORD` + `KIT_TEAM_CHANNEL_ID`
-  (all set — meme is live).
+### Meeting briefings
 
-## Admin commands
+- Bizdev, kickoff, and active-project briefings now share the simplified layout requested by the studio:
+  - Meeting info
+  - Attendee info (external attendees only, with LinkedIn/web evidence when available)
+  - Positioning (a natural-language Ranger & Fox partnership paragraph)
+- Private delivery remains the default. Research failures degrade to explicit fallback copy rather than fabricated biography.
 
-`/kit sync-staff` · `/kit sync-projects` (Harvest→Supabase reconcile, preview →
-`run`) · `/kit backfill-time` · `/kit meme` · `/kit render` (+ `status`).
+### Dependency/security state
 
-## Open decisions / follow-ups
+- Bolt dependencies were upgraded in PR #139.
+- `npm audit` in `bolt/` moved from 12 advisories (1 critical, 6 high, 4 moderate, 1 low) to zero.
+- Vitest is 4.1.11 and tsx is 4.23.12.
+- The post-upgrade suite passed: 45 test files and 398 tests before the shortcut test consolidation; 45 files and 396 tests after replacing six duplicate parity assertions with four registry assertions. TypeScript validation is clean.
 
-- **`creative_director` role** maps to `artist` tier (no budget visibility) —
-  probably should be `producer` for a studio. Awaiting a call.
-- **Inngest/Vercel** — confirm the cloud-side crons (briefings, delivery scans,
-  brain jobs, transcript ingest, studio-knowledge) are registered + firing; if
-  the Inngest↔Vercel sync ever breaks, they silently stop.
-- Data cleanup done this session: 232 projects (test junk + dupes removed),
-  transcript flow healthy.
+## Merged pull requests in the final pass
 
-## Notable this-session history
+- PR #136 — index daily-hours reminder check-in lookup
+- PR #137 — simplify and improve meeting briefings
+- PR #138 — repair Frame.io V4 public share creation
+- PR #139 — update Bolt dependencies and clear npm advisories
+- PR #140 — unify Slack DM shortcut routing
 
-Audit cleanup (~5,300 lines + 7 deps removed, root tsc 6→0 via regenerated
-Supabase types), multi-day check-ins, threading fix, project-codename/keyword
-resolution + `/kit sync-projects`, caption QC, timesheet meme, founder DM access
-hardening (`role='admin'` → admin tier), dead Plaud-API removal, and the
-project-table cleanup. All merged (PRs up through #99).
+All were squash-merged to `main` after local tests and passing Vercel checks.
+
+## Runtime ownership
+
+- Railway owns Slack Socket Mode, `/webhooks/dropbox`, project outgoing-file mirroring, daily-hours/reminder jobs, project create/update recovery, and other in-process Slack jobs.
+- Vercel/Inngest owns meeting scans/dispatch, `/Delivery-Queue` polling and delivery workflow jobs, transcript ingest, health checks, studio-knowledge jobs, and Master Project List → Canvas convergence.
+- Supabase owns shared records and durable workflow ledgers.
+- Studio workers own FFmpeg transcodes and Deadline relay execution.
+
+The Railway Dropbox webhook and the Vercel `/Delivery-Queue` poller are not duplicates. They watch different roots and implement different workflows. See `.ai/runtime.md`.
+
+## What remains
+
+Everything currently safe to implement in the repository has been merged. Remaining work requires a live event, provider/dashboard access, a studio machine, or a product decision:
+
+1. Verify Railway deployed current `main` and is healthy.
+2. Verify the next outgoing file produces a real public Frame.io share.
+3. Verify project 2633's missing Frame.io ID auto-backfills on that event.
+4. Observe the next local-5pm hours occurrence end to end.
+5. Observe the next real simplified meeting briefing.
+6. Confirm studio delivery/render workers before depending on transcodes.
+7. Resolve the visibility and briefing-posting decisions in `OPERATOR-TODO.md`.
+
+## Verification commands
+
+```bash
+npm run build
+cd bolt
+npm ci
+npm test
+npx tsc --noEmit
+npm audit
+```
