@@ -310,21 +310,29 @@ async function readRfProductionRow(config: WorkbookConfig, rowIndex: number): Pr
 
 /**
  * Locate the next writable row (0-based grid index) ON THE CONFIGURED SHEET:
- * the first fully-empty row at/after the data region, using column A (Project
- * Number) as the occupancy signal. Deterministic and non-destructive — never a
- * blind full-width append. Uses the same sheetId-keyed read as every other row
- * read, so the creation write-row is chosen from `config.sheetId`, never the
- * first visible tab (which would place the row against the wrong tab's
- * occupancy and could overwrite a real row on the configured sheet).
+ * the first fully-empty row at/after the data region. Legacy workbooks use
+ * column A (Project Number) as their occupancy signal. The RF Production
+ * workbook checks every physical Projects column (A:O), because imported rows
+ * can contain a project name or section content while Project ID is blank.
+ * Deterministic and non-destructive — never a blind full-width append. Uses the
+ * same sheetId-keyed read as every other row read, so the creation write-row is
+ * chosen from `config.sheetId`, never the first visible tab.
  */
 async function findNextEmptyRowIndex(config: WorkbookConfig): Promise<number> {
   const firstDataRowIndex = config.headerRow // 0-based grid index of the first data row
+  const physicalColumnCount = config.layout === 'rf-production-v1' ? 15 : 1
   const rowData = await getGridData(
     config,
-    { startRowIndex: firstDataRowIndex, startColumnIndex: 0, endColumnIndex: 1 },
+    { startRowIndex: firstDataRowIndex, startColumnIndex: 0, endColumnIndex: physicalColumnCount },
     'formattedValue,effectiveValue',
   )
-  let offset = rowData.findIndex((rd) => normalizeCell(rd?.values?.[0]).display.trim() === '')
+  let offset = rowData.findIndex((rd) => {
+    const values = rd?.values || []
+    return Array.from(
+      { length: physicalColumnCount },
+      (_, columnIndex) => normalizeCell(values[columnIndex]).display.trim(),
+    ).every((value) => value === '')
+  })
   if (offset < 0) offset = rowData.length
   return firstDataRowIndex + offset
 }
