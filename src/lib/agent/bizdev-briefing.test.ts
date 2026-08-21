@@ -31,6 +31,8 @@ import {
   companyFromTitle,
   hasBizdevLanguage,
   hasRecruitingContext,
+  parsePositioningResponse,
+  fallbackPositioning,
 } from './bizdev-briefing'
 import { matchAttendeesToStaff } from './briefing-composer'
 
@@ -145,7 +147,7 @@ describe('renderAttendeeEvidence / buildBizdevBriefingText (no raw prose)', () =
       externals: [{ email: 'ryan@oshi.co' }],
       evidence: [ev as any],
     })
-    assert.match(text, /No reliable public information found/)
+    assert.match(text, /No reliable public background found/)
     assert.doesNotMatch(text, /I'd be happy to help/)
   })
 
@@ -155,7 +157,7 @@ describe('renderAttendeeEvidence / buildBizdevBriefingText (no raw prose)', () =
       externals: [{ email: 'ryan@oshi.co' }],
       evidence: [null],
     })
-    assert.match(text, /No reliable info found/)
+    assert.match(text, /No reliable public background found/)
   })
 
   it('renders resolved facts as structured bullets', () => {
@@ -168,6 +170,28 @@ describe('renderAttendeeEvidence / buildBizdevBriefingText (no raw prose)', () =
     assert.ok(lines.some((l) => l.includes('Ryan Dolinsky')))
     assert.ok(lines.some((l) => l.includes('Founder of Oshi')))
     assert.ok(lines.some((l) => l.includes('Confidence: resolved')))
+  })
+})
+
+describe('positioning paragraph', () => {
+  it('accepts only the structured positioning field', () => {
+    assert.equal(
+      parsePositioningResponse('{"positioning":"Ranger & Fox can turn the launch goal into a focused production plan."}'),
+      'Ranger & Fox can turn the launch goal into a focused production plan.',
+    )
+    assert.equal(parsePositioningResponse('Here is a positioning paragraph...'), null)
+    assert.equal(parsePositioningResponse('{"other":"missing"}'), null)
+  })
+
+  it('uses kickoff-specific positioning for a matched project', () => {
+    const paragraph = fallbackPositioning({
+      event: { ...OSHI_EVENT, summary: 'Oshi project kickoff' },
+      project: { name: 'Oshi launch film', client: 'Oshi' },
+      externals: [{ email: 'ryan@oshi.co' }],
+      evidence: [],
+    })
+    assert.match(paragraph, /kickoff/i)
+    assert.match(paragraph, /milestones/i)
   })
 })
 
