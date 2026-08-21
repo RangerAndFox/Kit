@@ -311,35 +311,14 @@ export function registerMessageHandlers(app: App) {
       }
     }
 
-    // ── Storyboard keyword shortcut (DM only) ─────────────
-    // Strict match: the message must be a clear "make me a storyboard"
-    // intent, not just any mention of the word. The orchestrator handles
-    // looser phrasings conversationally.
-    if (isDM && isStoryboardTrigger((msgEvent.text || '').trim())) {
-      const assistantThreadTs = dmThreadTs(msgEvent)
-      await handleStoryboardKeyword({
-        app,
-        channelId,
-        userId,
-        assistantThreadTs,
-      })
-      return
-    }
-
-    // ── New-project keyword shortcut (DM only) ────────────
-    if (isDM && isNewProjectTrigger((msgEvent.text || '').trim())) {
-      const assistantThreadTs = dmThreadTs(msgEvent)
-      await app.client.chat.postMessage(
-        buildNewProjectCard(channelId, assistantThreadTs),
-      )
-      return
-    }
-
-    // ── Update-project keyword shortcut (DM only) ─────────
-    if (isDM && isUpdateProjectTrigger((msgEvent.text || '').trim())) {
-      const assistantThreadTs = dmThreadTs(msgEvent)
-      const card = await buildUpdateProjectCardForContext({ teamId, channelId, threadTs: assistantThreadTs, client: app.client })
-      await app.client.chat.postMessage(card)
+    // ── Structured keyword shortcuts (DM only) ───────────
+    if (isDM && await handleDmShortcut(app, {
+      channelId,
+      userId,
+      teamId,
+      text: (msgEvent.text || '').trim(),
+      threadTs: dmThreadTs(msgEvent),
+    })) {
       return
     }
 
@@ -743,38 +722,6 @@ export function isNewProjectTrigger(text: string): boolean {
   return /^(new|make|create|start|spin up)\s+(a\s+)?project(\s+please)?\.?$/i.test(t)
 }
 
-/** Wrapper for the Assistant-thread caller (app.ts). */
-export async function handleNewProjectKeywordFromAssistant(
-  app: App,
-  opts: { channelId: string; assistantThreadTs?: string },
-): Promise<void> {
-  await app.client.chat.postMessage(
-    buildNewProjectCard(opts.channelId, opts.assistantThreadTs),
-  )
-}
-
-/**
- * Post the update-project card from an ASSISTANT thread.
- *
- * Required because "Agents & AI Apps" is enabled: a DM to Kit arrives through
- * the Assistant flow (`app.assistant`), NOT as a plain `message` event, so the
- * `isDM && isUpdateProjectTrigger(...)` branch in the message handler above
- * never sees it. Mirrors handleNewProjectKeywordFromAssistant; needs teamId
- * because the card resolves the project from the current channel/workspace.
- */
-export async function handleUpdateProjectKeywordFromAssistant(
-  app: App,
-  opts: { channelId: string; teamId: string; assistantThreadTs?: string },
-): Promise<void> {
-  const card = await buildUpdateProjectCardForContext({
-    teamId: opts.teamId,
-    channelId: opts.channelId,
-    threadTs: opts.assistantThreadTs,
-    client: app.client,
-  })
-  await app.client.chat.postMessage(card)
-}
-
 export function isStoryboardTrigger(text: string): boolean {
   if (!text) return false
   const t = text.toLowerCase().trim()
@@ -797,6 +744,72 @@ export function isStoryboardTrigger(text: string): boolean {
   return /^(new|make|create|start)\s+(a\s+)?storyboard(\s+please)?\.?$/i.test(t)
 }
 
+export interface DmShortcutContext {
+  channelId: string
+  userId: string
+  teamId: string
+  text: string
+  threadTs?: string
+}
+
+type DmShortcut = {
+  id: 'storyboard' | 'new-project' | 'update-project'
+  matches: (text: string) => boolean
+  run: (app: App, context: DmShortcutContext) => Promise<void>
+}
+
+/**
+ * Canonical ordered registry for strict DM card shortcuts. Both Slack inbound
+ * paths call handleDmShortcut, so adding an entry here makes it available in
+ * Assistant threads and in the plain-message fallback at the same time.
+ */
+export const DM_SHORTCUT_REGISTRY: readonly DmShortcut[] = [
+  {
+    id: 'storyboard',
+    matches: isStoryboardTrigger,
+    run: async (app, context) => handleStoryboardKeyword({
+      app,
+      channelId: context.channelId,
+      userId: context.userId,
+      assistantThreadTs: context.threadTs,
+    }),
+  },
+  {
+    id: 'new-project',
+    matches: isNewProjectTrigger,
+    run: async (app, context) => {
+      await app.client.chat.postMessage(
+        buildNewProjectCard(context.channelId, context.threadTs),
+      )
+    },
+  },
+  {
+    id: 'update-project',
+    matches: isUpdateProjectTrigger,
+    run: async (app, context) => {
+      const card = await buildUpdateProjectCardForContext({
+        teamId: context.teamId,
+        channelId: context.channelId,
+        threadTs: context.threadTs,
+        client: app.client,
+      })
+      await app.client.chat.postMessage(card)
+    },
+  },
+]
+
+export async function handleDmShortcut(
+  app: App,
+  context: DmShortcutContext,
+): Promise<boolean> {
+  const shortcut = DM_SHORTCUT_REGISTRY.find((candidate) =>
+    candidate.matches(context.text),
+  )
+  if (!shortcut) return false
+  await shortcut.run(app, context)
+  return true
+}
+
 /**
  * A user dropped a .docx/.txt in our DM. Stash a reference to the file
  * and post a card with a button that opens the settings modal pre-filled.
@@ -814,18 +827,6 @@ export async function handleStoryboardFileDropFromAssistant(
   },
 ): Promise<void> {
   return handleStoryboardFileDrop({ app, ...opts })
-}
-
-/** Wrapper for the Assistant-thread caller (app.ts). */
-export async function handleStoryboardKeywordFromAssistant(
-  app: App,
-  opts: {
-    channelId: string
-    userId: string
-    assistantThreadTs?: string
-  },
-): Promise<void> {
-  return handleStoryboardKeyword({ app, ...opts })
 }
 
 async function handleStoryboardFileDrop(opts: {
