@@ -49,6 +49,19 @@ async function slackPost(channel: string, text: string, blocks?: any[], threadTs
   return json.ok ? json.ts : null
 }
 
+/** Post first, then mark. A failed Slack request must leave the Dropbox file
+ * eligible for the next scan instead of silently losing its delivery prompt. */
+export async function completeDeliveryFileNotification(opts: {
+  dropboxId: string
+  post: () => Promise<string | null>
+  mark: (dropboxId: string) => Promise<void>
+}): Promise<boolean> {
+  const ts = await opts.post()
+  if (!ts) return false
+  await opts.mark(opts.dropboxId)
+  return true
+}
+
 async function slackUpdate(channel: string, ts: string, text: string, blocks?: any[]): Promise<boolean> {
   const token = process.env.SLACK_BOT_TOKEN
   if (!token || !channel || !ts) return false
@@ -187,13 +200,13 @@ export const deliveryDropboxScan = inngest.createFunction(
           },
         },
       ]
-      // Mark notified BEFORE posting so a Supabase write failure doesn't
-      // cause a re-post on the next cron tick. We tolerate the edge case
-      // where Slack post fails after the mark — operator will see the file
-      // wasn't notified and can `/kit deliver <path>` manually.
-      await markFileNotified(f.dropbox_id)
-      await slackPost(channel, `New file: ${name}`, blocks)
-      notified++
+      const delivered = await completeDeliveryFileNotification({
+        dropboxId: f.dropbox_id,
+        post: () => slackPost(channel, `New file: ${name}`, blocks),
+        mark: markFileNotified,
+      })
+      if (delivered) notified++
+      else logger.warn(`[delivery-scan] Slack notification failed for ${f.path}; leaving eligible for retry`)
     }
 
     return { notified, converted }

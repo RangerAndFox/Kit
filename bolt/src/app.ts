@@ -22,6 +22,7 @@ import { registerBrainApprovalHandlers } from './brain/approvals'
 import {
   verifyDropboxSignature,
   processDropboxNotification,
+  reconcileMissingFrameioProjectLinks,
 } from './watchers/dropbox'
 import cron from 'node-cron'
 import { sweepDailyReminders } from './checkins/reminder-delivery'
@@ -115,6 +116,20 @@ registerMessageHandlers(app)
 registerCommandHandlers(app)
 const { runProjectControlRecoverySweep } = registerInteractionHandlers(app)
 registerBrainApprovalHandlers(app)
+
+// Imported/synced projects can have Dropbox + Slack links before their
+// Frame.io id is known. Reconcile once at boot and hourly thereafter so they
+// become fully linked without waiting for a producer to drop a real delivery.
+setTimeout(() => {
+  reconcileMissingFrameioProjectLinks().catch((err) =>
+    console.error('[startup] Frame.io project-link reconcile failed:', err),
+  )
+}, 5_000)
+cron.schedule('23 * * * *', () => {
+  reconcileMissingFrameioProjectLinks().catch((err) =>
+    console.error('[cron] Frame.io project-link reconcile failed:', err),
+  )
+})
 
 // ─── Resilience + Diagnostics ──────────────────────────────
 
