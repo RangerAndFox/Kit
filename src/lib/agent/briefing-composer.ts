@@ -1,20 +1,15 @@
 // @ts-nocheck
 /**
- * Briefing composer — assembles the pre-meeting markdown body.
+ * Meeting briefing composer.
  *
- * Pulls context from:
- *   - projects (header, brief_summary, links)
- *   - kit_actions (open items for this project)
- *   - call_transcripts (last Plaud summary if available)
- *   - external_links (Frame.io, Dropbox)
- *
- * Output is markdown suitable for Slack chat.postMessage with mrkdwn=true.
+ * Every supported meeting type uses the same deliberately small layout:
+ * meeting information, public background on external attendees, and one
+ * positioning paragraph. Delivery remains private to internal R&F invitees.
  */
 
-import Anthropic from '@anthropic-ai/sdk'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { searchDocuments, buildContext } from '@/lib/rag/query'
 import type { CalendarEvent } from '@/lib/integrations/google-calendar'
+import type { AttendeeEvidence } from './bizdev-briefing'
 
 export interface BriefingContext {
   event: CalendarEvent
@@ -37,12 +32,22 @@ export interface BriefingArtifact {
   projectChannelId: string | null
 }
 
+export interface BriefingProject {
+  name: string
+  client?: string | null
+  project_code?: string | null
+  brief_summary?: string | null
+}
+
+export interface ExternalAttendee {
+  email: string
+  displayName?: string
+  responseStatus?: string
+}
+
 /**
- * Match calendar attendees to internal R&F staff — the people who get the
- * private briefing. PRIVACY-CRITICAL: only active staff with a Slack id whose
- * email exactly matches an attendee are returned. External attendees (clients),
- * inactive staff, and anyone not on the invite are excluded, so the prep can't
- * bleed to people who weren't on the call. Pure — unit-tested.
+ * Match calendar attendees to internal R&F staff — the people who receive the
+ * private briefing. External attendees are never delivery recipients.
  */
 export function matchAttendeesToStaff(
   attendees: { email: string }[],
@@ -62,9 +67,6 @@ export function matchAttendeesToStaff(
   for (const s of staff) {
     if (!s.id || !s.email || !s.slack_user_id || s.is_active === false) continue
     const entry = { staff_id: s.id, slack_user_id: s.slack_user_id, full_name: s.full_name }
-    // Primary email plus any aliases (e.g. a Slack address that differs from
-    // the calendar-invite address) so briefings match regardless of which
-    // address the invite used.
     byEmail.set(s.email.trim().toLowerCase(), entry)
     for (const alias of s.email_aliases || []) {
       if (alias && alias.trim()) byEmail.set(alias.trim().toLowerCase(), entry)
@@ -88,184 +90,157 @@ export function matchAttendeesToStaff(
   return out
 }
 
-/**
- * Suggested prep — 2-4 bullets synthesized from the project's brain + recent
- * notes via RAG, so a briefing surfaces relevant context without the
- * recipient having to dig through the project's history themselves.
- * Non-fatal: returns null on any failure (no matching docs, missing API key,
- * model error) so a prep-notes hiccup never blocks the rest of the briefing.
- */
-export async function buildProjectPrepNotes(opts: {
-  projectId: string
-  meetingTitle: string
-  briefSummary?: string | null
-}): Promise<string | null> {
-  try {
-    const query = [opts.meetingTitle, opts.briefSummary].filter(Boolean).join(' — ')
-    const results = await searchDocuments(query, { projectId: opts.projectId, limit: 8 })
-    if (results.length === 0) return null
-
-    const context = buildContext(results, 6_000)
-    if (!context.trim()) return null
-
-    const apiKey = process.env.ANTHROPIC_API_KEY
-    if (!apiKey) return null
-    const client = new Anthropic({ apiKey })
-
-    const res = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 300,
-      system:
-        'You summarize project context into pre-meeting prep notes for a video production ' +
-        'studio. Given retrieved brain/notes context and the meeting title, output 2-4 short ' +
-        'bullet points (each starting with "• ") of the most relevant context, open decisions, ' +
-        'or callbacks for this specific call. Be concrete and terse — no filler, no restating ' +
-        'the meeting title. If the context is not actually relevant to this meeting, output ' +
-        'nothing at all.',
-      messages: [
-        { role: 'user', content: `Meeting: ${opts.meetingTitle}\n\nRetrieved context:\n${context}` },
-      ],
-    })
-
-    const text = res.content
-      .filter((c: any) => c.type === 'text')
-      .map((c: any) => c.text)
-      .join('\n')
-      .trim()
-
-    return text || null
-  } catch (err: any) {
-    console.warn('[briefing-composer] prep notes failed:', err?.message || err)
-    return null
-  }
+function briefingTimezone(): string {
+  return process.env.BRIEFING_TIMEZONE || process.env.CHECKIN_TIMEZONE || 'America/Detroit'
 }
 
 export function fmtTime(iso: string): string {
   try {
-    const d = new Date(iso)
-    return d.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: briefingTimezone(),
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(new Date(iso))
   } catch {
     return iso
   }
 }
 
+export function fmtMeetingRange(startIso: string, endIso?: string): string {
+  const start = fmtTime(startIso)
+  if (!endIso || endIso === startIso) return start
+  try {
+    const end = new Intl.DateTimeFormat('en-US', {
+      timeZone: briefingTimezone(),
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZoneName: 'short',
+    }).format(new Date(endIso))
+    return `${start}–${end}`
+  } catch {
+    return start
+  }
+}
+
+function cleanSentence(value: string): string {
+  const text = value.replace(/\s+/g, ' ').trim().replace(/^[•\-]\s*/, '')
+  if (!text) return ''
+  return /[.!?]$/.test(text) ? text : `${text}.`
+}
+
 /**
- * Assemble the briefing markdown from already-fetched context. Pure — tested.
- * `lastTranscript` must already be scoped to this project by the caller.
+ * Compact public background for one external attendee. Internal history may
+ * help research resolve identity, but only public facts/inferences are rendered
+ * in this section because its contract is specifically LinkedIn/web context.
  */
+export function renderExternalAttendeeBackground(
+  attendee: ExternalAttendee,
+  evidence: AttendeeEvidence | null,
+): string {
+  const name = evidence?.identity?.name || attendee.displayName || attendee.email
+  if (!evidence || evidence.identity.status === 'unresolved') {
+    return `*${name}:* No reliable public background found.`
+  }
+
+  const publicFacts = (evidence.facts || [])
+    .filter((fact) => /^https?:\/\//i.test(String(fact.source_ref || '')))
+    .map((fact) => cleanSentence(fact.claim))
+    .filter(Boolean)
+    .slice(0, 3)
+  const background = [...publicFacts]
+
+  if (background.length === 0 && evidence.identity.company) {
+    background.push(
+      `Public signals associate ${name} with ${evidence.identity.company}, but Kit could not verify a specific role or profile.`,
+    )
+  }
+
+  return `*${name}:* ${background.join(' ') || 'No reliable public background found.'}`
+}
+
+/** Shared concise layout for bizdev, kickoff, and active-project meetings. */
+export function buildMeetingBriefingText(opts: {
+  event: CalendarEvent
+  project?: BriefingProject | null
+  externals: ExternalAttendee[]
+  evidence: (AttendeeEvidence | null)[]
+  positioning: string
+}): string {
+  const { event, project, externals, evidence, positioning } = opts
+  const lines: string[] = [
+    '*Meeting info*',
+    `*Subject:* ${event.summary || 'Untitled meeting'}`,
+    `*Date & time:* ${fmtMeetingRange(event.start_time, event.end_time)}`,
+  ]
+
+  if (project) {
+    const identity = [project.project_code, project.name].filter(Boolean).join(' | ')
+    lines.push(`*Project:* ${identity}${project.client ? ` — ${project.client}` : ''}`)
+  }
+  if (event.hangoutLink) lines.push(`*Join:* ${event.hangoutLink}`)
+
+  lines.push('', '*Attendee info*')
+  if (externals.length === 0) {
+    lines.push('_No external attendees on this invite._')
+  } else {
+    externals.forEach((attendee, index) => {
+      lines.push(renderExternalAttendeeBackground(attendee, evidence[index] || null))
+    })
+  }
+
+  lines.push('', '*Positioning*', positioning)
+  return lines.join('\n')
+}
+
+/** Project-meeting wrapper retained as the public composer test seam. */
 export function buildBriefingText(opts: {
   event: CalendarEvent
-  project: any | null
-  actions: { title: string }[] | null
-  lastTranscript: { start_time: string; transcript: string } | null
-  prepNotes?: string | null
+  project: BriefingProject | null
+  externals: ExternalAttendee[]
+  evidence: (AttendeeEvidence | null)[]
+  positioning: string
 }): string {
-  const { event, project, actions, lastTranscript, prepNotes } = opts
-  const lines: string[] = []
-  lines.push(`:wave: *Pre-meeting briefing*`)
-  lines.push(`*Meeting:* ${event.summary} — ${fmtTime(event.start_time)}`)
-  if (project) {
-    lines.push(
-      `*Project:* ${project.name}${project.client ? ` (${project.client})` : ''}${project.project_code ? ` — ${project.project_code}` : ''}`,
-    )
-    if (project.brief_summary) lines.push(`*Brief:* ${project.brief_summary}`)
-  }
-
-  if (prepNotes) {
-    lines.push('', '*Suggested prep:*', prepNotes)
-  }
-
-  // Links — accept both the rehydrated *_url keys and the provisioner's bare
-  // keys (the same dual-key shape the onboarding welcome DM handles).
-  const el = project?.external_links || {}
-  const frameio = el.frameio_url || el.frameio
-  const dropbox = el.dropbox_url || el.dropbox
-  const links: string[] = []
-  if (frameio) links.push(`• Frame.io: ${frameio}`)
-  if (dropbox) links.push(`• Dropbox: ${dropbox}`)
-  if (event.hangoutLink) links.push(`• Google Meet: ${event.hangoutLink}`)
-  if (links.length) {
-    lines.push('', '*Links:*', ...links)
-  }
-
-  if (actions && actions.length > 0) {
-    lines.push('', '*Open actions:*')
-    for (const a of actions) lines.push(`• ${a.title}`)
-  }
-
-  if (lastTranscript?.transcript) {
-    const snippet = lastTranscript.transcript.slice(0, 400)
-    lines.push(
-      '',
-      `*Last meeting (${fmtTime(lastTranscript.start_time)}):* ${snippet}${snippet.length === 400 ? '…' : ''}`,
-    )
-  }
-
-  if (event.attendees?.length) {
-    lines.push('', `*Attendees:* ${event.attendees.map((a) => a.email).join(', ')}`)
-  }
-
-  return lines.join('\n')
+  return buildMeetingBriefingText(opts)
 }
 
 export async function composeBriefing(ctx: BriefingContext): Promise<BriefingArtifact> {
   const { event, projectId } = ctx
   const sb = createAdminClient()
 
-  // Project header
-  const { data: project } = await sb
-    .from('projects')
-    .select('id, name, client, project_code, brief_summary, external_links')
-    .eq('id', projectId)
-    .maybeSingle()
+  const [{ data: project }, { data: staffRows }] = await Promise.all([
+    sb
+      .from('projects')
+      .select('id, name, client, project_code, brief_summary, external_links')
+      .eq('id', projectId)
+      .maybeSingle(),
+    sb
+      .from('staff')
+      .select('id, email, email_aliases, slack_user_id, full_name, is_active')
+      .eq('is_active', true),
+  ])
 
-  // Channel id
-  const channelId =
+  const projectChannelId =
     project?.external_links?.slack_id ||
     project?.external_links?.slack_channel_id ||
     null
-
-  // Open actions
-  const { data: actions } = await sb
-    .from('kit_actions')
-    .select('title, body, status')
-    .eq('project_id', projectId)
-    .in('status', ['pending', 'approved'])
-    .limit(5)
-
-  // Last call transcript for THIS project, any source — Plaud webhooks or
-  // the Drive-folder zap (scoped to the project; an unscoped query would
-  // surface another project's meeting in this briefing).
-  const { data: lastTranscript } = await sb
-    .from('call_transcripts')
-    .select('start_time, transcript, source')
-    .eq('project_id', projectId)
-    .order('start_time', { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  // Recipients = the R&F people actually on the invite. We DM only them, so a
-  // briefing for a sensitive meeting never reaches anyone who wasn't on the
-  // call. Match active staff (by email) against the event's attendees.
-  const { data: staffRows } = await sb
-    .from('staff')
-    .select('id, email, email_aliases, slack_user_id, full_name, is_active')
-    .eq('is_active', true)
   const recipients = matchAttendeesToStaff(event.attendees || [], staffRows || [])
 
-  const prepNotes = project
-    ? await buildProjectPrepNotes({
-        projectId,
-        meetingTitle: event.summary,
-        briefSummary: project.brief_summary,
-      })
-    : null
-
-  const channelText = buildBriefingText({ event, project, actions, lastTranscript, prepNotes })
+  // Dynamic import avoids a runtime cycle: bizdev-briefing imports the shared
+  // layout above, while project briefings reuse its normalized research path.
+  const {
+    buildStaffEmailSet,
+    filterExternalAttendees,
+    researchAttendee,
+    buildPositioningParagraph,
+  } = await import('./bizdev-briefing')
+  const internalEmails = buildStaffEmailSet(staffRows || [])
+  const externals = filterExternalAttendees(event.attendees || [], internalEmails)
+  const evidence = await Promise.all(externals.map((attendee) => researchAttendee(attendee, event)))
+  const positioning = await buildPositioningParagraph({ event, project, externals, evidence })
 
   return {
-    channelText,
+    channelText: buildBriefingText({ event, project, externals, evidence, positioning }),
     recipients,
-    projectChannelId: channelId,
+    projectChannelId,
   }
 }

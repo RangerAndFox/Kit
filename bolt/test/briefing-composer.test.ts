@@ -5,103 +5,93 @@ import { buildBriefingText, matchAttendeesToStaff } from '../../src/lib/agent/br
 const event: any = {
   summary: 'Rayfin client review',
   start_time: '2026-06-25T17:00:00Z',
+  end_time: '2026-06-25T18:00:00Z',
   attendees: [{ email: 'client@acme.com' }, { email: 'jared@rangerandfox.tv' }],
   hangoutLink: 'https://meet.google.com/abc-defg-hij',
 }
 
 describe('buildBriefingText', () => {
-  it('renders project header, attendees, actions, and the project recap', () => {
+  const janeEvidence: any = {
+    identity: { status: 'resolved', name: 'Jane Doe', company: 'Acme', candidates: [] },
+    facts: [
+      { claim: 'VP of Marketing at Acme', source_ref: 'https://linkedin.com/in/jane-doe' },
+      { claim: 'Leads Acme brand storytelling', source_ref: 'https://acme.com/team' },
+      { claim: 'May control the entire budget', source_ref: null },
+      { claim: 'Prior R&F meeting: Acme discovery', source_ref: 'internal:meeting_briefings' },
+    ],
+    inferences: [], missing: [], sources: [],
+  }
+
+  it('renders the concise three-section layout for an active-project meeting', () => {
     const text = buildBriefingText({
       event,
-      project: { name: 'Rayfin', client: 'Acme', project_code: '2620', brief_summary: 'Sizzle reel', external_links: {} },
-      actions: [{ title: 'Send v2 for approval' }],
-      lastTranscript: { start_time: '2026-06-20T17:00:00Z', transcript: 'We discussed the edit timeline.' },
+      project: { name: 'Rayfin', client: 'Acme', project_code: '2620', brief_summary: 'Sizzle reel' },
+      externals: [{ email: 'client@acme.com', displayName: 'Jane Doe' }],
+      evidence: [janeEvidence],
+      positioning: 'Ranger & Fox can keep the creative and approval process moving toward delivery.',
     })
-    expect(text).toContain('Rayfin client review')
-    expect(text).toContain('*Project:* Rayfin (Acme) — 2620')
-    expect(text).toContain('Send v2 for approval')
-    expect(text).toContain('Last meeting')
-    expect(text).toContain('We discussed the edit timeline.')
-    expect(text).toContain('client@acme.com')
+    expect(text).toContain('*Meeting info*')
+    expect(text).toContain('*Subject:* Rayfin client review')
+    expect(text).toMatch(/\*Date & time:\* .+–.+/)
+    expect(text).toContain('*Project:* 2620 | Rayfin — Acme')
+    expect(text).toContain('*Attendee info*')
+    expect(text).toContain('*Jane Doe:* VP of Marketing at Acme.')
+    expect(text).toContain('Leads Acme brand storytelling.')
+    expect(text).not.toContain('May control the entire budget')
+    expect(text).not.toContain('Prior R&F meeting')
+    expect(text).toContain('*Positioning*')
+    expect(text).toContain('approval process')
   })
 
-  it('accepts both the *_url and bare external_links keys', () => {
-    const urlKeys = buildBriefingText({
-      event,
-      project: { name: 'P', external_links: { frameio_url: 'https://f.io/x', dropbox_url: 'https://db/x' } },
-      actions: null,
-      lastTranscript: null,
-    })
-    expect(urlKeys).toContain('Frame.io: https://f.io/x')
-    expect(urlKeys).toContain('Dropbox: https://db/x')
-
-    const bareKeys = buildBriefingText({
-      event,
-      project: { name: 'P', external_links: { frameio: 'https://f.io/y', dropbox: 'https://db/y' } },
-      actions: null,
-      lastTranscript: null,
-    })
-    expect(bareKeys).toContain('Frame.io: https://f.io/y')
-    expect(bareKeys).toContain('Dropbox: https://db/y')
-    // Google Meet link always comes from the event.
-    expect(bareKeys).toContain('meet.google.com')
-  })
-
-  it('truncates a long recap to 400 chars with an ellipsis', () => {
-    const long = 'x'.repeat(600)
+  it('uses the same simplified layout for a project kickoff', () => {
     const text = buildBriefingText({
-      event,
-      project: { name: 'P', external_links: {} },
-      actions: null,
-      lastTranscript: { start_time: '2026-06-20T17:00:00Z', transcript: long },
+      event: { ...event, summary: 'Rayfin project kickoff' },
+      project: { name: 'Rayfin', client: 'Acme', project_code: '2620' },
+      externals: [{ email: 'client@acme.com', displayName: 'Jane Doe' }],
+      evidence: [janeEvidence],
+      positioning: 'Use this kickoff to align the audience, milestones, ownership, and feedback process.',
     })
-    expect(text).toContain('x'.repeat(400) + '…')
-    expect(text).not.toContain('x'.repeat(401))
-  })
-
-  it('omits sections that have no data', () => {
-    const text = buildBriefingText({
-      event: { ...event, attendees: [], hangoutLink: undefined },
-      project: null,
-      actions: null,
-      lastTranscript: null,
-    })
-    expect(text).not.toContain('*Project:*')
-    expect(text).not.toContain('*Links:*')
-    expect(text).not.toContain('*Attendees:*')
+    expect(text).toContain('*Meeting info*')
+    expect(text).toContain('*Attendee info*')
+    expect(text).toContain('*Positioning*')
+    expect(text).not.toContain('*Suggested prep:*')
+    expect(text).not.toContain('*Open actions:*')
     expect(text).not.toContain('*Last meeting')
   })
 
-  it('renders suggested-prep notes when provided', () => {
+  it('lists only external attendees and keeps the meeting link with meeting info', () => {
     const text = buildBriefingText({
       event,
-      project: { name: 'Rayfin', external_links: {} },
-      actions: null,
-      lastTranscript: null,
-      prepNotes: '• Client wants a shorter cut this round\n• Budget approved for reshoots',
+      project: { name: 'Rayfin', client: 'Acme' },
+      externals: [{ email: 'client@acme.com', displayName: 'Jane Doe' }],
+      evidence: [janeEvidence],
+      positioning: 'Ranger & Fox can help Acme turn decisions into an executable production plan.',
     })
-    expect(text).toContain('*Suggested prep:*')
-    expect(text).toContain('Client wants a shorter cut this round')
+    expect(text).toContain('*Jane Doe:*')
+    expect(text).not.toContain('jared@rangerandfox.tv')
+    expect(text).toContain('*Join:* https://meet.google.com/abc-defg-hij')
+    expect(text).not.toContain('*Links:*')
   })
 
-  it('omits the suggested-prep section when there are no notes', () => {
+  it('keeps all three sections when no external attendee can be researched', () => {
     const text = buildBriefingText({
-      event,
-      project: { name: 'Rayfin', external_links: {} },
-      actions: null,
-      lastTranscript: null,
-      prepNotes: null,
+      event: { ...event, attendees: [] },
+      project: { name: 'Rayfin' },
+      externals: [],
+      evidence: [],
+      positioning: 'Ranger & Fox can use this internal meeting to align the next production milestone.',
     })
-    expect(text).not.toContain('*Suggested prep:*')
+    expect(text).toContain('_No external attendees on this invite._')
+    expect(text).toContain('*Positioning*')
   })
 })
 
 describe('matchAttendeesToStaff (privacy)', () => {
   const staff = [
-    { email: 'jared@rangerandfox.tv', slack_user_id: 'U_JARED', full_name: 'Jared', is_active: true },
-    { email: 'Steve@RangerAndFox.tv', slack_user_id: 'U_STEVE', full_name: 'Steve', is_active: true },
-    { email: 'former@rangerandfox.tv', slack_user_id: 'U_OLD', full_name: 'Former', is_active: false },
-    { email: 'nobot@rangerandfox.tv', slack_user_id: null, full_name: 'No Slack', is_active: true },
+    { id: 's-jared', email: 'jared@rangerandfox.tv', slack_user_id: 'U_JARED', full_name: 'Jared', is_active: true },
+    { id: 's-steve', email: 'Steve@RangerAndFox.tv', slack_user_id: 'U_STEVE', full_name: 'Steve', is_active: true },
+    { id: 's-former', email: 'former@rangerandfox.tv', slack_user_id: 'U_OLD', full_name: 'Former', is_active: false },
+    { id: 's-nobot', email: 'nobot@rangerandfox.tv', slack_user_id: null, full_name: 'No Slack', is_active: true },
   ]
 
   it('returns only the R&F attendees actually on the invite', () => {
@@ -141,6 +131,7 @@ describe('matchAttendeesToStaff (privacy)', () => {
   it('matches an invite that uses an email alias (Slack email differs from calendar email)', () => {
     const aliased = [
       {
+        id: 's-jared',
         email: 'jared@rangerandfox.tv',
         email_aliases: ['jareddoud@rangerandfox.tv'],
         slack_user_id: 'U_JARED',
@@ -156,6 +147,7 @@ describe('matchAttendeesToStaff (privacy)', () => {
   it('matches an alias case-insensitively and still dedupes vs the primary', () => {
     const aliased = [
       {
+        id: 's-jared',
         email: 'jared@rangerandfox.tv',
         email_aliases: ['jareddoud@rangerandfox.tv'],
         slack_user_id: 'U_JARED',
