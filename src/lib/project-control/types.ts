@@ -28,8 +28,14 @@ export type CreationDecision = 'create' | 'duplicate' | 'replace'
 export interface WorkbookConfig {
   spreadsheetId: string
   sheetId: number
-  /** 1-based header row (row 3 in the production workbook). */
+  /** 1-based Projects header row. */
   headerRow: number
+  /** Physical workbook schema. Omitted/legacy preserves the original A:Y sheet. */
+  layout?: 'legacy' | 'rf-production-v1'
+  /** Numeric gid of the normalized Links tab used by rf-production-v1. */
+  linksSheetId?: number
+  /** 1-based Links header row; defaults to headerRow. */
+  linksHeaderRow?: number
   /** Optional explicit Project Control template file id (SLACK override). */
   controlTemplateFileId?: string
   /** Template channel used when no explicit file ids are configured. */
@@ -44,6 +50,13 @@ export function workbookConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Wor
     spreadsheetId,
     sheetId: parseInt(sheetIdRaw, 10),
     headerRow: env.MASTER_PROJECT_LIST_HEADER_ROW ? parseInt(env.MASTER_PROJECT_LIST_HEADER_ROW, 10) : 3,
+    layout: env.MASTER_PROJECT_LIST_LAYOUT === 'rf-production-v1' ? 'rf-production-v1' : 'legacy',
+    linksSheetId: env.MASTER_PROJECT_LIST_LINKS_SHEET_ID
+      ? parseInt(env.MASTER_PROJECT_LIST_LINKS_SHEET_ID, 10)
+      : undefined,
+    linksHeaderRow: env.MASTER_PROJECT_LIST_LINKS_HEADER_ROW
+      ? parseInt(env.MASTER_PROJECT_LIST_LINKS_HEADER_ROW, 10)
+      : undefined,
     controlTemplateFileId: env.SLACK_PROJECT_CONTROL_TEMPLATE_FILE_ID?.trim() || undefined,
     templateChannelId: env.SLACK_TEMPLATE_CHANNEL_ID?.trim() || 'C0B1312H89L',
   }

@@ -15,7 +15,14 @@
 
 import crypto from 'node:crypto'
 import { KIT_PROJECT_ID_METADATA_KEY, type WorkbookConfig } from './types'
-import { MASTER_HEADERS, headerToA1Column, normalizeCell, type SheetCell, type OwnedCell } from './render'
+import {
+  MASTER_HEADERS,
+  RF_PRODUCTION_PROJECT_HEADERS,
+  headerToA1Column,
+  normalizeCell,
+  type SheetCell,
+  type OwnedCell,
+} from './render'
 
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 const SCOPES = [
@@ -134,16 +141,17 @@ async function getGridData(
   config: WorkbookConfig,
   range: GridRange,
   valueFields: string,
+  sheetId = config.sheetId,
 ): Promise<Array<{ values?: SheetCell[] }>> {
   const fields = encodeURIComponent(`sheets(properties.sheetId,data(rowData(values(${valueFields}))))`)
   const data = await api<SheetDataFilterResponse>(
     'POST',
     `${SHEETS_BASE}/${config.spreadsheetId}:getByDataFilter?fields=${fields}`,
-    { dataFilters: [{ gridRange: { sheetId: config.sheetId, ...range } }], includeGridData: true },
+    { dataFilters: [{ gridRange: { sheetId, ...range } }], includeGridData: true },
   )
-  const sheet = (data.sheets || []).find((s) => s.properties?.sheetId === config.sheetId)
+  const sheet = (data.sheets || []).find((s) => s.properties?.sheetId === sheetId)
   if (!sheet) {
-    throw new Error(`getGridData: configured sheet ${config.sheetId} not found in getByDataFilter response`)
+    throw new Error(`getGridData: configured sheet ${sheetId} not found in getByDataFilter response`)
   }
   return sheet.data?.[0]?.rowData || []
 }
@@ -214,6 +222,7 @@ export async function searchRowMetadata(
  * `getGridData`) so it can never read the same row index from the wrong tab.
  */
 export async function readRow(config: WorkbookConfig, rowIndex: number): Promise<SheetCell[]> {
+  if (config.layout === 'rf-production-v1') return readRfProductionRow(config, rowIndex)
   const rowData = await getGridData(
     config,
     { startRowIndex: rowIndex, endRowIndex: rowIndex + 1, startColumnIndex: 0, endColumnIndex: MASTER_HEADERS.length },
@@ -223,6 +232,80 @@ export async function readRow(config: WorkbookConfig, rowIndex: number): Promise
   const cells: SheetCell[] = []
   for (let i = 0; i < MASTER_HEADERS.length; i++) cells.push((values[i] as SheetCell) || {})
   return cells
+}
+
+function textCell(value: string | null | undefined): SheetCell {
+  return value ? { formattedValue: value, effectiveValue: { stringValue: value } } : {}
+}
+
+function projectNumberFromCell(cell: SheetCell | undefined): string {
+  return normalizeCell(cell).display.trim()
+}
+
+function normalizeLinkType(value: string): 'Frame.io' | 'Dropbox' | null {
+  const v = value.trim().toLowerCase()
+  if (v === 'frame.io' || v === 'frameio') return 'Frame.io'
+  if (v === 'dropbox' || v.startsWith('dropbox ')) return 'Dropbox'
+  return null
+}
+
+async function readRfLinkRows(config: WorkbookConfig): Promise<Array<{ rowIndex: number; projectNumber: string; type: string; url: string }>> {
+  if (config.linksSheetId == null) return []
+  const firstDataRowIndex = config.linksHeaderRow ?? config.headerRow
+  const data = await getGridData(
+    config,
+    { startRowIndex: firstDataRowIndex, startColumnIndex: 0, endColumnIndex: 3 },
+    'formattedValue,effectiveValue,userEnteredValue,hyperlink',
+    config.linksSheetId,
+  )
+  return data.map((rd, i) => ({
+    rowIndex: firstDataRowIndex + i,
+    projectNumber: normalizeCell(rd.values?.[0]).display.trim(),
+    type: normalizeCell(rd.values?.[1]).display.trim(),
+    url: normalizeCell(rd.values?.[2]).hyperlink || normalizeCell(rd.values?.[2]).display.trim(),
+  }))
+}
+
+/** Translate the RF Production Projects + Links tabs into the stable A:Y
+ * semantic row consumed by the Canvas renderer and row hash. */
+async function readRfProductionRow(config: WorkbookConfig, rowIndex: number): Promise<SheetCell[]> {
+  const rowData = await getGridData(
+    config,
+    { startRowIndex: rowIndex, endRowIndex: rowIndex + 1, startColumnIndex: 0, endColumnIndex: RF_PRODUCTION_PROJECT_HEADERS.length },
+    'formattedValue,effectiveValue,userEnteredValue,hyperlink,effectiveFormat.numberFormat.type',
+  )
+  const physical = rowData[0]?.values || []
+  const out: SheetCell[] = MASTER_HEADERS.map(() => ({}))
+  const put = (semantic: typeof MASTER_HEADERS[number], physicalIndex: number) => {
+    out[MASTER_HEADERS.indexOf(semantic)] = physical[physicalIndex] || {}
+  }
+  put('Project Number', 0)
+  put('Client', 1)
+  put('Project Name', 3)
+  put('Quick Status', 4)
+  put('Status', 5)
+  put('Next Share', 6)
+  put('End Date', 7)
+  put('Creative Director', 8)
+  put('Producer', 9)
+  // Prefer the explicitly named Client Contact column; fall back to Contact for
+  // migrated rows where the newer field is blank.
+  out[MASTER_HEADERS.indexOf('Client Contact')] = physical[10] || physical[2] || {}
+  if (!projectNumberFromCell(out[MASTER_HEADERS.indexOf('Client Contact')])) {
+    out[MASTER_HEADERS.indexOf('Client Contact')] = physical[2] || {}
+  }
+  put('Start Date', 11)
+
+  const projectNumber = projectNumberFromCell(physical[0])
+  if (projectNumber && config.linksSheetId != null) {
+    const links = await readRfLinkRows(config)
+    for (const link of links) {
+      if (link.projectNumber !== projectNumber) continue
+      const type = normalizeLinkType(link.type)
+      if (type && link.url) out[MASTER_HEADERS.indexOf(type)] = textCell(link.url)
+    }
+  }
+  return out
 }
 
 /**
@@ -263,9 +346,9 @@ export interface CreateBoundRowResult {
  * cell's existing format + validation).
  */
 function buildCellRequests(config: WorkbookConfig, rowIndex: number, ownedCells: OwnedCell[]): unknown[] {
-  const colIndex = (col: string) => col.charCodeAt(0) - 'A'.charCodeAt(0)
+  const colIndex = (header: string) => headerToA1Column(header, config.layout || 'legacy').charCodeAt(0) - 'A'.charCodeAt(0)
   return ownedCells.map((cell) => {
-    const start = { sheetId: config.sheetId, rowIndex, columnIndex: colIndex(cell.column) }
+    const start = { sheetId: config.sheetId, rowIndex, columnIndex: colIndex(cell.header) }
     if (cell.kind === 'date' && typeof cell.serial === 'number') {
       return {
         updateCells: {
@@ -367,6 +450,89 @@ export async function updateBoundRow(
   return { rowIndex }
 }
 
+export interface ProjectLinksInput {
+  frameioUrl?: string
+  dropboxUrl?: string
+}
+
+/** Upsert Kit-owned provider links in RF Production's normalized Links tab.
+ * Existing human labels (for example "Dropbox (client folder)") are preserved;
+ * only the URL changes. New rows use the workbook's canonical link labels. */
+export async function upsertProjectLinks(
+  config: WorkbookConfig,
+  projectNumber: string | undefined,
+  links: ProjectLinksInput,
+): Promise<void> {
+  if (config.layout !== 'rf-production-v1' || config.linksSheetId == null || !projectNumber?.trim()) return
+  const desired = [
+    { type: 'Frame.io' as const, url: links.frameioUrl?.trim() },
+    { type: 'Dropbox' as const, url: links.dropboxUrl?.trim() },
+  ].filter((x): x is { type: 'Frame.io' | 'Dropbox'; url: string } => Boolean(x.url))
+  if (desired.length === 0) return
+
+  const rows = await readRfLinkRows(config)
+  const occupied = new Set(rows.filter((r) => r.projectNumber).map((r) => r.rowIndex))
+  let next = config.linksHeaderRow ?? config.headerRow
+  const allocate = (): number => {
+    while (occupied.has(next)) next++
+    occupied.add(next)
+    return next++
+  }
+  const requests: unknown[] = []
+  for (const link of desired) {
+    const existing = rows.find((r) => r.projectNumber === projectNumber.trim() && normalizeLinkType(r.type) === link.type)
+    if (existing) {
+      requests.push({
+        updateCells: {
+          rows: [{ values: [{ userEnteredValue: { stringValue: link.url } }] }],
+          fields: 'userEnteredValue',
+          start: { sheetId: config.linksSheetId, rowIndex: existing.rowIndex, columnIndex: 2 },
+        },
+      })
+      continue
+    }
+    const rowIndex = allocate()
+    requests.push({
+      updateCells: {
+        rows: [{ values: [
+          { userEnteredValue: { stringValue: projectNumber.trim() } },
+          { userEnteredValue: { stringValue: link.type } },
+          { userEnteredValue: { stringValue: link.url } },
+        ] }],
+        fields: 'userEnteredValue',
+        start: { sheetId: config.linksSheetId, rowIndex, columnIndex: 0 },
+      },
+    })
+  }
+  await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests })
+}
+
+/** Keep normalized Links rows attached when a project's human-facing ID is
+ * changed through Kit. Provider URLs and link labels are left untouched. */
+export async function renameProjectLinks(
+  config: WorkbookConfig,
+  oldProjectNumber: string | undefined,
+  newProjectNumber: string | undefined,
+): Promise<void> {
+  const oldId = oldProjectNumber?.trim()
+  const newId = newProjectNumber?.trim()
+  if (
+    config.layout !== 'rf-production-v1' || config.linksSheetId == null ||
+    !oldId || !newId || oldId === newId
+  ) return
+  const rows = await readRfLinkRows(config)
+  const matching = rows.filter((r) => r.projectNumber === oldId)
+  if (matching.length === 0) return
+  const requests = matching.map((row) => ({
+    updateCells: {
+      rows: [{ values: [{ userEnteredValue: { stringValue: newId } }] }],
+      fields: 'userEnteredValue',
+      start: { sheetId: config.linksSheetId!, rowIndex: row.rowIndex, columnIndex: 0 },
+    },
+  }))
+  await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests })
+}
+
 // ─── Narrow single-column read / single-cell write (operator repair only) ─────
 
 export interface ColumnCell {
@@ -392,7 +558,13 @@ export interface ColumnCell {
  * configured sheet is absent, so a read/write tab mismatch is impossible.
  */
 export async function readColumn(config: WorkbookConfig, header: string): Promise<ColumnCell[]> {
-  const columnIndex = headerToA1Column(header).charCodeAt(0) - 'A'.charCodeAt(0)
+  if (config.layout === 'rf-production-v1' && (header === 'Frame.io' || header === 'Dropbox')) {
+    const rows = await readRfLinkRows(config)
+    return rows
+      .filter((row) => normalizeLinkType(row.type) === header)
+      .map((row) => ({ rowIndex: row.rowIndex, value: row.url, hyperlink: row.url || null }))
+  }
+  const columnIndex = headerToA1Column(header, config.layout || 'legacy').charCodeAt(0) - 'A'.charCodeAt(0)
   const firstDataRowIndex = config.headerRow // 0-based grid index of the first data row
   const rowData = await getGridData(
     config,
@@ -419,14 +591,18 @@ export async function writeCellValue(
   header: string,
   value: string,
 ): Promise<void> {
-  const col = headerToA1Column(header)
-  const columnIndex = col.charCodeAt(0) - 'A'.charCodeAt(0)
+  const normalizedLink = config.layout === 'rf-production-v1' && (header === 'Frame.io' || header === 'Dropbox')
+  const columnIndex = normalizedLink
+    ? 2
+    : headerToA1Column(header, config.layout || 'legacy').charCodeAt(0) - 'A'.charCodeAt(0)
+  const sheetId = normalizedLink ? config.linksSheetId : config.sheetId
+  if (sheetId == null) throw new Error(`writeCellValue: Links sheet is not configured for ${header}`)
   await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, {
     requests: [{
       updateCells: {
         rows: [{ values: [{ userEnteredValue: { stringValue: value } }] }],
         fields: 'userEnteredValue',
-        start: { sheetId: config.sheetId, rowIndex, columnIndex },
+        start: { sheetId, rowIndex, columnIndex },
       },
     }],
   })

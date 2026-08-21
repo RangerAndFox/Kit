@@ -29,11 +29,30 @@ Human edits Master Project List row
 |---|---|---|
 | Vercel **Production only** | `PROJECT_CONTROL_WEBHOOK_SECRET` | Shared HMAC secret. Absent ⇒ endpoint fails closed (401). **Never** set in Preview. |
 | Vercel (existing) | `PROJECT_CONTROL_SYNC_ENABLED=true` | Gates both cron and event sync. |
-| Vercel (existing) | `MASTER_PROJECT_LIST_SPREADSHEET_ID`, `MASTER_PROJECT_LIST_SHEET_ID`, `MASTER_PROJECT_LIST_HEADER_ROW` | Workbook config; the endpoint rejects any request whose workbook/sheet doesn't match. |
+| Vercel + Railway | `MASTER_PROJECT_LIST_SPREADSHEET_ID=1K-P4yCUzP49-YFJke8jwTII-APfaMJQ9WzpSm9BQfeE` | RF Production System workbook. Both runtimes must use the same value. |
+| Vercel + Railway | `MASTER_PROJECT_LIST_SHEET_ID=1869744848`, `MASTER_PROJECT_LIST_HEADER_ROW=4` | `Projects` tab and its header row. The endpoint rejects requests for any other workbook/tab. |
+| Vercel + Railway | `MASTER_PROJECT_LIST_LAYOUT=rf-production-v1` | Enables the Projects A:O schema adapter while preserving legacy compatibility until the environment switch. |
+| Vercel + Railway | `MASTER_PROJECT_LIST_LINKS_SHEET_ID=1721636671`, `MASTER_PROJECT_LIST_LINKS_HEADER_ROW=4` | Normalized `Links` tab. Kit upserts Frame.io/Dropbox URLs here and carries them through Project Control Canvas sync. |
 | Vercel (existing) | `GOOGLE_SERVICE_ACCOUNT_JSON` | Also used by the repair utility. |
 | Apps Script → Script Properties | `WEBHOOK_URL` | `https://<kit-prod-domain>/api/webhooks/project-control/sheet-edited` |
 | Apps Script → Script Properties | `WEBHOOK_SECRET` | Exact same value as `PROJECT_CONTROL_WEBHOOK_SECRET`. |
-| Apps Script → Script Properties | `SPREADSHEET_ID`, `SHEET_ID`, `HEADER_ROW` | `SHEET_ID` is the numeric tab gid; `HEADER_ROW` defaults to 3. |
+| Apps Script → Script Properties | `SPREADSHEET_ID`, `SHEET_ID`, `HEADER_ROW` | Use the RF Production values above (`HEADER_ROW=4`). |
+
+## RF Production workbook contract
+
+Kit treats `Projects` as the authoritative project row and translates its new
+physical columns into the stable Project Control model. In particular:
+
+- `Project ID` → project number; `Phase` → quick status; `Next Milestone` → next share.
+- `Deadline` and `Start Date` are written as native Google Sheets dates.
+- `Creative Director`, `Producer`, and the explicit `Client Contact` column are
+  updated without touching neighboring columns or validation rules.
+- Frame.io and Dropbox URLs live in `Links` (one row per project/link type).
+  Creation is retry-safe, existing human link labels are preserved, and changing
+  a Project ID moves every matching link row to the new ID.
+- The original A:Y workbook remains supported behind the default `legacy`
+  layout, which makes the production cutover reversible by changing environment
+  variables rather than reverting code.
 
 Endpoint (POST only): `/api/webhooks/project-control/sheet-edited`
 Inngest event: `project-control/sheet.edited`. Replay dedupe is enforced by
