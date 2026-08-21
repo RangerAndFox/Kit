@@ -35,7 +35,8 @@ The main implementation risk is no longer a known code failure; it is deployment
 - Project outgoing-file mirroring is confirmed working for uploads under `/production/.../09_Outgoing/{01_Client Progress,02_Delivery}`.
 - Share creation was corrected to Adobe's documented Frame.io V4 contract: `POST /accounts/{account}/projects/{project}/shares` with a public asset share and `asset_ids`.
 - A provider-contract regression test locks the endpoint and payload. The existing file-view fallback remains in place.
-- Project `2633-Microsoft / Biz Apps` is a known partial record: Slack, Dropbox, and Harvest are linked; Frame.io is missing. The watcher should discover/backfill it on the next eligible delivery.
+- Project `2633-Microsoft / Biz Apps` is now proactively linked to Frame.io. PR #147 added startup/hourly reconciliation for active Dropbox-linked projects, and production persisted Frame.io project `e52092ec-336c-4744-a2f7-e5dbd1fb2766` on 2026-08-21 without requiring a synthetic delivery file.
+- Delivery Queue Slack prompts now remain retryable until Slack confirms the notification; a failed post is no longer silently marked complete.
 
 ### Hours tracking
 
@@ -65,6 +66,7 @@ The main implementation risk is no longer a known code failure; it is deployment
 - PR #138 — repair Frame.io V4 public share creation
 - PR #139 — update Bolt dependencies and clear npm advisories
 - PR #140 — unify Slack DM shortcut routing
+- PR #147 — reconcile missing Frame.io links and retain failed delivery notifications
 
 All were squash-merged to `main` after local tests and passing Vercel checks.
 
@@ -83,11 +85,10 @@ Everything currently safe to implement in the repository has been merged. Remain
 
 1. Verify Railway deployed current `main` and is healthy.
 2. Verify the next outgoing file produces a real public Frame.io share.
-3. Verify project 2633's missing Frame.io ID auto-backfills on that event.
-4. Observe the next local-5pm hours occurrence end to end.
-5. Observe the next real simplified meeting briefing.
-6. Confirm studio delivery/render workers before depending on transcodes.
-7. Resolve the visibility and briefing-posting decisions in `OPERATOR-TODO.md`.
+3. Observe the next local-5pm hours occurrence end to end.
+4. Observe the next real simplified meeting briefing.
+5. Install and confirm a studio delivery/render worker before depending on transcodes; production currently has zero registered workers.
+6. Resolve the visibility and briefing-posting decisions in `OPERATOR-TODO.md`.
 
 ## Verification commands
 
