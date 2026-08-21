@@ -507,6 +507,32 @@ async function resolveProjectChannelBySafeName(safeName: string): Promise<string
   return data?.external_links?.slack_id || data?.external_links?.slack_channel_id || null
 }
 
+/**
+ * Build the Frame.io v4 Create Share request.
+ *
+ * This stays pure and exported so provider endpoint/payload drift is covered
+ * by a focused contract test. Adobe's v4 collection specifies a project-level
+ * shares route with data.type=asset and data.asset_ids.
+ */
+export function buildFrameioShareRequest(
+  accountId: string,
+  projectId: string,
+  fileId: string,
+  name: string,
+): { path: string; body: Record<string, unknown> } {
+  return {
+    path: `/accounts/${accountId}/projects/${projectId}/shares`,
+    body: {
+      data: {
+        type: 'asset',
+        name,
+        access: 'public',
+        asset_ids: [fileId],
+      },
+    },
+  }
+}
+
 async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
   // ── Lookup project (or discover from Frame.io) ──────────
   const sb = createAdminClient()
@@ -674,8 +700,8 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
   )
 
   // ── Create a Frame.io share link ────────────────────────
-  // Frame.io v4 uses /accounts/{acct}/share_links, not review_links.
-  // The previous /projects/{id}/review_links endpoint 404s on v4.
+  // Frame.io v4 creates shares inside a project and accepts asset_ids in the
+  // create payload. The account-level /share_links route never existed in v4.
   // If the create fails, fall back to the file's view_url (logged-in
   // Frame.io view) so the PM at least gets a working link.
   const shareName =
@@ -684,22 +710,20 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
       : `${d.subfolder} – ${fileName}`
   let reviewUrl: string | undefined
   try {
-    const linkResp = await frameioPost(
-      `/accounts/${acct}/share_links`,
-      {
-        data: {
-          name: shareName,
-          items: [{ id: file.id, type: 'file' }],
-        },
-      },
+    const shareRequest = buildFrameioShareRequest(
+      acct,
+      frameioId,
+      file.id,
+      shareName,
     )
+    const linkResp = await frameioPost(shareRequest.path, shareRequest.body)
     const link = linkResp.data || linkResp
     reviewUrl =
       link.short_url || link.url || link.share_url || link.view_url
     console.log(`[dropbox-watcher] share link created: ${reviewUrl}`)
   } catch (err: any) {
     console.warn(
-      `[dropbox-watcher] share_link create failed (${err.message}); falling back to file view_url`,
+      `[dropbox-watcher] share create failed (${err.message}); falling back to file view_url`,
     )
   }
 

@@ -1,5 +1,32 @@
 import { describe, it, expect } from 'vitest'
-import { isDeniedDeliveryFile, resolveFrameioIdForProject } from '../src/watchers/dropbox'
+import {
+  buildFrameioShareRequest,
+  isDeniedDeliveryFile,
+  resolveFrameioIdForProject,
+} from '../src/watchers/dropbox'
+
+describe('buildFrameioShareRequest', () => {
+  it('uses the Frame.io v4 project share contract with the uploaded asset', () => {
+    expect(
+      buildFrameioShareRequest(
+        'account-123',
+        'project-456',
+        'file-789',
+        '02_Delivery – final.mov',
+      ),
+    ).toEqual({
+      path: '/accounts/account-123/projects/project-456/shares',
+      body: {
+        data: {
+          type: 'asset',
+          name: '02_Delivery – final.mov',
+          access: 'public',
+          asset_ids: ['file-789'],
+        },
+      },
+    })
+  })
+})
 
 describe('isDeniedDeliveryFile', () => {
   it('denies the default .aac and .m4v extensions', () => {
