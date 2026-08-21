@@ -273,6 +273,12 @@ Regex: `^/production/(\d{4})/([^/]+)/09_Outgoing/(01_Client Progress|02_Delivery
 3. List Frame.io workspace projects, find one whose name starts with that number (strict) or contains it (lenient fallback)
 4. UPSERT a Supabase row capturing `external_ids.dropbox_safe_name` + `external_links.frameio_id` so the second file drop hits the cache
 
+Active projects that already have a linked Dropbox folder but are missing
+`external_links.frameio_id` are also reconciled at Railway startup and hourly.
+This uses one paginated Frame.io workspace listing per pass and fails closed on
+duplicate project-number matches, so imported projects become fully linked
+without waiting for a delivery file and without guessing between candidates.
+
 **Folder mirroring**
 For a Dropbox path `…/02_Delivery/051426/v1/asset.mp4`:
 1. Find Frame.io `03_Outgoing` under project root

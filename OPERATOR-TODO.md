@@ -30,13 +30,7 @@ confirm all three outcomes:
 2. The Slack notification's “Open review on Frame.io” link opens a public asset share, not only the logged-in file view.
 3. Railway logs contain `share link created`, not `share create failed`.
 
-### 3. Confirm project 2633 Frame.io auto-backfill
-
-Supabase currently has project `2633-Microsoft / Biz Apps` linked to Slack, Dropbox, and Harvest, but not Frame.io. Its next eligible outgoing-file event should discover the Frame.io project by project number and persist `external_links.frameio_id`. After that event, reopen `/kit update` and verify the project remains editable and the Frame.io link is present.
-
-Do not create a second Frame.io project or manually guess an ID. If discovery fails, inspect the live Frame.io project's name and Railway logs first.
-
-### 4. Observe the next daily-hours occurrence
+### 3. Observe the next daily-hours occurrence
 
 The reminder delivery ledger/index is merged and the two historical Allyson over-log incidents are already remediated. On the next workday after 5pm in the recipient's local Slack timezone, verify:
 
@@ -45,7 +39,7 @@ The reminder delivery ledger/index is merged and the two historical Allyson over
 - confirming writes the intended Harvest entries once;
 - a missed 5pm tick catches up within the configured window rather than disappearing.
 
-### 5. Observe the next meeting briefing
+### 4. Observe the next meeting briefing
 
 For the next qualifying calendar event, verify the private briefing uses exactly the simplified structure:
 
@@ -60,6 +54,10 @@ Use a bizdev meeting, kickoff, or active-project meeting. Confirm internal R&F a
 ### Delivery workers
 
 The `/Delivery-Queue/` pipeline is distinct from the project outgoing-file mirror. Use `/kit workers` to confirm at least one studio render worker is online before relying on profile-based transcodes. If no worker is registered, follow `kit-render-worker/README.md` on the intended studio machine and run an end-to-end short-file test.
+
+Audit state on 2026-08-21: the production `render_workers` and `render_jobs`
+tables were both empty. Dropbox/Frame.io and the delivery/spec scan heartbeats
+were healthy; the missing studio worker is the blocker, not the cloud pipeline.
 
 ### After Effects / Deadline
 
