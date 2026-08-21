@@ -1,6 +1,6 @@
-@import "tailwindcss";
 @import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap");
 @import url("https://api.fontshare.com/v2/css?f[]=satoshi@400,500,600,700&display=swap");
+@import "tailwindcss";
 
 @theme {
   --color-background: #0c0e12;
