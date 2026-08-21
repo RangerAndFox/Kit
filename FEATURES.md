@@ -12,6 +12,7 @@ Cross-cutting infrastructure (Supabase schema, Bolt server, deployment) is at th
 ## Table of contents
 
 1. [New Project Provisioning](#1-new-project-provisioning)
+1A. [Existing Project Updates](#1a-existing-project-updates)
 2. [Slack Channel + Canvas Provisioning](#2-slack-channel--canvas-provisioning)
 3. [Frame.io Project Provisioning](#3-frameio-project-provisioning)
 4. [Dropbox Folder Provisioning](#4-dropbox-folder-provisioning)
@@ -23,7 +24,7 @@ Cross-cutting infrastructure (Supabase schema, Bolt server, deployment) is at th
 10. [Hours Check-Ins + Ad-Hoc Logging](#10-hours-check-ins--ad-hoc-logging)
 11. ~~Shot List Canvas~~ — removed
 12. [Delivery Pipeline](#12-delivery-pipeline)
-13. [Plaud Transcripts](#13-plaud-transcripts)
+13. [Meeting Transcript Ingest (Plaud → Drive)](#13-meeting-transcript-ingest-plaud--drive)
 14. [Pre-Meeting Briefings](#14-pre-meeting-briefings)
 15. [Studio Knowledge (project history, contacts, notes, auto-summarization)](#15-studio-knowledge)
 16. [Infrastructure](#16-infrastructure)
@@ -74,6 +75,29 @@ Form fields don't map 1:1 to column names — see `~/.claude/projects/.../memory
 - `form.deadline` → `target_delivery`
 - `form.budgetTotal` → `budget_total`
 - `form.projectManager` → `project_manager_slack_id`
+
+---
+
+## 1A. Existing Project Updates
+
+### Summary
+A producer types `update project` in a Kit DM or runs `/kit update`. Kit posts the update card, reconciles editable database projects with live Slack project channels, opens a prefilled form, previews the cross-system changes, and applies the confirmed ripple through Slack, Dropbox, Harvest, Frame.io, the Master Project List, and project metadata.
+
+### Trigger
+- Slack DM containing the strict shortcut `update project` or `edit project`
+- `/kit update`
+- Launching the card inside a project channel infers that project; launching in a DM shows the reconciled picker
+
+### Technical breakdown
+- Trigger/card: `bolt/src/handlers/updateproject-card.ts`
+- Shared Assistant/plain-message shortcut registry: `bolt/src/handlers/messages.ts` (`DM_SHORTCUT_REGISTRY`)
+- Picker, adoption, modal, preview, submission, and recovery: `bolt/src/handlers/interactions.ts`
+- Durable ledgers: `project_update_requests` and `project_update_steps`
+- Railway's five-minute project-control recovery sweep resumes retryable partial ripples without replaying completed steps
+
+The picker is not a raw history of every Kit database row. It combines editable rows (`active`, `partial`, `paused`) with non-archived Slack channels that match Kit's project-channel convention. A live Slack project missing from Supabase can be adopted/relinked before the form opens; deleted or archived test channels are excluded. Submit rechecks editability so an archived project cannot be updated from a stale card.
+
+Each external step is reconciled using durable markers. A recoverable failure remains partial and is retried; an unrecoverable failure is surfaced as needing attention rather than falsely reporting success.
 
 ---
 
@@ -260,7 +284,7 @@ For a Dropbox path `…/02_Delivery/051426/v1/asset.mp4`:
 Frame.io v4 `POST /accounts/{acct}/folders/{folder_id}/files/remote_upload` with `data: {name, source_url}`. The source_url is a 4-hour Dropbox temporary link from `/files/get_temporary_link`, so the Bolt server never buffers bytes — Frame.io fetches directly.
 
 **Share link**
-`POST /accounts/{acct}/share_links` with `data: {name, items: [{id, type:"file"}]}`. If that fails, falls back to `file.view_url` from the upload response, then to a constructed `https://next.frame.io/project/{id}/view/{file_id}` URL.
+Frame.io V4 creates the public review share inside the project: `POST /accounts/{acct}/projects/{project_id}/shares` with `data: {type:"asset", name, access:"public", asset_ids:[file_id]}`. The exact provider path and payload are covered by `bolt/test/dropbox-watcher.test.ts`. If creation fails, Kit falls back to `file.view_url` from the upload response, then to a constructed `https://next.frame.io/project/{id}/view/{file_id}` URL.
 
 **Notification routing**
 1. `project_manager_slack_id` if set → DM
@@ -332,16 +356,17 @@ Note: admin scopes (`admin.users:write`, `admin.invites:write`) require Enterpri
 ## 10. Hours Check-Ins + Ad-Hoc Logging
 
 ### Summary
-At 5pm Mon-Fri Kit DMs each in-house creative ("How'd your day go?"), parses the natural-language reply via Claude Haiku, fuzzy-matches Harvest projects, and writes confirmed entries to Harvest. Same parser handles unprompted ad-hoc messages like `log 4h on Acme review yesterday`. Only fires for `employment_type='employee'`; freelancers and contractors are skipped (they log directly in Harvest).
+At or after 5pm on each person's local workday, Kit posts an hours prompt in that person's private one-person Kit channel, parses the natural-language reply via Claude Haiku, fuzzy-matches Harvest projects, and writes confirmed entries to Harvest. The same parser handles unprompted ad-hoc messages like `log 4h on Acme review yesterday`. Only active employees participate; freelancers and contractors log directly in Harvest.
 
 ### Trigger
-- **Scheduled:** `node-cron` cron at 5pm + 10pm Mon-Fri (timezone via `CHECKIN_TIMEZONE`, default `America/Los_Angeles`).
+- **Scheduled:** an hourly UTC sweep calculates each person's local time from their Slack timezone, sends after 5pm, and catches up within the bounded delivery window after a restart or transient failure. `CHECKIN_TIMEZONE` is only the fallback timezone.
 - **Ad-hoc:** any unprompted message to Kit that looks like an hours entry — phrases like `log 4h on X`, `2.5 hours on Y`, `worked 3 hours on Z`.
 
 ### Technical breakdown
 
 **Code path**
-- 5pm sender: `bolt/src/checkins/daily-hours.ts`. Loads `staff` rows with `role='creative'`, `employment_type='employee'`, `is_active=true`. Pulls each person's last 7 days of Harvest entries, ranks projects by recent activity, picks top 3 as candidates, DMs them.
+- Durable sender: `bolt/src/checkins/reminder-delivery.ts`, scheduled hourly from `bolt/src/app.ts`. Each `(staff, local workday)` occurrence is claimed in `daily_hours_reminders`, reconciled against Slack metadata after ambiguous sends, and creates/links the `daily_hours_checkins` conversation row only once.
+- Candidate composition: `bolt/src/checkins/daily-hours.ts`. Pulls recent Harvest entries and Slack project-channel activity to suggest likely projects.
 - Reply parser: `bolt/src/checkins/reply.ts` — Haiku call with structured-output prompt → returns array of `{project_match, hours, notes}` entries.
 - Ad-hoc fast path: `bolt/src/checkins/adhoc.ts` — detects unprompted hours intent, runs the same parser, gates on `employment_type === 'employee'`.
 - Confirmation card + write: `bolt/src/checkins/confirm.ts` — Block Kit buttons (`kit_checkin_confirm` / `kit_checkin_redo`); on confirm, calls `createTimeEntry` per parsed entry.
@@ -349,7 +374,7 @@ At 5pm Mon-Fri Kit DMs each in-house creative ("How'd your day go?"), parses the
 - DB tracking: `daily_hours_checkins` rows with `staff_id`, `slack_user_id`, `check_in_date`, `status`, `parsed_entries`, `dm_channel_id`, `dm_ts`, `origin` ('scheduled' | 'adhoc').
 
 **Duplicate guard**
-Before posting a scheduled DM, the sender checks for any existing row for `(staff_id, check_in_date)` with status `scheduled` OR `logged`. Skips if found.
+The delivery ledger and unique occurrence identity prevent duplicate prompts across overlapping sweeps, deploys, or Slack timeouts. A supporting index on `daily_hours_reminders.check_in_id` keeps reconciliation bounded as history grows.
 
 **Sync to staff table**
 `bolt/scripts/sync-staff.ts` is a one-shot that pulls Slack `users.list` + Harvest `listUsers` and upserts into `staff` with role + employment_type. Run after onboarding new team members.
@@ -426,49 +451,34 @@ Standalone Node.js package deployed to Windows studio PCs.
 
 ---
 
-## 13. Plaud Transcripts
+## 13. Meeting Transcript Ingest (Plaud → Drive)
 
 ### Summary
-Plaud (https://plaud.ai) hardware recorder posts `transcription.completed` webhooks to Kit. Kit verifies HMAC, fetches transcript via Plaud API, classifies the project via the CALL_PROCESSOR managed agent, ingests to RAG, and updates `call_transcripts`. Plus auto-embeds for studio-knowledge retrieval (P4 wiring).
+Plaud has no direct production ingestion API in this build. Zapier places completed Plaud transcript files into a shared Google Drive folder. Every 15 minutes Kit finds unseen files, extracts and sanitizes the text, classifies the call to a project when confidence is sufficient, stores it in `call_transcripts`, and embeds it for studio-knowledge and meeting-briefing retrieval.
 
 ### Trigger
-Plaud webhook → `POST /api/webhooks/plaud`. Activates when `PLAUD_INGEST_ENABLED=true`.
+Inngest cron `*/15 * * * *`. Activates when `DRIVE_TRANSCRIPTS_ENABLED=true`, `DRIVE_TRANSCRIPTS_FOLDER_ID` is set, and the Google service account can read the folder.
 
 ### Technical breakdown
 
-**Webhook receiver** (`src/app/api/webhooks/plaud/route.ts`)
-- Reads raw body via `request.text()`.
-- HMAC-SHA256 verifies `plaud-signature: sha256=<hex>` over `${plaud-timestamp}.${rawBody}` using `PLAUD_WEBHOOK_SECRET` (constant-time compare via `crypto.timingSafeEqual` on decoded Buffers).
-- Replay-protection: rejects `|now - plaud-timestamp| > PLAUD_TIMESTAMP_SKEW_SECONDS` (default 300, clamped to (0, 3600]).
-- Dispatches `transcription.completed` → Inngest event `plaud/transcription.ready`; `transcription.failed` → `plaud/transcription.failed`. Unknown events log + 200 (forward compatibility).
-- Top-level try/catch around the handler body so `request.text()` aborts return controlled 500.
+**Inngest function** (`src/lib/inngest/drive-transcripts.ts`)
+- Lists up to 25 recent Drive files and processes at most 10 new files per run.
+- Uses `external_recording_id='drive:<fileId>'` with a unique constraint as the idempotency claim.
+- Downloads supported Google Docs/plain-text transcript content via `src/lib/integrations/drive-transcripts.ts` and sanitizes it before storage.
+- Calls `matchTranscriptToProject` using the filename and transcript text; unmatched historical rows receive one bounded rematch attempt.
+- Calls `embedTranscript` so project Q&A, channel participation, brain retrieval, and future briefings can use the call content. Embedding failure is non-fatal and can be repaired with the transcript re-embed action.
 
-**Inngest functions** (`src/lib/inngest/plaud.ts`)
-- `plaudTranscriptionReady` (retries: 2, idempotency: `event.data.transcription_id`)
-  - `upsert-skeleton` — inserts `call_transcripts` row with `source='plaud'`, `ingest_status='pending'`, IDs only. `ignoreDuplicates: true` on the upsert prevents late retries from regressing already-ingested rows back to pending.
-  - If `PLAUD_INGEST_ENABLED=false`, returns early.
-  - `fetch-plaud-file` + `fetch-plaud-transcript` — calls the Plaud Transcription API with `PLAUD_API_KEY`.
-  - `route-to-call-processor` — hands to `webhook-router.ts` `transcript` route → CALL_PROCESSOR managed agent for project classification + RAG ingest. Requires `KIT_DEFAULT_WORKSPACE_ID` (throws loudly if unset rather than landing empty-string FK).
-  - `mark-ingested` — updates row with transcript text + `ingest_status='ingested'`.
-  - `embed-into-rag` — calls `embedTranscript` (from `src/lib/studio-knowledge/transcript.ts`) to chunk + embed the transcript into `project_documents` with `doc_type='call_transcript'`. Failures are warned-and-swallowed (non-fatal — `call_transcripts` row is still good, can be re-embedded later).
-- `plaudTranscriptionFailed` (retries: 0 — failure-of-failure-handler shouldn't retry storm) — writes `ingest_status='failed'`, optionally posts to `PLAUD_ERROR_CHANNEL_ID`.
+**Schema**
+`call_transcripts` stores the Drive file identity, transcript, source, project match, timestamps, and ingestion state. `project_documents` stores the searchable transcript chunks.
 
-**Plaud API client** (`src/lib/integrations/plaud.ts`)
-- `verifyPlaudSignature` — byte-buffer comparison, constant-time, false on malformed input.
-- `isTimestampFresh` — clamped skew (0-3600s).
-- `fetchPlaudTranscript(transcriptionId)` / `fetchPlaudFile(fileId)` — flag-gated; both throw `PLAUD_INGEST_ENABLED is false` until activation.
-
-**Schema** (migrations 014 + 015)
-`call_transcripts` has `external_recording_id` (unique), `external_file_id`, `source` ('plaud'|'manual'|'granola'), `ingest_status`, plus nullable transcript/participants/start_time/end_time for the skeleton-then-hydrate flow. Migration 015 created the table from scratch (Granola code had referenced it but no migration ever shipped).
-
-**Status:** code skeleton live; waiting on Plaud dev portal approval (see `OPERATOR-TODO.md` §D).
+**Status:** live through Google Drive. The former direct Plaud webhook/API skeleton was removed to avoid maintaining a dead second ingestion path.
 
 ---
 
 ## 14. Pre-Meeting Briefings
 
 ### Summary
-Inngest cron polls Google Calendar every 15 minutes for upcoming events. For each event, classifies to a Kit project via Claude Haiku; if confidence ≥ threshold, schedules a delayed dispatch event for ~30 minutes before meeting start. At dispatch, Kit composes a briefing (project header, meeting context, recent Frame.io / Dropbox links, last Plaud transcript summary if available, open `kit_actions`) and **DMs it privately to the R&F people actually on the invite** — matched from the event's attendees against `staff` by email. Nothing is posted to a shared channel by default, so a briefing for a sensitive meeting can't bleed to people who weren't on the call.
+Inngest polls Google Calendar every 15 minutes and schedules a private briefing roughly 30 minutes before a matched meeting. Bizdev calls, project kickoffs, and active-project meetings all use the same concise layout: **Meeting info**, **Attendee info** (external attendees only, enriched from LinkedIn/web evidence when available), and a natural-language **Positioning** paragraph describing how Ranger & Fox can be useful in that meeting. Delivery goes privately to the R&F invitees; shared-channel posting remains opt-in.
 
 ### Trigger
 Inngest cron `0,15,30,45 * * * *` (every 15 min). Activates when `GOOGLE_CALENDAR_INGEST_ENABLED=true`.
@@ -484,7 +494,7 @@ Service-account JWT (not 3-legged OAuth) — one shared service account, calenda
 Claude Haiku with priority-ranked match rules (project_code in title → attendees → keywords). Returns `{project_id, confidence, reasoning}`. JSON-only output, "prefer null over low-confidence" prompt rule. Confidence threshold (`BRIEFING_MATCH_THRESHOLD`, default 0.5).
 
 **Briefing composer** (`src/lib/agent/briefing-composer.ts`)
-Pulls project + open `kit_actions` (where `status IN ('pending','approved')`) + last `call_transcripts` row (source='plaud'). Composes Slack mrkdwn body. Returns `{channelText, producerDmText, projectChannelId, producerSlackUserId}`.
+Builds the shared three-section layout. External-attendee evidence and positioning are assembled in `src/lib/agent/bizdev-briefing.ts`; missing research degrades to honest, useful fallback copy rather than invented background. Internal Ranger & Fox attendees are omitted from the attendee-background section.
 
 **Inngest functions** (`src/lib/inngest/pre-meeting.ts`)
 - `preMeetingScan` (cron, every 15m) — fetches events from `[now, now + lead + 16min]`, classifies each, upserts `meeting_briefings` row with status (`pending`/`skipped`/`failed`), schedules a `pre-meeting/dispatch` event for `start - lead` (lead = `BRIEFING_LEAD_TIME_MINUTES`, default 30).
@@ -496,7 +506,7 @@ The active-projects query in the scanner uses `KIT_DEFAULT_WORKSPACE_ID` to scop
 **Schema** (migration 017)
 `meeting_briefings` — `event_id` (unique), `calendar_id`, `project_id` (FK, set null on delete), `meeting_title`, `meeting_start_time`, `attendees_json`, `briefing_md`, `slack_*` fields, `confidence`, status enum, `error`.
 
-**Status:** code skeleton live; awaiting Google service-account setup (see `OPERATOR-TODO.md` §C).
+**Status:** calendar scanning and private delivery are live; the next qualifying meeting must be observed to verify the redesigned three-section output in production.
 
 ---
 
@@ -642,13 +652,11 @@ Existing `project_documents` (pgvector embedded column, `match_documents` RPC) +
 ### Railway
 - `PORT` — auto-set by Railway
 
-### Plaud (transcripts)
-- `PLAUD_WEBHOOK_SECRET` — HMAC signing key from the Plaud developer console
-- `PLAUD_API_KEY` — required when `PLAUD_INGEST_ENABLED=true`
-- `PLAUD_INGEST_ENABLED` — `true` to activate the API fetch + RAG ingest path
-- `PLAUD_TIMESTAMP_SKEW_SECONDS` — replay window, default `300` (clamped to 0-3600)
-- `PLAUD_ERROR_CHANNEL_ID` — optional Slack channel for `transcription.failed` notices
-- `KIT_DEFAULT_WORKSPACE_ID` — workspace uuid for sessions/RAG scoping; required when ingest is enabled
+### Meeting transcripts (Google Drive)
+- `DRIVE_TRANSCRIPTS_ENABLED` — `true` to activate the 15-minute scan
+- `DRIVE_TRANSCRIPTS_FOLDER_ID` — shared folder receiving Zapier/Plaud transcript files
+- `GOOGLE_SERVICE_ACCOUNT_JSON` — service-account JSON (raw or base64)
+- `KIT_DEFAULT_WORKSPACE_ID` — workspace uuid for classification/RAG scoping
 
 ### Google Calendar (briefings)
 - `GOOGLE_CALENDAR_INGEST_ENABLED` — `true` to activate the 15-min cron
@@ -691,5 +699,5 @@ Existing `project_documents` (pgvector embedded column, `match_documents` RPC) +
 | Dropbox webhook 403 in logs | `DROPBOX_APP_SECRET` env var on Railway |
 | Watcher matches path but no upload | Project's `external_ids.dropbox_safe_name` mismatch — check Supabase `projects` row |
 | `no project matches safeName=...` | New project not yet in Supabase. Watcher will auto-discover from Frame.io on next file drop |
-| Share link 404 | Frame.io v4 endpoint shape — see `bolt/src/watchers/dropbox.ts` share_links call |
+| Share link 404 | Frame.io V4 project-share contract — see `buildFrameioShareRequest` in `bolt/src/watchers/dropbox.ts` and its contract test |
 | Storyboard "nothing happened" | Check `assistantThreadTs` is being plumbed through `updateIntake` |
