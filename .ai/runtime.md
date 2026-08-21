@@ -29,9 +29,18 @@ fact.
   `project_update_requests`/`project_update_steps`, migration 063). Both are
   idempotent (reconcile-by-marker + memoized durable steps), so a resumed ripple
   never double-applies. *(Verified in code; live cadence Needs verification.)*
-- **node-cron jobs run here:** *Needs verification* — in-process `node-cron`
-  schedules are configured in `bolt/src/app.ts` but were not inspected this
-  sprint. Read `app.ts` to confirm any specific schedule before relying on it.
+- **node-cron jobs run here (Verified in `bolt/src/app.ts`):** hourly
+  timezone-aware daily-hours delivery; 09:00 local pending-check-in nudges and
+  missing-time scan; hourly brain-approval dispatch (feature-gated); every-minute
+  AE completion notification; Friday 09:00 local timesheet meme; five-minute
+  project create/update recovery; daily 09:00 local celebrations. Actual live
+  cadence still depends on Railway running the current `main` deployment.
+- **Dropbox webhook owner (Verified):** Railway alone owns the project outgoing
+  mirror. `POST /webhooks/dropbox` HMAC-verifies, ACKs immediately, then consumes
+  the recursive `/production` cursor. Only paths matching
+  `/production/<year>/<project>/09_Outgoing/{01_Client Progress,02_Delivery}/...`
+  are mirrored to Frame.io. Share creation uses the V4 project-scoped `shares`
+  contract. This is not the delivery/transcode queue below.
 
 ## Vercel — Next.js app + Inngest functions
 
@@ -46,6 +55,11 @@ fact.
   `brainDeadlineSweep`, `brainScavengerScan`, `brainConsolidate`,
   `driveTranscriptScan`, `healthWatchdog`, `healthDailyDigest`,
   `projectControlSync`, `projectControlSyncOnEdit`.
+- **Dropbox poller owner (Verified):** `deliveryDropboxScan` is an Inngest
+  once-per-minute poll of `/Delivery-Queue/`. It detects stable inputs, routes
+  them to project/fallback Slack notifications, converts SRT sidecars, and feeds
+  the profile-based render-worker workflow. It does not inspect project
+  `09_Outgoing` folders and does not mirror files to Frame.io.
 - **`healthDailyDigest` (Verified from `route.ts`):** daily 09:00 America/New_York
   cron (`TZ=`-pinned) that runs the same `runAllChecks()` as the watchdog, rolls
   up `daily_hours_checkins` state, and DMs a one-glance digest to the studio
@@ -119,8 +133,10 @@ in this session.
 
 - **Slack** — Socket Mode (outbound WebSocket, per `railway.toml`), token via
   env (`SLACK_BOT_TOKEN` in `.env.example`). *(Verified from config.)*
-- **Harvest** — client under `src/lib/`. Auth model *Needs verification* — no
-  Harvest key is present in the inspected `.env.example`.
+- **Harvest** — personal access token + account id via
+  `HARVEST_ACCESS_TOKEN` / `HARVEST_ACCOUNT_ID`; client under
+  `src/lib/harvest/`. *(Verified in code; production values/live access Need
+  verification.)*
 - **Dropbox** — OAuth refresh-token flow, `src/lib/dropbox/client.ts`.
   *(Verified: `DROPBOX_APP_KEY` / `DROPBOX_APP_SECRET` / `DROPBOX_REFRESH_TOKEN`
   in `.env.example`.)*
@@ -144,6 +160,7 @@ in this session.
 ## Unresolved ownership questions
 
 - Which branch each platform deploys from. *(Needs verification.)*
-- Dropbox `/production` is observed by more than one mechanism across runtimes
-  — canonical owner undecided. *(Decision required — see
-  `.ai/audits/architecture.md`.)*
+- No Dropbox watcher ownership conflict remains: Railway owns the webhook-driven
+  `/production/.../09_Outgoing` → Frame.io mirror; Vercel/Inngest owns the
+  polling `/Delivery-Queue` → render-worker workflow. Revisit only if product
+  requirements intentionally merge those contracts.
