@@ -5,10 +5,9 @@
  * Google/Slack/Supabase. The sync path feeds normalized Sheet cells in and gets
  * a Canvas markdown body + a stable source hash out.
  *
- * The Master Project List is authoritative (spreadsheet
- * 1mW2ywjhSlgT13RxjMPKbSC1kby4feh6pIqiii0Pf-0w, sheet 1050051919, header row 3,
- * data columns A:Y). Kit writes only a small owned subset at creation and never
- * touches the margin formula columns.
+ * The Master Project List is authoritative. The normalized row below is stable
+ * across workbook versions: the Sheets adapter translates each physical layout
+ * into these semantic fields before rendering or hashing.
  */
 
 import { createHash } from 'node:crypto'
@@ -43,6 +42,28 @@ export const MASTER_HEADERS = [
 ] as const
 
 export type MasterHeader = (typeof MASTER_HEADERS)[number]
+export type WorkbookLayout = 'legacy' | 'rf-production-v1'
+
+/** Physical columns on the RF Production System's Projects tab (A:O). */
+export const RF_PRODUCTION_PROJECT_HEADERS = [
+  'Project ID', 'Client', 'Contact', 'Project Name', 'Phase', 'Status',
+  'Next Milestone', 'Deadline', 'Creative Director', 'Producer',
+  'Client Contact', 'Start Date', 'Project Type', 'Previous Notes', 'Column 4',
+] as const
+
+const RF_PRODUCTION_COLUMNS: Partial<Record<MasterHeader, string>> = {
+  'Project Number': 'A',
+  Client: 'B',
+  'Project Name': 'D',
+  'Quick Status': 'E',
+  Status: 'F',
+  'Next Share': 'G',
+  'End Date': 'H',
+  'Creative Director': 'I',
+  Producer: 'J',
+  'Client Contact': 'K',
+  'Start Date': 'L',
+}
 
 // Formula/computed columns Kit must never write.
 export const NEVER_WRITE_HEADERS: MasterHeader[] = ['Current Margin', 'Projected Margin']
@@ -70,7 +91,12 @@ export interface NormalizedCell {
 export type NormalizedRow = Record<string, NormalizedCell>
 
 /** Column letter for a Master Project List header (A:Y). */
-export function headerToA1Column(header: string): string {
+export function headerToA1Column(header: string, layout: WorkbookLayout = 'legacy'): string {
+  if (layout === 'rf-production-v1') {
+    const col = RF_PRODUCTION_COLUMNS[header as MasterHeader]
+    if (!col) throw new Error(`Header ${header} is not a Projects-tab column in ${layout}`)
+    return col
+  }
   const idx = (MASTER_HEADERS as readonly string[]).indexOf(header)
   if (idx < 0) throw new Error(`Unknown Master Project List header: ${header}`)
   return String.fromCharCode('A'.charCodeAt(0) + idx)
@@ -189,7 +215,10 @@ export function parseDateToSerial(input?: string): number | null {
  * are never produced. This is the ONLY set Kit writes at row creation — every
  * other column stays Sheet-owned.
  */
-export function kitOwnedCreationCells(sub: CreationSubmission): OwnedCell[] {
+export function kitOwnedCreationCells(
+  sub: CreationSubmission,
+  layout: WorkbookLayout = 'legacy',
+): OwnedCell[] {
   const map: Array<[MasterHeader, string | undefined]> = [
     ['Project Number', sub.projectNumber],
     ['Client', sub.clientName],
@@ -207,12 +236,15 @@ export function kitOwnedCreationCells(sub: CreationSubmission): OwnedCell[] {
   for (const [header, value] of map) {
     if (value == null || String(value).trim() === '') continue
     if (NEVER_WRITE_HEADERS.includes(header)) continue // defensive; never in map
+    // RF Production stores provider URLs in the normalized Links tab, not in
+    // Projects. The Sheets adapter upserts those separately.
+    if (layout === 'rf-production-v1' && (header === 'Frame.io' || header === 'Dropbox')) continue
     if (DATE_HEADERS.has(header)) {
       const serial = parseDateToSerial(String(value))
       if (serial == null) continue // invalid/absent date → leave blank, never text
-      out.push({ header, column: headerToA1Column(header), kind: 'date', value: String(value), serial })
+      out.push({ header, column: headerToA1Column(header, layout), kind: 'date', value: String(value), serial })
     } else {
-      out.push({ header, column: headerToA1Column(header), kind: 'string', value: String(value) })
+      out.push({ header, column: headerToA1Column(header, layout), kind: 'string', value: String(value) })
     }
   }
   return out

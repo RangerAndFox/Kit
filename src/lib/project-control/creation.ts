@@ -42,6 +42,8 @@ import {
   searchRowMetadata as realSearchRowMetadata,
   readRow as realReadRow,
   createBoundRow as realCreateBoundRow,
+  upsertProjectLinks as realUpsertProjectLinks,
+  type ProjectLinksInput,
 } from './sheets'
 import {
   ensureBinding,
@@ -61,6 +63,7 @@ export interface CreationSheetsPort {
     kitProjectId: string,
     owned: OwnedCell[],
   ): Promise<{ metadataId: number; rowIndex: number; alreadyBound: boolean }>
+  upsertProjectLinks(config: WorkbookConfig, projectNumber: string | undefined, links: ProjectLinksInput): Promise<void>
 }
 
 export interface CreationCanvasPort {
@@ -102,6 +105,7 @@ export function defaultCreationDeps(): CreationDeps {
       searchRowMetadata: realSearchRowMetadata,
       readRow: realReadRow,
       createBoundRow: realCreateBoundRow,
+      upsertProjectLinks: realUpsertProjectLinks,
     },
     canvas: { createControlCanvas, editControlCanvas, reconcileControlCanvas },
     store: {
@@ -175,7 +179,7 @@ export async function bindProjectControl(
       if (!(await deps.store.renewWorkbookLease(config.spreadsheetId, 'creation', holder))) {
         return { status: 'deferred', reason: 'creation_lease_lost' }
       }
-      const owned = kitOwnedCreationCells(opts.submission)
+      const owned = kitOwnedCreationCells(opts.submission, config.layout || 'legacy')
       const res = await deps.sheets.createBoundRow(config, opts.projectId, owned)
       rowIndex = res.rowIndex
       await deps.store.updateBinding(opts.projectId, {
@@ -184,6 +188,14 @@ export async function bindProjectControl(
         error: null,
       })
     }
+
+    // The RF Production workbook normalizes provider URLs into its Links tab.
+    // This runs on every resume: an interrupted write self-heals before Canvas
+    // creation, while the upsert prevents duplicate link rows.
+    await deps.sheets.upsertProjectLinks(config, opts.submission.projectNumber, {
+      frameioUrl: opts.submission.frameioUrl,
+      dropboxUrl: opts.submission.dropboxUrl,
+    })
 
     // ── Step 2: template snapshot ────────────────────────────────────────────
     if (!controlTemplate) {

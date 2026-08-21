@@ -40,7 +40,7 @@ import {
   completeUpdateStep,
   listUpdateRequestsWithIncompleteSteps,
 } from '../../../src/lib/provisioner/update-store'
-import { updateBoundRow } from '../../../src/lib/project-control/sheets'
+import { renameProjectLinks, updateBoundRow } from '../../../src/lib/project-control/sheets'
 import { kitOwnedCreationCells, headerToA1Column, type MasterHeader } from '../../../src/lib/project-control/render'
 import { buildUpdateProjectCard } from './updateproject-card'
 import {
@@ -1620,7 +1620,7 @@ export function registerInteractionHandlers(app: App) {
               if (!nm) return { success: false, error: 'could not resolve producer display name' }
               ownedFields.producerName = nm
             }
-            const cells = kitOwnedCreationCells(ownedFields as any)
+            const cells = kitOwnedCreationCells(ownedFields as any, config.layout || 'legacy')
             const CLEARABLE: Record<string, MasterHeader> = {
               client_contact: 'Client Contact',
               start_date: 'Start Date',
@@ -1632,10 +1632,13 @@ export function registerInteractionHandlers(app: App) {
             for (const ch of (plan.changes as any[])) {
               const header = CLEARABLE[ch.field]
               if (header && ch.new == null && !have.has(header)) {
-                cells.push({ header, column: headerToA1Column(header), kind: 'string', value: '' })
+                cells.push({ header, column: headerToA1Column(header, config.layout || 'legacy'), kind: 'string', value: '' })
               }
             }
             const r = await updateBoundRow(config, pid, cells)
+            if (changed.has('project_number')) {
+              await renameProjectLinks(config, current.projectNumber, f.projectNumber)
+            }
             return { success: true, message: 'skipped' in r ? 'sheet unbound (skipped)' : `sheet row ${(r as any).rowIndex} updated` }
           } catch (err: any) {
             return { success: false, error: err.message }
