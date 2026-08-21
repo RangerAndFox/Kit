@@ -64,6 +64,14 @@ describe('filterExternalAttendees', () => {
     const out = filterExternalAttendees([{ email: '' }], internal)
     expect(out).toEqual([])
   })
+
+  it('drops external invitees who declined the meeting', () => {
+    const out = filterExternalAttendees([
+      { email: 'declined@acme.com', responseStatus: 'declined' },
+      { email: 'accepted@acme.com', responseStatus: 'accepted' },
+    ], internal)
+    expect(out.map((attendee) => attendee.email)).toEqual(['accepted@acme.com'])
+  })
 })
 
 describe('buildBizdevBriefingText', () => {
@@ -76,26 +84,32 @@ describe('buildBizdevBriefingText', () => {
     const text = buildBizdevBriefingText({
       event,
       externals: [{ email: 'jane@acme.com', displayName: 'Jane Doe' }],
-      bios: ['Jane is the VP of Marketing at Acme.'],
+      evidence: [{
+        identity: { status: 'resolved', name: 'Jane Doe', company: 'Acme', candidates: [] },
+        facts: [{ claim: 'VP of Marketing at Acme', source_ref: 'https://linkedin.com/in/jane' }],
+        inferences: [], missing: [], sources: [],
+      }],
+      positioning: 'Ranger & Fox could help Acme turn its goals into a focused creative production plan.',
     })
-    expect(text).toContain('business development')
+    expect(text).toContain('*Meeting info*')
     expect(text).toContain('Intro call — Acme Corp')
     expect(text).toContain('Jane Doe')
-    expect(text).toContain('jane@acme.com')
-    expect(text).toContain('Jane is the VP of Marketing at Acme.')
+    expect(text).toContain('VP of Marketing at Acme.')
+    expect(text).toContain('*Positioning*')
   })
 
   it('falls back to a placeholder when a bio lookup failed', () => {
     const text = buildBizdevBriefingText({
       event,
       externals: [{ email: 'jane@acme.com' }],
-      bios: [null],
+      evidence: [null],
+      positioning: 'Ranger & Fox could help clarify the creative and production opportunity.',
     })
-    expect(text).toContain('No reliable info found')
+    expect(text).toContain('No reliable public background found')
   })
 
   it('notes when there are no external attendees', () => {
-    const text = buildBizdevBriefingText({ event, externals: [], bios: [] })
-    expect(text).toContain('No external attendees found')
+    const text = buildBizdevBriefingText({ event, externals: [], evidence: [] })
+    expect(text).toContain('No external attendees on this invite')
   })
 })
