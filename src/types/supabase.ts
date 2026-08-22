@@ -3917,6 +3917,7 @@ export type Database = {
       match_documents: {
         Args: {
           filter_project_id?: string
+          filter_visibility_tiers?: string[]
           filter_workspace_id?: string
           match_count?: number
           query_embedding: string

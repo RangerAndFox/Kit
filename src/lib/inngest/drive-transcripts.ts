@@ -105,7 +105,7 @@ export const driveTranscriptScan = inngest.createFunction(
           // Keep the RAG chunks' project scoping in sync with the transcript.
           await sb
             .from('project_documents')
-            .update({ project_id: projectId })
+            .update({ project_id: projectId, visibility_tier: 'team' })
             .eq('doc_type', 'call_transcript')
             .filter('metadata->>call_transcripts_id', 'eq', row.id)
         }

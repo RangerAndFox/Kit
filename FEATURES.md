@@ -477,7 +477,9 @@ Inngest cron `*/15 * * * *`. Activates when `DRIVE_TRANSCRIPTS_ENABLED=true`, `D
 **Schema**
 `call_transcripts` stores the Drive file identity, transcript, source, project match, timestamps, and ingestion state. `project_documents` stores the searchable transcript chunks.
 
-**Status:** live through Google Drive. The former direct Plaud webhook/API skeleton was removed to avoid maintaining a dead second ingestion path.
+**Status:** live through Google Drive. The former direct Plaud webhook/API skeleton was removed to avoid maintaining a dead second ingestion path. Production audit on 2026-08-21 found 69 ingested transcripts represented by 1,509 embedded chunks; the newest watched-folder file was from August 14, so the absence of newer records was an upstream-folder state, not a stalled scan.
+
+Unmatched Plaud/Drive transcripts are founder/admin-only until Kit positively associates them with a project. A later successful project rematch promotes their knowledge chunks to team visibility. Semantic search enforces the requester's allowed visibility tiers inside the service-role database function, so producer searches cannot retrieve founder-only transcripts.
 
 ---
 
@@ -565,7 +567,7 @@ Registered as `ask_studio_knowledge` tool. Ten actions:
 **Schema**
 Existing `project_documents` (pgvector embedded column, `match_documents` RPC) + `client_profiles` (extended with `harvest_client_id` in migration 023). No new tables — all notes/transcripts/summaries flow into `project_documents` with distinct `doc_type` values.
 
-**Status:** code live; needs `OPENAI_API_KEY` set and the two backfill scripts run once (see `OPERATOR-TODO.md` §A1-A3).
+**Status:** live. Production has working embeddings and transcript-backed retrieval. Founder-only knowledge is available only to Kit admins; producer searches are restricted to team-visible documents.
 
 ---
 

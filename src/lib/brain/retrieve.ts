@@ -10,7 +10,12 @@
  * Spec: KIT-BRAIN-SPEC.md §3.4
  */
 
-import { searchDocuments, buildContext, type SearchResult } from '@/lib/rag/query'
+import {
+  searchDocuments,
+  buildContext,
+  type KnowledgeVisibilityTier,
+  type SearchResult,
+} from '@/lib/rag/query'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { parseBrain, type BrainBullet, type BrainProvenance } from './format'
 
@@ -46,6 +51,8 @@ export interface RetrieveOpts {
   limit?: number
   /** Wider candidate pool before re-rank. Default = limit * 2. */
   candidatePool?: number
+  /** Knowledge tiers the requester is allowed to retrieve. Defaults to team-only. */
+  visibilityTiers?: KnowledgeVisibilityTier[]
 }
 
 interface BrainRow {
@@ -111,6 +118,7 @@ export async function brainFirstRetrieve(opts: RetrieveOpts): Promise<BrainFirst
     workspaceId: opts.workspaceId ?? null,
     projectId,
     limit: candidates,
+    visibilityTiers: opts.visibilityTiers,
   })
 
   // Step 3: partition + re-rank

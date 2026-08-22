@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 
 import { sanitizeTranscriptText } from '../../src/lib/integrations/drive-transcripts'
 import { scoreProjectMentions } from '../../src/lib/agent/call-classifier'
+import { transcriptVisibilityTier } from '../../src/lib/studio-knowledge/transcript'
 
 describe('sanitizeTranscriptText', () => {
   it('converts <br> variants to newlines', () => {
@@ -55,5 +56,16 @@ describe('scoreProjectMentions', () => {
 
   it('returns 0 when nothing matches', () => {
     expect(scoreProjectMentions('lunch order thread', project)).toBe(0)
+  })
+})
+
+describe('transcriptVisibilityTier', () => {
+  it('keeps unmatched Plaud and Drive transcripts founder-only', () => {
+    expect(transcriptVisibilityTier({ project_id: null, source: 'plaud' })).toBe('founder')
+    expect(transcriptVisibilityTier({ project_id: null, source: 'drive' })).toBe('founder')
+  })
+
+  it('makes positively project-matched transcripts team-visible', () => {
+    expect(transcriptVisibilityTier({ project_id: 'project-1', source: 'drive' })).toBe('team')
   })
 })
