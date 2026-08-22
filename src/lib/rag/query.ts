@@ -24,6 +24,17 @@ export interface SearchOptions {
   workspaceId?: string | null
   projectId?: string | null
   limit?: number
+  visibilityTiers?: KnowledgeVisibilityTier[]
+}
+
+export type KnowledgeVisibilityTier = 'team' | 'founder'
+
+/**
+ * Convert Kit's requester tier into the knowledge tiers it may retrieve.
+ * Unknown callers fail closed to team-only; founder knowledge is admin-only.
+ */
+export function visibilityTiersForRequester(tier: unknown): KnowledgeVisibilityTier[] {
+  return tier === 'admin' ? ['team', 'founder'] : ['team']
 }
 
 export async function searchDocuments(query: string, opts: SearchOptions = {}): Promise<SearchResult[]> {
@@ -39,6 +50,7 @@ export async function searchDocuments(query: string, opts: SearchOptions = {}): 
     match_count: limit,
     filter_workspace_id: opts.workspaceId ?? undefined,
     filter_project_id: opts.projectId ?? undefined,
+    filter_visibility_tiers: opts.visibilityTiers?.length ? opts.visibilityTiers : ['team'],
   })
   if (error) {
     throw new Error(`match_documents RPC failed: ${error.message}`)

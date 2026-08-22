@@ -5,7 +5,7 @@
  */
 
 import type { AgentDefinition, AgentResult } from './types'
-import { searchDocuments, buildContext } from '../../rag/query'
+import { searchDocuments, buildContext, visibilityTiersForRequester } from '../../rag/query'
 import { createAdminClient } from '../../supabase/admin'
 import { brainFirstRetrieve, buildSourcedContext } from '../../brain/retrieve'
 
@@ -19,12 +19,19 @@ async function handle(action: string, payload: Record<string, unknown>): Promise
         const projectId = (payload.projectId as string) || null
         const channelId = (payload.channelId as string) || null
         const limit = Number(payload.limit) || 10
+        const visibilityTiers = visibilityTiersForRequester(payload.requesterTier)
 
         // Brain-first when a channelId is available — the brain's own
         // sections rank ahead of generic project_documents, and the
         // result carries a Sources: line + structured provenance refs.
         if (channelId && workspaceId) {
-          const first = await brainFirstRetrieve({ query, channelId, workspaceId, limit })
+          const first = await brainFirstRetrieve({
+            query,
+            channelId,
+            workspaceId,
+            limit,
+            visibilityTiers,
+          })
           const sourced = buildSourcedContext(first)
           return {
             agent: 'studio_knowledge',
@@ -40,7 +47,12 @@ async function handle(action: string, payload: Record<string, unknown>): Promise
           }
         }
 
-        const results = await searchDocuments(query, { workspaceId, projectId, limit })
+        const results = await searchDocuments(query, {
+          workspaceId,
+          projectId,
+          limit,
+          visibilityTiers,
+        })
         const context = buildContext(results)
         return {
           agent: 'studio_knowledge',

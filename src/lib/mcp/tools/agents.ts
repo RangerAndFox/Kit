@@ -112,7 +112,13 @@ export const askAgent: KitTool = {
     }
 
     // ── Dispatch to agent ───────────────────────────────────
-    const result = await dispatch(agent_id, action, payload)
+    // The model cannot elevate its own knowledge visibility. Unknown callers
+    // fail closed to the lowest tier; resolved admins may retrieve founder docs.
+    const dispatchPayload = {
+      ...payload,
+      requesterTier: user?.tier ?? 'artist',
+    }
+    const result = await dispatch(agent_id, action, dispatchPayload)
 
     if (!result.success) {
       return fail(result.error || `Agent "${agent_id}" action "${action}" failed`)

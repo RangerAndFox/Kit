@@ -96,6 +96,9 @@ export async function runSpecialist(
         slackUserId: llmPayload.slackUserId ?? user?.slackUserId,
         teamMemberId: llmPayload.teamMemberId ?? user?.teamMemberId,
         channelId: llmPayload.channelId ?? context.channelId ?? undefined,
+        // Never trust the model to choose its own knowledge visibility. The
+        // resolved Kit tier is the only source for founder/admin retrieval.
+        requesterTier: user?.tier ?? 'artist',
       }
 
       let result: { success: boolean; data?: any; error?: string; message?: string }
