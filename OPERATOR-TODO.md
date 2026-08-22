@@ -4,6 +4,19 @@ Current as of 2026-08-21. This list contains only checks that require live provi
 
 ## Immediate production verification
 
+### 0. Authorize and cut over direct Plaud transcript sync
+
+The direct OAuth ingestion path is implemented but deliberately disabled until a one-time account authorization is complete.
+
+1. Install Plaud's official CLI and run `plaud login` on an operator Mac.
+2. Put the resulting refresh token into Vercel Production as `PLAUD_REFRESH_TOKEN` (secret).
+3. Set `PLAUD_INGEST_FROM=2026-08-15T00:00:00Z`. The existing Drive folder has no file newer than August 14, so this backfills the known gap without intentionally replaying older Drive history.
+4. Set `PLAUD_INGEST_ENABLED=true` and `DRIVE_TRANSCRIPTS_ENABLED=false` in the same production cutover.
+5. Sync the production Inngest app, then confirm a recent Plaud recording produces one `source='plaud'` row, project classification where applicable, and searchable transcript chunks.
+6. Keep the Zap and Drive configuration intact but disabled during the observation period so rollback is a flag change.
+
+Do not paste the refresh token into Slack, a GitHub issue, or repository files.
+
 ### 1. Confirm Railway deployed current `main`
 
 GitHub/Vercel checks pass on merged pull requests, but the Railway connector entered a repeated authentication loop during the August 21 audit. In Railway, confirm the Bolt service's latest deployment commit matches GitHub `main`, uses the Kit repository, and is healthy at `/health`.

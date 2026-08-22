@@ -8,6 +8,7 @@ import {
 import { studioKnowledgeAutoSummarize } from './studio-knowledge-cron'
 import { brainDeadlineSweep, brainScavengerScan, brainConsolidate } from './brain-crons'
 import { driveTranscriptScan } from './drive-transcripts'
+import { plaudTranscriptScan } from './plaud-transcripts'
 import { healthWatchdog } from './health-cron'
 import { healthDailyDigest } from './health-digest'
 import { projectControlSync, projectControlSyncOnEdit } from './project-control-sync'
@@ -26,6 +27,7 @@ export const inngestFunctions = [
   brainScavengerScan,
   brainConsolidate,
   driveTranscriptScan,
+  plaudTranscriptScan,
   healthWatchdog,
   healthDailyDigest,
   projectControlSync,
