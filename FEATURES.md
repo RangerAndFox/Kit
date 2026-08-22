@@ -24,7 +24,7 @@ Cross-cutting infrastructure (Supabase schema, Bolt server, deployment) is at th
 10. [Hours Check-Ins + Ad-Hoc Logging](#10-hours-check-ins--ad-hoc-logging)
 11. ~~Shot List Canvas~~ — removed
 12. [Delivery Pipeline](#12-delivery-pipeline)
-13. [Meeting Transcript Ingest (Plaud → Drive)](#13-meeting-transcript-ingest-plaud--drive)
+13. [Meeting Transcript Ingest (Direct Plaud + Drive fallback)](#13-meeting-transcript-ingest-direct-plaud--drive-fallback)
 14. [Pre-Meeting Briefings](#14-pre-meeting-briefings)
 15. [Studio Knowledge (project history, contacts, notes, auto-summarization)](#15-studio-knowledge)
 16. [Infrastructure](#16-infrastructure)
@@ -457,17 +457,29 @@ Standalone Node.js package deployed to Windows studio PCs.
 
 ---
 
-## 13. Meeting Transcript Ingest (Plaud → Drive)
+## 13. Meeting Transcript Ingest (Direct Plaud + Drive fallback)
 
 ### Summary
-Plaud has no direct production ingestion API in this build. Zapier places completed Plaud transcript files into a shared Google Drive folder. Every 15 minutes Kit finds unseen files, extracts and sanitizes the text, classifies the call to a project when confidence is sufficient, stores it in `call_transcripts`, and embeds it for studio-knowledge and meeting-briefing retrieval.
+Kit can read completed recordings directly from a Plaud account through Plaud's OAuth personal-recording API—the supported interface behind Plaud's official CLI/MCP. Every 15 minutes Kit finds unseen recordings with completed transcripts, classifies them to projects, stores them in `call_transcripts`, and embeds them for studio knowledge and meeting briefings. The prior Zapier/Google Drive intake remains available as a rollback path, but the two sources should not be enabled together for new recordings.
 
 ### Trigger
-Inngest cron `*/15 * * * *`. Activates when `DRIVE_TRANSCRIPTS_ENABLED=true`, `DRIVE_TRANSCRIPTS_FOLDER_ID` is set, and the Google service account can read the folder.
+Direct Plaud cron at minutes 7, 22, 37, and 52. Activates only when `PLAUD_INGEST_ENABLED=true`, `PLAUD_REFRESH_TOKEN` is bootstrapped, `PLAUD_INGEST_FROM` is a valid ISO timestamp, and `KIT_DEFAULT_WORKSPACE_ID` is set. The Drive fallback keeps its existing `*/15 * * * *` schedule and separate activation flag.
 
 ### Technical breakdown
 
-**Inngest function** (`src/lib/inngest/drive-transcripts.ts`)
+**Direct Plaud client** (`src/lib/integrations/plaud.ts`)
+- Uses Plaud's personal-recording endpoints (`list files` and `get file`) rather than the unrelated Embedded upload/transcription API.
+- Exchanges the one-time OAuth refresh credential for short-lived access tokens. Rotated refresh tokens and access tokens live in the RLS-protected singleton `plaud_token_state`; a database lease prevents concurrent deployments from rotating the token twice.
+- Prefers Plaud's polished transcript block and falls back to the raw transaction block. Inline and temporary linked transcript content are both supported.
+- `PLAUD_INGEST_FROM` is a mandatory historical frontier. It prevents the first direct scan from duplicating recordings already imported through Drive.
+
+**Direct Inngest function** (`src/lib/inngest/plaud-transcripts.ts`)
+- Scans up to the 500 newest account recordings (100 per page) and processes at most 10 incomplete Kit records per run.
+- Uses `external_recording_id='plaud:<recordingId>'` for idempotency. Recordings visible before their transcript finishes are left unclaimed and retried naturally.
+- Converts timestamps/speaker labels into readable text, classifies the project, embeds with the existing privacy policy, and only then marks the row ingested. Failed embedding remains retryable and replay replaces rather than duplicates knowledge chunks.
+- Unmatched recordings remain founder/admin-only; project matches are team-visible.
+
+**Drive fallback** (`src/lib/inngest/drive-transcripts.ts`)
 - Lists up to 25 recent Drive files and processes at most 10 new files per run.
 - Uses `external_recording_id='drive:<fileId>'` with a unique constraint as the idempotency claim.
 - Downloads supported Google Docs/plain-text transcript content via `src/lib/integrations/drive-transcripts.ts` and sanitizes it before storage.
@@ -477,7 +489,7 @@ Inngest cron `*/15 * * * *`. Activates when `DRIVE_TRANSCRIPTS_ENABLED=true`, `D
 **Schema**
 `call_transcripts` stores the Drive file identity, transcript, source, project match, timestamps, and ingestion state. `project_documents` stores the searchable transcript chunks.
 
-**Status:** live through Google Drive. The former direct Plaud webhook/API skeleton was removed to avoid maintaining a dead second ingestion path. Production audit on 2026-08-21 found 69 ingested transcripts represented by 1,509 embedded chunks; the newest watched-folder file was from August 14, so the absence of newer records was an upstream-folder state, not a stalled scan.
+**Status:** direct integration implemented behind a disabled activation gate; one-time Plaud authorization and a live recording remain. Google Drive is still the production source until that validation succeeds. Production audit on 2026-08-21 found 69 ingested Drive transcripts represented by 1,509 embedded chunks; the newest watched-folder file was from August 14.
 
 Unmatched Plaud/Drive transcripts are founder/admin-only until Kit positively associates them with a project. A later successful project rematch promotes their knowledge chunks to team visibility. Semantic search enforces the requester's allowed visibility tiers inside the service-role database function, so producer searches cannot retrieve founder-only transcripts.
 
@@ -660,9 +672,13 @@ Existing `project_documents` (pgvector embedded column, `match_documents` RPC) +
 ### Railway
 - `PORT` — auto-set by Railway
 
-### Meeting transcripts (Google Drive)
+### Meeting transcripts
+- `PLAUD_INGEST_ENABLED` — `true` to activate direct personal-recording polling
+- `PLAUD_REFRESH_TOKEN` — one-time OAuth bootstrap from Plaud's official CLI; rotated values persist in Supabase
+- `PLAUD_INGEST_FROM` — required ISO-8601 historical frontier; recordings before it are ignored
+- `PLAUD_API_BASE` / `PLAUD_REFRESH_URL` — optional provider endpoint overrides for support/testing only
 - `DRIVE_TRANSCRIPTS_ENABLED` — `true` to activate the 15-minute scan
-- `DRIVE_TRANSCRIPTS_FOLDER_ID` — shared folder receiving Zapier/Plaud transcript files
+- `DRIVE_TRANSCRIPTS_FOLDER_ID` — rollback folder receiving Zapier/Plaud transcript files
 - `GOOGLE_SERVICE_ACCOUNT_JSON` — service-account JSON (raw or base64)
 - `KIT_DEFAULT_WORKSPACE_ID` — workspace uuid for classification/RAG scoping
 
