@@ -99,6 +99,7 @@ export const CRON_MAX_AGE_MIN: Record<string, number> = {
   'delivery-dropbox-scan': 15, // runs ~every minute
   'delivery-specs-scan': 15,
   'drive-transcript-scan': 45, // runs every 15 min
+  'plaud-transcript-scan': 45, // runs every 15 min when enabled
   'pre-meeting-scan': 45, // runs every 15 min
 }
 
@@ -106,6 +107,7 @@ export const CRON_LABELS: Record<string, string> = {
   'delivery-dropbox-scan': 'Delivery queue scan',
   'delivery-specs-scan': 'Delivery specs scan',
   'drive-transcript-scan': 'Transcript ingest',
+  'plaud-transcript-scan': 'Direct Plaud ingest',
   'pre-meeting-scan': 'Meeting briefings scan',
 }
 
@@ -117,18 +119,25 @@ export const CRON_LABELS: Record<string, string> = {
 export function checkCronFreshness(
   heartbeats: Record<string, string | null | undefined>,
   now: Date = new Date(),
+  env: Record<string, string | undefined> = process.env,
 ): CheckResult[] {
-  return Object.keys(CRON_MAX_AGE_MIN).map((cronId) => {
-    const label = CRON_LABELS[cronId] || cronId
-    const key = `cron:${cronId}`
-    const last = heartbeats[cronId]
-    if (!last) return { key, label, ok: true, detail: 'awaiting first run' }
-    const ageMin = (now.getTime() - Date.parse(last)) / 60_000
-    const maxAge = CRON_MAX_AGE_MIN[cronId]
-    if (Number.isNaN(ageMin)) return { key, label, ok: true, detail: 'unparsable heartbeat' }
-    if (ageMin > maxAge) {
-      return { key, label, ok: false, detail: `no success in ${Math.round(ageMin)}m (limit ${maxAge}m)` }
-    }
-    return { key, label, ok: true, detail: `last ran ${Math.round(ageMin)}m ago` }
-  })
+  return Object.keys(CRON_MAX_AGE_MIN)
+    .filter((cronId) => {
+      if (cronId === 'drive-transcript-scan') return env.DRIVE_TRANSCRIPTS_ENABLED === 'true'
+      if (cronId === 'plaud-transcript-scan') return env.PLAUD_INGEST_ENABLED === 'true'
+      return true
+    })
+    .map((cronId) => {
+      const label = CRON_LABELS[cronId] || cronId
+      const key = `cron:${cronId}`
+      const last = heartbeats[cronId]
+      if (!last) return { key, label, ok: true, detail: 'awaiting first run' }
+      const ageMin = (now.getTime() - Date.parse(last)) / 60_000
+      const maxAge = CRON_MAX_AGE_MIN[cronId]
+      if (Number.isNaN(ageMin)) return { key, label, ok: true, detail: 'unparsable heartbeat' }
+      if (ageMin > maxAge) {
+        return { key, label, ok: false, detail: `no success in ${Math.round(ageMin)}m (limit ${maxAge}m)` }
+      }
+      return { key, label, ok: true, detail: `last ran ${Math.round(ageMin)}m ago` }
+    })
 }

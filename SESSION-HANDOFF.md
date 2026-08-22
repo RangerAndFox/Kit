@@ -55,6 +55,7 @@ The main implementation risk is no longer a known code failure; it is deployment
 ### Meeting transcripts and studio knowledge
 
 - The Drive transcript scan and Google integration are healthy. Production contains 69 ingested Drive transcripts and 1,509 embedded transcript chunks; the watched folder itself has received no file newer than August 14.
+- Direct Plaud OAuth polling is implemented behind `PLAUD_INGEST_ENABLED=false`. It reads personal account recordings through Plaud's supported CLI/MCP API, safely coordinates rotating tokens in Supabase, and requires an explicit `PLAUD_INGEST_FROM` frontier to avoid replaying Drive history. One-time Plaud authorization and a live recording are still required before disabling Drive.
 - A privacy audit found that unmatched Plaud/Drive material had been embedded as team-visible and the service-role semantic-search RPC ignored visibility tiers.
 - Unmatched Plaud/Drive transcripts are now founder/admin-only; project-matched transcripts remain team-visible, and a later successful project rematch promotes the related chunks to team visibility.
 - Semantic search now receives a server-resolved requester tier and enforces allowed visibility inside `match_documents`. The production correction moved 724 chunks to founder visibility and left 785 team-visible. A direct production verification returned zero founder results for a team-only search.

@@ -31,6 +31,7 @@ const EXISTING_FUNCTION_IDS = [
   'brain-scavenger-scan',
   'brain-consolidate',
   'drive-transcript-scan',
+  'plaud-transcript-scan',
   'health-watchdog',
   'project-control-sync',
 ]
