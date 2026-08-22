@@ -52,6 +52,13 @@ The main implementation risk is no longer a known code failure; it is deployment
   - Positioning (a natural-language Ranger & Fox partnership paragraph)
 - Private delivery remains the default. Research failures degrade to explicit fallback copy rather than fabricated biography.
 
+### Meeting transcripts and studio knowledge
+
+- The Drive transcript scan and Google integration are healthy. Production contains 69 ingested Drive transcripts and 1,509 embedded transcript chunks; the watched folder itself has received no file newer than August 14.
+- A privacy audit found that unmatched Plaud/Drive material had been embedded as team-visible and the service-role semantic-search RPC ignored visibility tiers.
+- Unmatched Plaud/Drive transcripts are now founder/admin-only; project-matched transcripts remain team-visible, and a later successful project rematch promotes the related chunks to team visibility.
+- Semantic search now receives a server-resolved requester tier and enforces allowed visibility inside `match_documents`. The production correction moved 724 chunks to founder visibility and left 785 team-visible. A direct production verification returned zero founder results for a team-only search.
+
 ### Dependency/security state
 
 - Bolt dependencies were upgraded in PR #139.
@@ -87,7 +94,7 @@ Everything currently safe to implement in the repository has been merged. Remain
 2. Verify the next outgoing file produces a real public Frame.io share.
 3. Observe the next local-5pm hours occurrence end to end.
 4. Observe the next real simplified meeting briefing.
-5. Install and confirm a studio delivery/render worker before depending on transcodes; production currently has zero registered workers.
+5. The studio delivery/render worker is intentionally deferred until an always-on studio machine is selected; production currently has zero registered workers.
 6. Resolve the visibility and briefing-posting decisions in `OPERATOR-TODO.md`.
 
 ## Verification commands

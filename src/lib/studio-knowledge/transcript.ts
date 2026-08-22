@@ -23,6 +23,15 @@ export interface TranscriptInput {
   external_file_id: string | null
 }
 
+export function transcriptVisibilityTier(t: Pick<TranscriptInput, 'project_id' | 'source'>): 'team' | 'founder' {
+  if (t.project_id) return 'team'
+  // Plaud and its Drive/Zapier intake can contain personal or founder-only
+  // conversations. Until Kit positively matches one to a project, keep it
+  // out of producer-facing studio knowledge.
+  if (t.source === 'plaud' || t.source === 'drive') return 'founder'
+  return 'team'
+}
+
 export function composeTranscriptTitle(t: TranscriptInput): string {
   const date = t.start_time ? new Date(t.start_time).toISOString().slice(0, 10) : 'unknown date'
   const sourceLabel =
@@ -53,7 +62,7 @@ export async function embedTranscript(t: TranscriptInput): Promise<{ documentIds
     docType: 'call_transcript',
     title,
     content: t.transcript,
-    visibilityTier: 'team',
+    visibilityTier: transcriptVisibilityTier(t),
     metadata: {
       source: t.source,
       external_recording_id: t.external_recording_id,

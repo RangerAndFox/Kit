@@ -94,6 +94,7 @@ describe('runSpecialist', () => {
       slackUserId: 'U1',
       teamMemberId: 'tm1',
       channelId: undefined,
+      requesterTier: 'producer',
     })
     expect(createMock).toHaveBeenCalledTimes(2)
   })

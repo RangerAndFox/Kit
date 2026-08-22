@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 
 import { extractOrderedEmbeddings, chunkText } from '../../src/lib/rag/embeddings'
+import { visibilityTiersForRequester } from '../../src/lib/rag/query'
 
 const v = (fill: number, dims = 3) => new Array(dims).fill(fill)
 
@@ -52,5 +53,17 @@ describe('chunkText', () => {
   it('returns a single chunk for short text and [] for empty', () => {
     expect(chunkText('short', 1000, 200)).toEqual(['short'])
     expect(chunkText('', 1000, 200)).toEqual([])
+  })
+})
+
+describe('visibilityTiersForRequester', () => {
+  it('allows founder knowledge only for admins', () => {
+    expect(visibilityTiersForRequester('admin')).toEqual(['team', 'founder'])
+    expect(visibilityTiersForRequester('producer')).toEqual(['team'])
+  })
+
+  it('fails closed for unknown requesters', () => {
+    expect(visibilityTiersForRequester(undefined)).toEqual(['team'])
+    expect(visibilityTiersForRequester('founder')).toEqual(['team'])
   })
 })
