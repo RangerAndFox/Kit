@@ -23,9 +23,10 @@
  *     unavailable the occurrence stays `unconfirmed` and is surfaced — never
  *     reposted. It is NOT exactly-once (Slack has no idempotency key).
  *
- * Destination: the recipient's private one-person Kit channel (resolved through
- * the canonical resolvePersonalBriefingChannel), NOT the Assistant DM — a
- * proactive DM from an Agents & AI app lands in History without notifying.
+ * Destination: Kit's direct-message conversation with the recipient, opened via
+ * conversations.open. The returned D… channel id is stored on the occurrence
+ * and check-in rows so replies, confirmation cards, nudges, and reconciliation
+ * all remain bound to the same conversation.
  *
  * On a successful send the occurrence creates the daily_hours_checkins row (the
  * conversation record) so every existing reply / confirm / nudge / missing-time
@@ -34,7 +35,6 @@
 
 import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
-import { resolvePersonalBriefingChannel } from '../../../src/lib/agent/briefing-channel'
 import { resolveUserTimezone } from './user-tz'
 import { checkinToday, isWorkday, isStudioHoliday } from './date'
 import { isOnTimeOff } from '../../../src/lib/staff/time-off'
@@ -151,6 +151,16 @@ export function classifyPostOutcome(input: {
   if (input.threw) return { kind: 'ambiguous', error: input.error || 'request failed before ack' }
   if (input.ok && input.ts) return { kind: 'ok', ts: input.ts }
   return { kind: 'failed', error: input.error || 'unknown Slack error' }
+}
+
+/** Open (or reuse) Kit's direct-message conversation with one Slack user. */
+export async function resolveHoursReminderDm(app: App, slackUserId: string): Promise<string> {
+  if (!slackUserId) throw new Error('slackUserId required')
+  const opened: any = await app.client.conversations.open({ users: slackUserId })
+  if (!opened?.ok) throw new Error(`conversations.open: ${opened?.error || 'unknown Slack error'}`)
+  const channelId = opened.channel?.id
+  if (!channelId) throw new Error('conversations.open returned no channel')
+  return channelId
 }
 
 // ─── Reconciliation result (safety boundary — mirrors briefing-delivery) ──────
@@ -408,7 +418,6 @@ const OPEN_OR_LOGGED = ['logged', 'sent', 'nudged', 'replied', 'parsed', 'loggin
 
 export function makeDefaultDeps(app: App): ReminderDeps {
   const sb = createAdminClient()
-  const token = process.env.SLACK_BOT_TOKEN || ''
 
   return {
     async ensureRow(staff, localDate, tz) {
@@ -507,11 +516,7 @@ export function makeDefaultDeps(app: App): ReminderDeps {
     },
 
     resolveChannel(staff) {
-      return resolvePersonalBriefingChannel({
-        slackUserId: staff.slack_user_id,
-        fullName: staff.full_name,
-        token,
-      })
+      return resolveHoursReminderDm(app, staff.slack_user_id)
     },
 
     async reconcile(channelId, reminderId) {

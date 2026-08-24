@@ -362,7 +362,7 @@ Note: admin scopes (`admin.users:write`, `admin.invites:write`) require Enterpri
 ## 10. Hours Check-Ins + Ad-Hoc Logging
 
 ### Summary
-At or after 5pm on each person's local workday, Kit posts an hours prompt in that person's private one-person Kit channel, parses the natural-language reply via Claude Haiku, fuzzy-matches Harvest projects, and writes confirmed entries to Harvest. The same parser handles unprompted ad-hoc messages like `log 4h on Acme review yesterday`. Only active employees participate; freelancers and contractors log directly in Harvest.
+At or after 5pm on each person's local workday, Kit sends an hours prompt in its direct-message conversation with that person, parses the natural-language reply via Claude Haiku, fuzzy-matches Harvest projects, and writes confirmed entries to Harvest. The same parser handles unprompted ad-hoc messages like `log 4h on Acme review yesterday`. Only active employees participate; freelancers and contractors log directly in Harvest.
 
 ### Trigger
 - **Scheduled:** an hourly UTC sweep calculates each person's local time from their Slack timezone, sends after 5pm, and catches up within the bounded delivery window after a restart or transient failure. `CHECKIN_TIMEZONE` is only the fallback timezone.
