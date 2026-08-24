@@ -47,7 +47,7 @@ confirm all three outcomes:
 
 The reminder delivery ledger/index is merged and the two historical Allyson over-log incidents are already remediated. On the next workday after 5pm in the recipient's local Slack timezone, verify:
 
-- the prompt appears once in the recipient's private one-person Kit channel;
+- the prompt appears once in Kit's direct-message conversation with the recipient;
 - a reply produces the confirmation card;
 - confirming writes the intended Harvest entries once;
 - a missed 5pm tick catches up within the configured window rather than disappearing.
