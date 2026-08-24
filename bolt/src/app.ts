@@ -259,9 +259,9 @@ http
 // tick, a Railway restart, a transient Slack failure, or a travel-timezone
 // transition no longer permanently loses the reminder — the next in-window
 // sweep recovers it, and reconciliation prevents duplicates. Delivery lands in
-// the recipient's private one-person Kit channel (the Assistant DM does not
-// notify). CHECKIN_TIMEZONE remains the studio default for anyone without a
-// Slack tz. Runs hourly and is idempotent, so frequent ticks are safe.
+// Kit's direct-message conversation with the recipient. CHECKIN_TIMEZONE remains
+// the studio default for anyone without a Slack tz. Runs hourly and is
+// idempotent, so frequent ticks are safe.
 
 const CHECKIN_TZ = process.env.CHECKIN_TIMEZONE || 'America/Los_Angeles'
 
