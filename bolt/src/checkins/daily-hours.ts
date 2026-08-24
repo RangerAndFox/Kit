@@ -3,7 +3,7 @@
  * Daily Hours Check-in — shared helpers.
  *
  * The CANONICAL scheduled sender is now reminder-delivery.ts (durable occurrence
- * + effectively-once delivery to the private one-person Kit channel). This file
+ * + effectively-once delivery to Kit's direct-message conversation). This file
  * keeps the shared, pure pieces it reuses — the message body (composeDm), the
  * local-hour resolver (localHourAt), and candidate merging — plus the
  * (currently dormant) evening nudge. No suggested-projects list (operator
@@ -11,7 +11,7 @@
  * code, client name, or keywords.
  *
  * The reply is handled separately in handlers/messages.ts (intercepts a reply
- * from staff with an open check-in row, in a DM or their personal Kit channel).
+ * from staff with an open check-in row, in a DM or a legacy personal Kit channel).
  */
 
 import type { App } from '@slack/bolt'

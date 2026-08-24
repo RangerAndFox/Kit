@@ -84,10 +84,11 @@ async function getBotUserId(app: App): Promise<string | null> {
 }
 
 // Each staffer's personal one-person Kit channel id (staff.briefing_channel_id).
-// Scheduled hours reminders now post there (a private channel notifies; the
-// Assistant DM does not), so a reply in that channel must reach the check-in
-// parser — but private-channel messages otherwise early-return unhandled. Cache
-// the id (TTL) so this costs a Map hit, not a Supabase query, per message.
+// New scheduled hours reminders use Kit's DM, but older open reminders and
+// manually initiated flows may still live in this private channel. Keep routing
+// replies there through the check-in parser; other private-channel messages
+// otherwise early-return unhandled. Cache the id (TTL) so this costs a Map hit,
+// not a Supabase query, per message.
 const personalChannelCache = new Map<string, { channelId: string; at: number }>()
 const PERSONAL_CHANNEL_TTL_MS = 10 * 60 * 1000
 
@@ -237,10 +238,10 @@ export function registerMessageHandlers(app: App) {
     const teamId = msgEvent.team || ''
 
     // ── Daily-hours reminder reply (personal Kit channel) ──
-    // Scheduled hours reminders post in the recipient's private one-person Kit
-    // channel (it notifies; the Assistant DM does not). A reply there must reach
-    // the check-in parser, but private-channel messages otherwise early-return
-    // below. Gate cheaply: only private channels (not public 'channel', not DMs)
+    // Older hours reminders may remain open in the recipient's private
+    // one-person Kit channel. A reply there must reach the check-in parser, but
+    // unrelated private-channel messages still return below. Gate cheaply: only
+    // private channels (not public 'channel', not DMs)
     // whose id matches this user's cached personal Kit channel. Runs BEFORE
     // brain ingest so a hours reply isn't also fed to the brain.
     if (

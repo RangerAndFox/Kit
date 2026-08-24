@@ -7,6 +7,7 @@ import {
   findReminderTsInHistory,
   shouldReconcile,
   classifyPostOutcome,
+  resolveHoursReminderDm,
   buildReminderDiagnostic,
   deliverHoursReminder,
   settleHoursReminderAfterCutoff,
@@ -25,7 +26,7 @@ const STAFF: ReminderStaff = {
   harvest_user_id: 5634070,
 }
 const DATE = '2026-07-31' // Friday
-const PERSONAL = 'C-personal-kit' // the private one-person Kit channel
+const DM = 'D-kit-steve'
 
 // ── In-memory ledger + mock Slack, mirroring migration 065's SQL semantics ────
 function makeFakeDeps(cfg: {
@@ -41,7 +42,6 @@ function makeFakeDeps(cfg: {
     conversations: [] as any[],
     posts: 0,
     channelsUsedForPost: [] as string[],
-    openedDMs: 0, // must stay 0 — reminders never use the Assistant DM
     idSeq: 0,
     ciSeq: 0,
     tsSeq: 0,
@@ -92,7 +92,7 @@ function makeFakeDeps(cfg: {
       return !!cfg.satisfied
     },
     async resolveChannel() {
-      return PERSONAL
+      return DM
     },
     async reconcile(_channelId, reminderId) {
       if (cfg.reconcile === 'unavailable') return { outcome: 'unavailable', error: 'missing_scope' }
@@ -177,6 +177,34 @@ describe('pure helpers', () => {
   })
 })
 
+describe('DM destination', () => {
+  it('opens and returns Kit\'s DM conversation for the recipient', async () => {
+    const calls: any[] = []
+    const app = {
+      client: {
+        conversations: {
+          open: async (args: any) => {
+            calls.push(args)
+            return { ok: true, channel: { id: DM } }
+          },
+        },
+      },
+    } as any
+
+    await expect(resolveHoursReminderDm(app, STAFF.slack_user_id)).resolves.toBe(DM)
+    expect(calls).toEqual([{ users: STAFF.slack_user_id }])
+  })
+
+  it('fails closed when Slack does not return a DM channel', async () => {
+    const app = {
+      client: { conversations: { open: async () => ({ ok: true, channel: null }) } },
+    } as any
+    await expect(resolveHoursReminderDm(app, STAFF.slack_user_id)).rejects.toThrow(
+      'conversations.open returned no channel',
+    )
+  })
+})
+
 // ── Weekend / holiday (14) ────────────────────────────────────────────────────
 describe('workday gating', () => {
   it('skips weekends and studio holidays', () => {
@@ -200,16 +228,15 @@ describe('deliverHoursReminder', () => {
     expect(state.posts).toBe(1)
   })
 
-  it('(10) delivers to the private Kit channel, never the Assistant DM', async () => {
+  it('(10) delivers to Kit\'s direct-message conversation', async () => {
     const { deps, state } = makeFakeDeps()
     const r = await deliverHoursReminder(base, deps)
     expect(r.status).toBe('sent')
-    expect(state.channelsUsedForPost).toEqual([PERSONAL])
-    expect(state.openedDMs).toBe(0)
-    // The occurrence and the conversation row both point at the Kit channel.
+    expect(state.channelsUsedForPost).toEqual([DM])
+    // The occurrence and the conversation row both point at the Kit DM.
     const row = state.rows.get(state.byKey.get(`${STAFF.id}|${DATE}`)!)
-    expect(row.slack_channel_id).toBe(PERSONAL)
-    expect(state.conversations[0].dm_channel_id).toBe(PERSONAL)
+    expect(row.slack_channel_id).toBe(DM)
+    expect(state.conversations[0].dm_channel_id).toBe(DM)
   })
 
   it('(18) records a reply-compatible scheduled check-in row on send', async () => {
@@ -236,7 +263,7 @@ describe('deliverHoursReminder', () => {
     await deps.ensureRow(STAFF, DATE, base.tz)
     const id = state.byKey.get(`${STAFF.id}|${DATE}`)!
     // Simulate: posted (in history) but process died mid-'posting', lease expired.
-    Object.assign(state.rows.get(id), { status: 'posting', slack_channel_id: PERSONAL, lease_expires_at: 1 })
+    Object.assign(state.rows.get(id), { status: 'posting', slack_channel_id: DM, lease_expires_at: 1 })
     state.history.push({ ts: 'ts-precrash', metadata: buildReminderMetadata(id) })
     const r = await deliverHoursReminder(base, deps)
     expect(r.status).toBe('sent')
@@ -505,7 +532,7 @@ describe('buildReminderDiagnostic', () => {
       localHour: 17,
       occurrence: {
         status: 'sent', skip_reason: null, error: null, attempts: 1,
-        slack_channel_id: PERSONAL, slack_message_ts: 'ts-9', check_in_id: 'ci-1',
+        slack_channel_id: DM, slack_message_ts: 'ts-9', check_in_id: 'ci-1',
         claimed_at: 't', lease_expires_at: 't',
       },
       checkIn: { status: 'sent', origin: 'scheduled' },
