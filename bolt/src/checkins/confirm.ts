@@ -25,6 +25,8 @@ interface CheckinRow {
   dm_channel_id: string | null
   dm_ts: string | null
   parsed_entries: any
+  harvest_entry_ids: any
+  origin: string | null
 }
 
 interface StaffRow {
@@ -38,7 +40,7 @@ async function loadCheckin(checkinId: string): Promise<CheckinRow | null> {
   const { data, error } = await sb
     .from('daily_hours_checkins')
     .select(
-      'id, staff_id, slack_user_id, check_in_date, status, dm_channel_id, dm_ts, parsed_entries',
+      'id, staff_id, slack_user_id, check_in_date, status, dm_channel_id, dm_ts, parsed_entries, harvest_entry_ids, origin',
     )
     .eq('id', checkinId)
     .maybeSingle()
@@ -47,6 +49,12 @@ async function loadCheckin(checkinId: string): Promise<CheckinRow | null> {
     return null
   }
   return (data as CheckinRow) || null
+}
+
+/** Preserve earlier partial-success ids while appending a targeted retry. */
+export function mergeHarvestEntryIds(existing: unknown, created: number[]): number[] {
+  const before = Array.isArray(existing) ? existing.map(Number).filter(Number.isFinite) : []
+  return [...new Set([...before, ...created])]
 }
 
 async function loadStaff(staffId: string): Promise<StaffRow | null> {
@@ -155,16 +163,19 @@ export async function handleCheckinConfirm(opts: {
   }
   const logged: HarvestTimeEntry[] = []
   const failures: string[] = []
+  const failedEntries: any[] = []
 
   for (const entry of entries) {
     if (entry.resolution !== 'matched' || !entry.harvest_project_id) {
       failures.push(`${entry.hours}h "${entry.projectQuery}" (unmatched)`)
+      failedEntries.push(entry)
       continue
     }
     try {
       const task = await getDefaultTask(entry.harvest_project_id)
       if (!task) {
         failures.push(`${entry.hours}h ${entry.harvest_project_name} (no task)`)
+        failedEntries.push(entry)
         continue
       }
       const te = await createTimeEntry({
@@ -182,10 +193,12 @@ export async function handleCheckinConfirm(opts: {
         `[checkin-confirm] createTimeEntry failed for project ${entry.harvest_project_id}: ${err.message}`,
       )
       failures.push(`${entry.hours}h ${entry.harvest_project_name} (${err.message})`)
+      failedEntries.push(entry)
     }
   }
 
   const entryIds = logged.map((e) => e.id)
+  const allEntryIds = mergeHarvestEntryIds(checkin.harvest_entry_ids, entryIds)
   console.log(
     `[checkin-confirm] ${checkin.id}: created ${logged.length} Harvest entr(ies) [${entryIds.join(', ')}], ${failures.length} failure(s)`,
   )
@@ -197,7 +210,11 @@ export async function handleCheckinConfirm(opts: {
     .update({
       status: failures.length === 0 ? 'logged' : 'failed',
       logged_at: new Date().toISOString(),
-      harvest_entry_ids: entryIds.length ? entryIds : null,
+      harvest_entry_ids: allEntryIds.length ? allEntryIds : null,
+      // A partial failure keeps only the still-unlogged lines. The successful
+      // lines are represented by immutable Harvest ids and can never be
+      // submitted again through the retry card.
+      parsed_entries: failures.length ? failedEntries : entries,
       error_message: failures.length ? failures.join('; ') : null,
       updated_at: new Date().toISOString(),
     })
@@ -211,16 +228,71 @@ export async function handleCheckinConfirm(opts: {
   let text: string
   if (failures.length === 0) {
     text = `:white_check_mark: *Logged to Harvest* — you're all set, no need to enter these manually.\n${summary}`
-  } else if (logged.length === 0) {
+  } else if (logged.length === 0 && !allEntryIds.length) {
     text = `:x: Couldn't log any entries:\n• ${failures.join('\n• ')}`
+  } else if (logged.length === 0) {
+    text =
+      `:large_yellow_circle: The entries logged earlier remain safe and were not submitted again.\n` +
+      `*Still skipped:*\n• ${failures.join('\n• ')}`
   } else {
     text = `:large_yellow_circle: Partially logged.\n*Logged:*\n${summary}\n\n*Skipped:*\n• ${failures.join('\n• ')}`
   }
-  await postResult({
-    app,
-    channelId: checkin.dm_channel_id || '',
-    threadTs: checkin.dm_ts,
-    text,
+  if (failures.length && allEntryIds.length) {
+    await app.client.chat.postMessage({
+      channel: checkin.dm_channel_id || '',
+      text,
+      blocks: [
+        { type: 'section', text: { type: 'mrkdwn', text } },
+        {
+          type: 'actions',
+          elements: [{
+            type: 'button',
+            text: { type: 'plain_text', text: '✏️ Fix skipped entry only' },
+            action_id: 'checkin_retry_failed',
+            value: checkin.id,
+          }],
+        },
+      ],
+    })
+  } else {
+    await postResult({ app, channelId: checkin.dm_channel_id || '', threadTs: checkin.dm_ts, text })
+  }
+}
+
+/**
+ * Re-open only the unlogged remainder of a partial confirmation. Existing
+ * Harvest ids stay attached to the row; the next reply replaces only the
+ * failed parsed_entries and confirmation appends new ids without duplication.
+ */
+export async function handleCheckinRetryFailed(opts: { app: App; checkinId: string }): Promise<void> {
+  const sb = createAdminClient()
+  const { data: row, error } = await sb
+    .from('daily_hours_checkins')
+    .select('id, dm_channel_id, check_in_date, status, harvest_entry_ids')
+    .eq('id', opts.checkinId)
+    .maybeSingle()
+  if (error || !row || row.status !== 'failed' || !Array.isArray(row.harvest_entry_ids) || !row.harvest_entry_ids.length) {
+    return
+  }
+  const { data: changed } = await sb
+    .from('daily_hours_checkins')
+    .update({
+      status: 'sent',
+      origin: 'partial-retry',
+      parsed_entries: null,
+      reply_ts: null,
+      error_message: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', row.id)
+    .eq('status', 'failed')
+    .select('id')
+  if (!changed?.length) return
+  await opts.app.client.chat.postMessage({
+    channel: row.dm_channel_id || '',
+    text:
+      `The entries already logged to Harvest are locked and will not be submitted again. ` +
+      `Reply with only the corrected skipped time for *${row.check_in_date}* (for example, \`3h on 2639\`).`,
   })
 }
 

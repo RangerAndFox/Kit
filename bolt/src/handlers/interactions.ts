@@ -80,7 +80,7 @@ import { resolveControlTemplate } from '../../../src/lib/project-control/canvas'
 import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
 import { peekIntake, takeIntake, updateIntake } from '../../../src/lib/storyboard/stash'
 import { extractScriptFromFile } from '../../../src/lib/storyboard/files'
-import { handleCheckinConfirm, handleCheckinRedo } from '../checkins/confirm'
+import { handleCheckinConfirm, handleCheckinRedo, handleCheckinRetryFailed } from '../checkins/confirm'
 import { parseOnboardSubmission } from '../onboarding/modal'
 import { runOnboarding, buildRequesterSummary } from '../onboarding/orchestrator'
 import { rehydrateProjectExternalLinks } from '../onboarding/rehydrate'
@@ -177,6 +177,15 @@ export function registerInteractionHandlers(app: App) {
     if (!checkinId) return
     handleCheckinRedo({ app, client, body, checkinId }).catch((err) =>
       console.error('[checkin] redo failed:', err),
+    )
+  })
+
+  app.action('checkin_retry_failed', async ({ ack, body }) => {
+    await ack()
+    const checkinId = (body as any).actions?.[0]?.value || ''
+    if (!checkinId) return
+    handleCheckinRetryFailed({ app, checkinId }).catch((err) =>
+      console.error('[checkin] partial retry failed:', err),
     )
   })
 

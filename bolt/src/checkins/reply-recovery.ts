@@ -72,7 +72,22 @@ export function makeReplyRecoveryDeps(app: App): ReplyRecoveryDeps {
         .not('dm_ts', 'is', null)
         .order('created_at', { ascending: false })
       if (error) throw new Error(`load open check-ins: ${error.message}`)
-      return (data || []) as RecoverableCheckin[]
+      // Partial retries retain the original work date, so they may sit outside
+      // the ordinary two-day recovery scan while remaining safely actionable.
+      const { data: retries, error: retryError } = await sb
+        .from('daily_hours_checkins')
+        .select(
+          'id, staff_id, slack_user_id, check_in_date, status, dm_channel_id, dm_ts, reply_ts, candidate_projects',
+        )
+        .gte('check_in_date', checkinDateMinusDays(14))
+        .eq('origin', 'partial-retry')
+        .in('status', ['sent', 'nudged', 'parsed'])
+        .not('dm_channel_id', 'is', null)
+        .not('dm_ts', 'is', null)
+      if (retryError) throw new Error(`load partial retry check-ins: ${retryError.message}`)
+      const byId = new Map<string, RecoverableCheckin>()
+      for (const row of [...(data || []), ...(retries || [])]) byId.set(row.id, row as RecoverableCheckin)
+      return [...byId.values()]
     },
 
     async readMessages(row) {
