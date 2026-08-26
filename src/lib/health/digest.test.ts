@@ -38,10 +38,14 @@ const emptySummary: CheckinSummary = summarizeCheckins([], TODAY)
 describe('summarizeCheckins', () => {
   it('counts a replied-but-unlogged past day as lost hours (not sent-no-reply)', () => {
     const s = summarizeCheckins(
-      [row({ check_in_date: '2026-08-05', status: 'parsed', reply_ts: '123.45', harvest_entry_ids: null })],
+      [row({
+        check_in_date: '2026-08-05', status: 'parsed', reply_ts: '123.45', harvest_entry_ids: null,
+        parsed_entries: [{ hours: 8, resolution: 'matched', harvest_project_id: 1 }],
+      })],
       TODAY,
     )
     assert.equal(s.repliedUnlogged, 1)
+    assert.equal(s.awaitingConfirmation, 1)
     assert.equal(s.sentNoReply, 0)
     assert.equal(s.oldestUnlogged, '2026-08-05')
   })
@@ -74,12 +78,37 @@ describe('summarizeCheckins', () => {
     assert.equal(checkinsUrgent(s), true)
   })
 
-  it('a partial-failure row (status=failed WITH Harvest ids) counts once as failed, not also as stuck', () => {
+  it('a partial-failure row is reported separately from a total confirmation failure', () => {
     // confirm.ts logs matched entries and fails the rest, writing the succeeded
     // ids on a 'failed' row — a known, already-explained shape, not the anomaly.
     const s = summarizeCheckins([row({ status: 'failed', harvest_entry_ids: [555] })], TODAY)
-    assert.equal(s.failed, 1)
+    assert.equal(s.failed, 0)
+    assert.equal(s.partialFailures, 1)
     assert.equal(s.harvestIdButStuck, 0)
+  })
+
+  it('separates clarification, expired, and zero-hour cards from actionable confirmations', () => {
+    const s = summarizeCheckins(
+      [
+        row({
+          check_in_date: '2026-08-10', status: 'parsed', reply_ts: '1', harvest_entry_ids: null,
+          parsed_entries: [{ hours: 3, resolution: 'unmatched', projectQuery: '3639' }],
+        }),
+        row({
+          check_in_date: '2026-07-20', status: 'parsed', reply_ts: '2', harvest_entry_ids: null,
+          parsed_entries: [{ hours: 8, resolution: 'matched', harvest_project_id: 2 }],
+        }),
+        row({
+          check_in_date: '2026-08-05', status: 'parsed', reply_ts: '3', harvest_entry_ids: null,
+          parsed_entries: [{ hours: 0, resolution: 'ambiguous' }],
+        }),
+      ],
+      TODAY,
+    )
+    assert.equal(s.needsClarification, 1)
+    assert.equal(s.awaitingConfirmation, 0)
+    assert.equal(s.expired, 1)
+    assert.equal(s.repliedUnlogged, 1)
   })
 
   it('a past-day failed row with a reply counts once as failed, not also as backlog', () => {
@@ -132,7 +161,7 @@ describe('formatHealthDigest', () => {
     assert.match(msg, /all systems go/)
     assert.match(msg, /Integrations:.*all up/)
     assert.match(msg, /\*Crons:\* 2\/2 fresh/)
-    assert.match(msg, /Time logging:.*1 logged today, no replies waiting/)
+    assert.match(msg, /Time logging:.*1 logged today, no actionable confirmations waiting/)
     assert.doesNotMatch(msg, /rotating_light/)
   })
 
@@ -161,11 +190,14 @@ describe('formatHealthDigest', () => {
 
   it('a non-urgent backlog shows a warning but does not raise the issue count', () => {
     const s = summarizeCheckins(
-      [row({ check_in_date: '2026-08-05', status: 'parsed', reply_ts: '1.2', harvest_entry_ids: null })],
+      [row({
+        check_in_date: '2026-08-05', status: 'parsed', reply_ts: '1.2', harvest_entry_ids: null,
+        parsed_entries: [{ hours: 8, resolution: 'matched', harvest_project_id: 1 }],
+      })],
       TODAY,
     )
     const msg = formatHealthDigest(allGreenChecks, s, 'Tue Aug 12')
     assert.match(msg, /all systems go/) // integrations + crons green → still "go"
-    assert.match(msg, /:warning: 1 past-day reply still unlogged \(oldest 2026-08-05\)/)
+    assert.match(msg, /:warning: 1 awaiting confirmation \(oldest actionable 2026-08-05\)/)
   })
 })

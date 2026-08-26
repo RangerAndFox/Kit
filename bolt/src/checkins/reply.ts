@@ -61,6 +61,24 @@ export interface ParsedEntry {
  */
 export async function findOpenCheckin(slackUserId: string): Promise<OpenCheckin | null> {
   const sb = createAdminClient()
+  // A targeted partial retry keeps the original work date so corrected hours
+  // land on the right day. Prefer it over ordinary recent reminders and allow
+  // the full confirmation window; its explicit origin prevents old generic
+  // prompts from swallowing unrelated DMs.
+  const { data: retryRows, error: retryError } = await sb
+    .from('daily_hours_checkins')
+    .select(
+      'id, staff_id, slack_user_id, check_in_date, status, dm_channel_id, dm_ts, candidate_projects',
+    )
+    .eq('slack_user_id', slackUserId)
+    .eq('origin', 'partial-retry')
+    .in('status', ['sent', 'nudged'])
+    .gte('check_in_date', checkinDateMinusDays(14))
+    .order('updated_at', { ascending: false })
+    .limit(1)
+  if (retryError) console.warn(`[checkin-reply] partial retry lookup failed: ${retryError.message}`)
+  if (retryRows?.[0]) return retryRows[0] as OpenCheckin
+
   // limit(1) instead of maybeSingle(): if a redo + the scheduled send ever
   // produce two open rows, maybeSingle() errors and ALL replies leak past the
   // check-in interceptor. Prefer the newest open row instead.
@@ -102,10 +120,11 @@ export function parseConfirmDecision(text: string): 'confirm' | 'redo' | null {
 
 /**
  * The user's most recent check-in awaiting confirmation (status='parsed'),
- * capped at a week old so a typed "yes" can never resurrect stale hours.
+ * capped at the same 14-day window enforced by the confirm handler, so a
+ * targeted partial retry remains confirmable without resurrecting stale hours.
  */
 export async function findParsedCheckin(slackUserId: string): Promise<OpenCheckin | null> {
-  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const actionableSince = checkinDateMinusDays(14)
   const sb = createAdminClient()
   const { data, error } = await sb
     .from('daily_hours_checkins')
@@ -114,7 +133,7 @@ export async function findParsedCheckin(slackUserId: string): Promise<OpenChecki
     )
     .eq('slack_user_id', slackUserId)
     .eq('status', 'parsed')
-    .gte('check_in_date', weekAgo)
+    .gte('check_in_date', actionableSince)
     .order('check_in_date', { ascending: false })
     .limit(1)
   if (error) {
