@@ -16,7 +16,7 @@
 
 import { inngest } from './client'
 import { runAllChecks } from '../health/run'
-import { loadRecentCheckins } from '../health/checkins-digest'
+import { loadRecentCheckins, reconcileParsedCheckins } from '../health/checkins-digest'
 import { summarizeCheckins, unavailableCheckinSummary, formatHealthDigest } from '../health/digest'
 import { studioToday, studioDateLabel } from '../time/studio-date'
 import { postSlackAsKit } from '../health/notify'
@@ -35,6 +35,11 @@ export const healthDailyDigest = inngest.createFunction(
     const recipient = process.env.KIT_HEALTH_DIGEST_USER_ID || DEFAULT_RECIPIENT
 
     const checks = await step.run('run-checks', () => runAllChecks())
+    // Acquire the run's date before reconciliation so retries make the same
+    // expiry decision and render against the same studio day.
+    const now = new Date(await step.run('now', () => Date.now()))
+    const today = studioToday(now)
+    const reconciliation = await step.run('reconcile-checkins', () => reconcileParsedCheckins(today))
     // Distinguish "no backlog" from "couldn't read the backlog": a swallowed
     // query error must not render as a healthy zero (a fabricated all-clear for
     // the very failure class this digest exists to catch).
@@ -49,8 +54,7 @@ export const healthDailyDigest = inngest.createFunction(
     // Memoize wall-clock time in a step so a retry classifies the (memoized)
     // rows against the same day boundary the original attempt used, not the
     // retry's clock — the canonical Inngest idiom for acquiring time.
-    const now = new Date(await step.run('now', () => Date.now()))
-    const summary = loaded.ok ? summarizeCheckins(loaded.rows, studioToday(now)) : unavailableCheckinSummary()
+    const summary = loaded.ok ? summarizeCheckins(loaded.rows, today) : unavailableCheckinSummary()
     const text = formatHealthDigest(checks, summary, studioDateLabel(now))
 
     // Delivery IS the heartbeat, so a dropped DM must not report green.
@@ -73,6 +77,7 @@ export const healthDailyDigest = inngest.createFunction(
       repliedUnlogged: summary.repliedUnlogged,
       failed: summary.failed,
       stuckLogging: summary.stuckLogging,
+      reconciliation,
     }
   },
 )

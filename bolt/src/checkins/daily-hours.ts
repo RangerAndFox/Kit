@@ -107,15 +107,24 @@ export async function nudgePendingCheckins(app: App): Promise<{ nudged: number }
   const today = checkinToday()
   const { data: rows, error } = await sb
     .from('daily_hours_checkins')
-    .select('id, slack_user_id, dm_channel_id, dm_ts, status, check_in_date')
+    .select('id, slack_user_id, dm_channel_id, dm_ts, status, check_in_date, nudged_at, parsed_entries')
     .gte('check_in_date', ymdAddDays(today, -CHECKIN_STALE_AFTER_DAYS))
     .in('status', ['sent', 'parsed'])
-    .is('nudged_at', null)
   if (error) throw new Error(`load pending failed: ${error.message}`)
 
   let nudged = 0
   for (const r of rows || []) {
     if (!r.dm_channel_id) continue
+    const entries = Array.isArray(r.parsed_entries) ? r.parsed_entries : []
+    // Zero-hour cards are closed by the health reconciliation and do not need
+    // reminders. For parsed positive-hour cards, remind every other morning
+    // until confirmed; unanswered initial prompts still receive only one nudge.
+    if (r.status === 'parsed' && !entries.some((e: any) => Number(e?.hours) > 0)) continue
+    if (r.status === 'sent' && r.nudged_at) continue
+    if (r.status === 'parsed' && r.nudged_at) {
+      const ageMs = Date.now() - new Date(r.nudged_at).getTime()
+      if (Number.isFinite(ageMs) && ageMs < 48 * 60 * 60 * 1000) continue
+    }
     try {
       // Name the day: with the window reaching back, "today's hours" would be
       // wrong for anything the reminder catches up on.
@@ -128,8 +137,8 @@ export async function nudgePendingCheckins(app: App): Promise<{ nudged: number }
         channel: r.dm_channel_id,
         text,
       })
-      // Keep 'parsed' status (the card is still actionable) — only mark the
-      // nudge timestamp; 'sent' rows advance to 'nudged' as before.
+      // Keep 'parsed' status (the card is still actionable) and refresh the
+      // nudge timestamp so it is eligible again after the two-day cooldown.
       await sb
         .from('daily_hours_checkins')
         .update({
