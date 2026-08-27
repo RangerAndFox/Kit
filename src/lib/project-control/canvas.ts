@@ -116,7 +116,7 @@ function slackGet(method: string, params: Record<string, string>): Promise<Slack
 
 /** Deterministic title for a project's Project Control Canvas. */
 export function controlCanvasTitle(spine: string): string {
-  return `${spine} — Project Control`
+  return `${spine} — Overview`
 }
 
 export function hashTemplate(markdown: string): string {

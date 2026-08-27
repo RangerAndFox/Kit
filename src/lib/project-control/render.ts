@@ -44,25 +44,30 @@ export const MASTER_HEADERS = [
 export type MasterHeader = (typeof MASTER_HEADERS)[number]
 export type WorkbookLayout = 'legacy' | 'rf-production-v1'
 
-/** Physical columns on the RF Production System's Projects tab (A:O). */
+/** Physical columns on the Canvas Control Center's Projects tab (A:W). */
 export const RF_PRODUCTION_PROJECT_HEADERS = [
-  'Project ID', 'Client', 'Contact', 'Project Name', 'Phase', 'Status',
-  'Next Milestone', 'Deadline', 'Creative Director', 'Producer',
-  'Client Contact', 'Start Date', 'Project Type', 'Previous Notes', 'Column 4',
+  'Project ID', 'Client', 'Project Name', 'Client Contact', 'Project Type',
+  'Lifecycle', 'Phase', 'Current Status', 'Next Milestone', 'Next Milestone Date',
+  'Start Date', 'Delivery Date', 'Creative Director', 'Producer', 'VO', 'Music',
+  'Last Share Label', 'Last Share URL', 'Last Share Date', 'Previous Notes',
+  'Workback Template', 'Schedule Status', 'Last Share Milestone',
 ] as const
 
 const RF_PRODUCTION_COLUMNS: Partial<Record<MasterHeader, string>> = {
   'Project Number': 'A',
   Client: 'B',
-  'Project Name': 'D',
-  'Quick Status': 'E',
+  'Project Name': 'C',
+  'Client Contact': 'D',
   Status: 'F',
-  'Next Share': 'G',
-  'End Date': 'H',
-  'Creative Director': 'I',
-  Producer: 'J',
-  'Client Contact': 'K',
-  'Start Date': 'L',
+  'Quick Status': 'H',
+  'Next Share': 'I',
+  'Start Date': 'K',
+  'End Date': 'L',
+  'Creative Director': 'M',
+  Producer: 'N',
+  VO: 'O',
+  Music: 'P',
+  'Last Share': 'R',
 }
 
 // Formula/computed columns Kit must never write.
@@ -173,6 +178,12 @@ export interface CreationSubmission {
   producerName?: string
   frameioUrl?: string
   dropboxUrl?: string
+  harvestUrl?: string
+  boordsUrl?: string
+  projectType?: string
+  workbackTemplate?: string
+  milestoneCount?: number
+  milestoneNames?: string[]
 }
 
 export interface OwnedCell {

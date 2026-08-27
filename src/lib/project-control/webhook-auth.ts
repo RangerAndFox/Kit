@@ -114,7 +114,11 @@ export function authorizeSheetEditWebhook(args: AuthorizeArgs): AuthResult {
 
   // Exact workbook + sheet match — never act on some other spreadsheet.
   if (notification.spreadsheetId !== config.spreadsheetId) return DENY
-  if (notification.sheetId !== config.sheetId) return DENY
+  const allowedSheetIds = new Set([
+    config.sheetId, config.linksSheetId, config.specsSheetId, config.workbackSheetId,
+    config.assignmentsSheetId, config.deliverablesSheetId, config.statusLogSheetId,
+  ].filter((id): id is number => id != null))
+  if (!allowedSheetIds.has(notification.sheetId)) return DENY
 
   return { ok: true, notification }
 }

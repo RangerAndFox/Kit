@@ -36,6 +36,11 @@ export interface WorkbookConfig {
   linksSheetId?: number
   /** 1-based Links header row; defaults to headerRow. */
   linksHeaderRow?: number
+  specsSheetId?: number
+  workbackSheetId?: number
+  assignmentsSheetId?: number
+  deliverablesSheetId?: number
+  statusLogSheetId?: number
   /** Optional explicit Project Control template file id (SLACK override). */
   controlTemplateFileId?: string
   /** Template channel used when no explicit file ids are configured. */
@@ -57,7 +62,14 @@ export function workbookConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Wor
     linksHeaderRow: env.MASTER_PROJECT_LIST_LINKS_HEADER_ROW
       ? parseInt(env.MASTER_PROJECT_LIST_LINKS_HEADER_ROW, 10)
       : undefined,
-    controlTemplateFileId: env.SLACK_PROJECT_CONTROL_TEMPLATE_FILE_ID?.trim() || undefined,
+    specsSheetId: env.MASTER_PROJECT_LIST_SPECS_SHEET_ID ? parseInt(env.MASTER_PROJECT_LIST_SPECS_SHEET_ID, 10) : undefined,
+    workbackSheetId: env.MASTER_PROJECT_LIST_WORKBACK_SHEET_ID ? parseInt(env.MASTER_PROJECT_LIST_WORKBACK_SHEET_ID, 10) : undefined,
+    assignmentsSheetId: env.MASTER_PROJECT_LIST_ASSIGNMENTS_SHEET_ID ? parseInt(env.MASTER_PROJECT_LIST_ASSIGNMENTS_SHEET_ID, 10) : undefined,
+    deliverablesSheetId: env.MASTER_PROJECT_LIST_DELIVERABLES_SHEET_ID ? parseInt(env.MASTER_PROJECT_LIST_DELIVERABLES_SHEET_ID, 10) : undefined,
+    statusLogSheetId: env.MASTER_PROJECT_LIST_STATUS_LOG_SHEET_ID ? parseInt(env.MASTER_PROJECT_LIST_STATUS_LOG_SHEET_ID, 10) : undefined,
+    controlTemplateFileId: env.SLACK_PROJECT_CONTROL_TEMPLATE_FILE_ID?.trim()
+      || env.SLACK_PROJECT_CANVAS_TEMPLATE_IDS?.split(',')[0]?.trim()
+      || undefined,
     templateChannelId: env.SLACK_TEMPLATE_CHANNEL_ID?.trim() || 'C0B1312H89L',
   }
 }
