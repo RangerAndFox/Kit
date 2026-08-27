@@ -3,7 +3,7 @@
  *
  * A Google Apps Script *installable* onEdit trigger (NOT the simple onEdit,
  * which cannot make external requests). On a human edit inside the configured
- * spreadsheet + target sheet, it POSTs a tiny HMAC-signed notification to Kit's
+ * spreadsheet + configured control sheet, it POSTs a tiny HMAC-signed notification to Kit's
  * production Vercel endpoint, which asks Inngest to run the canonical Project
  * Control sync. This script NEVER renders a canvas, calls Slack, or reads Sheet
  * cell contents — it only says "the workbook changed, please refresh".
@@ -20,7 +20,9 @@
  *      WEBHOOK_URL    = https://<kit-prod-domain>/api/webhooks/project-control/sheet-edited
  *      WEBHOOK_SECRET = <same value as Vercel PROJECT_CONTROL_WEBHOOK_SECRET>
  *      SPREADSHEET_ID = <Master Project List spreadsheet id>
- *      SHEET_IDS      = <comma-separated gids of all authoritative source tabs>
+ *      SHEET_IDS      = <comma-separated gids of all authoritative source tabs;
+ *                        put the Projects tab first because it is the signed workbook identity>
+ *      SHEET_ID       = <optional explicit Projects-tab gid; defaults to first SHEET_IDS value>
  *      HEADER_ROW     = 3   (optional; edits on/above this row are ignored)
  * 3. Triggers (clock icon) → Add Trigger:
  *      function: onMasterProjectListEdit
@@ -39,6 +41,7 @@ function onMasterProjectListEdit(e) {
     var secret = props.getProperty('WEBHOOK_SECRET');
     var spreadsheetId = props.getProperty('SPREADSHEET_ID');
     var sheetIds = (props.getProperty('SHEET_IDS') || props.getProperty('SHEET_ID') || '').split(',').map(function (id) { return String(id).trim(); }).filter(Boolean);
+    var primarySheetId = props.getProperty('SHEET_ID') || sheetIds[0];
     var headerRow = parseInt(props.getProperty('HEADER_ROW') || '3', 10);
 
     // Fail visibly in the logs, never modify the sheet, never send half-configured.
@@ -47,7 +50,9 @@ function onMasterProjectListEdit(e) {
       return;
     }
 
-    // Ignore edits outside the configured workbook / target sheet.
+    // Ignore edits outside the configured workbook / control tabs. The payload
+    // always carries the primary Projects tab id because Kit authenticates that
+    // stable workbook identity, then refreshes the entire workbook projection.
     var editedSpreadsheetId = e.source && e.source.getId ? e.source.getId() : null;
     if (editedSpreadsheetId && editedSpreadsheetId !== spreadsheetId) return;
 
@@ -63,7 +68,7 @@ function onMasterProjectListEdit(e) {
       requestId: Utilities.getUuid(),
       timestamp: Date.now(),
       spreadsheetId: spreadsheetId,
-      sheetId: Number(editedSheetId)
+      sheetId: Number(primarySheetId)
     };
     var body = JSON.stringify(payload);
 
