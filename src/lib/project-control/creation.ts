@@ -1,6 +1,7 @@
 /**
  * Railway-owned creation orchestration: bind a freshly provisioned project to
- * exactly one Master Project List row and one Project Control Canvas.
+ * exactly one Projects row, its normalized child records, and three Project
+ * Control canvases.
  *
  * Creation lifecycle (persisted on the binding, resumable at every step):
  *   pending_sheet → sheet_bound → pending_canvas → connected
@@ -43,8 +44,11 @@ import {
   readRow as realReadRow,
   createBoundRow as realCreateBoundRow,
   upsertProjectLinks as realUpsertProjectLinks,
+  seedNormalizedProjectTables as realSeedNormalizedProjectTables,
+  readProjectSupplement as realReadProjectSupplement,
   type ProjectLinksInput,
 } from './sheets'
+import { projectViewHash, renderOverviewView, renderReferenceView, renderScheduleView, type ProjectSupplement } from './views'
 import {
   ensureBinding,
   getBindingByProject,
@@ -53,6 +57,7 @@ import {
   renewWorkbookLease,
   releaseWorkbookLease,
   type BindingRow,
+  upsertProjectCanvas,
 } from './store'
 
 export interface CreationSheetsPort {
@@ -64,6 +69,8 @@ export interface CreationSheetsPort {
     owned: OwnedCell[],
   ): Promise<{ metadataId: number; rowIndex: number; alreadyBound: boolean }>
   upsertProjectLinks(config: WorkbookConfig, projectNumber: string | undefined, links: ProjectLinksInput): Promise<void>
+  seedNormalizedProjectTables?(config: WorkbookConfig, submission: CreationSubmission): Promise<void>
+  readProjectSupplement?(config: WorkbookConfig, projectNumber: string): Promise<ProjectSupplement>
 }
 
 export interface CreationCanvasPort {
@@ -79,6 +86,7 @@ export interface CreationStorePort {
   claimWorkbookLease(spreadsheetId: string, kind: 'creation' | 'sync', holder: string): Promise<boolean>
   renewWorkbookLease(spreadsheetId: string, kind: 'creation' | 'sync', holder: string): Promise<boolean>
   releaseWorkbookLease(spreadsheetId: string, kind: 'creation' | 'sync', holder: string): Promise<void>
+  upsertProjectCanvas?(input: { projectId: string; canvasType: 'overview' | 'reference' | 'schedule'; canvasId: string; canvasUrl?: string | null; sourceTemplateFileId?: string | null; templateMarkdown?: string | null; sourceTemplateHash?: string | null }): Promise<void>
 }
 
 export interface CreationDeps {
@@ -106,11 +114,14 @@ export function defaultCreationDeps(): CreationDeps {
       readRow: realReadRow,
       createBoundRow: realCreateBoundRow,
       upsertProjectLinks: realUpsertProjectLinks,
+      seedNormalizedProjectTables: realSeedNormalizedProjectTables,
+      readProjectSupplement: realReadProjectSupplement,
     },
     canvas: { createControlCanvas, editControlCanvas, reconcileControlCanvas },
     store: {
       ensureBinding, getBindingByProject, updateBinding,
       claimWorkbookLease, renewWorkbookLease, releaseWorkbookLease,
+      upsertProjectCanvas,
     },
     config: workbookConfigFromEnv(),
     enabled: projectControlCreationEnabled(),
@@ -131,6 +142,7 @@ export interface SlackProvisionResult {
     channelId?: string
     controlTemplate?: { fileId: string; markdown: string; hash: string } | null
     controlTemplateError?: string | null
+    canvasClones?: Array<{ templateFileId: string; canvasId: string; title: string; markdown: string }>
   }
 }
 
@@ -147,6 +159,16 @@ export async function bindProjectControl(
 
   const controlTemplate = opts.slackResult?.data?.controlTemplate || null
   const controlTemplateError = opts.slackResult?.data?.controlTemplateError || null
+  const saveCanvasBindings = async (overview: CanvasHandle) => {
+    if (!deps.store.upsertProjectCanvas) return
+    await deps.store.upsertProjectCanvas({ projectId: opts.projectId, canvasType: 'overview', canvasId: overview.canvasId, canvasUrl: overview.canvasUrl, sourceTemplateFileId: controlTemplate?.fileId, templateMarkdown: controlTemplate?.markdown, sourceTemplateHash: controlTemplate?.hash })
+    for (const clone of opts.slackResult.data?.canvasClones || []) {
+      const lower = clone.title.toLowerCase()
+      const canvasType = lower.includes('reference') ? 'reference' : lower.includes('schedule') ? 'schedule' : null
+      if (!canvasType) continue
+      await deps.store.upsertProjectCanvas({ projectId: opts.projectId, canvasType, canvasId: clone.canvasId, sourceTemplateFileId: clone.templateFileId, templateMarkdown: clone.markdown })
+    }
+  }
 
   const binding = await deps.store.ensureBinding({
     projectId: opts.projectId,
@@ -195,7 +217,10 @@ export async function bindProjectControl(
     await deps.sheets.upsertProjectLinks(config, opts.submission.projectNumber, {
       frameioUrl: opts.submission.frameioUrl,
       dropboxUrl: opts.submission.dropboxUrl,
+      harvestUrl: opts.submission.harvestUrl,
+      boordsUrl: opts.submission.boordsUrl,
     })
+    await deps.sheets.seedNormalizedProjectTables?.(config, opts.submission)
 
     // ── Step 2: template snapshot ────────────────────────────────────────────
     if (!controlTemplate) {
@@ -241,12 +266,30 @@ export async function bindProjectControl(
 
     const cells = await deps.sheets.readRow(config, rowIndex)
     const row = normalizeRow(MASTER_HEADERS, cells)
-    const rowHash = sourceRowHash(row)
+    const extra = deps.sheets.readProjectSupplement
+      ? await deps.sheets.readProjectSupplement(config, row['Project Number']?.display || '')
+      : null
+    const rowHash = extra ? projectViewHash(row, extra) : sourceRowHash(row)
     const spine = [opts.submission.projectNumber, opts.submission.clientName, opts.submission.projectName]
       .filter(Boolean)
       .join('_')
     const title = controlCanvasTitle(spine || opts.submission.projectName || 'Project')
-    const markdown = renderProjectControlCanvas(controlTemplate.markdown, row)
+    const markdown = extra
+      ? renderOverviewView(row, extra)
+      : renderProjectControlCanvas(controlTemplate.markdown, row)
+    const renderClonedViews = async () => {
+      if (!extra) return
+      for (const clone of opts.slackResult.data?.canvasClones || []) {
+        const lower = clone.title.toLowerCase()
+        const canvasType = lower.includes('reference') ? 'reference' : lower.includes('schedule') ? 'schedule' : null
+        if (!canvasType) continue
+        await deps.canvas.editControlCanvas({
+          canvasId: clone.canvasId,
+          title: `${spine || opts.submission.projectName || 'Project'} — ${canvasType === 'reference' ? 'Reference' : 'Schedule'}`,
+          markdown: canvasType === 'reference' ? renderReferenceView(row, extra) : renderScheduleView(row, extra),
+        })
+      }
+    }
 
     const b2 = await deps.store.getBindingByProject(opts.projectId)
     if (b2 && b2.canvas_id) {
@@ -258,6 +301,8 @@ export async function bindProjectControl(
         last_synced_at: deps.now(),
         error: null,
       })
+      await saveCanvasBindings({ canvasId: b2.canvas_id, canvasUrl: b2.canvas_url })
+      await renderClonedViews()
       return { status: 'connected' }
     }
 
@@ -294,6 +339,8 @@ export async function bindProjectControl(
       last_synced_at: deps.now(),
       error: null,
     })
+    await saveCanvasBindings(canvasHandle)
+    await renderClonedViews()
     return { status: 'connected' }
   } catch (err) {
     await deps.store

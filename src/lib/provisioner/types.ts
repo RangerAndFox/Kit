@@ -6,4 +6,5 @@ export type ServiceKey =
   | 'canva'
   | 'figma'
   | 'slack'
-
+  | 'harvest'
+  | 'boords'

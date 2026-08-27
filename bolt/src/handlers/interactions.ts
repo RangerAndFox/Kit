@@ -77,6 +77,7 @@ import {
   workbookConfigFromEnv,
 } from '../../../src/lib/project-control/types'
 import { resolveControlTemplate } from '../../../src/lib/project-control/canvas'
+import { applyProjectShare, dismissProjectShare } from '../../../src/lib/project-control/share-progress'
 import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
 import { peekIntake, takeIntake, updateIntake } from '../../../src/lib/storyboard/stash'
 import { extractScriptFromFile } from '../../../src/lib/storyboard/files'
@@ -104,6 +105,30 @@ import {
 export function registerInteractionHandlers(app: App) {
   // ─── Delivery: profile-selection + create-profile modals ──
   registerDeliveryViewHandlers(app)
+
+  app.action('kit_project_share_advance', async ({ ack, body, client }) => {
+    await ack()
+    const eventId = (body as any).actions?.[0]?.value || ''
+    const userId = (body as any).user?.id || ''
+    try {
+      const result = await applyProjectShare(eventId, userId)
+      await client.chat.postMessage({ channel: userId, text: `✅ *${result.projectName}*: ${result.milestone} moved to Client Review${result.nextMilestone ? `; ${result.nextMilestone} is now In Progress` : '; the workback is complete'}. The Schedule canvas will refresh automatically.` })
+    } catch (err: any) {
+      await client.chat.postMessage({ channel: userId, text: `⚠️ Could not advance the workback: ${err.message}` })
+    }
+  })
+
+  app.action('kit_project_share_dismiss', async ({ ack, body, client }) => {
+    await ack()
+    const eventId = (body as any).actions?.[0]?.value || ''
+    const userId = (body as any).user?.id || ''
+    try {
+      await dismissProjectShare(eventId, userId)
+      await client.chat.postMessage({ channel: userId, text: 'Got it — the latest-share link was saved, and the current milestone was left unchanged.' })
+    } catch (err: any) {
+      await client.chat.postMessage({ channel: userId, text: `⚠️ Could not dismiss the prompt: ${err.message}` })
+    }
+  })
 
   // ─── NDA: "Review & send NDA" card button → modal ─────────
   app.action(NDA_REVIEW_ACTION, async ({ ack, body, client }) => {
@@ -744,6 +769,8 @@ export function registerInteractionHandlers(app: App) {
       teamMembers: values.team_members?.val?.selected_users || [],
       startDate: values.start_date?.val?.selected_date || undefined,
       deadline: values.deadline?.val?.selected_date || undefined,
+      workbackTemplate: values.workback_template?.val?.selected_option?.value || 'Standard Sizzle',
+      milestoneCount: Math.max(2, Math.min(20, parseInt(values.milestone_count?.val?.value || '9', 10) || 9)),
       description: values.description?.val?.value || undefined,
       budgetTotal: Number.isFinite(parsedBudget) && parsedBudget > 0 ? parsedBudget : undefined,
       selectedServices:
@@ -1101,6 +1128,7 @@ export function registerInteractionHandlers(app: App) {
         // Harvest only accepts budget at creation time; carry it through so
         // the Harvest agent can attach budget_by='project' + budget=<amount>.
         budgetTotal: form.budgetTotal,
+        blank: true,
       }
 
       console.log(`[Bolt] Provisioning ${form.projectName} across ${services.length} services`)
@@ -1137,6 +1165,14 @@ export function registerInteractionHandlers(app: App) {
         // "Assets Folders" rows get filled in.
         dropboxUrl: acc.dropbox?.url,
         frameioUrl: acc.frameio?.url,
+        boordsUrl: acc.boords?.url,
+        harvestUrl: acc.harvest?.url,
+        collectedLinks: {
+          dropbox: acc.dropbox?.url,
+          frameio: acc.frameio?.url,
+          boords: acc.boords?.url,
+          harvest: acc.harvest?.url,
+        },
       })
 
       if (creationEnabled && requestKey) {
@@ -1241,6 +1277,11 @@ export function registerInteractionHandlers(app: App) {
               creativeDirectorName: await resolveUserDisplayName(client, form.creativeDirector),
               frameioUrl: serviceResults.frameio?.url,
               dropboxUrl: serviceResults.dropbox?.url,
+              harvestUrl: serviceResults.harvest?.url,
+              boordsUrl: serviceResults.boords?.url,
+              projectType: form.projectType,
+              workbackTemplate: form.workbackTemplate,
+              milestoneCount: form.milestoneCount,
             },
             slackResult: serviceResults.slack,
           })
@@ -1981,7 +2022,7 @@ async function resolveUserDisplayName(client: any, userId?: string): Promise<str
  * Boords is excluded: it provisions a storyboard, not a project, and has
  * its own dedicated flow (/storyboard).
  */
-const NEW_PROJECT_EXCLUDED_SERVICES = new Set(['boords'])
+const NEW_PROJECT_EXCLUDED_SERVICES = new Set<string>()
 
 function getProvisionableServices(): ServiceKey[] {
   return getAvailableAgents()

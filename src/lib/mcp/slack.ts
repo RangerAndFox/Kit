@@ -691,7 +691,7 @@ export interface DuplicateCanvasesResult {
   standaloneCanvasIds: string[]
   /** Per-clone mapping so callers can tell which new canvas came from which
    *  template (index-based alignment is unreliable — clones can be skipped). */
-  clones: Array<{ templateFileId: string; canvasId: string; title: string }>
+  clones: Array<{ templateFileId: string; canvasId: string; title: string; markdown: string }>
 }
 
 /**
@@ -842,7 +842,7 @@ async function resolveCanvasTemplateFileIds(): Promise<TemplateFileIdResolution>
 
 /**
  * Clone each canvas template into a new standalone canvas titled after the
- * project, share it to the channel with write access, and pin it as a
+ * project, share it to the channel with read access, and pin it as a
  * bookmark so it shows up as a tab at the top of the channel.
  *
  * Content is copied verbatim from the templates — producers customize per
@@ -875,7 +875,14 @@ export async function duplicateTemplateCanvases(opts: {
   // channel and clone all of them. Editors maintain the templates by
   // adding/removing canvases in C0B1312H89L — no env-var changes needed.
   const excluded = new Set(opts.excludeFileIds || [])
-  const templateFileIds = (await resolveCanvasTemplateFileIds()).ids.filter((id) => !excluded.has(id))
+  const resolvedIds = (await resolveCanvasTemplateFileIds()).ids
+  // Project Control v2 intentionally creates exactly the three approved views;
+  // adding an unrelated canvas to the template channel must not silently add a
+  // fourth project tab. Operators can override the IDs without a deploy.
+  const approvedIds = (process.env.SLACK_PROJECT_CANVAS_TEMPLATE_IDS || 'F0BT5QT3C4E,F0BSSC7NZKR,F0BT3LH43U5')
+    .split(',').map((x) => x.trim()).filter(Boolean)
+  const approved = new Set(approvedIds)
+  const templateFileIds = resolvedIds.filter((id) => approved.has(id) && !excluded.has(id))
   if (templateFileIds.length === 0) {
     console.warn('[Slack canvas] no template canvases resolved; skipping')
     return out
@@ -1006,17 +1013,17 @@ export async function duplicateTemplateCanvases(opts: {
         continue
       }
       out.standaloneCanvasIds.push(canvasId)
-      out.clones.push({ templateFileId: fileId, canvasId, title: newTitle })
+      out.clones.push({ templateFileId: fileId, canvasId, title: newTitle, markdown })
 
-      // 4. Also grant the channel write access so members can edit, not
-      //    just read. The channel_id on create gives read; this upgrades it.
+      // 4. These are generated projections. Channel members can read them;
+      //    Kit remains able to replace the document through its app token.
       try {
         await slackPost('canvases.access.set', {
           canvas_id: canvasId,
-          access_level: 'write',
+          access_level: 'read',
           channel_ids: [opts.newChannelId],
         })
-        console.log(`[Slack canvas] ${canvasId}: granted write access to ${opts.newChannelId}`)
+        console.log(`[Slack canvas] ${canvasId}: granted read access to ${opts.newChannelId}`)
       } catch (err: any) {
         console.warn(`[Slack canvas] ${canvasId}: access.set failed: ${err.message}`)
       }
