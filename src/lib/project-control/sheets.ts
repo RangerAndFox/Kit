@@ -22,7 +22,11 @@ import {
   normalizeCell,
   type SheetCell,
   type OwnedCell,
+  parseDateToSerial,
 } from './render'
+import { generateWorkback } from './workback'
+import type { CreationSubmission } from './render'
+import type { ProjectSupplement } from './views'
 
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 const SCOPES = [
@@ -242,10 +246,12 @@ function projectNumberFromCell(cell: SheetCell | undefined): string {
   return normalizeCell(cell).display.trim()
 }
 
-function normalizeLinkType(value: string): 'Frame.io' | 'Dropbox' | null {
+function normalizeLinkType(value: string): 'Frame.io' | 'Dropbox' | 'Harvest' | 'Boords' | null {
   const v = value.trim().toLowerCase()
   if (v === 'frame.io' || v === 'frameio') return 'Frame.io'
   if (v === 'dropbox' || v.startsWith('dropbox ')) return 'Dropbox'
+  if (v === 'harvest') return 'Harvest'
+  if (v === 'boords') return 'Boords'
   return null
 }
 
@@ -254,7 +260,7 @@ async function readRfLinkRows(config: WorkbookConfig): Promise<Array<{ rowIndex:
   const firstDataRowIndex = config.linksHeaderRow ?? config.headerRow
   const data = await getGridData(
     config,
-    { startRowIndex: firstDataRowIndex, startColumnIndex: 0, endColumnIndex: 3 },
+    { startRowIndex: firstDataRowIndex, startColumnIndex: 0, endColumnIndex: 4 },
     'formattedValue,effectiveValue,userEnteredValue,hyperlink',
     config.linksSheetId,
   )
@@ -262,7 +268,7 @@ async function readRfLinkRows(config: WorkbookConfig): Promise<Array<{ rowIndex:
     rowIndex: firstDataRowIndex + i,
     projectNumber: normalizeCell(rd.values?.[0]).display.trim(),
     type: normalizeCell(rd.values?.[1]).display.trim(),
-    url: normalizeCell(rd.values?.[2]).hyperlink || normalizeCell(rd.values?.[2]).display.trim(),
+    url: normalizeCell(rd.values?.[3]).hyperlink || normalizeCell(rd.values?.[3]).display.trim(),
   }))
 }
 
@@ -281,20 +287,20 @@ async function readRfProductionRow(config: WorkbookConfig, rowIndex: number): Pr
   }
   put('Project Number', 0)
   put('Client', 1)
-  put('Project Name', 3)
-  put('Quick Status', 4)
+  put('Project Name', 2)
+  put('Client Contact', 3)
   put('Status', 5)
-  put('Next Share', 6)
-  put('End Date', 7)
-  put('Creative Director', 8)
-  put('Producer', 9)
-  // Prefer the explicitly named Client Contact column; fall back to Contact for
-  // migrated rows where the newer field is blank.
-  out[MASTER_HEADERS.indexOf('Client Contact')] = physical[10] || physical[2] || {}
-  if (!projectNumberFromCell(out[MASTER_HEADERS.indexOf('Client Contact')])) {
-    out[MASTER_HEADERS.indexOf('Client Contact')] = physical[2] || {}
-  }
-  put('Start Date', 11)
+  put('Quick Status', 7)
+  put('Next Share', 8)
+  put('Start Date', 10)
+  put('End Date', 11)
+  put('Creative Director', 12)
+  put('Producer', 13)
+  put('VO', 14)
+  put('Music', 15)
+  const lastShareLabel = physical[16] || physical[17] || {}
+  const lastShareUrl = normalizeCell(physical[17]).hyperlink || normalizeCell(physical[17]).display.trim()
+  out[MASTER_HEADERS.indexOf('Last Share')] = lastShareUrl ? { ...lastShareLabel, hyperlink: lastShareUrl } : lastShareLabel
 
   const projectNumber = projectNumberFromCell(physical[0])
   if (projectNumber && config.linksSheetId != null) {
@@ -302,7 +308,7 @@ async function readRfProductionRow(config: WorkbookConfig, rowIndex: number): Pr
     for (const link of links) {
       if (link.projectNumber !== projectNumber) continue
       const type = normalizeLinkType(link.type)
-      if (type && link.url) out[MASTER_HEADERS.indexOf(type)] = textCell(link.url)
+      if ((type === 'Frame.io' || type === 'Dropbox') && link.url) out[MASTER_HEADERS.indexOf(type)] = textCell(link.url)
     }
   }
   return out
@@ -320,7 +326,7 @@ async function readRfProductionRow(config: WorkbookConfig, rowIndex: number): Pr
  */
 async function findNextEmptyRowIndex(config: WorkbookConfig): Promise<number> {
   const firstDataRowIndex = config.headerRow // 0-based grid index of the first data row
-  const physicalColumnCount = config.layout === 'rf-production-v1' ? 15 : 1
+  const physicalColumnCount = config.layout === 'rf-production-v1' ? RF_PRODUCTION_PROJECT_HEADERS.length : 1
   const rowData = await getGridData(
     config,
     { startRowIndex: firstDataRowIndex, startColumnIndex: 0, endColumnIndex: physicalColumnCount },
@@ -461,6 +467,8 @@ export async function updateBoundRow(
 export interface ProjectLinksInput {
   frameioUrl?: string
   dropboxUrl?: string
+  harvestUrl?: string
+  boordsUrl?: string
 }
 
 /** Upsert Kit-owned provider links in RF Production's normalized Links tab.
@@ -475,7 +483,9 @@ export async function upsertProjectLinks(
   const desired = [
     { type: 'Frame.io' as const, url: links.frameioUrl?.trim() },
     { type: 'Dropbox' as const, url: links.dropboxUrl?.trim() },
-  ].filter((x): x is { type: 'Frame.io' | 'Dropbox'; url: string } => Boolean(x.url))
+    { type: 'Harvest' as const, url: links.harvestUrl?.trim() },
+    { type: 'Boords' as const, url: links.boordsUrl?.trim() },
+  ].filter((x): x is { type: 'Frame.io' | 'Dropbox' | 'Harvest' | 'Boords'; url: string } => Boolean(x.url))
   if (desired.length === 0) return
 
   const rows = await readRfLinkRows(config)
@@ -494,7 +504,7 @@ export async function upsertProjectLinks(
         updateCells: {
           rows: [{ values: [{ userEnteredValue: { stringValue: link.url } }] }],
           fields: 'userEnteredValue',
-          start: { sheetId: config.linksSheetId, rowIndex: existing.rowIndex, columnIndex: 2 },
+          start: { sheetId: config.linksSheetId, rowIndex: existing.rowIndex, columnIndex: 3 },
         },
       })
       continue
@@ -505,7 +515,10 @@ export async function upsertProjectLinks(
         rows: [{ values: [
           { userEnteredValue: { stringValue: projectNumber.trim() } },
           { userEnteredValue: { stringValue: link.type } },
+          { userEnteredValue: { stringValue: link.type } },
           { userEnteredValue: { stringValue: link.url } },
+          { userEnteredValue: { boolValue: true } },
+          { userEnteredValue: { numberValue: link.type === 'Dropbox' ? 10 : link.type === 'Frame.io' ? 20 : link.type === 'Boords' ? 50 : 90 } },
         ] }],
         fields: 'userEnteredValue',
         start: { sheetId: config.linksSheetId, rowIndex, columnIndex: 0 },
@@ -513,6 +526,155 @@ export async function upsertProjectLinks(
     })
   }
   await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests })
+}
+
+type PlainValue = string | number | boolean | null | undefined
+
+function userValue(value: PlainValue): Record<string, unknown> {
+  if (typeof value === 'boolean') return { boolValue: value }
+  if (typeof value === 'number') return { numberValue: value }
+  return { stringValue: value == null ? '' : String(value) }
+}
+
+async function appendRows(config: WorkbookConfig, sheetId: number, width: number, rows: PlainValue[][]): Promise<void> {
+  if (rows.length === 0) return
+  const firstDataRowIndex = config.headerRow
+  const existing = await getGridData(config, { startRowIndex: firstDataRowIndex, startColumnIndex: 0, endColumnIndex: width }, 'formattedValue,effectiveValue', sheetId)
+  const lastOccupied = existing.reduce((last, r, index) =>
+    Array.from({ length: width }, (_, i) => normalizeCell(r.values?.[i]).display.trim()).some(Boolean) ? index : last, -1)
+  const rowIndex = firstDataRowIndex + lastOccupied + 1
+  await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, {
+    requests: [{ updateCells: {
+      start: { sheetId, rowIndex, columnIndex: 0 },
+      rows: rows.map((row) => ({ values: row.map((value) => ({ userEnteredValue: userValue(value) })) })),
+      fields: 'userEnteredValue',
+    } }],
+  })
+}
+
+async function sheetHasProject(config: WorkbookConfig, sheetId: number, projectNumber: string): Promise<boolean> {
+  const data = await getGridData(config, { startRowIndex: config.headerRow, startColumnIndex: 0, endColumnIndex: 1 }, 'formattedValue,effectiveValue', sheetId)
+  return data.some((r) => normalizeCell(r.values?.[0]).display.trim() === projectNumber)
+}
+
+async function readTableForProject(config: WorkbookConfig, sheetId: number | undefined, headers: readonly string[], projectNumber: string): Promise<Array<Record<string, string>>> {
+  if (sheetId == null) return []
+  const data = await getGridData(config, { startRowIndex: config.headerRow, startColumnIndex: 0, endColumnIndex: headers.length }, 'formattedValue,effectiveValue,hyperlink', sheetId)
+  return data.flatMap((r) => {
+    if (normalizeCell(r.values?.[0]).display.trim() !== projectNumber) return []
+    const row: Record<string, string> = {}
+    headers.forEach((h, i) => {
+      const n = normalizeCell(r.values?.[i])
+      const serial = r.values?.[i]?.effectiveValue?.numberValue
+      const date = /date/i.test(h) && typeof serial === 'number'
+        ? new Date(Date.UTC(1899, 11, 30) + serial * 86_400_000).toISOString().slice(0, 10)
+        : null
+      row[h] = n.hyperlink || date || n.display
+    })
+    return [row]
+  })
+}
+
+export async function readProjectSupplement(config: WorkbookConfig, projectNumber: string): Promise<ProjectSupplement> {
+  const [projectRows, specRows, workback, links, deliverables, assignments] = await Promise.all([
+    readTableForProject(config, config.sheetId, RF_PRODUCTION_PROJECT_HEADERS, projectNumber),
+    readTableForProject(config, config.specsSheetId, ['Project ID','Dimensions','Frame Rate','Duration','Audio Requirements','Primary File Type','Notes','Specs Status'], projectNumber),
+    readTableForProject(config, config.workbackSheetId, ['Project ID','Task','Phase','Start Date','Due Date','Owner','Status','% Complete','Notes','Milestone URL','Sort Order','Show on Canvas'], projectNumber),
+    readTableForProject(config, config.linksSheetId, ['Project ID','Link Type','Label','URL','Active','Sort Order'], projectNumber),
+    readTableForProject(config, config.deliverablesSheetId, ['Project ID','Deliverable','Specs','Delivery Link','Status','Sort Order'], projectNumber),
+    readTableForProject(config, config.assignmentsSheetId, ['Project ID','Date','Person','Role','Phase','Daily Assignment'], projectNumber),
+  ])
+  return {
+    scheduleStatus: projectRows[0]?.['Schedule Status'] || 'Draft',
+    specs: specRows[0] || {}, workback, links, deliverables, assignments,
+  }
+}
+
+/** Seed every normalized source table once. The Projects row remains bound by
+ * developer metadata; child tables are idempotent by Project ID. */
+export async function seedNormalizedProjectTables(config: WorkbookConfig, submission: CreationSubmission): Promise<void> {
+  if (config.layout !== 'rf-production-v1' || !submission.projectNumber) return
+  const id = submission.projectNumber.trim()
+  await upsertProjectLinks(config, id, submission)
+
+  if (config.specsSheetId != null && !(await sheetHasProject(config, config.specsSheetId, id))) {
+    await appendRows(config, config.specsSheetId, 8, [[id, '', '', '', '', '', '', 'Needs Review']])
+  }
+
+  if (config.workbackSheetId != null && submission.startDate && submission.deadline && !(await sheetHasProject(config, config.workbackSheetId, id))) {
+    const rows = generateWorkback({
+      startDate: submission.startDate,
+      deliveryDate: submission.deadline,
+      milestoneCount: submission.milestoneCount || 9,
+      template: submission.workbackTemplate || 'Standard Sizzle',
+      milestoneNames: submission.milestoneNames,
+    })
+    await appendRows(config, config.workbackSheetId, 12, rows.map((row) => [
+      id, row.task, row.phase, parseDateToSerial(row.startDate), parseDateToSerial(row.dueDate), submission.producerName || '', row.status,
+      row.percentComplete, '', '', row.sortOrder, true,
+    ]))
+  }
+
+  if (config.deliverablesSheetId != null && !(await sheetHasProject(config, config.deliverablesSheetId, id))) {
+    await appendRows(config, config.deliverablesSheetId, 6, [
+      [id, 'Main', '', '', 'Planned', 10],
+      [id, 'Caption', '', '', 'Planned', 20],
+      [id, 'Accessibility Files', '', '', 'Planned', 30],
+      [id, 'Thumbnails', '', '', 'Planned', 40],
+    ])
+  }
+  if (config.statusLogSheetId != null && !(await sheetHasProject(config, config.statusLogSheetId, id))) {
+    await appendRows(config, config.statusLogSheetId, 4, [[id, parseDateToSerial(new Date().toISOString().slice(0, 10)), 'Project created by Kit', 'Kit']])
+  }
+}
+
+/** Record the newest Frame.io review as project-level source data. */
+export async function recordLatestShare(config: WorkbookConfig, kitProjectId: string, input: { label: string; url: string; date: string; milestone?: string | null }): Promise<void> {
+  if (config.layout !== 'rf-production-v1') return
+  const bound = await searchRowMetadata(config.spreadsheetId, kitProjectId, config.sheetId)
+  if (!bound) return
+  const values: PlainValue[] = [input.label, input.url, parseDateToSerial(input.date), input.milestone || '']
+  const columns = [16, 17, 18, 22]
+  const requests = values.map((value, i) => ({ updateCells: {
+    start: { sheetId: config.sheetId, rowIndex: bound.rowIndex, columnIndex: columns[i] },
+    rows: [{ values: [{ userEnteredValue: userValue(value) }] }], fields: 'userEnteredValue',
+  } }))
+  await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests })
+}
+
+/** Producer-confirmed progression. The shared milestone becomes Client Review,
+ * earlier rows become Complete, and the next row is promoted to In Progress. */
+export async function advanceWorkbackForShare(config: WorkbookConfig, kitProjectId: string, projectNumber: string, milestone: string, actor: string): Promise<{ nextMilestone: string | null }> {
+  if (config.workbackSheetId == null) return { nextMilestone: null }
+  const data = await getGridData(config, { startRowIndex: config.headerRow, startColumnIndex: 0, endColumnIndex: 12 }, 'formattedValue,effectiveValue', config.workbackSheetId)
+  const rows = data.map((r, i) => ({ rowIndex: config.headerRow + i, values: r.values || [] }))
+    .filter((r) => normalizeCell(r.values[0]).display.trim() === projectNumber)
+    .sort((a, b) => Number(normalizeCell(a.values[10]).display || 0) - Number(normalizeCell(b.values[10]).display || 0))
+  const at = rows.findIndex((r) => normalizeCell(r.values[1]).display.trim() === milestone)
+  if (at < 0) throw new Error(`Milestone not found: ${milestone}`)
+  const next = rows[at + 1]
+  const requests: unknown[] = []
+  rows.forEach((r, i) => {
+    if (i > at + 1) return
+    const status = i < at ? 'Complete' : i === at ? 'Client Review' : 'In Progress'
+    const percent = i < at ? 1 : 0
+    requests.push({ updateCells: { start: { sheetId: config.workbackSheetId!, rowIndex: r.rowIndex, columnIndex: 6 }, rows: [{ values: [
+      { userEnteredValue: { stringValue: status } }, { userEnteredValue: { numberValue: percent } },
+    ] }], fields: 'userEnteredValue' } })
+  })
+  const bound = await searchRowMetadata(config.spreadsheetId, kitProjectId, config.sheetId)
+  if (bound) {
+    const nextName = next ? normalizeCell(next.values[1]).display : 'Final Delivery complete'
+    const nextDate = next?.values[4]?.effectiveValue?.numberValue
+    requests.push({ updateCells: { start: { sheetId: config.sheetId, rowIndex: bound.rowIndex, columnIndex: 8 }, rows: [{ values: [
+      { userEnteredValue: { stringValue: nextName } }, { userEnteredValue: nextDate == null ? { stringValue: '' } : { numberValue: nextDate } },
+    ] }], fields: 'userEnteredValue' } })
+  }
+  await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests })
+  if (config.statusLogSheetId != null) {
+    await appendRows(config, config.statusLogSheetId, 4, [[projectNumber, parseDateToSerial(new Date().toISOString().slice(0, 10)), `${milestone} shared; workback advanced`, actor]])
+  }
+  return { nextMilestone: next ? normalizeCell(next.values[1]).display : null }
 }
 
 /** Keep normalized Links rows attached when a project's human-facing ID is
@@ -601,7 +763,7 @@ export async function writeCellValue(
 ): Promise<void> {
   const normalizedLink = config.layout === 'rf-production-v1' && (header === 'Frame.io' || header === 'Dropbox')
   const columnIndex = normalizedLink
-    ? 2
+    ? 3
     : headerToA1Column(header, config.layout || 'legacy').charCodeAt(0) - 'A'.charCodeAt(0)
   const sheetId = normalizedLink ? config.linksSheetId : config.sheetId
   if (sheetId == null) throw new Error(`writeCellValue: Links sheet is not configured for ${header}`)

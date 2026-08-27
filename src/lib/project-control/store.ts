@@ -343,6 +343,56 @@ export async function listSyncableBindings(spreadsheetId: string): Promise<Bindi
   return (data as BindingRow[]) || []
 }
 
+export type ProjectCanvasType = 'overview' | 'reference' | 'schedule'
+export interface ProjectCanvasRow {
+  id: string
+  project_id: string
+  canvas_type: ProjectCanvasType
+  source_template_file_id: string | null
+  source_template_hash: string | null
+  template_markdown: string | null
+  canvas_id: string | null
+  canvas_url: string | null
+  last_source_hash: string | null
+  last_synced_at: string | null
+  sync_status: string
+  error: string | null
+}
+
+export async function upsertProjectCanvas(input: {
+  projectId: string
+  canvasType: ProjectCanvasType
+  canvasId: string
+  canvasUrl?: string | null
+  sourceTemplateFileId?: string | null
+  templateMarkdown?: string | null
+  sourceTemplateHash?: string | null
+}): Promise<void> {
+  const { error } = await db().from('project_control_canvases').upsert({
+    project_id: input.projectId,
+    canvas_type: input.canvasType,
+    canvas_id: input.canvasId,
+    canvas_url: input.canvasUrl || null,
+    source_template_file_id: input.sourceTemplateFileId || null,
+    source_template_hash: input.sourceTemplateHash || null,
+    template_markdown: input.templateMarkdown || null,
+    updated_at: nowIso(),
+  }, { onConflict: 'project_id,canvas_type' })
+  if (error) throw new Error(`upsertProjectCanvas: ${error.message}`)
+}
+
+export async function listProjectCanvases(projectId: string): Promise<ProjectCanvasRow[]> {
+  const { data, error } = await db().from('project_control_canvases').select('*').eq('project_id', projectId)
+  if (error) throw new Error(`listProjectCanvases: ${error.message}`)
+  return (data as ProjectCanvasRow[]) || []
+}
+
+export async function updateProjectCanvas(projectId: string, canvasType: ProjectCanvasType, patch: Partial<ProjectCanvasRow>): Promise<void> {
+  const { error } = await db().from('project_control_canvases').update({ ...patch, updated_at: nowIso() })
+    .eq('project_id', projectId).eq('canvas_type', canvasType)
+  if (error) throw new Error(`updateProjectCanvas: ${error.message}`)
+}
+
 /**
  * Bindings that never reached 'connected' (incomplete creation) — the Railway
  * recovery sweep re-drives these. The Vercel/Inngest sync deliberately ignores

@@ -117,7 +117,7 @@ describe('createBoundRow RF Production placement safety', () => {
       kitOwnedCreationCells({ projectNumber: '2640', clientName: 'Microsoft', projectName: 'New project' }, config.layout),
     )
 
-    assert.equal(requestedEndColumnIndex, 15, 'the RF layout scans every physical Projects column')
+    assert.equal(requestedEndColumnIndex, 23, 'the RF layout scans every physical Projects column')
     assert.equal(metadataStartIndex, config.headerRow + 1, 'the occupied ID-less row is skipped')
   })
 })
@@ -252,21 +252,22 @@ describe('RF Production workbook adapter', () => {
     ? { formattedValue: value, effectiveValue: { stringValue: value } }
     : {}
 
-  it('maps Projects A:O plus normalized Links into the stable Canvas row', async () => {
+  it('maps Projects A:W plus normalized Links into the stable Canvas row', async () => {
     __setSheetsTransportForTests(async <T>(_method: string, url: string, body?: unknown): Promise<T> => {
       if (!url.includes(':getByDataFilter')) throw new Error(`unexpected url ${url}`)
       const gr = (body as any).dataFilters[0].gridRange
       if (gr.sheetId === config.sheetId) {
         return { sheets: [{ properties: { sheetId: config.sheetId }, data: [{ rowData: [{ values: [
-          c('2637'), c('Microsoft'), c('Michelle | John'), c('Fabric IQ'), c('Design'), c('On track'),
-          c('Creative review'), c('09/10/2026'), c('Steve'), c('Ally'), c('Michelle'), c('08/11/2026'),
-          c('Client'), c('notes'), c(''),
+          c('2637'), c('Microsoft'), c('Fabric IQ'), c('Michelle'), c('Client'), c('Active'),
+          c('Design'), c('On track'), c('Creative review'), c('08/28/2026'), c('08/11/2026'), c('09/10/2026'),
+          c('Steve'), c('Ally'), c('Yes'), c('Custom'), c('Boardomatic V2'), c('https://frame.io/share/latest'), c('08/27/2026'), c('notes'),
+          c('Standard Sizzle'), c('Confirmed'), c('Boardomatic V2'),
         ] }] }] }] } as T
       }
       if (gr.sheetId === config.linksSheetId) {
         return { sheets: [{ properties: { sheetId: config.linksSheetId }, data: [{ rowData: [
-          { values: [c('2637'), c('Frame.io'), c('https://next.frame.io/project/fabric')] },
-          { values: [c('2637'), c('Dropbox (client folder)'), c('https://dropbox.com/fabric')] },
+          { values: [c('2637'), c('Frame.io'), c('Frame.io'), c('https://next.frame.io/project/fabric')] },
+          { values: [c('2637'), c('Dropbox (client folder)'), c('Dropbox'), c('https://dropbox.com/fabric')] },
         ] }] }] } as T
       }
       throw new Error(`wrong sheet ${gr.sheetId}`)
@@ -277,7 +278,7 @@ describe('RF Production workbook adapter', () => {
     assert.equal(cells.length, 25)
     assert.equal(at('Project Number'), '2637')
     assert.equal(at('Client Contact'), 'Michelle')
-    assert.equal(at('Quick Status'), 'Design')
+    assert.equal(at('Quick Status'), 'On track')
     assert.equal(at('Next Share'), 'Creative review')
     assert.equal(at('Start Date'), '08/11/2026')
     assert.equal(at('End Date'), '09/10/2026')
@@ -304,15 +305,15 @@ describe('RF Production workbook adapter', () => {
     }, 'rf-production-v1')
     await updateBoundRow(config, 'project-uuid', owned)
     const cols = requests.map((r) => r.updateCells.start.columnIndex)
-    assert.deepEqual(cols, [0, 1, 10, 3, 11, 7, 8, 9])
+    assert.deepEqual(cols, [0, 1, 3, 2, 10, 11, 12, 13])
     assert.ok(!owned.some((x) => x.header === 'Frame.io' || x.header === 'Dropbox'))
   })
 
   it('upserts provider links and renames every link row without duplicates', async () => {
     const batches: any[][] = []
     const linkRows = [
-      { values: [c('2637'), c('Frame.io'), c('old-frame')] },
-      { values: [c('2637'), c('Dropbox (client folder)'), c('old-dropbox')] },
+      { values: [c('2637'), c('Frame.io'), c('Frame.io'), c('old-frame')] },
+      { values: [c('2637'), c('Dropbox (client folder)'), c('Dropbox'), c('old-dropbox')] },
     ]
     __setSheetsTransportForTests(async <T>(_method: string, url: string, body?: unknown): Promise<T> => {
       if (url.includes(':getByDataFilter')) {
@@ -326,8 +327,8 @@ describe('RF Production workbook adapter', () => {
     })
     await upsertProjectLinks(config, '2637', { frameioUrl: 'new-frame', dropboxUrl: 'new-dropbox' })
     assert.deepEqual(batches[0].map((r) => r.updateCells.start), [
-      { sheetId: config.linksSheetId, rowIndex: 4, columnIndex: 2 },
-      { sheetId: config.linksSheetId, rowIndex: 5, columnIndex: 2 },
+      { sheetId: config.linksSheetId, rowIndex: 4, columnIndex: 3 },
+      { sheetId: config.linksSheetId, rowIndex: 5, columnIndex: 3 },
     ])
     await renameProjectLinks(config, '2637', '2637A')
     assert.deepEqual(batches[1].map((r) => r.updateCells.start.columnIndex), [0, 0])

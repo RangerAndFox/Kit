@@ -12,6 +12,7 @@ const SERVICE_LABELS: Record<string, string> = {
   frameio: 'Frame.io — project + folders',
   harvest: 'Harvest — project + budget',
   dropbox: 'Dropbox — project folder',
+  boords: 'Boords — blank storyboard project',
 }
 
 const PROJECT_TYPE_OPTIONS = [
@@ -122,6 +123,23 @@ export function buildNewProjectModal(
         optional: true,
         label: { type: 'plain_text', text: 'Deadline' },
         element: { type: 'datepicker', action_id: 'val' },
+      },
+      {
+        type: 'input',
+        block_id: 'workback_template',
+        label: { type: 'plain_text', text: 'Workback Style' },
+        element: {
+          type: 'static_select', action_id: 'val',
+          initial_option: { text: { type: 'plain_text', text: 'Standard Sizzle' }, value: 'Standard Sizzle' },
+          options: ['Standard Sizzle', 'Fast-Turn', 'Project Update', 'Internal Project', 'Custom'].map((t) => ({ text: { type: 'plain_text', text: t }, value: t })),
+        },
+      },
+      {
+        type: 'input',
+        block_id: 'milestone_count',
+        label: { type: 'plain_text', text: 'Number of Milestones' },
+        hint: { type: 'plain_text', text: 'Kit spreads these between the start and delivery dates. You can revise the draft afterward.' },
+        element: { type: 'number_input', action_id: 'val', is_decimal_allowed: false, min_value: '2', max_value: '20', initial_value: '9' },
       },
       {
         type: 'input',

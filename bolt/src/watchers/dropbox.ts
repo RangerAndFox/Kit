@@ -23,6 +23,7 @@ import { frameioHeaders } from '../../../src/lib/frameio/auth'
 import { frameioProjectUrl } from '../../../src/lib/frameio/url'
 import { isFrameioUploadEnabled } from '../../../src/lib/projects/settings'
 import { processSrtFile } from '../../../src/lib/delivery/subtitle-watcher'
+import { registerProjectShare } from '../../../src/lib/project-control/share-progress'
 
 const DROPBOX_API = 'https://api.dropboxapi.com/2'
 const FRAMEIO_API = 'https://api.frame.io/v4'
@@ -299,6 +300,8 @@ async function processDeltasOnce(app: App): Promise<void> {
         safeName,
         subfolder,
         year,
+        dropboxId: entry.id || entry.path_lower,
+        rev: entry.rev || '',
       })
       // Celebrate a real delivery (02_Delivery only) with a meme in the team
       // channel — one per project per day (deduped downstream). Fire-and-forget
@@ -348,6 +351,8 @@ interface Delivery {
   safeName: string
   subfolder: string // "01_Client Progress" | "02_Delivery"
   year: string
+  dropboxId: string
+  rev: string
 }
 
 /**
@@ -733,6 +738,23 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
       `https://next.frame.io/project/${frameioId}/view/${file.id}`
   }
 
+  let progression: { eventId: string | null; milestone: string | null; confidence: string } | null = null
+  try {
+    const projectNumber = project.external_ids?.project_number || extractProjectNumber(d.safeName) || String(project.project_code || '').split('-')[0]
+    progression = await registerProjectShare({
+      projectId: project.id,
+      projectNumber,
+      dropboxFileId: d.dropboxId,
+      dropboxRev: d.rev,
+      fileName,
+      shareUrl: reviewUrl,
+    })
+  } catch (err: any) {
+    // The review upload is already successful; a Sheet/migration problem must
+    // be visible but must never roll back or repeat the media upload.
+    console.warn(`[dropbox-watcher] project-control share update failed: ${err.message}`)
+  }
+
   // ── Notify ──────────────────────────────────────────────
   // Preference order:
   //   1. DM the project's PM if we have one
@@ -762,10 +784,20 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
     return
   }
 
+  const blocks: any[] = [{ type: 'section', text: { type: 'mrkdwn', text } }]
+  if (progression?.eventId) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: progression.milestone
+      ? `Kit matched this to *${progression.milestone}* (${progression.confidence}). Advance the live workback?`
+      : 'Kit could not confidently match this filename to a workback milestone. The latest-share link was updated; review the schedule manually.' } })
+    if (progression.milestone) blocks.push({ type: 'actions', elements: [
+      { type: 'button', action_id: 'kit_project_share_advance', style: 'primary', text: { type: 'plain_text', text: 'Yes, advance workback' }, value: progression.eventId },
+      { type: 'button', action_id: 'kit_project_share_dismiss', text: { type: 'plain_text', text: 'No, keep current milestone' }, value: progression.eventId },
+    ] })
+  }
   await app.client.chat.postMessage({
     channel: target,
     text: `📦 New delivery for *${project.name}*`,
-    blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }],
+    blocks,
   })
   console.log(
     `[dropbox-watcher] notified ${pmId ? `PM ${pmId}` : channelId ? `channel ${channelId}` : `fallback ${fallbackPm}`}`,

@@ -21,7 +21,7 @@ import {
   projectControlSyncEnabled,
   type WorkbookConfig,
 } from '../project-control/types'
-import { getWorkbookVersion, searchRowMetadata, readRow } from '../project-control/sheets'
+import { getWorkbookVersion, searchRowMetadata, readRow, readProjectSupplement } from '../project-control/sheets'
 import { editControlCanvas, controlCanvasTitle } from '../project-control/canvas'
 import {
   normalizeRow,
@@ -41,12 +41,17 @@ import {
   claimNotification,
   type BindingRow,
   type SyncStateRow,
+  listProjectCanvases,
+  updateProjectCanvas,
+  type ProjectCanvasRow,
 } from '../project-control/store'
+import { projectViewHash, renderOverviewView, renderReferenceView, renderScheduleView, type ProjectSupplement } from '../project-control/views'
 
 export interface SyncSheetsPort {
   getWorkbookVersion(spreadsheetId: string): Promise<string>
   searchRowMetadata(spreadsheetId: string, kitProjectId: string, sheetId: number): Promise<{ metadataId: number; rowIndex: number; sheetId: number } | null>
   readRow(config: WorkbookConfig, rowIndex: number): Promise<SheetCell[]>
+  readProjectSupplement?(config: WorkbookConfig, projectNumber: string): Promise<ProjectSupplement>
 }
 export interface SyncCanvasPort {
   editControlCanvas(o: { canvasId: string; title: string; markdown: string }): Promise<void>
@@ -60,6 +65,8 @@ export interface SyncStorePort {
   releaseWorkbookLease(spreadsheetId: string, kind: 'creation' | 'sync', holder: string): Promise<void>
   advanceCursor(spreadsheetId: string, driveVersion: string): Promise<void>
   claimNotification(projectId: string, key: string): Promise<boolean>
+  listProjectCanvases?(projectId: string): Promise<ProjectCanvasRow[]>
+  updateProjectCanvas?(projectId: string, canvasType: 'overview' | 'reference' | 'schedule', patch: Partial<ProjectCanvasRow>): Promise<void>
 }
 export interface SyncDeps {
   sheets: SyncSheetsPort
@@ -85,11 +92,12 @@ async function postAlert(text: string): Promise<void> {
 
 export function defaultSyncDeps(): SyncDeps {
   return {
-    sheets: { getWorkbookVersion, searchRowMetadata, readRow },
+    sheets: { getWorkbookVersion, searchRowMetadata, readRow, readProjectSupplement },
     canvas: { editControlCanvas },
     store: {
       listSyncableBindings, updateBinding, getSyncState, claimWorkbookLease,
       renewWorkbookLease, releaseWorkbookLease, advanceCursor, claimNotification,
+      listProjectCanvases, updateProjectCanvas,
     },
     post: postAlert,
     config: workbookConfigFromEnv(),
@@ -171,7 +179,12 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
 
         const cells = await deps.sheets.readRow(config, meta.rowIndex)
         const row = normalizeRow(MASTER_HEADERS, cells)
-        const hash = sourceRowHash(row)
+        let extra: ProjectSupplement | null = null
+        let hash = sourceRowHash(row)
+        if (deps.sheets.readProjectSupplement) {
+          extra = await deps.sheets.readProjectSupplement(config, row['Project Number']?.display || '')
+          hash = projectViewHash(row, extra)
+        }
 
         if (hash === b.last_row_hash && b.sync_status === 'synced') {
           unchanged++
@@ -189,7 +202,9 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
         const spine = [row['Project Number']?.display, row['Client']?.display, row['Project Name']?.display]
           .filter(Boolean).join('_')
         const title = controlCanvasTitle(spine || row['Project Name']?.display || 'Project')
-        const markdown = renderProjectControlCanvas(b.template_markdown, row)
+        const markdown = extra
+          ? renderOverviewView(row, extra)
+          : renderProjectControlCanvas(b.template_markdown, row)
         // Ownership check immediately before the irreversible Canvas edit.
         if (!(await deps.store.renewWorkbookLease(config.spreadsheetId, 'sync', holder))) {
           leaseLost = true
@@ -197,6 +212,20 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
           break
         }
         await deps.canvas.editControlCanvas({ canvasId: b.canvas_id, title, markdown })
+
+        // V2: the other two project tabs are also deterministic projections of
+        // the same workbook, never editable secondary sources.
+        if (extra && deps.store.listProjectCanvases && deps.store.updateProjectCanvas) {
+          const viewHash = projectViewHash(row, extra)
+          const canvases = await deps.store.listProjectCanvases(b.project_id)
+          for (const view of canvases) {
+            if (!view.canvas_id || view.canvas_type === 'overview') continue
+            const viewTitle = `${spine || row['Project Name']?.display || 'Project'} — ${view.canvas_type === 'reference' ? 'Reference' : 'Schedule'}`
+            const viewMarkdown = view.canvas_type === 'reference' ? renderReferenceView(row, extra) : renderScheduleView(row, extra)
+            await deps.canvas.editControlCanvas({ canvasId: view.canvas_id, title: viewTitle, markdown: viewMarkdown })
+            await deps.store.updateProjectCanvas(b.project_id, view.canvas_type, { sync_status: 'synced', last_source_hash: viewHash, last_synced_at: deps.now(), error: null })
+          }
+        }
 
         const wasBroken = b.sync_status === 'error' || b.sync_status === 'orphaned'
         await deps.store.updateBinding(b.project_id, {

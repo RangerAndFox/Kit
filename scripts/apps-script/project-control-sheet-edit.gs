@@ -20,7 +20,7 @@
  *      WEBHOOK_URL    = https://<kit-prod-domain>/api/webhooks/project-control/sheet-edited
  *      WEBHOOK_SECRET = <same value as Vercel PROJECT_CONTROL_WEBHOOK_SECRET>
  *      SPREADSHEET_ID = <Master Project List spreadsheet id>
- *      SHEET_ID       = <numeric gid of the target sheet/tab>
+ *      SHEET_IDS      = <comma-separated gids of all authoritative source tabs>
  *      HEADER_ROW     = 3   (optional; edits on/above this row are ignored)
  * 3. Triggers (clock icon) → Add Trigger:
  *      function: onMasterProjectListEdit
@@ -38,12 +38,12 @@ function onMasterProjectListEdit(e) {
     var webhookUrl = props.getProperty('WEBHOOK_URL');
     var secret = props.getProperty('WEBHOOK_SECRET');
     var spreadsheetId = props.getProperty('SPREADSHEET_ID');
-    var sheetId = props.getProperty('SHEET_ID');
+    var sheetIds = (props.getProperty('SHEET_IDS') || props.getProperty('SHEET_ID') || '').split(',').map(function (id) { return String(id).trim(); }).filter(Boolean);
     var headerRow = parseInt(props.getProperty('HEADER_ROW') || '3', 10);
 
     // Fail visibly in the logs, never modify the sheet, never send half-configured.
-    if (!webhookUrl || !secret || !spreadsheetId || !sheetId) {
-      Logger.log('[kit] skipped: missing Script Properties (WEBHOOK_URL/WEBHOOK_SECRET/SPREADSHEET_ID/SHEET_ID)');
+    if (!webhookUrl || !secret || !spreadsheetId || sheetIds.length === 0) {
+      Logger.log('[kit] skipped: missing Script Properties (WEBHOOK_URL/WEBHOOK_SECRET/SPREADSHEET_ID/SHEET_IDS)');
       return;
     }
 
@@ -52,7 +52,8 @@ function onMasterProjectListEdit(e) {
     if (editedSpreadsheetId && editedSpreadsheetId !== spreadsheetId) return;
 
     var sheet = e.range.getSheet();
-    if (String(sheet.getSheetId()) !== String(sheetId)) return;
+    var editedSheetId = String(sheet.getSheetId());
+    if (sheetIds.indexOf(editedSheetId) === -1) return;
 
     // Ignore header rows and above (labels, not project data).
     if (e.range.getRow() <= headerRow) return;
@@ -62,7 +63,7 @@ function onMasterProjectListEdit(e) {
       requestId: Utilities.getUuid(),
       timestamp: Date.now(),
       spreadsheetId: spreadsheetId,
-      sheetId: Number(sheetId)
+      sheetId: Number(editedSheetId)
     };
     var body = JSON.stringify(payload);
 

@@ -84,6 +84,7 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       if (collected.harvest) links['Harvest'] = collected.harvest
       if (collected.dropbox) links['Dropbox'] = collected.dropbox
       if (collected.frameio) links['Frame.io'] = collected.frameio
+      if (collected.boords) links['Boords'] = collected.boords
       if (collected.canva) links['Canva'] = collected.canva
     }
     if (Object.keys(links).length > 0) {
@@ -131,8 +132,9 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
     // Duplicate canvases from the template channel (header canvas + standalones).
     // Skipped entirely when template resolution was uncertain — cloning here
     // could otherwise clone a Project-Control-like canvas we failed to exclude.
-    let canvasResult: { standaloneCanvasIds: string[] } = {
+    let canvasResult: { standaloneCanvasIds: string[]; clones: Array<{ templateFileId: string; canvasId: string; title: string; markdown: string }> } = {
       standaloneCanvasIds: [],
+      clones: [],
     }
     if (skipGenericClone) {
       console.warn(
@@ -170,6 +172,7 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
         channelName: channel.channelName,
         channelId: channel.channelId,
         standaloneCanvasIds: canvasResult.standaloneCanvasIds,
+        canvasClones: canvasResult.clones,
         controlTemplate,
         controlTemplateError,
       },
