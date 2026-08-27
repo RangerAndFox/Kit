@@ -15,6 +15,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   parseCompanyFromDomain,
+  nameFromEmailLocalPart,
   nameFromTitle,
   buildAttendeeIdentityCandidates,
   resolveIdentityStatus,
@@ -51,6 +52,7 @@ describe('company-from-domain (candidate generation)', () => {
   it('derives a company from a corporate domain', () => {
     assert.equal(parseCompanyFromDomain('ryan@oshi.co'), 'Oshi')
     assert.equal(parseCompanyFromDomain('x@acme.co.uk'), 'Acme')
+    assert.equal(parseCompanyFromDomain('tara.nadolny@espn.com'), 'ESPN')
   })
   it('returns null for generic consumer providers', () => {
     assert.equal(parseCompanyFromDomain('x@gmail.com'), null)
@@ -69,6 +71,18 @@ describe('name-from-title (candidate generation)', () => {
   })
 })
 
+describe('name-from-email-local-part (candidate generation)', () => {
+  it('derives the reported ESPN attendee name from a structured address', () => {
+    assert.equal(nameFromEmailLocalPart('tara.nadolny@espn.com'), 'Tara Nadolny')
+    assert.equal(nameFromEmailLocalPart('jane_doe+calendar@acme.com'), 'Jane Doe')
+  })
+  it('rejects role inboxes, initials, and unstructured addresses', () => {
+    assert.equal(nameFromEmailLocalPart('production.team@acme.com'), null)
+    assert.equal(nameFromEmailLocalPart('t.nadolny@espn.com'), null)
+    assert.equal(nameFromEmailLocalPart('user123@acme.com'), null)
+  })
+})
+
 describe('buildAttendeeIdentityCandidates', () => {
   it('assembles name + company for the Oshi case even with no displayName', () => {
     const c = buildAttendeeIdentityCandidates({ event: OSHI_EVENT, attendee: { email: 'ryan@oshi.co' } })
@@ -83,6 +97,24 @@ describe('buildAttendeeIdentityCandidates', () => {
       attendee: { email: 'ryan@oshi.co', displayName: 'Ryan D.' },
     })
     assert.equal(c.name, 'Ryan D.')
+  })
+  it('REPORTED ESPN case: uses the email name when Calendar supplies only the email', () => {
+    const event = { ...OSHI_EVENT, summary: 'Nathan Stewart Catch Up' }
+    const c = buildAttendeeIdentityCandidates({
+      event,
+      attendee: { email: 'tara.nadolny@espn.com' },
+    })
+    assert.equal(c.name, 'Tara Nadolny')
+    assert.equal(c.company, 'ESPN')
+    assert.ok(c.candidates.some((x) => x.from === 'email-local-part'))
+  })
+  it('ignores a calendar displayName that is just the email address', () => {
+    const event = { ...OSHI_EVENT, summary: 'Catch up' }
+    const c = buildAttendeeIdentityCandidates({
+      event,
+      attendee: { email: 'tara.nadolny@espn.com', displayName: 'tara.nadolny@espn.com' },
+    })
+    assert.equal(c.name, 'Tara Nadolny')
   })
 })
 
