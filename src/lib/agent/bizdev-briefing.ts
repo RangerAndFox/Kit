@@ -202,8 +202,52 @@ const GENERIC_EMAIL_DOMAINS = new Set([
   'aol.com', 'proton.me', 'protonmail.com', 'pm.me', 'gmx.com', 'zoho.com',
 ])
 
+const COMPANY_DOMAIN_STYLING: Record<string, string> = {
+  abc: 'ABC',
+  bbc: 'BBC',
+  cbs: 'CBS',
+  cnn: 'CNN',
+  espn: 'ESPN',
+  hbo: 'HBO',
+  ibm: 'IBM',
+  nbc: 'NBC',
+}
+
 function capitalize(s: string): string {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : s
+}
+
+// Shared inboxes and role accounts are not people. Keeping this denylist
+// intentionally narrow lets a structured personal address become a useful
+// search candidate without turning production@client.com into "Production".
+const NON_PERSON_EMAIL_PARTS = new Set([
+  'admin', 'accounts', 'billing', 'bookings', 'careers', 'contact', 'events',
+  'hello', 'help', 'info', 'jobs', 'legal', 'marketing', 'media', 'news',
+  'noreply', 'office', 'press', 'production', 'reception', 'sales', 'studio',
+  'support', 'team',
+])
+
+/**
+ * Person-name CANDIDATE from a structured email local part. This is a search
+ * hint, never proof: public evidence must still corroborate it. We require at
+ * least two full alphabetic parts, so tara.nadolny becomes "Tara Nadolny"
+ * while info@, t.nadolny@, and user123@ remain unresolved.
+ */
+export function nameFromEmailLocalPart(email: string): string | null {
+  const local = ((email || '').trim().split('@')[0] || '').split('+')[0]
+  const parts = local.split(/[._-]+/).filter(Boolean)
+  if (parts.length < 2 || parts.length > 4) return null
+  if (parts.some((part) => part.length < 2 || !/^[a-zA-Z]+$/.test(part))) return null
+  if (parts.some((part) => NON_PERSON_EMAIL_PARTS.has(part.toLowerCase()))) return null
+  return parts.map((part) => capitalize(part.toLowerCase())).join(' ')
+}
+
+function usableDisplayName(displayName: string | undefined, email: string): string | null {
+  const value = (displayName || '').trim()
+  if (!value || value.includes('@') || value.toLowerCase() === (email || '').trim().toLowerCase()) {
+    return null
+  }
+  return value
 }
 
 /**
@@ -224,7 +268,7 @@ export function parseCompanyFromDomain(email: string): string | null {
   labels.pop()
   if (labels.length >= 2 && labels[labels.length - 1].length <= 3) labels.pop()
   const reg = labels[labels.length - 1]
-  return reg ? capitalize(reg) : null
+  return reg ? COMPANY_DOMAIN_STYLING[reg] || capitalize(reg) : null
 }
 
 /**
@@ -258,10 +302,15 @@ export function buildAttendeeIdentityCandidates(opts: {
   const { event, attendee } = opts
   const candidates: { value: string; from: string }[] = []
 
+  const displayName = usableDisplayName(attendee.displayName, attendee.email)
   const titleName = nameFromTitle(event.summary || '', attendee.email)
-  const name = attendee.displayName || titleName || null
-  if (attendee.displayName) candidates.push({ value: attendee.displayName, from: 'calendar-displayName' })
+  const emailName = nameFromEmailLocalPart(attendee.email)
+  const name = displayName || titleName || emailName || null
+  if (displayName) candidates.push({ value: displayName, from: 'calendar-displayName' })
   if (titleName) candidates.push({ value: titleName, from: 'meeting-title' })
+  if (emailName && emailName !== titleName && emailName !== displayName) {
+    candidates.push({ value: emailName, from: 'email-local-part' })
+  }
 
   const company = parseCompanyFromDomain(attendee.email)
   if (company) candidates.push({ value: company, from: 'email-domain' })
@@ -702,12 +751,15 @@ export async function researchAttendee(
       `Candidate name: ${JSON.stringify(cand.name)}\n` +
       `Candidate company (from email domain): ${JSON.stringify(cand.company)}\n\n` +
       internalContext +
-      `Search LinkedIn and the web to corroborate or correct these candidates, then return the evidence JSON.`
+      `Search LinkedIn and the web to corroborate or correct these candidates. ` +
+      `Start with the exact candidate name plus company, then try a LinkedIn-specific query and ` +
+      `the exact email address. Identify the person's current role and concise relevant background ` +
+      `when reliable sources support them, then return the evidence JSON.`
 
     const res = await client.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 700,
-      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 4 }],
       system:
         'You research a business-development meeting attendee for Ranger & Fox, a creative video ' +
         'production studio. You are given candidate identity signals (name from the meeting title, ' +
