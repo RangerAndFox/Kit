@@ -13,6 +13,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { harvestProjectWebUrl } from '../harvest/web-url'
 import { createAdminClient } from '../supabase/admin'
 import { bindProjectControl } from './creation'
 import {
@@ -270,7 +271,7 @@ function harvestProjectUrl(project: ProjectRow): string | undefined {
   const explicit = providerUrl(project.external_links, 'harvest_url', 'harvest')
   if (explicit) return explicit
   const id = clean(project.external_links?.harvest_id) || clean(project.harvest_project_id)
-  return /^\d+$/.test(id) ? `https://rangerandfox.harvestapp.com/projects/${id}` : undefined
+  return /^\d+$/.test(id) ? harvestProjectWebUrl(id) : undefined
 }
 
 async function ensureChannelAccess(channel: SlackChannel, projectId: string): Promise<void> {

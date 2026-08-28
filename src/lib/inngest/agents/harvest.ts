@@ -27,6 +27,7 @@ import {
 } from '@/lib/harvest/client'
 import { studioToday, studioDateMinusDays } from '@/lib/time/studio-date'
 import { staffProfile } from '@/lib/staff/timezone'
+import { harvestProjectWebUrl } from '@/lib/harvest/web-url'
 import type { AgentDefinition, AgentResult } from './types'
 
 /**
@@ -100,7 +101,7 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       agent: 'harvest',
       action: 'provision',
       success: true,
-      url: `https://rangerandfox.harvestapp.com/projects/${project.id}`,
+      url: harvestProjectWebUrl(project.id),
       id: String(project.id),
       message: `Created Harvest project "${project.name}" with ${project.task_assignments.length} tasks; assigned ${teamAssigned} team members`,
       data: {
@@ -177,7 +178,7 @@ async function rename(payload: Record<string, unknown>): Promise<AgentResult> {
       agent: 'harvest',
       action: 'rename',
       success: true,
-      url: `https://rangerandfox.harvestapp.com/projects/${project.id}`,
+      url: harvestProjectWebUrl(project.id),
       id: String(project.id),
       message: nameChanged || codeChanged
         ? `Renamed Harvest project to "${project.name}"${project.code ? ` (${project.code})` : ''}`
