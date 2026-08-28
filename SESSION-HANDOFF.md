@@ -1,6 +1,6 @@
 # Kit — Session handoff
 
-Current as of 2026-08-21. Repository: https://github.com/RangerAndFox/Kit. Production Supabase project: `ozsxrcgrezpffnpwlrnq`.
+Current as of 2026-08-27. Repository: https://github.com/RangerAndFox/Kit. Production Supabase project: `ozsxrcgrezpffnpwlrnq`.
 
 ## Current build state
 
@@ -24,6 +24,13 @@ The main implementation risk is no longer a known code failure; it is deployment
 - Slack create/rename behavior was hardened and covered by focused tests.
 - Project identity and channel bindings remain stable across updates.
 - Shortcut routing now has one canonical `DM_SHORTCUT_REGISTRY` used by both Slack's Assistant callback and the plain-message fallback. This prevents a strict card command from working on only one inbound path and falling through to a generic answer on the other.
+
+### Project Control workbook and canvases
+
+- The Google Sheet “RF Production System — Canvas Control Center” is the producer-facing source of truth for Overview, Reference, and Schedule canvases.
+- New project provisioning writes the project into Projects, Project Specs, Links, Deliverables, Status Log, and Workback as applicable; provider-created Dropbox, Frame.io, and Boords links flow back into the workbook and generated Slack canvases.
+- Native Google Sheets tables on Projects, Project Specs, and Workback now expand atomically with Kit's write. The existing test project rows were repaired into those tables; plain filtered-range tabs already cover the full working grids.
+- Workback state and latest-share fields converge from the Dropbox → Frame.io automation, and sheet edits trigger canvas refreshes rather than requiring canvas edits.
 
 ### Storyboards
 
@@ -54,11 +61,11 @@ The main implementation risk is no longer a known code failure; it is deployment
 
 ### Meeting transcripts and studio knowledge
 
-- The Drive transcript scan and Google integration are healthy. Production contains 69 ingested Drive transcripts and 1,509 embedded transcript chunks; the watched folder itself has received no file newer than August 14.
-- Direct Plaud OAuth polling is implemented behind `PLAUD_INGEST_ENABLED=false`. It reads personal account recordings through Plaud's supported CLI/MCP API, safely coordinates rotating tokens in Supabase, and requires an explicit `PLAUD_INGEST_FROM` frontier to avoid replaying Drive history. One-time Plaud authorization and a live recording are still required before disabling Drive.
-- A privacy audit found that unmatched Plaud/Drive material had been embedded as team-visible and the service-role semantic-search RPC ignored visibility tiers.
-- Unmatched Plaud/Drive transcripts are now founder/admin-only; project-matched transcripts remain team-visible, and a later successful project rematch promotes the related chunks to team visibility.
-- Semantic search now receives a server-resolved requester tier and enforces allowed visibility inside `match_documents`. The production correction moved 724 chunks to founder visibility and left 785 team-visible. A direct production verification returned zero founder results for a team-only search.
+- Direct Plaud OAuth polling is enabled in production; the Drive fallback is disabled to prevent duplicate ingestion. Token rotation is coordinated in Supabase and the explicit historical frontier prevents replaying older Drive imports.
+- Raw Plaud/Drive transcripts are founder/admin-only even after project matching. Project matches receive a separate deterministic `call_transcript_safe` derivative with financial, contact, credential, contractual, legal, personal, URL, and named-speaker lines removed.
+- Shared Slack participation does not receive transcript context at all. Non-DM replies also pass through a final deterministic sensitive-content guard; artists remain blocked from the studio-knowledge surface.
+- Production was corrected on 2026-08-27: all 1,509 historical raw transcript chunks are founder-only and zero remain team-visible. Auto-generated team summaries read only the safe derivative, never the raw transcript.
+- Semantic search receives a server-resolved requester tier and enforces allowed visibility inside `match_documents`.
 
 ### Dependency/security state
 

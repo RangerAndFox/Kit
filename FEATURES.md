@@ -476,22 +476,22 @@ Direct Plaud cron at minutes 7, 22, 37, and 52. Activates only when `PLAUD_INGES
 **Direct Inngest function** (`src/lib/inngest/plaud-transcripts.ts`)
 - Scans up to the 500 newest account recordings (100 per page) and processes at most 10 incomplete Kit records per run.
 - Uses `external_recording_id='plaud:<recordingId>'` for idempotency. Recordings visible before their transcript finishes are left unclaimed and retried naturally.
-- Converts timestamps/speaker labels into readable text, classifies the project, embeds with the existing privacy policy, and only then marks the row ingested. Failed embedding remains retryable and replay replaces rather than duplicates knowledge chunks.
-- Unmatched recordings remain founder/admin-only; project matches are team-visible.
+- Converts timestamps/speaker labels into readable text, classifies the project, embeds with the privacy boundary, and only then marks the row ingested. Failed embedding remains retryable and replay replaces rather than duplicates knowledge chunks.
+- Every raw Plaud/Drive recording remains founder/admin-only. A project match creates a separate team-safe derivative with sensitive lines removed; it never promotes the raw transcript.
 
 **Drive fallback** (`src/lib/inngest/drive-transcripts.ts`)
 - Lists up to 25 recent Drive files and processes at most 10 new files per run.
 - Uses `external_recording_id='drive:<fileId>'` with a unique constraint as the idempotency claim.
 - Downloads supported Google Docs/plain-text transcript content via `src/lib/integrations/drive-transcripts.ts` and sanitizes it before storage.
 - Calls `matchTranscriptToProject` using the filename and transcript text; unmatched historical rows receive one bounded rematch attempt.
-- Calls `embedTranscript` so project Q&A, channel participation, brain retrieval, and future briefings can use the call content. Embedding failure is non-fatal and can be repaired with the transcript re-embed action.
+- Calls `embedTranscript` so access-controlled project Q&A and briefings can use the call content. Shared-channel participation does not receive transcript context. Embedding failure is non-fatal and can be repaired with the transcript re-embed action.
 
 **Schema**
 `call_transcripts` stores the Drive file identity, transcript, source, project match, timestamps, and ingestion state. `project_documents` stores the searchable transcript chunks.
 
-**Status:** direct integration implemented behind a disabled activation gate; one-time Plaud authorization and a live recording remain. Google Drive is still the production source until that validation succeeds. Production audit on 2026-08-21 found 69 ingested Drive transcripts represented by 1,509 embedded chunks; the newest watched-folder file was from August 14.
+**Status:** direct Plaud integration enabled in production on 2026-08-27; the Drive fallback is disabled. The production privacy correction left all 1,509 historical raw transcript chunks founder-only and zero raw chunks team-visible.
 
-Unmatched Plaud/Drive transcripts are founder/admin-only until Kit positively associates them with a project. A later successful project rematch promotes their knowledge chunks to team visibility. Semantic search enforces the requester's allowed visibility tiers inside the service-role database function, so producer searches cannot retrieve founder-only transcripts.
+Raw Plaud/Drive transcripts remain founder/admin-only regardless of project match. Project-matched calls may create a separately redacted `call_transcript_safe` derivative for team retrieval. Shared Slack channels receive no transcript block, all non-DM output passes a sensitive-content guard, and semantic search enforces the requester's allowed visibility tiers inside the service-role database function.
 
 ---
 
@@ -561,8 +561,8 @@ Registered as `ask_studio_knowledge` tool. Ten actions:
 **Studio-knowledge helpers** (`src/lib/studio-knowledge/`)
 - `project-summary.ts` — `composeProjectSummaryText(project)` formats structural fields + brief + SOW into a markdown summary; `embedProjectSummary` upserts as `doc_type='project_summary'`; `embedAllProjects(workspaceId)` iterates.
 - `client-profile.ts` — same shape for `client_profiles` rows (`doc_type='client_profile'`).
-- `transcript.ts` — `composeTranscriptTitle` (Plaud/Granola/Manual + date + first ≤3 participant names); `embedTranscript` uses `ingestLongDocument` so long transcripts split into multiple `doc_type='call_transcript'` rows with `metadata.call_transcripts_id` pointing back; `backfillTranscriptsIntoRag(workspaceId)` for cleanup re-runs.
-- `auto-summarize.ts` — `regenerateProjectSummary` pulls recent notes + transcripts (top 20 / top 10 by `created_at`) + open `kit_actions`, asks Claude Haiku to write a ~250-word narrative, upserts. Falls back to the static `embedProjectSummary` when there's no material to draw from.
+- `transcript.ts` — `composeTranscriptTitle` (Plaud/Granola/Manual + date + first ≤3 participant names); `embedTranscript` stores founder-only raw chunks and, when project-matched, a separate redacted `call_transcript_safe` derivative; `backfillTranscriptsIntoRag(workspaceId)` repairs either missing side.
+- `auto-summarize.ts` — `regenerateProjectSummary` pulls recent notes + safe transcript derivatives (top 20 / top 10 by `created_at`) + open `kit_actions`, asks Claude Haiku to write a ~250-word narrative, upserts. It never reads the raw Plaud/Drive transcript. Falls back to the static `embedProjectSummary` when there's no material to draw from.
 
 **Notes capture** (`bolt/src/notes/`)
 - `keyword.ts` — regex detectors for `note for X:`, `note:`, `remember [that] X [for Y]`.
