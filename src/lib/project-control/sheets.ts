@@ -605,7 +605,12 @@ async function readTableForProject(config: WorkbookConfig, sheetId: number | und
       const date = /date/i.test(h) && typeof serial === 'number'
         ? new Date(Date.UTC(1899, 11, 30) + serial * 86_400_000).toISOString().slice(0, 10)
         : null
-      row[h] = n.hyperlink || date || n.display
+      // A formatted label can carry a stale hyperlink (the production sheet's
+      // "Frame.io" Link Type cell is one example). Only URL-bearing schema
+      // columns should prefer CellData.hyperlink; identity/type labels must
+      // remain their displayed text or downstream field matching breaks.
+      const isLinkValue = /(^url$| url$| link$)/i.test(h)
+      row[h] = (isLinkValue ? n.hyperlink : null) || date || n.display
     })
     return [row]
   })
