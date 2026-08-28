@@ -10,6 +10,7 @@ import { runProjectControlSync, projectControlSync, projectControlSyncOnEdit, ty
 import { MASTER_HEADERS, normalizeRow, sourceRowHash, type SheetCell } from './render'
 import type { WorkbookConfig } from './types'
 import type { BindingRow, SyncStateRow } from './store'
+import { PROJECT_VIEW_RENDER_VERSION } from './views'
 
 const CONFIG: WorkbookConfig = { spreadsheetId: 'sid', sheetId: 0, headerRow: 3, templateChannelId: 'C0' }
 const TEMPLATE = '# 🎬 2xxx Client Project\n\n| ### **Client** |  |\n'
@@ -109,7 +110,7 @@ describe('runProjectControlSync', () => {
     })
     await runProjectControlSync(deps)
     assert.deepEqual(edits, ['C1'])
-    assert.equal(store.advanced, 'v2')
+    assert.equal(store.advanced, `v2|project-views:${PROJECT_VIEW_RENDER_VERSION}`)
   })
 
   it('unchanged hash produces no canvas write', async () => {
@@ -117,6 +118,17 @@ describe('runProjectControlSync', () => {
     const r = await runProjectControlSync(deps)
     assert.deepEqual(edits, [])
     assert.equal(r.unchanged, 1)
+  })
+
+  it('takes the cheap no-change exit when both workbook and view version match', async () => {
+    const { deps, edits } = makeDeps({
+      cursor: `v2|project-views:${PROJECT_VIEW_RENDER_VERSION}`,
+      versions: ['v2'],
+      bindings: [binding({ last_row_hash: ROW_HASH })],
+    })
+    const result = await runProjectControlSync(deps)
+    assert.deepEqual(edits, [])
+    assert.equal(result.reason, 'no_change')
   })
 
   it('processes an error binding even when the Drive version is unchanged', async () => {

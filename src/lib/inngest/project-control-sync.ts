@@ -45,7 +45,7 @@ import {
   updateProjectCanvas,
   type ProjectCanvasRow,
 } from '../project-control/store'
-import { projectViewHash, renderOverviewView, renderReferenceView, renderScheduleView, type ProjectSupplement } from '../project-control/views'
+import { PROJECT_VIEW_RENDER_VERSION, projectViewHash, renderOverviewView, renderReferenceView, renderScheduleView, type ProjectSupplement } from '../project-control/views'
 
 export interface SyncSheetsPort {
   getWorkbookVersion(spreadsheetId: string): Promise<string>
@@ -149,12 +149,13 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
     const v1 = await deps.sheets.getWorkbookVersion(config.spreadsheetId)
     const state = await deps.store.getSyncState(config.spreadsheetId)
     const cursorVersion = state?.drive_version || null
+    const cursorVersionKey = `${v1}|project-views:${PROJECT_VIEW_RENDER_VERSION}`
 
     const bindings = await deps.store.listSyncableBindings(config.spreadsheetId)
     const needsRecovery = bindings.filter((b) => b.sync_status !== 'synced')
 
     // Coarse gate: unchanged workbook AND nothing to recover ⇒ cheap exit.
-    if (v1 === cursorVersion && needsRecovery.length === 0) {
+    if (cursorVersionKey === cursorVersion && needsRecovery.length === 0) {
       return { ...empty, ran: true, reason: 'no_change', considered: bindings.length }
     }
 
@@ -278,7 +279,7 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
     const v2 = await deps.sheets.getWorkbookVersion(config.spreadsheetId)
     let cursorAdvanced = false
     if (allOk && v1 === v2) {
-      await deps.store.advanceCursor(config.spreadsheetId, v1)
+      await deps.store.advanceCursor(config.spreadsheetId, cursorVersionKey)
       cursorAdvanced = true
     }
 

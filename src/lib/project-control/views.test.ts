@@ -29,6 +29,12 @@ describe('generated Canvas tables', () => {
     assert.doesNotMatch(markdown, /Line one\nLine two/)
   })
 
+  it('renders an intentional assignments table when nobody is assigned today', () => {
+    const markdown = renderOverviewView(row, supplement)
+    assert.match(markdown, /\| Artist \| Assignment \|/)
+    assert.match(markdown, /\| — \| No assignments for today \|/)
+  })
+
   it('escapes milestone pipes so schedule columns remain aligned', () => {
     const markdown = renderScheduleView(row, supplement)
     assert.match(markdown, /Revise boards \\| timing edit/)

@@ -10,6 +10,10 @@ export interface ProjectSupplement {
   assignments: Array<Record<string, string>>
 }
 
+// Bump when generated Canvas markup changes so the sync cursor performs one
+// complete regeneration even if the workbook itself has not changed.
+export const PROJECT_VIEW_RENDER_VERSION = '2'
+
 const val = (row: NormalizedRow, key: string) => row[key]?.display || '—'
 const link = (label: string, url?: string) => url ? `[${label}](${url})` : '—'
 const tableCell = (value: string) => (value || '—')
@@ -22,17 +26,20 @@ const table = (headers: string[], rows: string[][]) => [
 ].join('\n')
 
 export function projectViewHash(row: NormalizedRow, extra: ProjectSupplement): string {
-  return createHash('sha256').update(JSON.stringify({ row, extra })).digest('hex')
+  return createHash('sha256').update(JSON.stringify({ renderVersion: PROJECT_VIEW_RENDER_VERSION, row, extra })).digest('hex')
 }
 
 export function renderOverviewView(row: NormalizedRow, extra: ProjectSupplement): string {
   const today = new Date().toISOString().slice(0, 10)
   const assignments = extra.assignments.filter((a) => a.Date === today)
+  const assignmentRows = assignments.length > 0
+    ? assignments.map((a) => [a.Person, a['Daily Assignment']])
+    : [['—', 'No assignments for today']]
   const links = Object.fromEntries(extra.links.map((x) => [x['Link Type'], x.URL]))
   return `${GENERATED_VIEW_NOTICE}\n\n# ${val(row, 'Project Number')} — ${val(row, 'Project Name')}\n\n` +
     `## Project info\n${table(['Field', 'Value'], [
       ['Client', val(row, 'Client')], ['Status', val(row, 'Quick Status')], ['Next Milestone', val(row, 'Next Share')],
-    ])}\n\n## Today’s assignments\n${table(['Artist', 'Assignment'], assignments.map((a) => [a.Person, a['Daily Assignment']]))}\n\n` +
+    ])}\n\n## Today’s assignments\n${table(['Artist', 'Assignment'], assignmentRows)}\n\n` +
     `## Latest share\n${table(['Field', 'Value'], [['Last Share', row['Last Share']?.hyperlink ? link(row['Last Share'].display, row['Last Share'].hyperlink) : val(row, 'Last Share')], ['Status', val(row, 'Quick Status')], ['Next Milestone', val(row, 'Next Share')]])}\n\n` +
     `## Asset folders\n${table(['Asset', 'Link'], ['Dropbox','Frame.io','Figma','Script','Boords','Client Visual Reference','Music Reference','ElevenLabs','Harvest'].map((k) => [k, link(k, links[k])]))}`
 }
