@@ -42,7 +42,12 @@ Replace the workbook Apps Script with `scripts/apps-script/project-control-sheet
 - `HEADER_ROW=4`
 - existing production webhook URL and shared secret
 
-Human edits on any authoritative source tab trigger the debounced live refresh. Kit API writes call the same signed endpoint immediately; the existing ten-minute sync cron remains the recovery path.
+Install both `onMasterProjectListEdit` (**On edit**) and
+`onMasterProjectListChange` (**On change**) as installable spreadsheet triggers.
+Cell edits on any authoritative source tab and structural changes such as row
+insertion, deletion, movement, or sorting trigger a five-second debounced live
+refresh. Kit API writes call the same signed endpoint immediately; the existing
+ten-minute sync cron remains the recovery path.
 
 ## Provisioning behavior
 

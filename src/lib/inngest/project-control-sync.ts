@@ -334,7 +334,11 @@ export const projectControlSyncOnEdit = inngest.createFunction(
     name: 'Project Control — Sheet edit refresh',
     retries: 1,
     idempotency: 'event.data.request_id',
-    debounce: { period: '20s', key: 'event.data.spreadsheet_id' },
+    // A producer commonly fills several cells in one new row. Five seconds is
+    // long enough to collapse that burst while keeping the Canvas refresh
+    // perceptibly live; the previous 20-second window made a healthy update
+    // look broken before the sync had even started.
+    debounce: { period: '5s', key: 'event.data.spreadsheet_id' },
     triggers: [{ event: 'project-control/sheet.edited' }],
   },
   async ({ step }: { step: { run: <T>(id: string, fn: () => Promise<T> | T) => Promise<T> } }) => {
