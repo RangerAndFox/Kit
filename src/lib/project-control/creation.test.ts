@@ -129,6 +129,47 @@ describe('bindProjectControl', () => {
     assert.equal(counters.created, 0) // no canvas fabricated
   })
 
+  it('recovers the normalized workbook by creating all three generated views without a template', async () => {
+    const config: WorkbookConfig = { ...CONFIG, layout: 'rf-production-v1' }
+    const createdTitles: string[] = []
+    const savedTypes: string[] = []
+    const store = makeStore()
+    store.listProjectCanvases = async () => []
+    store.upsertProjectCanvas = async (input) => { savedTypes.push(input.canvasType) }
+    const sheets: CreationSheetsPort = {
+      ...okSheets,
+      readProjectSupplement: async () => ({
+        specs: {}, workback: [], links: [], deliverables: [], assignments: [],
+      }),
+    }
+    const canvas: CreationCanvasPort = {
+      createControlCanvas: async ({ title }) => {
+        createdTitles.push(title)
+        return { canvasId: `C${createdTitles.length}`, canvasUrl: `u${createdTitles.length}` }
+      },
+      editControlCanvas: async () => {},
+      reconcileControlCanvas: async () => ({ status: 'absent' as const }),
+    }
+    const deps: CreationDeps = { sheets, canvas, store, config, enabled: true, now: () => 't' }
+    const r = await bindProjectControl(
+      {
+        projectId: 'proj',
+        submission: { projectNumber: '2601', clientName: 'Nike', projectName: 'S' },
+        slackResult: slackResult({ controlTemplate: null, controlTemplateError: 'uncertain', canvasClones: [] }),
+      },
+      deps,
+    )
+    assert.equal(r.status, 'connected')
+    assert.deepEqual(createdTitles, [
+      '2601_Nike_S — Overview',
+      '2601_Nike_S — Reference',
+      '2601_Nike_S — Schedule',
+    ])
+    assert.deepEqual(savedTypes, ['overview', 'reference', 'schedule'])
+    assert.equal(store.b.creation_state, 'connected')
+    assert.equal(store.b.error, null)
+  })
+
   it('stops without a second canvas when an ambiguous create finds multiple candidates', async () => {
     const store = makeStore()
     const { deps } = makeDeps({
