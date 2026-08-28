@@ -121,8 +121,29 @@ interface SheetDataFilterResponse {
     data?: Array<{ rowData?: Array<{ values?: SheetCell[] }> }>
   }>
 }
+interface SpreadsheetMetadataResponse {
+  sheets?: Array<{
+    properties?: {
+      sheetId?: number
+      gridProperties?: { rowCount?: number }
+    }
+  }>
+}
 interface BatchUpdateResponse {
   replies?: Array<{ createDeveloperMetadata?: { developerMetadata?: { metadataId?: number } } }>
+}
+
+async function getSheetRowCount(config: WorkbookConfig, sheetId: number): Promise<number> {
+  const fields = encodeURIComponent('sheets(properties(sheetId,gridProperties(rowCount)))')
+  const data = await api<SpreadsheetMetadataResponse>(
+    'GET',
+    `${SHEETS_BASE}/${config.spreadsheetId}?fields=${fields}`,
+  )
+  const rowCount = data.sheets
+    ?.find((sheet) => sheet.properties?.sheetId === sheetId)
+    ?.properties?.gridProperties?.rowCount
+  if (rowCount == null) throw new Error(`getSheetRowCount: configured sheet ${sheetId} not found`)
+  return rowCount
 }
 
 /**
@@ -539,16 +560,31 @@ function userValue(value: PlainValue): Record<string, unknown> {
 async function appendRows(config: WorkbookConfig, sheetId: number, width: number, rows: PlainValue[][]): Promise<void> {
   if (rows.length === 0) return
   const firstDataRowIndex = config.headerRow
-  const existing = await getGridData(config, { startRowIndex: firstDataRowIndex, startColumnIndex: 0, endColumnIndex: width }, 'formattedValue,effectiveValue', sheetId)
+  // Column A is the normalized tables' durable occupancy key (Project ID).
+  // Other columns may contain prefilled formulas all the way to the grid edge;
+  // treating those as occupied pushes the append one row beyond the sheet.
+  const existing = await getGridData(
+    config,
+    { startRowIndex: firstDataRowIndex, startColumnIndex: 0, endColumnIndex: 1 },
+    'formattedValue,effectiveValue',
+    sheetId,
+  )
   const lastOccupied = existing.reduce((last, r, index) =>
-    Array.from({ length: width }, (_, i) => normalizeCell(r.values?.[i]).display.trim()).some(Boolean) ? index : last, -1)
+    normalizeCell(r.values?.[0]).display.trim() ? index : last, -1)
   const rowIndex = firstDataRowIndex + lastOccupied + 1
+  const rowCount = await getSheetRowCount(config, sheetId)
+  const missingRows = Math.max(0, rowIndex + rows.length - rowCount)
+  const requests: unknown[] = []
+  if (missingRows > 0) {
+    requests.push({ appendDimension: { sheetId, dimension: 'ROWS', length: missingRows } })
+  }
+  requests.push({ updateCells: {
+    start: { sheetId, rowIndex, columnIndex: 0 },
+    rows: rows.map((row) => ({ values: row.map((value) => ({ userEnteredValue: userValue(value) })) })),
+    fields: 'userEnteredValue',
+  } })
   await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, {
-    requests: [{ updateCells: {
-      start: { sheetId, rowIndex, columnIndex: 0 },
-      rows: rows.map((row) => ({ values: row.map((value) => ({ userEnteredValue: userValue(value) })) })),
-      fields: 'userEnteredValue',
-    } }],
+    requests,
   })
 }
 

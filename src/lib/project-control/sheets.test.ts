@@ -14,6 +14,7 @@ import {
   updateBoundRow,
   upsertProjectLinks,
   renameProjectLinks,
+  seedNormalizedProjectTables,
   __setSheetsTransportForTests,
 } from './sheets'
 import { kitOwnedCreationCells, parseDateToSerial, MASTER_HEADERS } from './render'
@@ -333,6 +334,74 @@ describe('RF Production workbook adapter', () => {
     await renameProjectLinks(config, '2637', '2637A')
     assert.deepEqual(batches[1].map((r) => r.updateCells.start.columnIndex), [0, 0])
     assert.deepEqual(batches[1].map((r) => r.updateCells.rows[0].values[0].userEnteredValue.stringValue), ['2637A', '2637A'])
+  })
+
+  it('appends workback rows by Project ID and expands a formula-prefilled grid', async () => {
+    const workbackSheetId = 1186252714
+    const workbackConfig: WorkbookConfig = {
+      ...config,
+      workbackSheetId,
+    }
+    type WorkbackBatchRequest =
+      | { appendDimension: { sheetId: number; dimension: string; length: number } }
+      | { updateCells: {
+          start: { sheetId: number; rowIndex: number; columnIndex: number }
+          rows: Array<{ values: unknown[] }>
+        } }
+    const batches: WorkbackBatchRequest[][] = []
+    const readWidths: number[] = []
+
+    __setSheetsTransportForTests(async <T>(_method: string, url: string, body?: unknown): Promise<T> => {
+      if (url.includes(':getByDataFilter')) {
+        const gr = (body as {
+          dataFilters: Array<{ gridRange: { sheetId: number; startColumnIndex: number; endColumnIndex: number } }>
+        }).dataFilters[0].gridRange
+        assert.equal(gr.sheetId, workbackSheetId)
+        readWidths.push(gr.endColumnIndex - gr.startColumnIndex)
+        // Row 4 is occupied. Rows 5-9 have blank Project IDs but formula cells
+        // in column H, matching the production Workback template.
+        const rowData = [
+          { values: [c('2600')] },
+          ...Array.from({ length: 5 }, () => ({
+            values: gr.endColumnIndex > 1
+              ? [...Array.from({ length: 7 }, () => c('')), c('0%')]
+              : [],
+          })),
+        ]
+        return { sheets: [{ properties: { sheetId: workbackSheetId }, data: [{ rowData }] }] } as T
+      }
+      if (url.includes('?fields=') && _method === 'GET') {
+        return { sheets: [{ properties: { sheetId: workbackSheetId, gridProperties: { rowCount: 10 } } }] } as T
+      }
+      if (url.includes(':batchUpdate')) {
+        batches.push((body as { requests: WorkbackBatchRequest[] }).requests)
+        return { replies: [] } as T
+      }
+      throw new Error(`unexpected url ${url}`)
+    })
+
+    await seedNormalizedProjectTables(workbackConfig, {
+      projectNumber: '9998',
+      clientName: 'Internal',
+      projectName: 'E2E',
+      startDate: '2026-08-27',
+      deadline: '2026-09-04',
+      milestoneCount: 9,
+      workbackTemplate: 'Standard Sizzle',
+    })
+
+    assert.deepEqual(readWidths, [1, 1], 'project detection and allocation only inspect the Project ID column')
+    assert.equal(batches.length, 1)
+    assert.deepEqual(batches[0][0], {
+      appendDimension: { sheetId: workbackSheetId, dimension: 'ROWS', length: 4 },
+    })
+    const write = batches[0][1] as Extract<WorkbackBatchRequest, { updateCells: unknown }>
+    assert.deepEqual(write.updateCells.start, {
+      sheetId: workbackSheetId,
+      rowIndex: 5,
+      columnIndex: 0,
+    })
+    assert.equal(write.updateCells.rows.length, 9)
   })
 })
 
