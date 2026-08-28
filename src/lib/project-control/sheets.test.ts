@@ -16,6 +16,7 @@ import {
   renameProjectLinks,
   renameNormalizedProjectRecords,
   readProjectSupplement,
+  createCachedProjectSupplementReader,
   seedNormalizedProjectTables,
   adoptLegacyProjectRow,
   __setSheetsTransportForTests,
@@ -366,6 +367,41 @@ describe('RF Production workbook adapter', () => {
   const c = (value: string): SheetCell => value
     ? { formattedValue: value, effectiveValue: { stringValue: value } }
     : {}
+
+  it('reads normalized supplement tabs once and reuses the invocation snapshot across projects', async () => {
+    const snapshotConfig: WorkbookConfig = {
+      ...config,
+      sheetId: 0,
+      specsSheetId: 1,
+      workbackSheetId: 2,
+      linksSheetId: 3,
+      deliverablesSheetId: 4,
+      assignmentsSheetId: 5,
+    }
+    let reads = 0
+    __setSheetsTransportForTests(async <T>(_method: string, url: string, body?: unknown): Promise<T> => {
+      if (!url.includes(':getByDataFilter')) throw new Error(`unexpected url ${url}`)
+      reads++
+      const sheetId = Number((body as { dataFilters: Array<{ gridRange: { sheetId: number } }> }).dataFilters[0].gridRange.sheetId)
+      return {
+        sheets: [{
+          properties: { sheetId },
+          data: [{ rowData: [
+            { values: [c('2637'), c(`value-${sheetId}`)] },
+            { values: [c('2639'), c(`other-${sheetId}`)] },
+          ] }],
+        }],
+      } as T
+    })
+
+    const read = createCachedProjectSupplementReader()
+    const first = await read(snapshotConfig, '2637')
+    const second = await read(snapshotConfig, '2639')
+
+    assert.equal(reads, 6)
+    assert.equal(first.specs['Dimensions'], 'value-1')
+    assert.equal(second.specs['Dimensions'], 'other-1')
+  })
 
   it('maps Projects A:W plus normalized Links into the stable Canvas row', async () => {
     __setSheetsTransportForTests(async <T>(_method: string, url: string, body?: unknown): Promise<T> => {

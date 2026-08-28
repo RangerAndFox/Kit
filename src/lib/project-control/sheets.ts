@@ -878,11 +878,11 @@ async function sheetHasProject(config: WorkbookConfig, sheetId: number, projectN
   return data.some((r) => normalizeCell(r.values?.[0]).display.trim() === projectNumber)
 }
 
-async function readTableForProject(config: WorkbookConfig, sheetId: number | undefined, headers: readonly string[], projectNumber: string): Promise<Array<Record<string, string>>> {
+async function readTableRows(config: WorkbookConfig, sheetId: number | undefined, headers: readonly string[]): Promise<Array<Record<string, string>>> {
   if (sheetId == null) return []
   const data = await getGridData(config, { startRowIndex: config.headerRow, startColumnIndex: 0, endColumnIndex: headers.length }, 'formattedValue,effectiveValue,hyperlink', sheetId)
   return data.flatMap((r) => {
-    if (normalizeCell(r.values?.[0]).display.trim() !== projectNumber) return []
+    if (!normalizeCell(r.values?.[0]).display.trim()) return []
     const row: Record<string, string> = {}
     headers.forEach((h, i) => {
       const n = normalizeCell(r.values?.[i])
@@ -901,6 +901,11 @@ async function readTableForProject(config: WorkbookConfig, sheetId: number | und
   })
 }
 
+async function readTableForProject(config: WorkbookConfig, sheetId: number | undefined, headers: readonly string[], projectNumber: string): Promise<Array<Record<string, string>>> {
+  const rows = await readTableRows(config, sheetId, headers)
+  return rows.filter((row) => row[headers[0]] === projectNumber)
+}
+
 export async function readProjectSupplement(config: WorkbookConfig, projectNumber: string): Promise<ProjectSupplement> {
   const [projectRows, specRows, workback, links, deliverables, assignments] = await Promise.all([
     readTableForProject(config, config.sheetId, RF_PRODUCTION_PROJECT_HEADERS, projectNumber),
@@ -913,6 +918,61 @@ export async function readProjectSupplement(config: WorkbookConfig, projectNumbe
   return {
     scheduleStatus: projectRows[0]?.['Schedule Status'] || 'Draft',
     specs: specRows[0] || {}, workback, links, deliverables, assignments,
+  }
+}
+
+/**
+ * Build an invocation-scoped supplement reader. A workbook sync touches many
+ * projects, but every project reads the same six normalized source tabs. Read
+ * each tab once and filter the in-memory snapshot per project, avoiding a fresh
+ * six-request burst for every binding. The closure is created by
+ * defaultSyncDeps for one sync invocation, so a later Sheet edit always starts
+ * with a fresh snapshot.
+ */
+export function createCachedProjectSupplementReader(): typeof readProjectSupplement {
+  let cacheKey = ''
+  let snapshot: Promise<{
+    projects: Array<Record<string, string>>
+    specs: Array<Record<string, string>>
+    workback: Array<Record<string, string>>
+    links: Array<Record<string, string>>
+    deliverables: Array<Record<string, string>>
+    assignments: Array<Record<string, string>>
+  }> | null = null
+
+  return async (config: WorkbookConfig, projectNumber: string): Promise<ProjectSupplement> => {
+    const key = [
+      config.spreadsheetId, config.sheetId, config.specsSheetId,
+      config.workbackSheetId, config.linksSheetId,
+      config.deliverablesSheetId, config.assignmentsSheetId,
+      config.headerRow,
+    ].join(':')
+    if (!snapshot || cacheKey !== key) {
+      cacheKey = key
+      snapshot = Promise.all([
+        readTableRows(config, config.sheetId, RF_PRODUCTION_PROJECT_HEADERS),
+        readTableRows(config, config.specsSheetId, ['Project ID','Dimensions','Frame Rate','Duration','Audio Requirements','Primary File Type','Notes','Specs Status']),
+        readTableRows(config, config.workbackSheetId, ['Project ID','Task','Phase','Start Date','Due Date','Owner','Status','% Complete','Notes','Milestone URL','Sort Order','Show on Canvas']),
+        readTableRows(config, config.linksSheetId, ['Project ID','Link Type','Label','URL','Active','Sort Order']),
+        readTableRows(config, config.deliverablesSheetId, ['Project ID','Deliverable','Specs','Delivery Link','Status','Sort Order']),
+        readTableRows(config, config.assignmentsSheetId, ['Project ID','Date','Person','Role','Phase','Daily Assignment']),
+      ]).then(([projects, specs, workback, links, deliverables, assignments]) => ({
+        projects, specs, workback, links, deliverables, assignments,
+      }))
+    }
+
+    const tables = await snapshot
+    const forProject = (rows: Array<Record<string, string>>) =>
+      rows.filter((row) => row['Project ID'] === projectNumber)
+    const project = tables.projects.find((row) => row['Project ID'] === projectNumber)
+    return {
+      scheduleStatus: project?.['Schedule Status'] || 'Draft',
+      specs: forProject(tables.specs)[0] || {},
+      workback: forProject(tables.workback),
+      links: forProject(tables.links),
+      deliverables: forProject(tables.deliverables),
+      assignments: forProject(tables.assignments),
+    }
   }
 }
 
