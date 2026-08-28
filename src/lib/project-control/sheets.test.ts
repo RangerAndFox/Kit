@@ -203,6 +203,37 @@ describe('adoptLegacyProjectRow', () => {
     )
     assert.equal(wrote, false)
   })
+
+  it('adopts the normalized row when copied metadata exists only on a legacy tab', async () => {
+    let wroteMetadata = false
+    __setSheetsTransportForTests(async <T>(_method: string, url: string, body?: unknown): Promise<T> => {
+      if (url.includes('developerMetadata:search')) {
+        return { matchedDeveloperMetadata: [{ developerMetadata: {
+          metadataId: 7,
+          location: { dimensionRange: { startIndex: 4, sheetId: 1869744848 } },
+        } }] } as T
+      }
+      if (url.includes(':getByDataFilter')) {
+        const cell = { formattedValue: '2637', effectiveValue: { stringValue: '2637' } }
+        return { sheets: [{ properties: { sheetId: config.sheetId }, data: [{ rowData: [{ values: [cell] }] }] }] } as T
+      }
+      if (decodeURIComponent(url).includes('tables(tableId,range)')) {
+        return { sheets: [{ properties: { sheetId: config.sheetId }, tables: [] }] } as T
+      }
+      if (url.includes(':batchUpdate')) {
+        const requests = (body as { requests: Array<{ createDeveloperMetadata?: unknown }> }).requests
+        wroteMetadata = requests.some((request) => Boolean(request.createDeveloperMetadata))
+        return { replies: requests.map((request) => request.createDeveloperMetadata
+          ? { createDeveloperMetadata: { developerMetadata: { metadataId: 99 } } }
+          : {}) } as T
+      }
+      throw new Error(`unexpected url ${url}`)
+    })
+    const result = await adoptLegacyProjectRow(config, 'project-2637', { projectNumber: '2637' })
+    assert.equal(result.rowIndex, 4)
+    assert.equal(result.metadataId, 99)
+    assert.equal(wroteMetadata, true)
+  })
 })
 
 describe('createBoundRow date + margin safety', () => {

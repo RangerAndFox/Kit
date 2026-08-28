@@ -552,7 +552,17 @@ export async function adoptLegacyProjectRow(
   if (config.layout !== 'rf-production-v1') {
     throw new Error('adoptLegacyProjectRow requires rf-production-v1')
   }
-  const already = await searchRowMetadata(config.spreadsheetId, kitProjectId, config.sheetId)
+  let already: RowMetadataMatch | null = null
+  try {
+    already = await searchRowMetadata(config.spreadsheetId, kitProjectId, config.sheetId)
+  } catch (error) {
+    // A duplicate workbook can retain developer metadata on its copied legacy
+    // tab. Normal reads must fail closed in that situation, but this explicit
+    // cutover operation exists to adopt the normalized Projects row. Once the
+    // configured-row metadata is attached, normal search deterministically
+    // selects it and continues to ignore the legacy tab.
+    if (!String(error).includes('not the configured sheet')) throw error
+  }
   let rowIndex: number
   let metadataId: number | null = already?.metadataId ?? null
   if (already) {
