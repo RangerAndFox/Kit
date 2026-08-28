@@ -72,6 +72,14 @@ describe('summarizeCheckins', () => {
     assert.equal(checkinsUrgent(s), true)
   })
 
+  it('does not flag an operator-verified Harvest reconciliation without captured ids', () => {
+    const s = summarizeCheckins([
+      row({ status: 'logged', harvest_entry_ids: null, origin: 'manual-reconciliation' }),
+    ], TODAY)
+    assert.equal(s.loggedWithoutIds, 0)
+    assert.equal(checkinsUrgent(s), false)
+  })
+
   it('flags a Harvest id present but status never advanced (inconsistency)', () => {
     const s = summarizeCheckins([row({ status: 'parsed', harvest_entry_ids: [999] })], TODAY)
     assert.equal(s.harvestIdButStuck, 1)

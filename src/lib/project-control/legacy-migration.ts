@@ -62,6 +62,7 @@ interface ProjectRow {
   start_date: string | null
   target_delivery: string | null
   slack_channel_id: string | null
+  harvest_project_id: number | null
   external_links: Record<string, unknown> | null
   external_ids?: Record<string, unknown> | null
   created_at?: string | null
@@ -265,6 +266,13 @@ function providerUrl(links: Record<string, unknown> | null | undefined, ...keys:
   return undefined
 }
 
+function harvestProjectUrl(project: ProjectRow): string | undefined {
+  const explicit = providerUrl(project.external_links, 'harvest_url', 'harvest')
+  if (explicit) return explicit
+  const id = clean(project.external_links?.harvest_id) || clean(project.harvest_project_id)
+  return /^\d+$/.test(id) ? `https://rangerandfox.harvestapp.com/projects/${id}` : undefined
+}
+
 async function ensureChannelAccess(channel: SlackChannel, projectId: string): Promise<void> {
   if (!channel.is_private && !channel.is_member) {
     await slackCall('conversations.join', { channel: channel.id })
@@ -406,7 +414,7 @@ export async function runLegacyProjectControlMigration(): Promise<LegacyMigratio
           projectType: seed.projectType,
           frameioUrl: providerUrl(links, 'frameio_url', 'frameio'),
           dropboxUrl: providerUrl(links, 'dropbox_url', 'dropbox'),
-          harvestUrl: providerUrl(links, 'harvest_url', 'harvest'),
+          harvestUrl: harvestProjectUrl(project),
           boordsUrl: providerUrl(links, 'boords_url', 'boords'),
         },
         slackResult: { id: channel.id, data: { channelId: channel.id } },

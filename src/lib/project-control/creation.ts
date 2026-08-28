@@ -217,6 +217,7 @@ export async function bindProjectControl(
       dropboxUrl: opts.submission.dropboxUrl,
       harvestUrl: opts.submission.harvestUrl,
       boordsUrl: opts.submission.boordsUrl,
+      slackUrl: `https://slack.com/app_redirect?channel=${encodeURIComponent(channelId)}`,
     })
     await deps.sheets.seedNormalizedProjectTables?.(config, opts.submission)
 

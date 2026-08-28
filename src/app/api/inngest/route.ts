@@ -21,12 +21,11 @@ import { registeredFunctions } from '@/lib/inngest/functions'
  */
 
 // Own the serverless execution limit for this route rather than inheriting an
-// unstated Vercel default (which can be as low as 10-15s). The delivery specs
-// scan bounds each tick to a ~30s elapsed budget; 60s leaves conservative
-// headroom for a page or folder re-list already in flight. Matches the
-// explicit-ownership convention used by the app's other heavy routes
-// (mcp, slack/events = 60).
-export const maxDuration = 60
+// unstated Vercel default. Most functions finish in under a minute, but the
+// workbook-wide Sheet-to-Canvas repair deliberately paces Google Sheets reads
+// below the per-user quota and can take several minutes when many projects need
+// recovery at once. Inngest still isolates and retries the individual step.
+export const maxDuration = 300
 
 export const { GET, POST, PUT } = serve({
   client: inngest,
