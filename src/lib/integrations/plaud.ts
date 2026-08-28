@@ -53,6 +53,15 @@ interface AccessSnapshot {
   expiresAt: number
 }
 
+class PlaudRefreshError extends Error {
+  constructor(
+    readonly status: number,
+    detail: string,
+  ) {
+    super(`Plaud token refresh failed: ${status} ${detail}`)
+  }
+}
+
 let cachedAccess: AccessSnapshot | null = null
 
 export function plaudIngestEnabled(): boolean {
@@ -128,11 +137,11 @@ async function invalidateAccessTokenQuietly(): Promise<void> {
   } catch {}
 }
 
-async function exchangeAndPersist(): Promise<AccessSnapshot> {
-  const state = await readTokenState()
-  const refreshToken = state?.refresh_token || process.env.PLAUD_REFRESH_TOKEN?.trim()
-  if (!refreshToken) throw new Error('Plaud refresh token is unavailable')
-
+async function exchangeRefreshToken(refreshToken: string): Promise<{
+  access_token?: string
+  refresh_token?: string
+  expires_in?: number
+}> {
   const refreshUrl = process.env.PLAUD_REFRESH_URL || DEFAULT_REFRESH_URL
   const res = await fetch(refreshUrl, {
     method: 'POST',
@@ -142,12 +151,33 @@ async function exchangeAndPersist(): Promise<AccessSnapshot> {
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
-    throw new Error(`Plaud token refresh failed: ${res.status} ${detail}`)
+    throw new PlaudRefreshError(res.status, detail)
   }
-  const data = (await res.json()) as {
+  return (await res.json()) as {
     access_token?: string
     refresh_token?: string
     expires_in?: number
+  }
+}
+
+async function exchangeAndPersist(): Promise<AccessSnapshot> {
+  const state = await readTokenState()
+  const bootstrapToken = process.env.PLAUD_REFRESH_TOKEN?.trim()
+  let refreshToken = state?.refresh_token || bootstrapToken
+  if (!refreshToken) throw new Error('Plaud refresh token is unavailable')
+
+  let data
+  try {
+    data = await exchangeRefreshToken(refreshToken)
+  } catch (error) {
+    // A fresh CLI authorization produces a new bootstrap token while the
+    // database may still hold a revoked rotated token. Recover once from that
+    // exact state, then persist Plaud's newly rotated credentials below.
+    if (!(error instanceof PlaudRefreshError) || error.status !== 401 || !bootstrapToken || bootstrapToken === refreshToken) {
+      throw error
+    }
+    refreshToken = bootstrapToken
+    data = await exchangeRefreshToken(refreshToken)
   }
   if (!data.access_token) throw new Error('Plaud token refresh returned no access_token')
 
