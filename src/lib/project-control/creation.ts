@@ -58,6 +58,8 @@ import {
   releaseWorkbookLease,
   type BindingRow,
   upsertProjectCanvas,
+  listProjectCanvases,
+  type ProjectCanvasRow,
 } from './store'
 
 export interface CreationSheetsPort {
@@ -87,6 +89,7 @@ export interface CreationStorePort {
   renewWorkbookLease(spreadsheetId: string, kind: 'creation' | 'sync', holder: string): Promise<boolean>
   releaseWorkbookLease(spreadsheetId: string, kind: 'creation' | 'sync', holder: string): Promise<void>
   upsertProjectCanvas?(input: { projectId: string; canvasType: 'overview' | 'reference' | 'schedule'; canvasId: string; canvasUrl?: string | null; sourceTemplateFileId?: string | null; templateMarkdown?: string | null; sourceTemplateHash?: string | null }): Promise<void>
+  listProjectCanvases?(projectId: string): Promise<ProjectCanvasRow[]>
 }
 
 export interface CreationDeps {
@@ -122,6 +125,7 @@ export function defaultCreationDeps(): CreationDeps {
       ensureBinding, getBindingByProject, updateBinding,
       claimWorkbookLease, renewWorkbookLease, releaseWorkbookLease,
       upsertProjectCanvas,
+      listProjectCanvases,
     },
     config: workbookConfigFromEnv(),
     enabled: projectControlCreationEnabled(),
@@ -162,12 +166,6 @@ export async function bindProjectControl(
   const saveCanvasBindings = async (overview: CanvasHandle) => {
     if (!deps.store.upsertProjectCanvas) return
     await deps.store.upsertProjectCanvas({ projectId: opts.projectId, canvasType: 'overview', canvasId: overview.canvasId, canvasUrl: overview.canvasUrl, sourceTemplateFileId: controlTemplate?.fileId, templateMarkdown: controlTemplate?.markdown, sourceTemplateHash: controlTemplate?.hash })
-    for (const clone of opts.slackResult.data?.canvasClones || []) {
-      const lower = clone.title.toLowerCase()
-      const canvasType = lower.includes('reference') ? 'reference' : lower.includes('schedule') ? 'schedule' : null
-      if (!canvasType) continue
-      await deps.store.upsertProjectCanvas({ projectId: opts.projectId, canvasType, canvasId: clone.canvasId, sourceTemplateFileId: clone.templateFileId, templateMarkdown: clone.markdown })
-    }
   }
 
   const binding = await deps.store.ensureBinding({
@@ -223,7 +221,8 @@ export async function bindProjectControl(
     await deps.sheets.seedNormalizedProjectTables?.(config, opts.submission)
 
     // ── Step 2: template snapshot ────────────────────────────────────────────
-    if (!controlTemplate) {
+    const generatedViews = config.layout === 'rf-production-v1' && Boolean(deps.sheets.readProjectSupplement)
+    if (!controlTemplate && !generatedViews) {
       // Fail closed on the Project Control step only — the Sheet row is bound,
       // but we won't fabricate a Canvas or report a false "connected".
       await deps.store.updateBinding(opts.projectId, {
@@ -237,9 +236,9 @@ export async function bindProjectControl(
     if (cur && cur.creation_state === 'sheet_bound') {
       await deps.store.updateBinding(opts.projectId, {
         creation_state: 'pending_canvas',
-        source_template_file_id: controlTemplate.fileId,
-        source_template_hash: controlTemplate.hash,
-        template_markdown: controlTemplate.markdown,
+        source_template_file_id: controlTemplate?.fileId || null,
+        source_template_hash: controlTemplate?.hash || null,
+        template_markdown: controlTemplate?.markdown || null,
       })
     }
 
@@ -276,17 +275,50 @@ export async function bindProjectControl(
     const title = controlCanvasTitle(spine || opts.submission.projectName || 'Project')
     const markdown = extra
       ? renderOverviewView(row, extra)
-      : renderProjectControlCanvas(controlTemplate.markdown, row)
-    const renderClonedViews = async () => {
+      : renderProjectControlCanvas(controlTemplate!.markdown, row)
+    const ensureSupplementalViews = async () => {
       if (!extra) return
-      for (const clone of opts.slackResult.data?.canvasClones || []) {
-        const lower = clone.title.toLowerCase()
-        const canvasType = lower.includes('reference') ? 'reference' : lower.includes('schedule') ? 'schedule' : null
-        if (!canvasType) continue
-        await deps.canvas.editControlCanvas({
-          canvasId: clone.canvasId,
-          title: `${spine || opts.submission.projectName || 'Project'} — ${canvasType === 'reference' ? 'Reference' : 'Schedule'}`,
-          markdown: canvasType === 'reference' ? renderReferenceView(row, extra) : renderScheduleView(row, extra),
+      const persisted = deps.store.listProjectCanvases
+        ? await deps.store.listProjectCanvases(opts.projectId)
+        : []
+      const desired = [
+        { canvasType: 'reference' as const, label: 'Reference', markdown: renderReferenceView(row, extra) },
+        { canvasType: 'schedule' as const, label: 'Schedule', markdown: renderScheduleView(row, extra) },
+      ]
+      for (const view of desired) {
+        const title = `${spine || opts.submission.projectName || 'Project'} — ${view.label}`
+        const clone = (opts.slackResult.data?.canvasClones || []).find((candidate) =>
+          candidate.title.toLowerCase().includes(view.canvasType))
+        const stored = persisted.find((candidate) => candidate.canvas_type === view.canvasType && candidate.canvas_id)
+        let handle: CanvasHandle
+        if (clone) {
+          await deps.canvas.editControlCanvas({ canvasId: clone.canvasId, title, markdown: view.markdown })
+          handle = { canvasId: clone.canvasId, canvasUrl: null }
+        } else if (stored?.canvas_id) {
+          await deps.canvas.editControlCanvas({ canvasId: stored.canvas_id, title, markdown: view.markdown })
+          handle = { canvasId: stored.canvas_id, canvasUrl: stored.canvas_url }
+        } else {
+          try {
+            handle = await deps.canvas.createControlCanvas({ channelId, title, markdown: view.markdown })
+          } catch (err) {
+            const rec = await deps.canvas.reconcileControlCanvas({ channelId, expectedTitle: title })
+            if (rec.status === 'found') {
+              await deps.canvas.editControlCanvas({ canvasId: rec.canvasId, title, markdown: view.markdown })
+              handle = { canvasId: rec.canvasId, canvasUrl: null }
+            } else if (rec.status === 'ambiguous') {
+              throw new Error(`${view.canvasType}_canvas_ambiguous: ${rec.canvasIds.join(',')}`)
+            } else {
+              throw err
+            }
+          }
+        }
+        await deps.store.upsertProjectCanvas?.({
+          projectId: opts.projectId,
+          canvasType: view.canvasType,
+          canvasId: handle.canvasId,
+          canvasUrl: handle.canvasUrl,
+          sourceTemplateFileId: clone?.templateFileId || null,
+          templateMarkdown: clone?.markdown || null,
         })
       }
     }
@@ -294,6 +326,8 @@ export async function bindProjectControl(
     const b2 = await deps.store.getBindingByProject(opts.projectId)
     if (b2 && b2.canvas_id) {
       await deps.canvas.editControlCanvas({ canvasId: b2.canvas_id, title, markdown })
+      await saveCanvasBindings({ canvasId: b2.canvas_id, canvasUrl: b2.canvas_url })
+      await ensureSupplementalViews()
       await deps.store.updateBinding(opts.projectId, {
         creation_state: 'connected',
         sync_status: 'synced',
@@ -301,8 +335,6 @@ export async function bindProjectControl(
         last_synced_at: deps.now(),
         error: null,
       })
-      await saveCanvasBindings({ canvasId: b2.canvas_id, canvasUrl: b2.canvas_url })
-      await renderClonedViews()
       return { status: 'connected' }
     }
 
@@ -330,6 +362,8 @@ export async function bindProjectControl(
       }
     }
 
+    await saveCanvasBindings(canvasHandle)
+    await ensureSupplementalViews()
     await deps.store.updateBinding(opts.projectId, {
       canvas_id: canvasHandle.canvasId,
       canvas_url: canvasHandle.canvasUrl,
@@ -339,8 +373,6 @@ export async function bindProjectControl(
       last_synced_at: deps.now(),
       error: null,
     })
-    await saveCanvasBindings(canvasHandle)
-    await renderClonedViews()
     return { status: 'connected' }
   } catch (err) {
     await deps.store
