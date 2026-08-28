@@ -14,8 +14,8 @@ catches API/script-originated Sheet changes, which edit triggers cannot see).
 ## Architecture
 
 ```
-Human edits Master Project List row
-  → Apps Script installable onEdit trigger  (scripts/apps-script/project-control-sheet-edit.gs)
+Human edits or structurally changes Master Project List
+  → Apps Script installable On edit / On change triggers  (scripts/apps-script/project-control-sheet-edit.gs)
   → POST /api/webhooks/project-control/sheet-edited   (HMAC-signed, Production only)
   → inngest.send('project-control/sheet.edited', id=<requestId>)
   → projectControlSyncOnEdit  (debounced per workbook)
@@ -73,6 +73,12 @@ Inngest event: `project-control/sheet.edited`. Replay dedupe is enforced by
    This creates the **installable** trigger (required — the restricted simple
    `onEdit` cannot make external requests). Do **not** rename the function to
    `onEdit`.
+5. Add a second installable trigger:
+   - Function: `onMasterProjectListChange`
+   - Event source: **From spreadsheet**
+   - Event type: **On change**
+   This covers structural changes (insert/delete/move/sort rows) that Google's
+   edit event does not report.
 5. Authorize the script when prompted (it needs external-request + this-workbook
    scopes only; it never reads credentials or cell contents).
 

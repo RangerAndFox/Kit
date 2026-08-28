@@ -231,7 +231,7 @@ describe('projectControlSync functions — cron + event share ONE core', () => {
     // Debounce (trailing edge) coalesces DISTINCT bursts but never drops the
     // final edit. Keyed on the workbook.
     assert.equal(onEdit.opts.debounce.key, 'event.data.spreadsheet_id')
-    assert.ok(onEdit.opts.debounce.period, 'has a debounce period')
+    assert.equal(onEdit.opts.debounce.period, '5s')
     // Function-level idempotency dedupes REPLAYED notifications — the event-level
     // `id` does NOT dedupe a debounced function, so this is what actually
     // collapses a retried requestId to one run.
