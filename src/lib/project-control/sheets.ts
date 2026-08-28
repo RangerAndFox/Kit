@@ -653,9 +653,11 @@ export async function deleteProjectRowMetadata(
  * cell's existing format + validation).
  */
 function buildCellRequests(config: WorkbookConfig, rowIndex: number, ownedCells: OwnedCell[]): unknown[] {
-  const colIndex = (header: string) => headerToA1Column(header, config.layout || 'legacy').charCodeAt(0) - 'A'.charCodeAt(0)
   return ownedCells.map((cell) => {
-    const start = { sheetId: config.sheetId, rowIndex, columnIndex: colIndex(cell.header) }
+    // OwnedCell already carries the schema-resolved physical column. Using it
+    // directly also supports RF-only fields (Project Type) that intentionally
+    // have no legacy semantic header.
+    const start = { sheetId: config.sheetId, rowIndex, columnIndex: cell.column.charCodeAt(0) - 'A'.charCodeAt(0) }
     if (cell.kind === 'date' && typeof cell.serial === 'number') {
       return {
         updateCells: {
@@ -996,9 +998,10 @@ export async function advanceWorkbackForShare(config: WorkbookConfig, kitProject
   return { nextMilestone: next ? normalizeCell(next.values[1]).display : null }
 }
 
-/** Keep normalized Links rows attached when a project's human-facing ID is
- * changed through Kit. Provider URLs and link labels are left untouched. */
-export async function renameProjectLinks(
+/** Keep every normalized child row attached when a project's human-facing ID
+ * changes through Kit. Only the Project ID key moves; producer-entered values,
+ * provider URLs, labels, milestone states, specs and notes remain untouched. */
+export async function renameNormalizedProjectRecords(
   config: WorkbookConfig,
   oldProjectNumber: string | undefined,
   newProjectNumber: string | undefined,
@@ -1006,21 +1009,53 @@ export async function renameProjectLinks(
   const oldId = oldProjectNumber?.trim()
   const newId = newProjectNumber?.trim()
   if (
-    config.layout !== 'rf-production-v1' || config.linksSheetId == null ||
+    config.layout !== 'rf-production-v1' ||
     !oldId || !newId || oldId === newId
   ) return
-  const rows = await readRfLinkRows(config)
-  const matching = rows.filter((r) => r.projectNumber === oldId)
-  if (matching.length === 0) return
-  const requests = matching.map((row) => ({
-    updateCells: {
-      rows: [{ values: [{ userEnteredValue: { stringValue: newId } }] }],
-      fields: 'userEnteredValue',
-      start: { sheetId: config.linksSheetId!, rowIndex: row.rowIndex, columnIndex: 0 },
-    },
+  const sheets = [
+    config.linksSheetId == null ? null : { sheetId: config.linksSheetId, firstDataRowIndex: config.linksHeaderRow ?? config.headerRow },
+    config.specsSheetId == null ? null : { sheetId: config.specsSheetId, firstDataRowIndex: config.headerRow },
+    config.workbackSheetId == null ? null : { sheetId: config.workbackSheetId, firstDataRowIndex: config.headerRow },
+    config.assignmentsSheetId == null ? null : { sheetId: config.assignmentsSheetId, firstDataRowIndex: config.headerRow },
+    config.deliverablesSheetId == null ? null : { sheetId: config.deliverablesSheetId, firstDataRowIndex: config.headerRow },
+    config.statusLogSheetId == null ? null : { sheetId: config.statusLogSheetId, firstDataRowIndex: config.headerRow },
+  ].filter((sheet): sheet is { sheetId: number; firstDataRowIndex: number } => sheet != null)
+
+  const scans = await Promise.all(sheets.map(async ({ sheetId, firstDataRowIndex }) => {
+    const rows = await getGridData(
+      config,
+      { startRowIndex: firstDataRowIndex, startColumnIndex: 0, endColumnIndex: 1 },
+      'formattedValue,effectiveValue',
+      sheetId,
+    )
+    return rows.map((row, offset) => ({
+      sheetId,
+      rowIndex: firstDataRowIndex + offset,
+      projectNumber: normalizeCell(row.values?.[0]).display.trim(),
+    })).filter((row) => row.projectNumber === oldId || row.projectNumber === newId)
   }))
+
+  const flat = scans.flat()
+  const oldRows = flat.filter((row) => row.projectNumber === oldId)
+  if (oldRows.length === 0) return // idempotent retry after an already-complete rename
+
+  // Never merge one project's normalized records into another project's key.
+  // A fully atomic prior run has no old rows; seeing BOTH keys means the
+  // workbook is ambiguous and needs a human decision.
+  if (flat.some((row) => row.projectNumber === newId)) {
+    throw new Error(`normalized project id collision: ${newId}`)
+  }
+
+  const requests = oldRows.map((row) => ({ updateCells: {
+    rows: [{ values: [{ userEnteredValue: { stringValue: newId } }] }],
+    fields: 'userEnteredValue',
+    start: { sheetId: row.sheetId, rowIndex: row.rowIndex, columnIndex: 0 },
+  } }))
   await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests })
 }
+
+/** Backward-compatible narrow name retained for older callers/tests. */
+export const renameProjectLinks = renameNormalizedProjectRecords
 
 // ─── Narrow single-column read / single-cell write (operator repair only) ─────
 

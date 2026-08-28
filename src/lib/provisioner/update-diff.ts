@@ -227,6 +227,7 @@ export function computeUpdatePlan(
       changed.has('client') ||
       changed.has('client_contact') ||
       changed.has('project_name') ||
+      changed.has('project_type') ||
       changed.has('start_date') ||
       changed.has('deadline') ||
       changed.has('creative_director') ||

@@ -186,8 +186,10 @@ export interface CreationSubmission {
   milestoneNames?: string[]
 }
 
+export type OwnedHeader = MasterHeader | 'Project Type'
+
 export interface OwnedCell {
-  header: MasterHeader
+  header: OwnedHeader
   column: string
   /** 'date' cells are written as a Sheets serial number with a DATE format;
    *  'string' cells as plain text. */
@@ -257,6 +259,12 @@ export function kitOwnedCreationCells(
     } else {
       out.push({ header, column: headerToA1Column(header, layout), kind: 'string', value: String(value) })
     }
+  }
+  // Project Type exists only in the RF Production control-center schema. Keep
+  // it out of the legacy A:Y map, but treat it as a first-class Kit-owned field
+  // for both creation and the confirmed update-project ripple.
+  if (layout === 'rf-production-v1' && sub.projectType?.trim()) {
+    out.push({ header: 'Project Type', column: 'E', kind: 'string', value: sub.projectType.trim() })
   }
   return out
 }

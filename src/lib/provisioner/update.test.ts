@@ -64,6 +64,7 @@ function fakeDeps(overrides: Partial<UpdateDeps> = {}) {
     persistDropboxMove: async (_pid, o) => { calls.push('persistDropbox'); dropboxWrites.push({ safeName: o.safeName, path: o.path }) },
     updateSheet: async () => { calls.push('sheet'); return { success: true } },
     updateProjectRow: async () => { calls.push('supabase'); return { success: true } },
+    refreshProjectControl: async () => { calls.push('project_control'); return { success: true } },
     ledger: fakeLedger(),
     ...overrides,
   }
@@ -91,7 +92,16 @@ describe('runProjectUpdate — phasing + services', () => {
     assert.equal(dropboxWrites.length, 1)
     assert.ok(calls.indexOf('persistDropbox') < calls.indexOf('supabase'))
     assert.ok(calls.indexOf('sheet') < calls.indexOf('supabase')) // sheet before supabase
+    assert.ok(calls.indexOf('supabase') < calls.indexOf('project_control'))
     assert.equal(out.allRequiredDone, true)
+  })
+
+  it('a control-center field refreshes the three managed canvases in the final phase', async () => {
+    const f = form({ clientContact: 'Janet' })
+    const plan = computeUpdatePlan(SNAP, f)
+    const { deps, calls } = fakeDeps()
+    await runProjectUpdate({ updateRequestId: 'R', projectId: SNAP.projectId, submission: f, plan, current: { slackChannelId: 'C1' } }, deps)
+    assert.deepEqual(calls, ['sheet', 'supabase', 'project_control'])
   })
 
   it('renames use the CURRENT value for an identity field the user did not change', async () => {
