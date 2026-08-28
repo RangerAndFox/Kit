@@ -16,6 +16,7 @@ import folderStructure from '../provisioner/folder-structure.json'
 import { dropboxHeaders, getDropboxAccessToken } from '@/lib/dropbox/client'
 import { frameioHeaders } from '@/lib/frameio/auth'
 import { frameioProjectUrl } from '@/lib/frameio/url'
+import { deriveProjectYear } from '@/lib/provisioner/identifiers'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -54,7 +55,8 @@ export async function provisionDropbox(input: ProvisionInput): Promise<Provision
   }
 
   const templatePath = process.env.DROPBOX_TEMPLATE_PATH ?? '/_TEMPLATES/New Project Template'
-  const year = new Date().getFullYear()
+  const projectNumber = input.projectCode?.split('-')[0] || ''
+  const year = deriveProjectYear(projectNumber) || String(new Date().getFullYear())
   const slug = `${input.client}_${input.projectName}`.replace(/[^\w\s-]/g, '').replace(/\s+/g, '_')
   const destPath = `/Ranger & Fox/Production/${year}/${slug}`
 

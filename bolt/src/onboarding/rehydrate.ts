@@ -22,6 +22,7 @@ import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { searchProjects as harvestSearchProjects } from '../../../src/lib/harvest/client'
 import { dropboxHeaders } from '../../../src/lib/dropbox/client'
 import { frameioProjectUrl } from '../../../src/lib/frameio/url'
+import { deriveProjectYear } from '../../../src/lib/provisioner/identifiers'
 
 interface RehydrateResult {
   discovered: string[]
@@ -64,7 +65,7 @@ async function findSlackChannel(
  */
 function deriveDropboxPath(project: OnboardingProject): string | null {
   const safeName: string | undefined = project.external_ids?.dropbox_safe_name
-  const year = new Date().getFullYear() // best-effort; could read created_at
+  const year = deriveProjectYear(project.project_code || safeName || '') || String(new Date().getFullYear())
   if (safeName) {
     return `/production/${year}/${safeName}`
   }

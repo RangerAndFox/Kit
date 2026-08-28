@@ -14,12 +14,29 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   deriveProjectCode,
+  deriveProjectYear,
   deriveDropboxSafeName,
   deriveFrameioBusinessLabel,
   deriveSlackShortId,
   deriveSlackSlug,
   deriveProjectIdentifiers,
 } from './identifiers'
+
+describe('deriveProjectYear', () => {
+  it('derives the four-digit year from the project-number prefix', () => {
+    assert.equal(deriveProjectYear('2659'), '2026')
+    assert.equal(deriveProjectYear('2701'), '2027')
+    assert.equal(deriveProjectYear('2599'), '2025')
+    assert.equal(deriveProjectYear(' 2630A '), '2026')
+    assert.equal(deriveProjectYear('2659-Microsoft'), '2026')
+  })
+
+  it('fails closed for values without a four-digit project spine', () => {
+    assert.equal(deriveProjectYear('26'), null)
+    assert.equal(deriveProjectYear('ABC2659'), null)
+    assert.equal(deriveProjectYear(''), null)
+  })
+})
 
 // ─── Oracles: the original inline logic, copied verbatim ─────────────────────
 
