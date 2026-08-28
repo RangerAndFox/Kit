@@ -32,7 +32,12 @@ function headers() {
 
 // Bounded: an unbounded Slack call could hang past the creation lease and let a
 // reclaiming worker run concurrently (see the lease-ownership guarantees).
-const SLACK_CALL_TIMEOUT_MS = 15_000
+// Canvas document replacements are materially slower than ordinary Slack Web
+// API calls. Production has shown Slack applying a replacement successfully
+// but returning after the former 15-second client cutoff, leaving Kit to report
+// a false failure. Keep the call bounded by the workbook lease while allowing
+// Slack enough time to acknowledge the completed edit.
+const SLACK_CALL_TIMEOUT_MS = 45_000
 
 /**
  * Channel access level for the managed Project Control Canvas. The Sheet is the
