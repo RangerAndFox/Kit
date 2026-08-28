@@ -138,7 +138,11 @@ export function summarizeCheckins(rows: CheckinRow[], todayISO: string): Checkin
       else s.failed++
     }
     if (r.status === 'logging') s.stuckLogging++
-    if (logged && !hasHarvestIds(r.harvest_entry_ids)) s.loggedWithoutIds++
+    // Entries reconciled against Harvest by an operator are complete even when
+    // Kit did not create (and therefore could not capture) the provider IDs.
+    // Keep the explicit origin marker auditable without manufacturing a daily
+    // health incident for hours already verified in Harvest.
+    if (logged && !hasHarvestIds(r.harvest_entry_ids) && r.origin !== 'manual-reconciliation') s.loggedWithoutIds++
     // Only 'parsed' — a row that never advanced past parsing yet carries a
     // Harvest id (the real, unexplained inconsistency). A 'failed' row can
     // legitimately carry ids from a partial success (confirm.ts logs matched

@@ -369,12 +369,15 @@ function projectNumberFromCell(cell: SheetCell | undefined): string {
   return normalizeCell(cell).display.trim()
 }
 
-function normalizeLinkType(value: string): 'Frame.io' | 'Dropbox' | 'Harvest' | 'Boords' | null {
+type ManagedLinkType = 'Frame.io' | 'Dropbox' | 'Harvest' | 'Boords' | 'Slack Channel'
+
+function normalizeLinkType(value: string): ManagedLinkType | null {
   const v = value.trim().toLowerCase()
   if (v === 'frame.io' || v === 'frameio') return 'Frame.io'
   if (v === 'dropbox' || v.startsWith('dropbox ')) return 'Dropbox'
   if (v === 'harvest') return 'Harvest'
   if (v === 'boords') return 'Boords'
+  if (v === 'slack' || v === 'slack channel') return 'Slack Channel'
   return null
 }
 
@@ -767,6 +770,7 @@ export interface ProjectLinksInput {
   dropboxUrl?: string
   harvestUrl?: string
   boordsUrl?: string
+  slackUrl?: string
 }
 
 /** Upsert Kit-owned provider links in RF Production's normalized Links tab.
@@ -783,7 +787,8 @@ export async function upsertProjectLinks(
     { type: 'Dropbox' as const, url: links.dropboxUrl?.trim() },
     { type: 'Harvest' as const, url: links.harvestUrl?.trim() },
     { type: 'Boords' as const, url: links.boordsUrl?.trim() },
-  ].filter((x): x is { type: 'Frame.io' | 'Dropbox' | 'Harvest' | 'Boords'; url: string } => Boolean(x.url))
+    { type: 'Slack Channel' as const, url: links.slackUrl?.trim() },
+  ].filter((x): x is { type: ManagedLinkType; url: string } => Boolean(x.url))
   if (desired.length === 0) return
 
   const rows = await readRfLinkRows(config)
@@ -816,7 +821,7 @@ export async function upsertProjectLinks(
           { userEnteredValue: { stringValue: link.type } },
           { userEnteredValue: { stringValue: link.url } },
           { userEnteredValue: { boolValue: true } },
-          { userEnteredValue: { numberValue: link.type === 'Dropbox' ? 10 : link.type === 'Frame.io' ? 20 : link.type === 'Boords' ? 50 : 90 } },
+          { userEnteredValue: { numberValue: link.type === 'Dropbox' ? 10 : link.type === 'Frame.io' ? 20 : link.type === 'Boords' ? 50 : link.type === 'Harvest' ? 90 : 100 } },
         ] }],
         fields: 'userEnteredValue',
         start: { sheetId: config.linksSheetId, rowIndex, columnIndex: 0 },
