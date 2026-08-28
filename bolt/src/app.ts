@@ -458,4 +458,14 @@ cron.schedule(
   console.log(`   App token: ...${process.env.SLACK_APP_TOKEN?.slice(-6)}`)
   console.log(`   Anthropic key: ${process.env.ANTHROPIC_API_KEY ? 'set' : 'MISSING'}`)
   console.log(`   Cron timezone: ${CHECKIN_TZ}`)
+
+  // Explicit, temporary cutover switch. The migration is idempotent and uses
+  // durable row metadata/canvas bindings, but it never runs unless production
+  // has opted in with PROJECT_CONTROL_LEGACY_MIGRATION_ENABLED=true.
+  if (process.env.PROJECT_CONTROL_LEGACY_MIGRATION_ENABLED === 'true') {
+    void import('../../src/lib/project-control/legacy-migration')
+      .then(({ runLegacyProjectControlMigration }) => runLegacyProjectControlMigration())
+      .then((result) => console.log('[project-control] legacy migration:', JSON.stringify(result)))
+      .catch((error) => console.error('[project-control] legacy migration failed:', error))
+  }
 })()

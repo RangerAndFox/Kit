@@ -81,6 +81,24 @@ async function getAccessToken(): Promise<string> {
   return cachedToken.token
 }
 
+/**
+ * Read a bounded A1 range from any spreadsheet the configured service account
+ * can access. This is intentionally small and read-only; the legacy Project
+ * Control migration uses it to reconcile the former production workbook before
+ * adopting rows in the new authoritative workbook.
+ */
+export async function readSpreadsheetValues(
+  spreadsheetId: string,
+  range: string,
+): Promise<Array<Array<string | number | boolean>>> {
+  const encodedRange = encodeURIComponent(range)
+  const data = await api<{ values?: Array<Array<string | number | boolean>> }>(
+    'GET',
+    `${SHEETS_BASE}/${spreadsheetId}/values/${encodedRange}?valueRenderOption=FORMATTED_VALUE`,
+  )
+  return data.values || []
+}
+
 type Transport = <T>(method: string, url: string, body?: unknown) => Promise<T>
 
 async function httpTransport<T>(method: string, url: string, body?: unknown): Promise<T> {
@@ -452,6 +470,145 @@ export interface CreateBoundRowResult {
   metadataId: number
   rowIndex: number
   alreadyBound: boolean
+}
+
+/** Fields copied from the former production workbook during the one-time
+ * Project Control cutover. Only non-empty source values are written. */
+export interface LegacyProjectRowSeed {
+  projectNumber: string
+  client?: string
+  projectName?: string
+  clientContact?: string
+  projectType?: string
+  lifecycle?: string
+  phase?: string
+  currentStatus?: string
+  nextMilestone?: string
+  startDate?: string
+  deliveryDate?: string
+  creativeDirector?: string
+  producer?: string
+  previousNotes?: string
+}
+
+function legacySeedRequests(config: WorkbookConfig, rowIndex: number, seed: LegacyProjectRowSeed): unknown[] {
+  const values: Array<{ columnIndex: number; value?: string; date?: string }> = [
+    { columnIndex: 0, value: seed.projectNumber },
+    { columnIndex: 1, value: seed.client },
+    { columnIndex: 2, value: seed.projectName },
+    { columnIndex: 3, value: seed.clientContact },
+    { columnIndex: 4, value: seed.projectType },
+    { columnIndex: 5, value: seed.lifecycle },
+    { columnIndex: 6, value: seed.phase },
+    { columnIndex: 7, value: seed.currentStatus },
+    { columnIndex: 8, value: seed.nextMilestone },
+    { columnIndex: 10, date: seed.startDate },
+    { columnIndex: 11, date: seed.deliveryDate },
+    { columnIndex: 12, value: seed.creativeDirector },
+    { columnIndex: 13, value: seed.producer },
+    { columnIndex: 19, value: seed.previousNotes },
+  ]
+  const requests: unknown[] = []
+  for (const item of values) {
+    if (item.date) {
+      const serial = parseDateToSerial(item.date)
+      if (serial == null) continue
+      requests.push({
+        updateCells: {
+          rows: [{ values: [{
+            userEnteredValue: { numberValue: serial },
+            userEnteredFormat: { numberFormat: { type: 'DATE' } },
+          }] }],
+          fields: 'userEnteredValue,userEnteredFormat.numberFormat',
+          start: { sheetId: config.sheetId, rowIndex, columnIndex: item.columnIndex },
+        },
+      })
+      continue
+    }
+    const value = item.value?.trim()
+    if (!value) continue
+    requests.push({
+      updateCells: {
+        rows: [{ values: [{ userEnteredValue: { stringValue: value } }] }],
+        fields: 'userEnteredValue',
+        start: { sheetId: config.sheetId, rowIndex, columnIndex: item.columnIndex },
+      },
+    })
+  }
+  return requests
+}
+
+/**
+ * Adopt the unique existing Projects row for a legacy project number, or seed
+ * a new row when none exists, then attach the durable kit_project_id metadata.
+ * This prevents the cutover from appending duplicate rows beneath the workbook
+ * tables. A duplicate project number fails closed for manual review.
+ */
+export async function adoptLegacyProjectRow(
+  config: WorkbookConfig,
+  kitProjectId: string,
+  seed: LegacyProjectRowSeed,
+): Promise<CreateBoundRowResult> {
+  if (config.layout !== 'rf-production-v1') {
+    throw new Error('adoptLegacyProjectRow requires rf-production-v1')
+  }
+  const already = await searchRowMetadata(config.spreadsheetId, kitProjectId, config.sheetId)
+  let rowIndex: number
+  let metadataId: number | null = already?.metadataId ?? null
+  if (already) {
+    rowIndex = already.rowIndex
+  } else {
+    const firstDataRowIndex = config.headerRow
+    const rows = await getGridData(
+      config,
+      { startRowIndex: firstDataRowIndex, startColumnIndex: 0, endColumnIndex: 1 },
+      'formattedValue,effectiveValue',
+    )
+    const wanted = seed.projectNumber.trim().toLowerCase()
+    const matches: number[] = []
+    rows.forEach((row, offset) => {
+      if (normalizeCell(row.values?.[0]).display.trim().toLowerCase() === wanted) {
+        matches.push(firstDataRowIndex + offset)
+      }
+    })
+    if (matches.length > 1) {
+      throw new Error(`legacy adoption ambiguous: ${seed.projectNumber} appears on rows ${matches.map((x) => x + 1).join(',')}`)
+    }
+    rowIndex = matches[0] ?? await findNextEmptyRowIndex(config)
+  }
+
+  const requests = legacySeedRequests(config, rowIndex, seed)
+  const table = await getNativeTable(config, config.sheetId)
+  const tableExpansion = expandTableRequest(table, rowIndex + 1)
+  if (tableExpansion) requests.push(tableExpansion)
+  if (!already) {
+    requests.push({
+      createDeveloperMetadata: {
+        developerMetadata: {
+          metadataKey: KIT_PROJECT_ID_METADATA_KEY,
+          metadataValue: kitProjectId,
+          visibility: 'DOCUMENT',
+          location: {
+            dimensionRange: {
+              sheetId: config.sheetId,
+              dimension: 'ROWS',
+              startIndex: rowIndex,
+              endIndex: rowIndex + 1,
+            },
+          },
+        },
+      },
+    })
+  }
+  if (requests.length) {
+    const data = await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests })
+    if (!already) {
+      const metaReply = (data.replies || []).find((r) => r.createDeveloperMetadata)
+      metadataId = metaReply?.createDeveloperMetadata?.developerMetadata?.metadataId ?? null
+    }
+  }
+  if (metadataId == null) throw new Error('adoptLegacyProjectRow: no developer metadata id returned')
+  return { metadataId, rowIndex, alreadyBound: Boolean(already) }
 }
 
 /**

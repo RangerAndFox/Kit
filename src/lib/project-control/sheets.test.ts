@@ -16,6 +16,7 @@ import {
   renameProjectLinks,
   readProjectSupplement,
   seedNormalizedProjectTables,
+  adoptLegacyProjectRow,
   __setSheetsTransportForTests,
 } from './sheets'
 import { kitOwnedCreationCells, parseDateToSerial, MASTER_HEADERS } from './render'
@@ -137,6 +138,70 @@ describe('createBoundRow RF Production placement safety', () => {
     assert.equal(requestedEndColumnIndex, 23, 'the RF layout scans every physical Projects column')
     assert.equal(metadataStartIndex, config.headerRow + 1, 'the occupied ID-less row is skipped')
     assert.equal(expandedTableEndIndex, config.headerRow + 2, 'the native Projects table expands through the new row')
+  })
+})
+
+describe('adoptLegacyProjectRow', () => {
+  const config: WorkbookConfig = {
+    ...CONFIG,
+    layout: 'rf-production-v1',
+    sheetId: 904721650,
+    headerRow: 4,
+  }
+
+  it('adopts and updates the unique existing project row instead of appending a duplicate', async () => {
+    let batch: any[] = []
+    __setSheetsTransportForTests(async <T>(_method: string, url: string, body?: unknown): Promise<T> => {
+      if (url.includes('developerMetadata:search')) return { matchedDeveloperMetadata: [] } as T
+      if (url.includes(':getByDataFilter')) {
+        return { sheets: [{ properties: { sheetId: config.sheetId }, data: [{ rowData: [
+          { values: [{ formattedValue: '2637', effectiveValue: { stringValue: '2637' } }] },
+          { values: [{ formattedValue: '2638', effectiveValue: { stringValue: '2638' } }] },
+        ] }] }] } as T
+      }
+      if (decodeURIComponent(url).includes('tables(tableId,range)')) {
+        return { sheets: [{ properties: { sheetId: config.sheetId }, tables: [{
+          tableId: 'projects-table', range: { sheetId: config.sheetId, startRowIndex: 3, endRowIndex: 20, startColumnIndex: 0, endColumnIndex: 23 },
+        }] }] } as T
+      }
+      if (url.includes(':batchUpdate')) {
+        batch = (body as any).requests
+        return { replies: [
+          ...batch.slice(0, -1).map(() => ({})),
+          { createDeveloperMetadata: { developerMetadata: { metadataId: 88 } } },
+        ] } as T
+      }
+      throw new Error(`unexpected url ${url}`)
+    })
+
+    const result = await adoptLegacyProjectRow(config, 'project-2637', {
+      projectNumber: '2637', client: 'Microsoft', projectName: 'Fabric IQ', lifecycle: 'Active',
+      currentStatus: 'Design in progress', startDate: '2026-08-11', deliveryDate: '2026-09-10',
+    })
+    assert.equal(result.rowIndex, 4, 'row 5 is adopted (headerRow is the zero-based first data row)')
+    assert.equal(result.metadataId, 88)
+    assert.equal(batch.filter((request) => request.createDeveloperMetadata).length, 1)
+    assert.ok(batch.every((request) => !request.updateTable), 'an in-table row does not expand the table')
+    const writtenRows = batch.filter((request) => request.updateCells).map((request) => request.updateCells.start.rowIndex)
+    assert.ok(writtenRows.length > 0 && writtenRows.every((rowIndex) => rowIndex === 4))
+  })
+
+  it('fails closed when a project number appears more than once', async () => {
+    let wrote = false
+    __setSheetsTransportForTests(async <T>(_method: string, url: string): Promise<T> => {
+      if (url.includes('developerMetadata:search')) return { matchedDeveloperMetadata: [] } as T
+      if (url.includes(':getByDataFilter')) {
+        const cell = { formattedValue: '2637', effectiveValue: { stringValue: '2637' } }
+        return { sheets: [{ properties: { sheetId: config.sheetId }, data: [{ rowData: [{ values: [cell] }, { values: [cell] }] }] }] } as T
+      }
+      if (url.includes(':batchUpdate')) wrote = true
+      throw new Error(`unexpected url ${url}`)
+    })
+    await assert.rejects(
+      () => adoptLegacyProjectRow(config, 'project-2637', { projectNumber: '2637' }),
+      /adoption ambiguous/,
+    )
+    assert.equal(wrote, false)
   })
 })
 
