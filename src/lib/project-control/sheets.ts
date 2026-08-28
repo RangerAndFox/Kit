@@ -611,6 +611,27 @@ export async function adoptLegacyProjectRow(
   return { metadataId, rowIndex, alreadyBound: Boolean(already) }
 }
 
+/** Remove only the row metadata belonging to a discarded migration duplicate.
+ * Cell values and the row itself are intentionally preserved. */
+export async function deleteProjectRowMetadata(
+  config: WorkbookConfig,
+  kitProjectId: string,
+): Promise<void> {
+  await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, {
+    requests: [{
+      deleteDeveloperMetadata: {
+        dataFilter: {
+          developerMetadataLookup: {
+            metadataKey: KIT_PROJECT_ID_METADATA_KEY,
+            metadataValue: kitProjectId,
+            visibility: 'DOCUMENT',
+          },
+        },
+      },
+    }],
+  })
+}
+
 /**
  * Build the per-cell `updateCells` batchUpdate requests for a set of owned cells
  * at a row. Shared by createBoundRow and updateBoundRow so the date-vs-string

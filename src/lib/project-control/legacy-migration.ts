@@ -12,14 +12,23 @@
  * Obvious tests are quarantined, and ambiguous spreadsheet rows fail closed.
  */
 
+import { randomUUID } from 'node:crypto'
 import { createAdminClient } from '../supabase/admin'
 import { bindProjectControl } from './creation'
 import {
   adoptLegacyProjectRow,
+  deleteProjectRowMetadata,
   readSpreadsheetValues,
   type LegacyProjectRowSeed,
 } from './sheets'
 import { workbookConfigFromEnv } from './types'
+import {
+  claimWorkbookLease,
+  getBindingByProject,
+  listProjectCanvases,
+  releaseWorkbookLease,
+  renewWorkbookLease,
+} from './store'
 
 const SLACK_API = 'https://slack.com/api'
 const PROJECT_CHANNEL_RE = /^(\d{4}[a-z]?)(?:-|_)/i
@@ -54,6 +63,8 @@ interface ProjectRow {
   target_delivery: string | null
   slack_channel_id: string | null
   external_links: Record<string, unknown> | null
+  external_ids?: Record<string, unknown> | null
+  created_at?: string | null
 }
 
 export interface LegacyMigrationResult {
@@ -274,6 +285,36 @@ async function ensureChannelAccess(channel: SlackChannel, projectId: string): Pr
   }
 }
 
+async function removeMigrationDuplicates(
+  config: NonNullable<ReturnType<typeof workbookConfigFromEnv>>,
+  projects: ProjectRow[],
+): Promise<void> {
+  const groups = new Map<string, ProjectRow[]>()
+  for (const project of projects) {
+    if (project.external_ids?.migrated_from !== 'legacy-production-sheet+slack') continue
+    const key = `${clean(project.project_code).toLowerCase()}|${clean(project.slack_channel_id)}`
+    if (!project.slack_channel_id) continue
+    groups.set(key, [...(groups.get(key) || []), project])
+  }
+  const sb = createAdminClient()
+  for (const duplicates of groups.values()) {
+    if (duplicates.length < 2) continue
+    duplicates.sort((a, b) => clean(a.created_at).localeCompare(clean(b.created_at)))
+    for (const duplicate of duplicates.slice(1)) {
+      const canvases = await listProjectCanvases(duplicate.id)
+      for (const canvas of canvases) {
+        if (canvas.canvas_id) await slackCall('canvases.delete', { canvas_id: canvas.canvas_id })
+      }
+      await deleteProjectRowMetadata(config, duplicate.id)
+      const { error } = await sb.from('projects').delete().eq('id', duplicate.id)
+      if (error) throw new Error(`duplicate cleanup ${duplicate.project_code}: ${error.message}`)
+      const index = projects.findIndex((candidate) => candidate.id === duplicate.id)
+      if (index >= 0) projects.splice(index, 1)
+      console.log(`[project-control migration] removed duplicate ${duplicate.project_code} (${duplicate.id})`)
+    }
+  }
+}
+
 export async function runLegacyProjectControlMigration(): Promise<LegacyMigrationResult> {
   const result: LegacyMigrationResult = {
     ran: false, scannedChannels: 0, eligible: 0, connected: [], deferred: [], skipped: [], errors: [],
@@ -283,6 +324,18 @@ export async function runLegacyProjectControlMigration(): Promise<LegacyMigratio
   const config = workbookConfigFromEnv()
   if (!sourceSpreadsheetId || !config) throw new Error('legacy migration workbook configuration is incomplete')
   result.ran = true
+
+  // A deploy and an environment-variable change can briefly overlap Railway
+  // replicas. Hold the workbook sync lease for the entire cutover so only one
+  // migration can inventory/adopt rows at a time.
+  const migrationHolder = `legacy-migration:${randomUUID()}`
+  if (!(await claimWorkbookLease(config.spreadsheetId, 'sync', migrationHolder))) {
+    result.ran = false
+    result.skipped.push({ channel: '*', reason: 'migration_lease_unavailable' })
+    return result
+  }
+
+  try {
 
   const [channels, sourceValues, targetValues] = await Promise.all([
     listLiveProjectChannels(),
@@ -300,6 +353,7 @@ export async function runLegacyProjectControlMigration(): Promise<LegacyMigratio
   const { data: projectData, error: projectError } = await sb.from('projects').select('*').eq('workspace_id', workspace.id)
   if (projectError) throw new Error(`project inventory failed: ${projectError.message}`)
   const projects = (projectData || []) as ProjectRow[]
+  await removeMigrationDuplicates(config, projects)
 
   for (const channel of channels.sort((a, b) => a.name.localeCompare(b.name))) {
     const number = projectNumber(channel.name)
@@ -318,10 +372,21 @@ export async function runLegacyProjectControlMigration(): Promise<LegacyMigratio
     }
     result.eligible++
     try {
+      if (!(await renewWorkbookLease(config.spreadsheetId, 'sync', migrationHolder))) {
+        throw new Error('migration lease lost')
+      }
       const provisional = buildSeed(number, source, target, candidates.find((row) => row.status === 'active') || candidates[0] || null, channel)
       const project = await resolveProject(projects, workspace.id, number, provisional, channel)
       const seed = buildSeed(number, source, target, project, channel)
       await ensureChannelAccess(channel, project.id)
+      const existingBinding = await getBindingByProject(project.id)
+      const existingCanvases = existingBinding?.creation_state === 'connected'
+        ? await listProjectCanvases(project.id)
+        : []
+      if (existingBinding?.creation_state === 'connected' && existingCanvases.length >= 3) {
+        result.connected.push(number)
+        continue
+      }
       await adoptLegacyProjectRow(config, project.id, seed)
       const links = project.external_links || {}
       const bind = await bindProjectControl({
@@ -347,9 +412,15 @@ export async function runLegacyProjectControlMigration(): Promise<LegacyMigratio
       if (bind.status === 'connected') result.connected.push(number)
       else if (bind.status === 'deferred') result.deferred.push(number)
       else result.errors.push({ projectNumber: number, channel: channel.name, error: bind.reason || bind.status })
+      // Stay below Google Sheets' service-account read quota. A new binding
+      // renders three views and reads several normalized tabs.
+      await new Promise((resolve) => setTimeout(resolve, 20_000))
     } catch (error) {
       result.errors.push({ projectNumber: number, channel: channel.name, error: error instanceof Error ? error.message : String(error) })
     }
   }
   return result
+  } finally {
+    await releaseWorkbookLease(config.spreadsheetId, 'sync', migrationHolder).catch(() => {})
+  }
 }
