@@ -123,6 +123,23 @@ describe('runProjectControlSync', () => {
     assert.deepEqual(edits, ['C1'])
   })
 
+  it('syncs generated RF Production views without a legacy template snapshot', async () => {
+    const { deps, edits, store } = makeDeps({
+      bindings: [binding({ template_markdown: null, source_template_file_id: null, source_template_hash: null, last_row_hash: 'old' })],
+    })
+    deps.config = { ...CONFIG, layout: 'rf-production-v1' }
+    deps.sheets.readProjectSupplement = async () => ({
+      scheduleStatus: 'Draft', specs: {}, workback: [], links: [], deliverables: [], assignments: [],
+    })
+
+    const result = await runProjectControlSync(deps)
+
+    assert.deepEqual(edits, ['C1'])
+    assert.equal(result.updated, 1)
+    assert.equal(store.bindings[0].sync_status, 'synced')
+    assert.equal(store.bindings[0].error, null)
+  })
+
   it('does not advance the cursor when a binding fails', async () => {
     const { deps, store } = makeDeps({ editThrows: true })
     await runProjectControlSync(deps)
