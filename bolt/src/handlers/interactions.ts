@@ -148,7 +148,7 @@ export function registerInteractionHandlers(app: App) {
     try {
       const db = createAdminClient() as any
       const { data: project, error } = await db.from('projects')
-        .select('id,name,project_code,project_manager_slack_id,external_ids')
+        .select('id,name,client,project_code,project_type,start_date,target_delivery,project_manager_slack_id,external_ids,external_links,slack_channel_id')
         .eq('id', projectId).maybeSingle()
       if (error || !project) throw new Error(error?.message || 'Project not found')
       if (project.project_manager_slack_id && project.project_manager_slack_id !== userId) {
@@ -160,8 +160,25 @@ export function registerInteractionHandlers(app: App) {
       if (!config) throw new Error('Project Control workbook is not configured')
       const result = await activateWorkbackDraft(config, project.id, projectNumber, `<@${userId}>`)
       await db.from('projects').update({ external_ids: { ...(project.external_ids || {}), schedule_status: 'active' } }).eq('id', project.id)
-      if (!(await requestProjectControlSync(config, config.workbackSheetId || config.sheetId))) {
-        console.warn('[project-control] immediate approved-workback refresh unavailable; cron will reconcile')
+      const channelId = project.slack_channel_id || project.external_links?.slack_id || project.external_links?.slack_channel_id
+      const refresh = await bindProjectControl({
+        projectId: project.id,
+        submission: {
+          projectNumber,
+          clientName: project.client || '',
+          projectName: project.name,
+          projectType: project.project_type || '',
+          startDate: project.start_date,
+          deadline: project.target_delivery,
+          scheduleStatus: 'Active',
+        },
+        slackResult: { id: channelId || undefined },
+      })
+      if (refresh.status === 'error' || refresh.status === 'deferred') {
+        console.warn(`[project-control] direct approved-workback refresh ${refresh.status}: ${refresh.reason || 'unknown'}`)
+        if (!(await requestProjectControlSync(config, config.workbackSheetId || config.sheetId))) {
+          console.warn('[project-control] approved-workback refresh fallback unavailable; cron will reconcile')
+        }
       }
       await respond({ replace_original: true, text: `✅ *${projectNumber} ${project.name}* workback approved. *${result.firstMilestone}* is now In Progress, and the Schedule Canvas will refresh automatically.` })
     } catch (err: any) {
@@ -176,7 +193,7 @@ export function registerInteractionHandlers(app: App) {
     try {
       const db = createAdminClient() as any
       const { data: project, error } = await db.from('projects')
-        .select('id,project_code,start_date,target_delivery,project_manager_slack_id,external_ids')
+        .select('id,name,client,project_code,project_type,start_date,target_delivery,project_manager_slack_id,external_ids,external_links,slack_channel_id')
         .eq('id', projectId).maybeSingle()
       if (error || !project) throw new Error(error?.message || 'Project not found')
       if (project.project_manager_slack_id && project.project_manager_slack_id !== userId) {
@@ -217,7 +234,7 @@ export function registerInteractionHandlers(app: App) {
     try {
       const db = createAdminClient() as any
       const { data: project, error } = await db.from('projects')
-        .select('id,name,project_code,project_manager_slack_id,external_ids')
+        .select('id,name,client,project_code,project_type,project_manager_slack_id,external_ids,external_links,slack_channel_id')
         .eq('id', projectId).maybeSingle()
       if (error || !project) throw new Error(error?.message || 'Project not found')
       if (project.project_manager_slack_id && project.project_manager_slack_id !== userId) {
@@ -237,8 +254,28 @@ export function registerInteractionHandlers(app: App) {
       })
       const externalIds = { ...(project.external_ids || {}), workback_template: workbackTemplate, milestone_count: milestoneCount, schedule_status: 'draft' }
       await db.from('projects').update({ start_date: startDate, target_delivery: deadline, external_ids: externalIds }).eq('id', project.id)
-      if (!(await requestProjectControlSync(config, config.workbackSheetId || config.sheetId))) {
-        console.warn('[project-control] immediate regenerated-workback refresh unavailable; cron will reconcile')
+      const channelId = project.slack_channel_id || project.external_links?.slack_id || project.external_links?.slack_channel_id
+      const refresh = await bindProjectControl({
+        projectId: project.id,
+        submission: {
+          projectNumber,
+          clientName: project.client || '',
+          projectName: project.name,
+          projectType: project.project_type || '',
+          startDate,
+          deadline,
+          workbackTemplate,
+          milestoneCount,
+          scheduleStatus: 'Draft',
+          producerName,
+        },
+        slackResult: { id: channelId || undefined },
+      })
+      if (refresh.status === 'error' || refresh.status === 'deferred') {
+        console.warn(`[project-control] direct regenerated-workback refresh ${refresh.status}: ${refresh.reason || 'unknown'}`)
+        if (!(await requestProjectControlSync(config, config.workbackSheetId || config.sheetId))) {
+          console.warn('[project-control] regenerated-workback refresh fallback unavailable; cron will reconcile')
+        }
       }
       const dm: any = await client.conversations.open({ users: userId })
       await client.chat.postMessage(buildWorkbackDraftMessage({
