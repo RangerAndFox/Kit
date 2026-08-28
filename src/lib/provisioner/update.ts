@@ -12,6 +12,8 @@
  *   B. the Master Project List row (the Canvas re-renders from it via sync);
  *   C. the Supabase projects row (last, so it never races Phase A's eager write
  *      of the moved Dropbox folder's safe-name).
+ *   D. the three managed Project Control canvases, edited in place from the
+ *      authoritative workbook after both persistence layers are current.
  *
  * All external calls go through injected `deps` so this is unit-tested without
  * the network or a DB. It does NOT set projects.status or the request status —
@@ -83,6 +85,8 @@ export interface UpdateDeps {
     form: UpdateForm,
     derived: { projectCode: string },
   ) => Promise<UpdateStepRunResult>
+  /** Immediately refresh the existing Overview/Reference/Schedule canvases. */
+  refreshProjectControl: (projectId: string, form: UpdateForm, current: UpdateCurrentIds) => Promise<UpdateStepRunResult>
   /** The durable step ledger (update-store adapters, keyed by requestKey). */
   ledger: StepLedger
 }
@@ -184,6 +188,7 @@ export async function runProjectUpdate(
   const required: string[] = [...externalServices]
   if (plan.services.sheet) required.push('sheet')
   if (plan.services.supabase) required.push('supabase')
+  if (plan.services.sheet) required.push('project_control')
 
   const phases: PhasePlan[] = []
   if (externalServices.length > 0) {
@@ -196,6 +201,17 @@ export async function runProjectUpdate(
     phases.push(() => [
       { service: 'supabase', run: () => deps.updateProjectRow(projectId, form, { projectCode: ids.projectCode }) },
     ])
+  }
+  if (plan.services.sheet) {
+    phases.push(() => [{
+      service: 'project_control',
+      run: () => deps.refreshProjectControl(projectId, form, {
+        ...current,
+        projectNumber: spineNumber,
+        clientName: spineClient,
+        projectName: spineName,
+      }),
+    }])
   }
 
   const outcome = await runDurableProvisioning(

@@ -14,6 +14,7 @@ import {
   updateBoundRow,
   upsertProjectLinks,
   renameProjectLinks,
+  renameNormalizedProjectRecords,
   readProjectSupplement,
   seedNormalizedProjectTables,
   adoptLegacyProjectRow,
@@ -438,13 +439,43 @@ describe('RF Production workbook adapter', () => {
     })
     const owned = kitOwnedCreationCells({
       projectNumber: '2637', clientName: 'Microsoft', clientContact: 'Michelle', projectName: 'Fabric IQ',
+      projectType: 'Client',
       startDate: '2026-08-11', deadline: '2026-09-10', creativeDirectorName: 'Steve', producerName: 'Ally',
       frameioUrl: 'https://frame.example', dropboxUrl: 'https://dropbox.example',
     }, 'rf-production-v1')
     await updateBoundRow(config, 'project-uuid', owned)
     const cols = requests.map((r) => r.updateCells.start.columnIndex)
-    assert.deepEqual(cols, [0, 1, 3, 2, 10, 11, 12, 13])
+    assert.deepEqual(cols, [0, 1, 3, 2, 10, 11, 12, 13, 4])
     assert.ok(!owned.some((x) => x.header === 'Frame.io' || x.header === 'Dropbox'))
+  })
+
+  it('atomically carries a renamed Project ID across every normalized source tab', async () => {
+    const ids = {
+      linksSheetId: 11, specsSheetId: 12, workbackSheetId: 13,
+      assignmentsSheetId: 14, deliverablesSheetId: 15, statusLogSheetId: 16,
+    }
+    const fullConfig: WorkbookConfig = { ...config, ...ids, linksHeaderRow: 4 }
+    let written: any[] = []
+    __setSheetsTransportForTests(async <T>(_method: string, url: string, body?: unknown): Promise<T> => {
+      if (url.includes(':getByDataFilter')) {
+        const gr = (body as any).dataFilters[0].gridRange
+        const rows = gr.sheetId === ids.workbackSheetId
+          ? [{ values: [c('2637')] }, { values: [c('2637')] }]
+          : [{ values: [c('2637')] }]
+        return { sheets: [{ properties: { sheetId: gr.sheetId }, data: [{ rowData: rows }] }] } as T
+      }
+      if (url.includes(':batchUpdate')) {
+        written = (body as any).requests
+        return { replies: [] } as T
+      }
+      throw new Error(`unexpected url ${url}`)
+    })
+
+    await renameNormalizedProjectRecords(fullConfig, '2637', '2637A')
+    assert.equal(written.length, 7)
+    assert.deepEqual(new Set(written.map((r) => r.updateCells.start.sheetId)), new Set(Object.values(ids)))
+    assert.ok(written.every((r) => r.updateCells.start.columnIndex === 0))
+    assert.ok(written.every((r) => r.updateCells.rows[0].values[0].userEnteredValue.stringValue === '2637A'))
   })
 
   it('upserts provider links and renames every link row without duplicates', async () => {

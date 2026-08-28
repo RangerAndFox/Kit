@@ -40,7 +40,7 @@ import {
   completeUpdateStep,
   listUpdateRequestsWithIncompleteSteps,
 } from '../../../src/lib/provisioner/update-store'
-import { renameProjectLinks, updateBoundRow } from '../../../src/lib/project-control/sheets'
+import { renameNormalizedProjectRecords, updateBoundRow } from '../../../src/lib/project-control/sheets'
 import { kitOwnedCreationCells, headerToA1Column, type MasterHeader } from '../../../src/lib/project-control/render'
 import { buildUpdateProjectCard } from './updateproject-card'
 import {
@@ -1653,6 +1653,7 @@ export function registerInteractionHandlers(app: App) {
             if (changed.has('client')) ownedFields.clientName = f.clientName
             if (changed.has('client_contact')) ownedFields.clientContact = f.clientContact
             if (changed.has('project_name')) ownedFields.projectName = f.projectName
+            if (changed.has('project_type')) ownedFields.projectType = f.projectType
             if (changed.has('start_date')) ownedFields.startDate = f.startDate
             if (changed.has('deadline')) ownedFields.deadline = f.deadline
             // For a CD/Producer CHANGED to a real user, a failed display-name
@@ -1685,10 +1686,16 @@ export function registerInteractionHandlers(app: App) {
                 cells.push({ header, column: headerToA1Column(header, config.layout || 'legacy'), kind: 'string', value: '' })
               }
             }
-            const r = await updateBoundRow(config, pid, cells)
+            // Rename normalized child keys first. Its collision preflight is
+            // read-only until it knows the destination ID is safe, so a true
+            // collision cannot leave the authoritative Projects row half-
+            // renamed. If the subsequent bound-row write fails transiently,
+            // the durable retry sees the child rename as already complete and
+            // finishes the row update idempotently.
             if (changed.has('project_number')) {
-              await renameProjectLinks(config, current.projectNumber, f.projectNumber)
+              await renameNormalizedProjectRecords(config, current.projectNumber, f.projectNumber)
             }
+            const r = await updateBoundRow(config, pid, cells)
             return { success: true, message: 'skipped' in r ? 'sheet unbound (skipped)' : `sheet row ${(r as any).rowIndex} updated` }
           } catch (err: any) {
             return { success: false, error: err.message }
@@ -1734,6 +1741,25 @@ export function registerInteractionHandlers(app: App) {
           const { error } = await supabase.from('projects').update(patch).eq('id', pid)
           if (error) return { success: false, error: error.message }
           return { success: true }
+        },
+        refreshProjectControl: async (pid, f, fresh) => {
+          const result = await bindProjectControl({
+            projectId: pid,
+            submission: {
+              projectNumber: fresh.projectNumber || f.projectNumber,
+              clientName: fresh.clientName || f.clientName,
+              clientContact: f.clientContact,
+              projectName: fresh.projectName || f.projectName,
+              projectType: f.projectType,
+              startDate: f.startDate,
+              deadline: f.deadline,
+            },
+            slackResult: { id: fresh.slackChannelId || undefined },
+          })
+          if (result.status === 'error' || result.status === 'deferred') {
+            return { success: false, error: result.reason || result.status }
+          }
+          return { success: true, message: result.status === 'skipped' ? `skipped: ${result.reason}` : 'three canvases refreshed' }
         },
         ledger: {
           getSteps: (rk) => getUpdateSteps(rk),
@@ -1786,7 +1812,7 @@ export function registerInteractionHandlers(app: App) {
       await client.chat.postMessage({
         channel: statusChannel,
         ...(threadTs ? { thread_ts: threadTs } : {}),
-        text: `:white_check_mark: *${form.projectName}* updated — changes rippled to ${outcome.ran.concat(outcome.resumed).filter((s: string) => s !== 'supabase' && s !== 'sheet').join(', ') || 'Kit\'s records'}.`,
+        text: `:white_check_mark: *${form.projectName}* updated — changes rippled to ${outcome.ran.concat(outcome.resumed).filter((s: string) => s !== 'supabase' && s !== 'sheet').map((s: string) => s === 'project_control' ? 'Project Control canvases' : s).join(', ') || 'Kit\'s records'}.`,
       })
     } else {
       // This ripple left external state inconsistent → flag 'partial', but never
