@@ -1005,6 +1005,7 @@ export async function seedNormalizedProjectTables(config: WorkbookConfig, submis
       milestoneCount: submission.milestoneCount || 9,
       template: submission.workbackTemplate || 'Standard Sizzle',
       milestoneNames: submission.milestoneNames,
+      draft: submission.scheduleStatus !== 'Active',
     })
     await appendRows(config, config.workbackSheetId, 12, rows.map((row) => [
       id, row.task, row.phase, parseDateToSerial(row.startDate), parseDateToSerial(row.dueDate), submission.producerName || '', row.status,
@@ -1037,6 +1038,106 @@ export async function recordLatestShare(config: WorkbookConfig, kitProjectId: st
     rows: [{ values: [{ userEnteredValue: userValue(value) }] }], fields: 'userEnteredValue',
   } }))
   await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests })
+}
+
+/** Replace a producer's unapproved workback with a newly generated draft.
+ * The Project row remains authoritative and the Schedule Canvas continues to
+ * show `Draft` until `activateWorkbackDraft` is called by the producer. */
+export async function replaceWorkbackDraft(
+  config: WorkbookConfig,
+  kitProjectId: string,
+  submission: Required<Pick<CreationSubmission, 'projectNumber' | 'startDate' | 'deadline' | 'workbackTemplate' | 'milestoneCount'>> & Pick<CreationSubmission, 'producerName' | 'milestoneNames'>,
+): Promise<ReturnType<typeof generateWorkback>> {
+  if (config.layout !== 'rf-production-v1' || config.workbackSheetId == null) {
+    throw new Error('Project Control workback sheet is not configured')
+  }
+  const rows = generateWorkback({
+    startDate: submission.startDate,
+    deliveryDate: submission.deadline,
+    milestoneCount: submission.milestoneCount,
+    template: submission.workbackTemplate,
+    milestoneNames: submission.milestoneNames,
+    draft: true,
+  })
+  const data = await getGridData(
+    config,
+    { startRowIndex: config.headerRow, startColumnIndex: 0, endColumnIndex: 12 },
+    'formattedValue,effectiveValue',
+    config.workbackSheetId,
+  )
+  const existing = data.map((row, offset) => ({ rowIndex: config.headerRow + offset, values: row.values || [] }))
+    .filter((row) => normalizeCell(row.values[0]).display.trim() === submission.projectNumber.trim())
+  if (existing.length > 0) {
+    await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, {
+      requests: existing.map((row) => ({ updateCells: {
+        start: { sheetId: config.workbackSheetId!, rowIndex: row.rowIndex, columnIndex: 0 },
+        rows: [{ values: Array.from({ length: 12 }, () => ({})) }],
+        fields: 'userEnteredValue',
+      } })),
+    })
+  }
+  await appendRows(config, config.workbackSheetId, 12, rows.map((row) => [
+    submission.projectNumber, row.task, row.phase, parseDateToSerial(row.startDate), parseDateToSerial(row.dueDate), submission.producerName || '',
+    row.status, row.percentComplete, '', '', row.sortOrder, true,
+  ]))
+  await updateBoundRow(config, kitProjectId, [
+    { header: 'Start Date', column: 'K', kind: 'date', value: submission.startDate, serial: parseDateToSerial(submission.startDate)! },
+    { header: 'End Date', column: 'L', kind: 'date', value: submission.deadline, serial: parseDateToSerial(submission.deadline)! },
+    { header: 'Workback Template', column: 'U', kind: 'string', value: submission.workbackTemplate },
+    { header: 'Schedule Status', column: 'V', kind: 'string', value: 'Draft' },
+  ])
+  return rows
+}
+
+/** Producer approval promotes the first untouched milestone and marks the
+ * project schedule Active. Safe to retry: an already-active workback is not
+ * advanced a second time. */
+export async function activateWorkbackDraft(
+  config: WorkbookConfig,
+  kitProjectId: string,
+  projectNumber: string,
+  actor: string,
+): Promise<{ firstMilestone: string }> {
+  if (config.workbackSheetId == null) throw new Error('Project Control workback sheet is not configured')
+  const data = await getGridData(config, { startRowIndex: config.headerRow, startColumnIndex: 0, endColumnIndex: 12 }, 'formattedValue,effectiveValue', config.workbackSheetId)
+  const rows = data.map((row, offset) => ({ rowIndex: config.headerRow + offset, values: row.values || [] }))
+    .filter((row) => normalizeCell(row.values[0]).display.trim() === projectNumber.trim())
+    .sort((a, b) => Number(normalizeCell(a.values[10]).display || 0) - Number(normalizeCell(b.values[10]).display || 0))
+  if (rows.length === 0) throw new Error(`No workback draft found for ${projectNumber}`)
+  const alreadyStarted = rows.some((row) => ['In Progress', 'Client Review', 'Complete'].includes(normalizeCell(row.values[6]).display.trim()))
+  const requests: unknown[] = []
+  if (!alreadyStarted) {
+    requests.push({ updateCells: {
+      start: { sheetId: config.workbackSheetId, rowIndex: rows[0].rowIndex, columnIndex: 6 },
+      rows: [{ values: [
+        { userEnteredValue: { stringValue: 'In Progress' } },
+        { userEnteredValue: { numberValue: 0 } },
+      ] }],
+      fields: 'userEnteredValue',
+    } })
+  }
+  const bound = await searchRowMetadata(config.spreadsheetId, kitProjectId, config.sheetId)
+  if (!bound) throw new Error(`Project ${projectNumber} is not bound to the control sheet`)
+  const firstName = normalizeCell(rows[0].values[1]).display.trim()
+  const firstDueDate = rows[0].values[4]?.effectiveValue?.numberValue
+  requests.push({ updateCells: {
+    start: { sheetId: config.sheetId, rowIndex: bound.rowIndex, columnIndex: 8 },
+    rows: [{ values: [
+      { userEnteredValue: { stringValue: firstName } },
+      { userEnteredValue: firstDueDate == null ? { stringValue: '' } : { numberValue: firstDueDate } },
+    ] }],
+    fields: 'userEnteredValue',
+  } })
+  requests.push({ updateCells: {
+    start: { sheetId: config.sheetId, rowIndex: bound.rowIndex, columnIndex: 21 },
+    rows: [{ values: [{ userEnteredValue: { stringValue: 'Active' } }] }],
+    fields: 'userEnteredValue',
+  } })
+  await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests })
+  if (config.statusLogSheetId != null) {
+    await appendRows(config, config.statusLogSheetId, 4, [[projectNumber, parseDateToSerial(new Date().toISOString().slice(0, 10)), 'Workback approved and activated', actor]])
+  }
+  return { firstMilestone: firstName }
 }
 
 /** Producer-confirmed progression. The shared milestone becomes Client Review,

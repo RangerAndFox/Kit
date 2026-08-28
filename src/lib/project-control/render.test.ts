@@ -142,6 +142,14 @@ describe('kitOwnedCreationCells', () => {
     assert.ok(!cols.includes('U'))
     assert.ok(!cols.includes('V'))
   })
+
+  it('writes RF Production workback metadata to its dedicated U/V columns', () => {
+    const cells = kitOwnedCreationCells({ workbackTemplate: 'Fast-Turn', scheduleStatus: 'Draft' }, 'rf-production-v1')
+    assert.deepEqual(cells.map(({ header, column, value }) => ({ header, column, value })), [
+      { header: 'Workback Template', column: 'U', value: 'Fast-Turn' },
+      { header: 'Schedule Status', column: 'V', value: 'Draft' },
+    ])
+  })
 })
 
 describe('NEVER_WRITE_HEADERS', () => {

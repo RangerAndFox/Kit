@@ -113,14 +113,12 @@ export function buildNewProjectModal(
       {
         type: 'input',
         block_id: 'start_date',
-        optional: true,
         label: { type: 'plain_text', text: 'Start Date' },
         element: { type: 'datepicker', action_id: 'val' },
       },
       {
         type: 'input',
         block_id: 'deadline',
-        optional: true,
         label: { type: 'plain_text', text: 'Deadline' },
         element: { type: 'datepicker', action_id: 'val' },
       },
@@ -131,14 +129,14 @@ export function buildNewProjectModal(
         element: {
           type: 'static_select', action_id: 'val',
           initial_option: { text: { type: 'plain_text', text: 'Standard Sizzle' }, value: 'Standard Sizzle' },
-          options: ['Standard Sizzle', 'Fast-Turn', 'Project Update', 'Internal Project', 'Custom'].map((t) => ({ text: { type: 'plain_text', text: t }, value: t })),
+          options: ['Standard Sizzle', 'Fast-Turn', 'Project Update', 'Internal Project', 'Custom'].map((t) => ({ text: { type: 'plain_text', text: t === 'Custom' ? 'Custom (producer edits draft)' : t }, value: t })),
         },
       },
       {
         type: 'input',
         block_id: 'milestone_count',
         label: { type: 'plain_text', text: 'Number of Milestones' },
-        hint: { type: 'plain_text', text: 'Kit spreads these between the start and delivery dates. You can revise the draft afterward.' },
+        hint: { type: 'plain_text', text: 'Kit drafts and dates these, then DMs the producer for approval before activating the schedule.' },
         element: { type: 'number_input', action_id: 'val', is_decimal_allowed: false, min_value: '2', max_value: '20', initial_value: '9' },
       },
       {

@@ -39,6 +39,9 @@ function businessDays(start: Date, end: Date): Date[] {
 
 export function suggestMilestoneNames(template: string, count: number): string[] {
   if (!Number.isInteger(count) || count < 2 || count > 20) throw new Error('Milestone count must be between 2 and 20')
+  if (template === 'Custom') {
+    return Array.from({ length: count }, (_, i) => i === count - 1 ? 'Final Delivery' : `Milestone ${i + 1}`)
+  }
   const seed = TEMPLATES[template] || TEMPLATES['Standard Sizzle']
   if (count === seed.length) return [...seed]
   if (count < seed.length) {
@@ -68,6 +71,8 @@ export function generateWorkback(input: {
   template?: string
   milestoneNames?: string[]
   today?: string
+  /** Draft schedules remain inactive until the producer explicitly approves. */
+  draft?: boolean
 }): WorkbackMilestone[] {
   const start = parseIso(input.startDate)
   const end = parseIso(input.deliveryDate)
@@ -83,7 +88,7 @@ export function generateWorkback(input: {
     const dueIndex = i === names.length - 1 ? days.length - 1 : Math.max(startIndex, Math.floor((i + 1) * days.length / names.length) - 1)
     const s = days[Math.min(startIndex, days.length - 1)]
     const due = days[Math.min(dueIndex, days.length - 1)]
-    const status: WorkbackStatus = today > due ? 'Not Started' : today >= s ? 'In Progress' : 'Not Started'
+    const status: WorkbackStatus = input.draft ? 'Not Started' : (today > due ? 'Not Started' : today >= s ? 'In Progress' : 'Not Started')
     return { task, phase: phaseFor(task), startDate: iso(s), dueDate: iso(due), status, percentComplete: 0, sortOrder: (i + 1) * 10 }
   })
 }

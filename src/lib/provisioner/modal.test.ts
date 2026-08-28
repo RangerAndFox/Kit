@@ -49,6 +49,14 @@ describe('buildNewProjectModal — Client Contact input', () => {
       assert.notEqual(byId[id].optional, true) // these remain required
     }
   })
+
+  it('requires both schedule dates and explains producer approval', () => {
+    const modal = buildNewProjectModal('D1') as any
+    const byId = Object.fromEntries(modal.blocks.filter((block: any) => block.block_id).map((block: any) => [block.block_id, block]))
+    assert.notEqual(byId.start_date.optional, true)
+    assert.notEqual(byId.deadline.optional, true)
+    assert.match(byId.milestone_count.hint.text, /DMs the producer for approval/i)
+  })
 })
 
 describe('buildUpdateProjectModal — pre-fill', () => {

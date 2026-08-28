@@ -182,11 +182,12 @@ export interface CreationSubmission {
   boordsUrl?: string
   projectType?: string
   workbackTemplate?: string
+  scheduleStatus?: 'Draft' | 'Active'
   milestoneCount?: number
   milestoneNames?: string[]
 }
 
-export type OwnedHeader = MasterHeader | 'Project Type'
+export type OwnedHeader = MasterHeader | 'Project Type' | 'Workback Template' | 'Schedule Status'
 
 export interface OwnedCell {
   header: OwnedHeader
@@ -265,6 +266,12 @@ export function kitOwnedCreationCells(
   // for both creation and the confirmed update-project ripple.
   if (layout === 'rf-production-v1' && sub.projectType?.trim()) {
     out.push({ header: 'Project Type', column: 'E', kind: 'string', value: sub.projectType.trim() })
+  }
+  if (layout === 'rf-production-v1' && sub.workbackTemplate?.trim()) {
+    out.push({ header: 'Workback Template', column: 'U', kind: 'string', value: sub.workbackTemplate.trim() })
+  }
+  if (layout === 'rf-production-v1' && sub.scheduleStatus?.trim()) {
+    out.push({ header: 'Schedule Status', column: 'V', kind: 'string', value: sub.scheduleStatus.trim() })
   }
   return out
 }

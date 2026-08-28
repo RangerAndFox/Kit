@@ -40,8 +40,17 @@ import {
   completeUpdateStep,
   listUpdateRequestsWithIncompleteSteps,
 } from '../../../src/lib/provisioner/update-store'
-import { renameNormalizedProjectRecords, updateBoundRow } from '../../../src/lib/project-control/sheets'
+import { activateWorkbackDraft, renameNormalizedProjectRecords, replaceWorkbackDraft, updateBoundRow } from '../../../src/lib/project-control/sheets'
 import { kitOwnedCreationCells, headerToA1Column, type MasterHeader } from '../../../src/lib/project-control/render'
+import { generateWorkback } from '../../../src/lib/project-control/workback'
+import { requestProjectControlSync } from '../../../src/lib/project-control/sync-request'
+import {
+  WORKBACK_APPROVE_ACTION,
+  WORKBACK_REGENERATE_ACTION,
+  WORKBACK_REGENERATE_VIEW,
+  buildWorkbackDraftMessage,
+  buildWorkbackRegenerateModal,
+} from '../../../src/lib/project-control/workback-approval'
 import { buildUpdateProjectCard } from './updateproject-card'
 import {
   getOrCreateCreationRequest,
@@ -127,6 +136,118 @@ export function registerInteractionHandlers(app: App) {
       await client.chat.postMessage({ channel: userId, text: 'Got it — the latest-share link was saved, and the current milestone was left unchanged.' })
     } catch (err: any) {
       await client.chat.postMessage({ channel: userId, text: `⚠️ Could not dismiss the prompt: ${err.message}` })
+    }
+  })
+
+  app.action('kit_workback_open_sheet', async ({ ack }) => { await ack() })
+
+  app.action(WORKBACK_APPROVE_ACTION, async ({ ack, body, client, respond }) => {
+    await ack()
+    const projectId = (body as any).actions?.[0]?.value || ''
+    const userId = (body as any).user?.id || ''
+    try {
+      const db = createAdminClient() as any
+      const { data: project, error } = await db.from('projects')
+        .select('id,name,project_code,project_manager_slack_id,external_ids')
+        .eq('id', projectId).maybeSingle()
+      if (error || !project) throw new Error(error?.message || 'Project not found')
+      if (project.project_manager_slack_id && project.project_manager_slack_id !== userId) {
+        throw new Error('Only the assigned producer can approve this workback')
+      }
+      const projectNumber = project.external_ids?.project_number || projectNumberFromCode(project.project_code)
+      if (!projectNumber) throw new Error('Project number is missing')
+      const config = workbookConfigFromEnv()
+      if (!config) throw new Error('Project Control workbook is not configured')
+      const result = await activateWorkbackDraft(config, project.id, projectNumber, `<@${userId}>`)
+      await db.from('projects').update({ external_ids: { ...(project.external_ids || {}), schedule_status: 'active' } }).eq('id', project.id)
+      if (!(await requestProjectControlSync(config, config.workbackSheetId || config.sheetId))) {
+        console.warn('[project-control] immediate approved-workback refresh unavailable; cron will reconcile')
+      }
+      await respond({ replace_original: true, text: `✅ *${projectNumber} ${project.name}* workback approved. *${result.firstMilestone}* is now In Progress, and the Schedule Canvas will refresh automatically.` })
+    } catch (err: any) {
+      await client.chat.postMessage({ channel: userId, text: `⚠️ Could not approve the workback: ${err.message}` })
+    }
+  })
+
+  app.action(WORKBACK_REGENERATE_ACTION, async ({ ack, body, client }) => {
+    await ack()
+    const projectId = (body as any).actions?.[0]?.value || ''
+    const userId = (body as any).user?.id || ''
+    try {
+      const db = createAdminClient() as any
+      const { data: project, error } = await db.from('projects')
+        .select('id,project_code,start_date,target_delivery,project_manager_slack_id,external_ids')
+        .eq('id', projectId).maybeSingle()
+      if (error || !project) throw new Error(error?.message || 'Project not found')
+      if (project.project_manager_slack_id && project.project_manager_slack_id !== userId) {
+        throw new Error('Only the assigned producer can regenerate this workback')
+      }
+      if (!project.start_date || !project.target_delivery) throw new Error('Start and delivery dates are required')
+      const projectNumber = project.external_ids?.project_number || projectNumberFromCode(project.project_code)
+      if (!projectNumber) throw new Error('Project number is missing')
+      await client.views.open({
+        trigger_id: (body as any).trigger_id,
+        view: buildWorkbackRegenerateModal({
+          projectId: project.id,
+          projectNumber,
+          startDate: project.start_date,
+          deadline: project.target_delivery,
+          template: project.external_ids?.workback_template,
+          milestoneCount: Number(project.external_ids?.milestone_count || 9),
+        }) as any,
+      })
+    } catch (err: any) {
+      await client.chat.postMessage({ channel: userId, text: `⚠️ Could not open the workback editor: ${err.message}` })
+    }
+  })
+
+  app.view(WORKBACK_REGENERATE_VIEW, async ({ ack, body, view, client }) => {
+    const values = view.state?.values || {}
+    const startDate = values.start_date?.val?.selected_date || ''
+    const deadline = values.deadline?.val?.selected_date || ''
+    const milestoneCount = Math.max(2, Math.min(20, parseInt(values.milestone_count?.val?.value || '9', 10) || 9))
+    const workbackTemplate = values.workback_template?.val?.selected_option?.value || 'Standard Sizzle'
+    if (!startDate || !deadline || deadline < startDate) {
+      await ack({ response_action: 'errors', errors: { deadline: 'Delivery must be on or after the start date.' } })
+      return
+    }
+    await ack()
+    const userId = (body as any).user?.id || ''
+    const { projectId } = JSON.parse(view.private_metadata || '{}')
+    try {
+      const db = createAdminClient() as any
+      const { data: project, error } = await db.from('projects')
+        .select('id,name,project_code,project_manager_slack_id,external_ids')
+        .eq('id', projectId).maybeSingle()
+      if (error || !project) throw new Error(error?.message || 'Project not found')
+      if (project.project_manager_slack_id && project.project_manager_slack_id !== userId) {
+        throw new Error('Only the assigned producer can regenerate this workback')
+      }
+      const projectNumber = project.external_ids?.project_number || projectNumberFromCode(project.project_code)
+      if (!projectNumber) throw new Error('Project number is missing')
+      const config = workbookConfigFromEnv()
+      if (!config) throw new Error('Project Control workbook is not configured')
+      let producerName = `<@${userId}>`
+      try {
+        const info: any = await client.users.info({ user: userId })
+        producerName = info?.user?.profile?.real_name || info?.user?.real_name || producerName
+      } catch { /* Slack display name is best effort. */ }
+      const rows = await replaceWorkbackDraft(config, project.id, {
+        projectNumber, startDate, deadline, workbackTemplate, milestoneCount, producerName,
+      })
+      const externalIds = { ...(project.external_ids || {}), workback_template: workbackTemplate, milestone_count: milestoneCount, schedule_status: 'draft' }
+      await db.from('projects').update({ start_date: startDate, target_delivery: deadline, external_ids: externalIds }).eq('id', project.id)
+      if (!(await requestProjectControlSync(config, config.workbackSheetId || config.sheetId))) {
+        console.warn('[project-control] immediate regenerated-workback refresh unavailable; cron will reconcile')
+      }
+      const dm: any = await client.conversations.open({ users: userId })
+      await client.chat.postMessage(buildWorkbackDraftMessage({
+        projectId: project.id, projectName: project.name, projectNumber,
+        rows, spreadsheetId: config.spreadsheetId,
+        producerSlackId: dm?.channel?.id || userId,
+      }) as any)
+    } catch (err: any) {
+      await client.chat.postMessage({ channel: userId, text: `⚠️ Could not regenerate the workback: ${err.message}` })
     }
   })
 
@@ -1035,6 +1156,9 @@ export function registerInteractionHandlers(app: App) {
               // (project_code.split('-')[0] is lossy if the client has a hyphen).
               ...(form.projectNumber ? { project_number: form.projectNumber } : {}),
               ...(form.creativeDirector ? { creative_director_slack_id: form.creativeDirector } : {}),
+              ...(form.workbackTemplate ? { workback_template: form.workbackTemplate } : {}),
+              ...(form.milestoneCount ? { milestone_count: form.milestoneCount } : {}),
+              schedule_status: 'draft',
             },
           })
           .select()
@@ -1281,6 +1405,7 @@ export function registerInteractionHandlers(app: App) {
               boordsUrl: serviceResults.boords?.url,
               projectType: form.projectType,
               workbackTemplate: form.workbackTemplate,
+              scheduleStatus: 'Draft',
               milestoneCount: form.milestoneCount,
             },
             slackResult: serviceResults.slack,
@@ -1294,6 +1419,26 @@ export function registerInteractionHandlers(app: App) {
             await client.chat.postMessage(postOpts({
               text: `:warning: *${form.projectName}* is created, but its Project Control Sheet/Canvas link is incomplete (${bind.reason}) and needs attention — it will not auto-recover.`,
             }))
+          } else if (form.startDate && form.deadline) {
+            const config = workbookConfigFromEnv()
+            if (config) {
+              const rows = generateWorkback({
+                startDate: form.startDate,
+                deliveryDate: form.deadline,
+                milestoneCount: form.milestoneCount,
+                template: form.workbackTemplate,
+                draft: true,
+              })
+              const dm: any = await client.conversations.open({ users: form.projectManager })
+              await client.chat.postMessage(buildWorkbackDraftMessage({
+                projectId: project.id,
+                projectName: form.projectName,
+                projectNumber: form.projectNumber,
+                producerSlackId: dm?.channel?.id || form.projectManager,
+                rows,
+                spreadsheetId: config.spreadsheetId,
+              }) as any)
+            }
           }
         } catch (err: any) {
           console.error('[Bolt] project-control bind failed (non-fatal):', err?.message)

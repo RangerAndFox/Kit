@@ -20,6 +20,7 @@ import {
   createCachedProjectSupplementReader,
   seedNormalizedProjectTables,
   adoptLegacyProjectRow,
+  activateWorkbackDraft,
   __setSheetsTransportForTests,
 } from './sheets'
 import { kitOwnedCreationCells, parseDateToSerial, MASTER_HEADERS } from './render'
@@ -263,6 +264,42 @@ describe('createBoundRow date + margin safety', () => {
     // Column U (Current Margin, index 20) / V (index 21) are never targeted.
     const cols = cellReqs.map((r) => r.updateCells.start.columnIndex)
     assert.ok(!cols.includes(20) && !cols.includes(21))
+  })
+})
+
+describe('activateWorkbackDraft', () => {
+  it('promotes the first milestone and marks the bound Project schedule Active', async () => {
+    const config: WorkbookConfig = { ...CONFIG, layout: 'rf-production-v1', workbackSheetId: 13 }
+    const batches: any[][] = []
+    const cell = (value: string | number): SheetCell => typeof value === 'number'
+      ? { formattedValue: String(value), effectiveValue: { numberValue: value } }
+      : { formattedValue: value, effectiveValue: { stringValue: value } }
+    __setSheetsTransportForTests(async <T>(_method: string, url: string, body?: unknown): Promise<T> => {
+      if (url.includes(':getByDataFilter')) {
+        return { sheets: [{ properties: { sheetId: 13 }, data: [{ rowData: [
+          { values: [cell('2637'), cell('Script V1'), cell('Pre-Production'), cell(''), cell(''), cell('Steve'), cell('Not Started'), cell(0), cell(''), cell(''), cell(10), cell('TRUE')] },
+          { values: [cell('2637'), cell('Final Delivery'), cell('Delivery/Completion'), cell(''), cell(''), cell('Steve'), cell('Not Started'), cell(0), cell(''), cell(''), cell(20), cell('TRUE')] },
+        ] }] }] } as T
+      }
+      if (url.includes('developerMetadata:search')) {
+        return { matchedDeveloperMetadata: [{ developerMetadata: { metadataId: 9, location: { dimensionRange: { sheetId: 0, startIndex: 7 } } } }] } as T
+      }
+      if (url.includes(':batchUpdate')) {
+        batches.push((body as any).requests)
+        return { replies: [] } as T
+      }
+      throw new Error(`unexpected url ${url}`)
+    })
+    const result = await activateWorkbackDraft(config, 'project-id', '2637', '<@U1>')
+    assert.equal(result.firstMilestone, 'Script V1')
+    assert.deepEqual(batches[0].map((request) => request.updateCells.start), [
+      { sheetId: 13, rowIndex: 3, columnIndex: 6 },
+      { sheetId: 0, rowIndex: 7, columnIndex: 8 },
+      { sheetId: 0, rowIndex: 7, columnIndex: 21 },
+    ])
+    assert.equal(batches[0][0].updateCells.rows[0].values[0].userEnteredValue.stringValue, 'In Progress')
+    assert.equal(batches[0][1].updateCells.rows[0].values[0].userEnteredValue.stringValue, 'Script V1')
+    assert.equal(batches[0][2].updateCells.rows[0].values[0].userEnteredValue.stringValue, 'Active')
   })
 })
 
