@@ -11,6 +11,7 @@ import {
   searchRowMetadata,
   readColumn,
   readRow,
+  readRowForSync,
   updateBoundRow,
   upsertProjectLinks,
   renameProjectLinks,
@@ -367,6 +368,19 @@ describe('RF Production workbook adapter', () => {
   const c = (value: string): SheetCell => value
     ? { formattedValue: value, effectiveValue: { stringValue: value } }
     : {}
+
+  it('reads only the Projects row during sync because Links come from the shared snapshot', async () => {
+    const calls: number[] = []
+    __setSheetsTransportForTests(async <T>(_method: string, url: string, body?: unknown): Promise<T> => {
+      if (!url.includes(':getByDataFilter')) throw new Error(`unexpected url ${url}`)
+      const sheetId = (body as { dataFilters: Array<{ gridRange: { sheetId: number } }> }).dataFilters[0].gridRange.sheetId
+      calls.push(sheetId)
+      return { sheets: [{ properties: { sheetId }, data: [{ rowData: [{ values: [c('2637')] }] }] }] } as T
+    })
+
+    await readRowForSync(config, 4)
+    assert.deepEqual(calls, [config.sheetId])
+  })
 
   it('reads normalized supplement tabs once and reuses the invocation snapshot across projects', async () => {
     const snapshotConfig: WorkbookConfig = {

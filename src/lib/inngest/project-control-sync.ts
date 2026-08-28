@@ -21,7 +21,7 @@ import {
   projectControlSyncEnabled,
   type WorkbookConfig,
 } from '../project-control/types'
-import { getWorkbookVersion, searchRowMetadata, readRow, createCachedProjectSupplementReader } from '../project-control/sheets'
+import { getWorkbookVersion, searchRowMetadata, readRowForSync, createCachedProjectSupplementReader } from '../project-control/sheets'
 import { editControlCanvas, controlCanvasTitle } from '../project-control/canvas'
 import {
   normalizeRow,
@@ -94,7 +94,7 @@ async function postAlert(text: string): Promise<void> {
 
 export function defaultSyncDeps(): SyncDeps {
   return {
-    sheets: { getWorkbookVersion, searchRowMetadata, readRow, readProjectSupplement: createCachedProjectSupplementReader() },
+    sheets: { getWorkbookVersion, searchRowMetadata, readRow: readRowForSync, readProjectSupplement: createCachedProjectSupplementReader() },
     canvas: { editControlCanvas },
     store: {
       listSyncableBindings, updateBinding, getSyncState, claimWorkbookLease,
@@ -107,10 +107,10 @@ export function defaultSyncDeps(): SyncDeps {
     now: () => new Date().toISOString(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     // The invocation-scoped supplement snapshot reduces each additional
-    // project to three Sheet reads (metadata, project row, link projection).
-    // Four seconds keeps the full pass below Google's 60 reads/user/minute
+    // project to two Sheet reads (metadata + project row).
+    // Three seconds keeps the full pass below Google's 60 reads/user/minute
     // quota while finishing comfortably inside the function runtime.
-    perBindingDelayMs: 4_000,
+    perBindingDelayMs: 3_000,
   }
 }
 
