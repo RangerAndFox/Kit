@@ -12,10 +12,13 @@ export interface ProjectSupplement {
 
 const val = (row: NormalizedRow, key: string) => row[key]?.display || '—'
 const link = (label: string, url?: string) => url ? `[${label}](${url})` : '—'
+const tableCell = (value: string) => (value || '—')
+  .replace(/\|/g, '\\|')
+  .replace(/\r?\n/g, '<br>')
 const table = (headers: string[], rows: string[][]) => [
-  `| ${headers.join(' | ')} |`,
+  `| ${headers.map(tableCell).join(' | ')} |`,
   `| ${headers.map(() => '---').join(' | ')} |`,
-  ...rows.map((r) => `| ${r.map((x) => x || '—').join(' | ')} |`),
+  ...rows.map((r) => `| ${r.map(tableCell).join(' | ')} |`),
 ].join('\n')
 
 export function projectViewHash(row: NormalizedRow, extra: ProjectSupplement): string {

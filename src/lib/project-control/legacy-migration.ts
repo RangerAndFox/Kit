@@ -354,6 +354,7 @@ export async function runLegacyProjectControlMigration(): Promise<LegacyMigratio
   if (projectError) throw new Error(`project inventory failed: ${projectError.message}`)
   const projects = (projectData || []) as ProjectRow[]
   await removeMigrationDuplicates(config, projects)
+  const forceRender = process.env.PROJECT_CONTROL_LEGACY_MIGRATION_FORCE_RENDER === 'true'
 
   for (const channel of channels.sort((a, b) => a.name.localeCompare(b.name))) {
     const number = projectNumber(channel.name)
@@ -383,7 +384,8 @@ export async function runLegacyProjectControlMigration(): Promise<LegacyMigratio
       const existingCanvases = existingBinding?.creation_state === 'connected'
         ? await listProjectCanvases(project.id)
         : []
-      if (existingBinding?.creation_state === 'connected' && existingCanvases.length >= 3) {
+      if (!forceRender && existingBinding?.creation_state === 'connected' &&
+          existingBinding.sync_status === 'synced' && existingCanvases.length >= 3) {
         result.connected.push(number)
         continue
       }
