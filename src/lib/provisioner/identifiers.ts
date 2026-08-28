@@ -46,6 +46,17 @@ export interface ProjectIdentifiers {
   frameioBusinessLabel: string
 }
 
+/**
+ * Ranger & Fox project numbers encode the production year in their first two
+ * digits: 2659 → 2026, 2701 → 2027. Letter suffixes after the four-digit spine
+ * are allowed (for example 2630A). Returns null for legacy/non-standard values
+ * so callers can retain an explicit, documented fallback.
+ */
+export function deriveProjectYear(projectNumber: string): string | null {
+  const match = String(projectNumber ?? '').trim().match(/^(\d{2})\d{2}/)
+  return match ? `20${match[1]}` : null
+}
+
 /** `${number}-${client}` with whitespace stripped from the client and TRIMMED off
  *  the number (plain_text_input never trims, and the preview shows the trimmed
  *  value — so an untrimmed number here would write a value the user never

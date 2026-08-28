@@ -7,7 +7,7 @@
  */
 
 import { withRetry } from '@/lib/provisioner/retry'
-import { deriveDropboxSafeName } from '@/lib/provisioner/identifiers'
+import { deriveDropboxSafeName, deriveProjectYear } from '@/lib/provisioner/identifiers'
 import { dropboxHeaders } from '@/lib/dropbox/client'
 import type { AgentDefinition, AgentResult } from './types'
 
@@ -62,13 +62,13 @@ export async function ensureSpecsFolders(projectPath: string): Promise<void> {
 
 async function provision(payload: Record<string, unknown>): Promise<AgentResult> {
   const templatePath = process.env.DROPBOX_TEMPLATE_PATH ?? '/_TEMPLATES/New Project Template'
-  const year = new Date().getFullYear()
 
   // Accept either `client`/`clientName` and either explicit projectNumber or
   // a parseable projectCode like "2655-Microsoft". Match the {ID}_{Client}_{Project} spine.
   const client = (payload.client as string) || (payload.clientName as string) || ''
   const projectName = (payload.projectName as string) || ''
   const projectNumber = getProjectNumber(payload)
+  const year = deriveProjectYear(projectNumber) || String(new Date().getFullYear())
 
   const labelParts = [projectNumber, client, projectName]
     .map((p) => (p ? String(p).trim() : ''))
@@ -224,7 +224,8 @@ async function getShareLink(payload: Record<string, unknown>): Promise<AgentResu
 async function getProjectFolder(payload: Record<string, unknown>): Promise<AgentResult> {
   try {
     const projectQuery = (payload.project as string) || ''
-    const year = (payload.year as number) || new Date().getFullYear()
+    const projectNumber = getProjectNumber(payload) || projectQuery
+    const year = (payload.year as number) || deriveProjectYear(projectNumber) || String(new Date().getFullYear())
     const basePath = `/production/${year}`
 
     // List the year folder and find matching projects
@@ -348,7 +349,7 @@ async function moveFolder(payload: Record<string, unknown>): Promise<AgentResult
       return { agent: 'dropbox', action: 'rename', success: false, error: 'rename needs at least one of projectNumber, client, projectName to build the new folder name' }
     }
     const segs = fromPath.split('/')
-    const year = segs[2] || String(new Date().getFullYear())
+    const year = segs[2] || deriveProjectYear(projectNumber) || String(new Date().getFullYear())
     const toPath = `/production/${year}/${newSafeName}`
 
     if (fromPath === toPath) {
@@ -428,7 +429,7 @@ export const dropboxAgent: AgentDefinition = {
     {
       action: 'find_project_folder',
       description: 'Find a project folder by name in the Production directory for a given year',
-      inputDescription: 'project (name to search), year (optional, defaults to current year)',
+      inputDescription: 'project (name/ID to search), projectNumber or projectCode (preferred; first two digits select the year), year (optional explicit override)',
       mutates: false,
     },
   ],

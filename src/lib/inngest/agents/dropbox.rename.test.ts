@@ -43,6 +43,30 @@ function dropboxMock(handlers: Record<string, (body: any) => { ok: boolean; stat
 
 const link = { ok: true, json: { url: 'https://dropbox/link' } }
 
+describe("dropbox project-year routing", () => {
+  it('provisions 2559 under 2025 even when the current calendar year differs', async () => {
+    const calls = dropboxMock({
+      '/files/copy_v2': () => ({ ok: true, json: {} }),
+      '/sharing/create_shared_link_with_settings': () => link,
+    })
+    const res: any = await dropboxAgent.handler('provision', {
+      projectNumber: '2559', client: 'Microsoft', projectName: 'Archive Test',
+    })
+    const copy = calls.find((c) => c.endpoint === '/files/copy_v2')!
+    assert.equal(copy.body.to_path, '/production/2025/2559_Microsoft_Archive_Test')
+    assert.equal(res.id, '/production/2025/2559_Microsoft_Archive_Test')
+  })
+
+  it('uses a project ID query to choose the year folder during lookup', async () => {
+    const calls = dropboxMock({
+      '/files/list_folder': () => ({ ok: true, json: { entries: [] } }),
+    })
+    const res: any = await dropboxAgent.handler('find_project_folder', { project: '2701' })
+    assert.equal(calls.find((c) => c.endpoint === '/files/list_folder')!.body.path, '/production/2027')
+    assert.equal(res.data.basePath, '/production/2027')
+  })
+})
+
 describe("dropbox 'rename' (move folder)", () => {
   it('moves within the same year and returns the new path + safe name', async () => {
     const calls = dropboxMock({
