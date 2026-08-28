@@ -9,6 +9,82 @@ import { requestProjectControlSync } from './sync-request'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = () => createAdminClient() as any
 
+type ShareConfidence = 'exact' | 'probable' | 'uncertain'
+
+type ProjectShareEvent = {
+  id: string
+  project_id: string
+  file_name: string
+  share_url: string
+  suggested_milestone: string | null
+  match_confidence: ShareConfidence | null
+  slack_message_ts?: string | null
+}
+
+export type RegisteredProjectShare = {
+  eventId: string | null
+  milestone: string | null
+  confidence: ShareConfidence
+}
+
+/** Complete the Sheet half of a durable share event. The event is inserted
+ * before this runs, so a transient Google failure leaves recoverable state
+ * instead of losing the Frame.io share forever. An empty milestone string is
+ * the durable "sync succeeded, no confident match" sentinel; null means the
+ * Sheet work still needs to be retried. */
+export async function syncProjectShareEvent(eventId: string): Promise<RegisteredProjectShare> {
+  const { data: event, error: eventError } = await db().from('project_share_events')
+    .select('id,project_id,file_name,share_url,suggested_milestone,match_confidence,slack_message_ts')
+    .eq('id', eventId).maybeSingle()
+  if (eventError || !event) throw new Error(eventError?.message || `Project share event not found: ${eventId}`)
+  const typed = event as ProjectShareEvent
+  if (typed.suggested_milestone !== null) {
+    return {
+      eventId: typed.slack_message_ts ? null : typed.id,
+      milestone: typed.suggested_milestone || null,
+      confidence: typed.match_confidence || 'uncertain',
+    }
+  }
+
+  const { data: project, error: projectError } = await db().from('projects')
+    .select('id,project_code,external_ids').eq('id', typed.project_id).maybeSingle()
+  if (projectError || !project) throw new Error(projectError?.message || `Project not found: ${typed.project_id}`)
+  const projectNumber = project.external_ids?.project_number || String(project.project_code || '').split('-')[0]
+  if (!projectNumber) throw new Error(`Project ${typed.project_id} has no project number`)
+
+  const config = workbookConfigFromEnv()
+  if (!config) throw new Error('Project Control workbook is not configured')
+  const extra = await readProjectSupplement(config, projectNumber)
+  const match = matchMilestone(typed.file_name, extra.workback.map((w) => w.Task))
+  await recordLatestShare(config, typed.project_id, {
+    label: typed.file_name,
+    url: typed.share_url,
+    date: new Date().toISOString().slice(0, 10),
+    milestone: match.task,
+  })
+  if (!(await requestProjectControlSync(config, config.sheetId))) {
+    console.warn('[project-control] immediate Latest Share refresh unavailable; cron will reconcile')
+  }
+
+  const { data: updated, error: updateError } = await db().from('project_share_events')
+    .update({
+      suggested_milestone: match.task || '',
+      match_confidence: match.confidence,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', typed.id)
+    .is('suggested_milestone', null)
+    .select('id,suggested_milestone,match_confidence,slack_message_ts')
+    .maybeSingle()
+  if (updateError) throw new Error(`syncProjectShareEvent: ${updateError.message}`)
+  const settled = (updated || typed) as ProjectShareEvent
+  return {
+    eventId: settled.slack_message_ts ? null : typed.id,
+    milestone: updated ? (updated.suggested_milestone || null) : match.task,
+    confidence: updated?.match_confidence || match.confidence,
+  }
+}
+
 export async function registerProjectShare(input: {
   projectId: string
   projectNumber: string
@@ -16,24 +92,25 @@ export async function registerProjectShare(input: {
   dropboxRev: string
   fileName: string
   shareUrl: string
-}): Promise<{ eventId: string | null; milestone: string | null; confidence: 'exact' | 'probable' | 'uncertain' }> {
-  const config = workbookConfigFromEnv()
-  let match: ReturnType<typeof matchMilestone> = { task: null, confidence: 'uncertain' }
-  if (config) {
-    const extra = await readProjectSupplement(config, input.projectNumber)
-    match = matchMilestone(input.fileName, extra.workback.map((w) => w.Task))
-    await recordLatestShare(config, input.projectId, { label: input.fileName, url: input.shareUrl, date: new Date().toISOString().slice(0, 10), milestone: match.task })
-    if (!(await requestProjectControlSync(config, config.sheetId))) {
-      console.warn('[project-control] immediate Latest Share refresh unavailable; cron will reconcile')
-    }
-  }
+}): Promise<RegisteredProjectShare> {
+  // Persist the outbox record FIRST. Previously the Google write happened
+  // before this insert, so a transient 503 left no event for a retry sweep.
   const { data, error } = await db().from('project_share_events').upsert({
     project_id: input.projectId, dropbox_file_id: input.dropboxFileId, dropbox_rev: input.dropboxRev,
-    file_name: input.fileName, share_url: input.shareUrl, suggested_milestone: match.task,
-    match_confidence: match.confidence, status: 'pending', updated_at: new Date().toISOString(),
+    file_name: input.fileName, share_url: input.shareUrl, suggested_milestone: null,
+    match_confidence: null, status: 'pending', updated_at: new Date().toISOString(),
   }, { onConflict: 'project_id,dropbox_file_id,dropbox_rev', ignoreDuplicates: true }).select('id').maybeSingle()
   if (error) throw new Error(`registerProjectShare: ${error.message}`)
-  return { eventId: data?.id || null, milestone: match.task, confidence: match.confidence }
+  let eventId = data?.id as string | undefined
+  if (!eventId) {
+    const { data: existing, error: existingError } = await db().from('project_share_events')
+      .select('id').eq('project_id', input.projectId).eq('dropbox_file_id', input.dropboxFileId)
+      .eq('dropbox_rev', input.dropboxRev).maybeSingle()
+    if (existingError || !existing) throw new Error(existingError?.message || 'Existing project share event not found')
+    eventId = existing.id
+  }
+  if (!eventId) throw new Error('Project share event id was not returned')
+  return syncProjectShareEvent(eventId)
 }
 
 export async function applyProjectShare(eventId: string, slackUserId: string): Promise<{ projectName: string; milestone: string; nextMilestone: string | null }> {

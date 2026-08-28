@@ -508,3 +508,36 @@ describe('readColumn — targets the CONFIGURED sheetId (not tab order)', () => 
     await assert.rejects(() => readColumn(config, 'Frame.io'), /sheet 42 not found/)
   })
 })
+
+describe('transient Google read recovery', () => {
+  it('retries a temporary 503 from getByDataFilter and returns the requested row', async () => {
+    let attempts = 0
+    __setSheetsTransportForTests(async <T>(_method: string, url: string): Promise<T> => {
+      assert.match(url, /:getByDataFilter/)
+      attempts++
+      if (attempts < 3) throw new Error(`Google POST ${url.split('?')[0]} failed (503): backend unavailable`)
+      return {
+        sheets: [{
+          properties: { sheetId: CONFIG.sheetId },
+          data: [{ rowData: [{ values: [{ formattedValue: '2601' }] }] }],
+        }],
+      } as T
+    })
+
+    const row = await readRow(CONFIG, 4)
+
+    assert.equal(attempts, 3)
+    assert.equal(row[0]?.formattedValue, '2601')
+  })
+
+  it('does not retry a non-transient Google error', async () => {
+    let attempts = 0
+    __setSheetsTransportForTests(async <T>(): Promise<T> => {
+      attempts++
+      throw new Error('Google POST failed (403): forbidden')
+    })
+
+    await assert.rejects(() => readRow(CONFIG, 4), /403/)
+    assert.equal(attempts, 1)
+  })
+})

@@ -23,6 +23,7 @@ import {
   verifyDropboxSignature,
   processDropboxNotification,
   reconcileMissingFrameioProjectLinks,
+  reconcilePendingProjectShares,
 } from './watchers/dropbox'
 import cron from 'node-cron'
 import { sweepDailyReminders } from './checkins/reminder-delivery'
@@ -130,6 +131,23 @@ cron.schedule('23 * * * *', () => {
     console.error('[cron] Frame.io project-link reconcile failed:', err),
   )
 })
+
+// Frame.io upload is intentionally not rolled back when Google Sheets or Slack
+// has a transient outage. Durable share events are retried at boot and every
+// two minutes until Last Share is synced and the producer prompt is delivered.
+let projectShareRecoveryRunning = false
+const runProjectShareRecovery = () => {
+  if (projectShareRecoveryRunning) return
+  projectShareRecoveryRunning = true
+  reconcilePendingProjectShares(app)
+    .then((result) => {
+      if (result.scanned || result.failed) console.log('[project-share-recovery]', result)
+    })
+    .catch((err) => console.error('[project-share-recovery] sweep failed:', err))
+    .finally(() => { projectShareRecoveryRunning = false })
+}
+setTimeout(runProjectShareRecovery, 15_000)
+cron.schedule('*/2 * * * *', runProjectShareRecovery, { timezone: 'UTC' })
 
 // ─── Resilience + Diagnostics ──────────────────────────────
 
