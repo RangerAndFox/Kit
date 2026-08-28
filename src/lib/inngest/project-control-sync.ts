@@ -21,7 +21,7 @@ import {
   projectControlSyncEnabled,
   type WorkbookConfig,
 } from '../project-control/types'
-import { getWorkbookVersion, searchRowMetadata, readRow, readProjectSupplement } from '../project-control/sheets'
+import { getWorkbookVersion, searchRowMetadata, readRow, createCachedProjectSupplementReader } from '../project-control/sheets'
 import { editControlCanvas, controlCanvasTitle } from '../project-control/canvas'
 import {
   normalizeRow,
@@ -94,7 +94,7 @@ async function postAlert(text: string): Promise<void> {
 
 export function defaultSyncDeps(): SyncDeps {
   return {
-    sheets: { getWorkbookVersion, searchRowMetadata, readRow, readProjectSupplement },
+    sheets: { getWorkbookVersion, searchRowMetadata, readRow, readProjectSupplement: createCachedProjectSupplementReader() },
     canvas: { editControlCanvas },
     store: {
       listSyncableBindings, updateBinding, getSyncState, claimWorkbookLease,
@@ -106,11 +106,11 @@ export function defaultSyncDeps(): SyncDeps {
     enabled: projectControlSyncEnabled(),
     now: () => new Date().toISOString(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    // A normalized project consumes several Sheets reads (metadata, project
-    // row, and supplemental tabs). Pace below Google's 60 reads/user/minute
-    // quota so a workbook-wide change converges instead of failing its later
-    // projects with 429 RESOURCE_EXHAUSTED.
-    perBindingDelayMs: 9_000,
+    // The invocation-scoped supplement snapshot reduces each additional
+    // project to three Sheet reads (metadata, project row, link projection).
+    // Four seconds keeps the full pass below Google's 60 reads/user/minute
+    // quota while finishing comfortably inside the function runtime.
+    perBindingDelayMs: 4_000,
   }
 }
 
