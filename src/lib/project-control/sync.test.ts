@@ -125,6 +125,17 @@ describe('runProjectControlSync', () => {
     assert.deepEqual(edits, ['C1'])
   })
 
+  it('processes recovery bindings before healthy bindings', async () => {
+    const { deps, edits } = makeDeps({
+      bindings: [
+        binding({ project_id: 'healthy', canvas_id: 'C1', sync_status: 'synced', last_row_hash: 'old' }),
+        binding({ project_id: 'recovery', canvas_id: 'C2', sync_status: 'error', last_row_hash: 'old' }),
+      ],
+    })
+    await runProjectControlSync(deps)
+    assert.deepEqual(edits, ['C2', 'C1'])
+  })
+
   it('syncs generated RF Production views without a legacy template snapshot', async () => {
     const { deps, edits, store } = makeDeps({
       bindings: [binding({ template_markdown: null, source_template_file_id: null, source_template_hash: null, last_row_hash: 'old' })],
