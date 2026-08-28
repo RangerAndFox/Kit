@@ -100,13 +100,31 @@ async function httpTransport<T>(method: string, url: string, body?: unknown): Pr
 
 let transport: Transport = httpTransport
 
+const RETRYABLE_GOOGLE_STATUS_RE = /failed \((?:429|500|502|503|504)\)/
+const GOOGLE_READ_RETRY_DELAYS_MS = [250, 1_000]
+
 /** Test seam: swap the HTTP transport for a fake. Pass null to restore. */
 export function __setSheetsTransportForTests(t: Transport | null): void {
   transport = t || httpTransport
 }
 
-function api<T>(method: string, url: string, body?: unknown): Promise<T> {
-  return transport<T>(method, url, body)
+function isRetrySafeGoogleRequest(method: string, url: string): boolean {
+  return method === 'GET' || url.includes(':getByDataFilter') || url.includes('developerMetadata:search')
+}
+
+async function api<T>(method: string, url: string, body?: unknown): Promise<T> {
+  const retrySafe = isRetrySafeGoogleRequest(method, url)
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await transport<T>(method, url, body)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      const delay = GOOGLE_READ_RETRY_DELAYS_MS[attempt]
+      if (!retrySafe || delay == null || !RETRYABLE_GOOGLE_STATUS_RE.test(message)) throw err
+      console.warn(`[project-control] transient Google read failure; retrying in ${delay}ms (${attempt + 1}/${GOOGLE_READ_RETRY_DELAYS_MS.length})`)
+      await new Promise((resolve) => setTimeout(resolve, delay))
+    }
+  }
 }
 
 // Narrow shapes of the Google REST responses we read (not the full API types).

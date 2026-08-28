@@ -23,7 +23,11 @@ import { frameioHeaders } from '../../../src/lib/frameio/auth'
 import { frameioProjectUrl } from '../../../src/lib/frameio/url'
 import { isFrameioUploadEnabled } from '../../../src/lib/projects/settings'
 import { processSrtFile } from '../../../src/lib/delivery/subtitle-watcher'
-import { registerProjectShare } from '../../../src/lib/project-control/share-progress'
+import {
+  registerProjectShare,
+  syncProjectShareEvent,
+  type RegisteredProjectShare,
+} from '../../../src/lib/project-control/share-progress'
 
 const DROPBOX_API = 'https://api.dropboxapi.com/2'
 const FRAMEIO_API = 'https://api.frame.io/v4'
@@ -355,6 +359,71 @@ interface Delivery {
   rev: string
 }
 
+type DeliveryProject = {
+  id: string
+  name: string
+  client: string
+  project_manager_slack_id?: string | null
+  external_links?: Record<string, any> | null
+}
+
+async function notifyProjectShare(
+  app: App,
+  input: {
+    project: DeliveryProject
+    fileName: string
+    reviewUrl: string
+    subfolderLine: string
+    progression: RegisteredProjectShare | null
+    recovered?: boolean
+  },
+): Promise<void> {
+  const { project, fileName, reviewUrl, subfolderLine, progression } = input
+  const linkLine = reviewUrl ? `<${reviewUrl}|Open review on Frame.io>` : '_(no review link)_'
+  const text = input.recovered
+    ? `♻️ *Recovered Frame.io share for ${project.name}* (${project.client})\n` +
+      `• File: \`${fileName}\`\n` +
+      `• ${linkLine}`
+    : `📦 *New delivery for ${project.name}* (${project.client})\n` +
+      `• Subfolder: \`${subfolderLine}\`\n` +
+      `• File: \`${fileName}\`\n` +
+      `• ${linkLine}`
+
+  const pmId = project.project_manager_slack_id || undefined
+  const channelId = project.external_links?.slack_id as string | undefined
+  const fallbackPm = process.env.KIT_FALLBACK_PM_SLACK_ID
+  const target = pmId || channelId || fallbackPm
+  if (!target) {
+    console.warn(`[dropbox-watcher] project ${project.id} has no notification target`)
+    return
+  }
+
+  const blocks: any[] = [{ type: 'section', text: { type: 'mrkdwn', text } }]
+  if (progression?.eventId) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: progression.milestone
+      ? `Kit matched this to *${progression.milestone}* (${progression.confidence}). Advance the live workback?`
+      : 'Kit could not confidently match this filename to a workback milestone. The latest-share link was updated; review the schedule manually.' } })
+    if (progression.milestone) blocks.push({ type: 'actions', elements: [
+      { type: 'button', action_id: 'kit_project_share_advance', style: 'primary', text: { type: 'plain_text', text: 'Yes, advance workback' }, value: progression.eventId },
+      { type: 'button', action_id: 'kit_project_share_dismiss', text: { type: 'plain_text', text: 'No, keep current milestone' }, value: progression.eventId },
+    ] })
+  }
+
+  const posted = await app.client.chat.postMessage({
+    channel: target,
+    text: input.recovered ? `♻️ Recovered Frame.io share for *${project.name}*` : `📦 New delivery for *${project.name}*`,
+    blocks,
+  })
+  if (progression?.eventId && posted.ts) {
+    const { error } = await createAdminClient().from('project_share_events')
+      .update({ slack_channel_id: target, slack_message_ts: posted.ts, updated_at: new Date().toISOString() })
+      .eq('id', progression.eventId)
+      .is('slack_message_ts', null)
+    if (error) throw new Error(`share notification ledger update failed: ${error.message}`)
+  }
+  console.log(`[dropbox-watcher] notified ${pmId ? `PM ${pmId}` : channelId ? `channel ${channelId}` : `fallback ${fallbackPm}`}`)
+}
+
 /**
  * An .srt landed in a project's accessibility folder: generate the TTML,
  * VTT, and TXT siblings next to it (same basename) and post a note to the
@@ -665,16 +734,38 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
   const sourceUrl: string = tempLinkResp.link
   if (!sourceUrl) throw new Error('Dropbox did not return a temporary link')
 
-  // ── Idempotency: skip if this file was already mirrored ──
+  // ── Idempotency: reuse if this file was already mirrored ─
   // Dropbox can replay the same delta (duplicate webhooks, a reprocessed
-  // batch). If a file with this name already exists in the target folder,
-  // don't upload a second copy. Fail open: on a lookup error, proceed with
-  // the upload rather than risk dropping a real delivery.
+  // batch). Do not upload a second copy, but DO reconcile the durable share
+  // event + Sheet state. The old early return made a transient Sheet failure
+  // permanent once Frame.io already had the asset.
   try {
-    const existingFileId = await findChildFile(acct, targetFolderId, fileName)
-    if (existingFileId) {
+    const existingFile = await findChildFile(acct, targetFolderId, fileName)
+    if (existingFile) {
+      const existingReviewUrl = existingFile.view_url ||
+        `https://next.frame.io/project/${frameioId}/view/${existingFile.id}`
+      const projectNumber = project.external_ids?.project_number || extractProjectNumber(d.safeName) || String(project.project_code || '').split('-')[0]
+      const progression = await registerProjectShare({
+        projectId: project.id,
+        projectNumber,
+        dropboxFileId: d.dropboxId,
+        dropboxRev: d.rev,
+        fileName,
+        shareUrl: existingReviewUrl,
+      })
+      const subfolderLine = traversedNames.length > 0
+        ? `${d.subfolder} / ${traversedNames.join(' / ')}`
+        : d.subfolder
+      await notifyProjectShare(app, {
+        project,
+        fileName,
+        reviewUrl: existingReviewUrl,
+        subfolderLine,
+        progression,
+        recovered: true,
+      })
       console.log(
-        `[dropbox-watcher] ${fileName} already in ${project.name} / ${d.subfolder} (file ${existingFileId}); skipping re-upload`,
+        `[dropbox-watcher] ${fileName} already in ${project.name} / ${d.subfolder} (file ${existingFile.id}); reconciled without re-upload`,
       )
       return
     }
@@ -738,7 +829,7 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
       `https://next.frame.io/project/${frameioId}/view/${file.id}`
   }
 
-  let progression: { eventId: string | null; milestone: string | null; confidence: string } | null = null
+  let progression: RegisteredProjectShare | null = null
   try {
     const projectNumber = project.external_ids?.project_number || extractProjectNumber(d.safeName) || String(project.project_code || '').split('-')[0]
     progression = await registerProjectShare({
@@ -755,53 +846,62 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
     console.warn(`[dropbox-watcher] project-control share update failed: ${err.message}`)
   }
 
-  // ── Notify ──────────────────────────────────────────────
-  // Preference order:
-  //   1. DM the project's PM if we have one
-  //   2. Post in the project's Slack channel if linked
-  //   3. DM the fallback user (KIT_FALLBACK_PM_SLACK_ID)
-  //   4. Skip silently
-  const linkLine = reviewUrl ? `<${reviewUrl}|Open review on Frame.io>` : '_(no review link)_'
   const subfolderLine =
     traversedNames.length > 0
       ? `${d.subfolder} / ${traversedNames.join(' / ')}`
       : d.subfolder
-  const text =
-    `📦 *New delivery for ${project.name}* (${project.client})\n` +
-    `• Subfolder: \`${subfolderLine}\`\n` +
-    `• File: \`${fileName}\`\n` +
-    `• ${linkLine}`
-
-  const pmId: string | undefined = project.project_manager_slack_id
-  const channelId: string | undefined = project.external_links?.slack_id
-  const fallbackPm = process.env.KIT_FALLBACK_PM_SLACK_ID
-  const target = pmId || channelId || fallbackPm
-
-  if (!target) {
-    console.warn(
-      `[dropbox-watcher] project ${project.id} has no PM, no Slack channel, and no KIT_FALLBACK_PM_SLACK_ID set; skipping notification`,
-    )
-    return
-  }
-
-  const blocks: any[] = [{ type: 'section', text: { type: 'mrkdwn', text } }]
-  if (progression?.eventId) {
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: progression.milestone
-      ? `Kit matched this to *${progression.milestone}* (${progression.confidence}). Advance the live workback?`
-      : 'Kit could not confidently match this filename to a workback milestone. The latest-share link was updated; review the schedule manually.' } })
-    if (progression.milestone) blocks.push({ type: 'actions', elements: [
-      { type: 'button', action_id: 'kit_project_share_advance', style: 'primary', text: { type: 'plain_text', text: 'Yes, advance workback' }, value: progression.eventId },
-      { type: 'button', action_id: 'kit_project_share_dismiss', text: { type: 'plain_text', text: 'No, keep current milestone' }, value: progression.eventId },
-    ] })
-  }
-  await app.client.chat.postMessage({
-    channel: target,
-    text: `📦 New delivery for *${project.name}*`,
-    blocks,
+  await notifyProjectShare(app, {
+    project,
+    fileName,
+    reviewUrl,
+    subfolderLine,
+    progression,
   })
-  console.log(
-    `[dropbox-watcher] notified ${pmId ? `PM ${pmId}` : channelId ? `channel ${channelId}` : `fallback ${fallbackPm}`}`,
-  )
+}
+
+/** Retry the Sheet + Slack half of durable Frame.io share events. This closes
+ * both crash windows: Frame upload succeeded but Google failed, or the Sheet
+ * write succeeded but Slack notification did not. The ledger fields make the
+ * sweep idempotent; successfully notified rows are no longer selected. */
+export async function reconcilePendingProjectShares(
+  app: App,
+  limit = 20,
+): Promise<{ scanned: number; recovered: number; failed: number }> {
+  const sb = createAdminClient()
+  const { data: events, error } = await sb.from('project_share_events')
+    .select('id,project_id,file_name,share_url,suggested_milestone,match_confidence,slack_message_ts')
+    .eq('status', 'pending')
+    .is('slack_message_ts', null)
+    .order('created_at', { ascending: true })
+    .limit(limit)
+  if (error) throw new Error(`pending project share scan failed: ${error.message}`)
+
+  const tally = { scanned: events?.length || 0, recovered: 0, failed: 0 }
+  for (const event of events || []) {
+    try {
+      const progression = await syncProjectShareEvent(event.id)
+      if (!progression.eventId) continue
+      const { data: project, error: projectError } = await sb.from('projects')
+        .select('id,name,client,project_manager_slack_id,external_links')
+        .eq('id', event.project_id)
+        .maybeSingle()
+      if (projectError || !project) throw new Error(projectError?.message || `Project not found: ${event.project_id}`)
+      await notifyProjectShare(app, {
+        project,
+        fileName: event.file_name,
+        reviewUrl: event.share_url,
+        subfolderLine: '01_Client Progress / recovered share',
+        progression,
+        recovered: true,
+      })
+      tally.recovered++
+      console.log(`[dropbox-watcher] recovered project share event ${event.id}`)
+    } catch (err: any) {
+      tally.failed++
+      console.error(`[dropbox-watcher] project share recovery failed for ${event.id}: ${err.message}`)
+    }
+  }
+  return tally
 }
 
 // ─── Discovery + auto-backfill ──────────────────────────────
@@ -1147,12 +1247,12 @@ async function findChildFile(
   acct: string,
   parentId: string,
   name: string,
-): Promise<string | null> {
+): Promise<any | null> {
   const r = await frameioGet(`/accounts/${acct}/folders/${parentId}/children`)
   const children = Array.isArray(r.data) ? r.data : Array.isArray(r) ? r : []
   for (const c of children) {
     const t = c.type || c.resource_type
-    if (t === 'file' && c.name === name) return c.id
+    if (t === 'file' && c.name === name) return c
   }
   return null
 }
