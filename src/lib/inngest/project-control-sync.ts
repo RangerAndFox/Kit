@@ -162,8 +162,15 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
     let allOk = true
     let leaseLost = false
 
-    for (let bindingIndex = 0; bindingIndex < bindings.length; bindingIndex++) {
-      const b = bindings[bindingIndex]
+    // Recover known failures first. A provider slowdown or function deadline
+    // must never make healthy/unchanged projects consume the entire pass while
+    // stale canvases remain at the end of an unspecified database order.
+    const orderedBindings = [
+      ...needsRecovery,
+      ...bindings.filter((b) => b.sync_status === 'synced'),
+    ]
+    for (let bindingIndex = 0; bindingIndex < orderedBindings.length; bindingIndex++) {
+      const b = orderedBindings[bindingIndex]
       if (bindingIndex > 0 && deps.perBindingDelayMs > 0) {
         await deps.sleep(deps.perBindingDelayMs)
       }
