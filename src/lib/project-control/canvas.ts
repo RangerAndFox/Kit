@@ -14,6 +14,8 @@ import { createHash } from 'node:crypto'
 import { fetchTemplateCandidates } from '@/lib/mcp/slack'
 import { classifyControlTemplate, type ControlTemplateClassification } from './template-signature'
 import type { WorkbookConfig } from './types'
+import { projectCanvasTitle } from './canvas-title'
+export { projectCanvasTitle, type ProjectCanvasTitleType } from './canvas-title'
 
 const SLACK_API = 'https://slack.com/api'
 
@@ -119,9 +121,9 @@ function slackGet(method: string, params: Record<string, string>): Promise<Slack
   return transport('get', method, params)
 }
 
-/** Deterministic title for a project's Project Control Canvas. */
-export function controlCanvasTitle(spine: string): string {
-  return `${spine} — Overview`
+/** Deterministic title for a project's Project Control / Overview Canvas. */
+export function controlCanvasTitle(projectNumber: string): string {
+  return projectCanvasTitle(projectNumber, 'overview')
 }
 
 export function hashTemplate(markdown: string): string {
@@ -234,6 +236,14 @@ async function editCanvasOnce(canvasId: string, change: CanvasChange): Promise<v
   const changes: CanvasChange[] = [change]
   assertValidCanvasChanges(changes)
   await slackPost('canvases.edit', { canvas_id: canvasId, changes })
+}
+
+/** Rename a Canvas tab without replacing its document body. */
+export async function renameControlCanvas(canvasId: string, title: string): Promise<void> {
+  await editCanvasOnce(canvasId, {
+    operation: 'rename',
+    title_content: { type: 'markdown', markdown: title },
+  })
 }
 
 /**

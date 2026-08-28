@@ -161,9 +161,9 @@ describe('bindProjectControl', () => {
     )
     assert.equal(r.status, 'connected')
     assert.deepEqual(createdTitles, [
-      '2601_Nike_S — Overview',
-      '2601_Nike_S — Reference',
-      '2601_Nike_S — Schedule',
+      '2601_Overview',
+      '2601_Reference',
+      '2601_Schedule',
     ])
     assert.deepEqual(savedTypes, ['overview', 'reference', 'schedule'])
     assert.equal(store.b.creation_state, 'connected')

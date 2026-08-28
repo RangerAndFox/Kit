@@ -8,6 +8,7 @@
 import TurndownService from 'turndown'
 import { gfm } from 'turndown-plugin-gfm'
 import { deriveSlackSlug } from '../provisioner/identifiers'
+import { projectCanvasTitle, type ProjectCanvasTitleType } from '../project-control/canvas-title'
 
 const SLACK_API = 'https://slack.com/api'
 
@@ -147,7 +148,7 @@ function preprocessCanvasHtml(html: string): string {
   return s
 }
 
-function canvasHtmlToMarkdown(html: string): string {
+export function canvasHtmlToMarkdown(html: string): string {
   const raw = turndown.turndown(preprocessCanvasHtml(html))
   return sanitizeCanvasMarkdown(raw).trim()
 }
@@ -881,7 +882,10 @@ export async function duplicateTemplateCanvases(opts: {
   // fourth project tab. Operators can override the IDs without a deploy.
   const approvedIds = (process.env.SLACK_PROJECT_CANVAS_TEMPLATE_IDS || 'F0BT5QT3C4E,F0BSSC7NZKR,F0BT3LH43U5')
     .split(',').map((x) => x.trim()).filter(Boolean)
-  const approved = new Set(approvedIds)
+  // Notes & Feedback was added after the original three approved template IDs.
+  // Keep it code-approved even while older Railway/Vercel env values remain.
+  const notesTemplateId = process.env.SLACK_PROJECT_NOTES_TEMPLATE_FILE_ID || 'F0B13HCFV9D'
+  const approved = new Set([...approvedIds, notesTemplateId])
   const templateFileIds = resolvedIds.filter((id) => approved.has(id) && !excluded.has(id))
   if (templateFileIds.length === 0) {
     console.warn('[Slack canvas] no template canvases resolved; skipping')
@@ -890,13 +894,13 @@ export async function duplicateTemplateCanvases(opts: {
 
   console.log(`[Slack canvas] duplicating ${templateFileIds.length} template(s) for channel ${opts.newChannelId}: ${templateFileIds.join(', ')}`)
 
-  // Build the project spine prefix used in every new canvas title:
-  //   {projectNumber}_{client}_{projectName} — matches Frame.io / Dropbox / Harvest.
-  // Fall back gracefully if any part is missing.
+  // Keep the full project spine inside the Canvas body. Slack's compact tab
+  // title uses only the stable project ID.
   const spineParts = [opts.projectNumber, opts.client, opts.projectName]
     .map((p) => (p ? String(p).trim() : ''))
     .filter(Boolean)
   const spine = spineParts.join('_') || opts.projectName
+  const projectNumber = String(opts.projectNumber || '').trim() || 'Project'
 
   // Clean a template canvas title for use in the new canvas name:
   //  - strip :emoji_shortcode: patterns (don't render in canvas titles)
@@ -911,6 +915,14 @@ export async function duplicateTemplateCanvases(opts: {
       .replace(/\s+/g, ' ')
       .trim()
     return cleaned || fallback
+  }
+
+  const templateCanvasType = (title: string): ProjectCanvasTitleType | null => {
+    if (/notes?\s*(?:and|&)\s*feedback|notesandfeedback/i.test(title)) return 'notesAndFeedback'
+    if (/reference/i.test(title)) return 'reference'
+    if (/schedule/i.test(title)) return 'schedule'
+    if (/overview/i.test(title)) return 'overview'
+    return null
   }
 
   for (const [idx, fileId] of templateFileIds.entries()) {
@@ -974,7 +986,10 @@ export async function duplicateTemplateCanvases(opts: {
       //    "+ Share a canvas" UI calls internally. Doing it as part of
       //    create (rather than canvases.access.set after the fact) is
       //    what makes the canvas appear in the channel header as a tab.
-      const newTitle = `${spine} — ${originalTitle}`
+      const canvasType = templateCanvasType(originalTitle)
+      const newTitle = canvasType
+        ? projectCanvasTitle(projectNumber, canvasType)
+        : `${projectNumber}_${originalTitle.replace(/[^a-z0-9]+/gi, '') || `Canvas${idx + 1}`}`
       let canvasId: string | undefined
       try {
         const created = await slackPost('canvases.create', {

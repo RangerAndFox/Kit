@@ -22,7 +22,7 @@ import {
   type WorkbookConfig,
 } from '../project-control/types'
 import { getWorkbookVersion, searchRowMetadata, readRowForSync, createCachedProjectSupplementReader } from '../project-control/sheets'
-import { editControlCanvas, controlCanvasTitle } from '../project-control/canvas'
+import { editControlCanvas, controlCanvasTitle, projectCanvasTitle } from '../project-control/canvas'
 import {
   normalizeRow,
   sourceRowHash,
@@ -222,9 +222,8 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
           continue
         }
 
-        const spine = [row['Project Number']?.display, row['Client']?.display, row['Project Name']?.display]
-          .filter(Boolean).join('_')
-        const title = controlCanvasTitle(spine || row['Project Name']?.display || 'Project')
+        const projectNumber = row['Project Number']?.display || 'Project'
+        const title = controlCanvasTitle(projectNumber)
         const markdown = extra
           ? renderOverviewView(row, extra)
           : renderProjectControlCanvas(b.template_markdown!, row)
@@ -250,7 +249,7 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
           }
           for (const view of canvases) {
             if (!view.canvas_id || view.canvas_type === 'overview') continue
-            const viewTitle = `${spine || row['Project Name']?.display || 'Project'} — ${view.canvas_type === 'reference' ? 'Reference' : 'Schedule'}`
+            const viewTitle = projectCanvasTitle(projectNumber, view.canvas_type === 'reference' ? 'reference' : 'schedule')
             const viewMarkdown = view.canvas_type === 'reference' ? renderReferenceView(row, extra) : renderScheduleView(row, extra)
             await deps.canvas.editControlCanvas({ canvasId: view.canvas_id, title: viewTitle, markdown: viewMarkdown })
             await deps.store.updateProjectCanvas(b.project_id, view.canvas_type, { sync_status: 'synced', last_source_hash: viewHash, last_synced_at: deps.now(), error: null })

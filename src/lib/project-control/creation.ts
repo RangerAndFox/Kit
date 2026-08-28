@@ -33,6 +33,7 @@ import {
 } from './render'
 import {
   controlCanvasTitle,
+  projectCanvasTitle,
   createControlCanvas,
   editControlCanvas,
   reconcileControlCanvas,
@@ -270,10 +271,8 @@ export async function bindProjectControl(
       ? await deps.sheets.readProjectSupplement(config, row['Project Number']?.display || '')
       : null
     const rowHash = extra ? projectViewHash(row, extra) : sourceRowHash(row)
-    const spine = [opts.submission.projectNumber, opts.submission.clientName, opts.submission.projectName]
-      .filter(Boolean)
-      .join('_')
-    const title = controlCanvasTitle(spine || opts.submission.projectName || 'Project')
+    const projectNumber = opts.submission.projectNumber || row['Project Number']?.display || 'Project'
+    const title = controlCanvasTitle(projectNumber)
     const markdown = extra
       ? renderOverviewView(row, extra)
       : renderProjectControlCanvas(controlTemplate!.markdown, row)
@@ -287,7 +286,7 @@ export async function bindProjectControl(
         { canvasType: 'schedule' as const, label: 'Schedule', markdown: renderScheduleView(row, extra) },
       ]
       for (const view of desired) {
-        const title = `${spine || opts.submission.projectName || 'Project'} — ${view.label}`
+        const title = projectCanvasTitle(projectNumber, view.canvasType)
         const clone = (opts.slackResult.data?.canvasClones || []).find((candidate) =>
           candidate.title.toLowerCase().includes(view.canvasType))
         const stored = persisted.find((candidate) => candidate.canvas_type === view.canvasType && candidate.canvas_id)
