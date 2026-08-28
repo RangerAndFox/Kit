@@ -26,13 +26,30 @@ export function containsSharedSurfaceSensitiveContent(text: string): boolean {
  * names are also removed so a transcript cannot become a client-contact list.
  */
 export function sanitizeTranscriptForSharedSurface(text: string): string {
-  return String(text || '')
+  const lines = String(text || '')
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
+  const speakerNames = new Set<string>()
+  for (const line of lines) {
+    const match = line.match(/^(?:\[[^\]]+\]\s*)?([^:\n]{1,80}):\s*/)
+    if (!match) continue
+    const full = match[1].trim()
+    if (full) speakerNames.add(full)
+    for (const token of full.split(/\s+/)) {
+      if (token.length >= 3) speakerNames.add(token)
+    }
+  }
+  const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const speakerPatterns = [...speakerNames]
+    .sort((a, b) => b.length - a.length)
+    .map((name) => new RegExp(`\\b${escapeRegExp(name)}\\b`, 'gi'))
+
+  return lines
     .filter((line) => !containsSharedSurfaceSensitiveContent(line))
     .filter((line) => !/https?:\/\//i.test(line))
     .map((line) => line.replace(/^(\[[^\]]+\]\s*)?[^:\n]{1,80}:\s*/, (_match, time = '') => `${time}Speaker: `))
+    .map((line) => speakerPatterns.reduce((safe, pattern) => safe.replace(pattern, 'External attendee'), line))
     .join('\n')
     .trim()
 }

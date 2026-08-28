@@ -25,9 +25,9 @@ describe('shared-surface privacy boundary', () => {
       '[00:01] Tara Nadolny: The review is Tuesday at 2.',
       '[00:08] Steve: Budget is $25,000.',
       '[00:12] Tara Nadolny: Email me at tara@example.com.',
-      '[00:18] Steve: Boardomatic V2 is the next milestone.',
+      '[00:18] Steve: Tara Nadolny will review Boardomatic V2 next.',
     ].join('\n'))
-    assert.equal(safe, '[00:01] Speaker: The review is Tuesday at 2.\n[00:18] Speaker: Boardomatic V2 is the next milestone.')
+    assert.equal(safe, '[00:01] Speaker: The review is Tuesday at 2.\n[00:18] Speaker: External attendee will review Boardomatic V2 next.')
     assert.equal(safe.includes('Tara'), false)
     assert.equal(safe.includes('$25,000'), false)
   })
