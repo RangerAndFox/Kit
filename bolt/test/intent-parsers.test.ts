@@ -4,6 +4,30 @@ import { parseRoleIntent } from '../src/roles/keyword'
 import { parseFrameioToggleIntent } from '../src/delivery/frameio-toggle'
 import { looksLikeHoursIntent } from '../src/checkins/adhoc'
 import { isUpdateProjectTrigger } from '../src/handlers/updateproject-card'
+import {
+  isNewProjectTrigger,
+  isStoryboardTrigger,
+  normalizeDmShortcutText,
+} from '../src/handlers/messages'
+
+describe('normalizeDmShortcutText (Slack AI relay attribution)', () => {
+  it('removes ChatGPT-style trailing relay attribution without changing the command', () => {
+    expect(normalizeDmShortcutText('new project\nSent using <@UCHATGPT>')).toBe('new project')
+    expect(normalizeDmShortcutText('update project  *Sent using* <@UCHATGPT>')).toBe('update project')
+    expect(normalizeDmShortcutText('new storyboard\n<@UCHATGPT>')).toBe('new storyboard')
+  })
+
+  it('does not strip ordinary names or prose', () => {
+    expect(normalizeDmShortcutText('new project for Steve')).toBe('new project for Steve')
+    expect(normalizeDmShortcutText('tell me about a new project')).toBe('tell me about a new project')
+  })
+
+  it('restores all three strict card shortcuts after relay cleanup', () => {
+    expect(isNewProjectTrigger(normalizeDmShortcutText('new project\nSent using <@UCHATGPT>'))).toBe(true)
+    expect(isUpdateProjectTrigger(normalizeDmShortcutText('update project\nSent using <@UCHATGPT>'))).toBe(true)
+    expect(isStoryboardTrigger(normalizeDmShortcutText('new storyboard\nSent using <@UCHATGPT>'))).toBe(true)
+  })
+})
 
 describe('looksLikeHoursIntent (ad-hoc hours pre-filter)', () => {
   it('matches hour phrasings', () => {

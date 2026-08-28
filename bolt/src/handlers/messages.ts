@@ -755,6 +755,28 @@ export interface DmShortcutContext {
   threadTs?: string
 }
 
+/**
+ * Slack can append a relay attribution when a message is sent into Kit from
+ * another Slack AI app (for example, "Sent using @ChatGPT"). That annotation
+ * is transport metadata, not part of the user's command. Keep the strict
+ * shortcut matchers strict, but remove only this narrow trailing shape before
+ * asking the registry to match it.
+ */
+export function normalizeDmShortcutText(text: string): string {
+  let normalized = String(text || '').trim()
+  if (!normalized) return ''
+
+  const mention = '<@[A-Z0-9]+(?:\\|[^>]+)?>'
+  const sentUsing = `(?:[_*~]*\\s*sent\\s+using\\s*[_*~]*\\s*)?${mention}`
+
+  // Slack may serialize the attribution on its own line or directly after the
+  // visible command. Requiring the suffix to end in a Slack user/app mention
+  // prevents ordinary prose such as "new project for Steve" from matching.
+  normalized = normalized.replace(new RegExp(`\\s+${sentUsing}\\s*$`, 'i'), '').trim()
+
+  return normalized
+}
+
 type DmShortcut = {
   id: 'storyboard' | 'new-project' | 'update-project'
   matches: (text: string) => boolean
@@ -805,8 +827,9 @@ export async function handleDmShortcut(
   app: App,
   context: DmShortcutContext,
 ): Promise<boolean> {
+  const shortcutText = normalizeDmShortcutText(context.text)
   const shortcut = DM_SHORTCUT_REGISTRY.find((candidate) =>
-    candidate.matches(context.text),
+    candidate.matches(shortcutText),
   )
   if (!shortcut) return false
   await shortcut.run(app, context)
