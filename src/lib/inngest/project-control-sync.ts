@@ -76,6 +76,8 @@ export interface SyncDeps {
   config: WorkbookConfig | null
   enabled: boolean
   now: () => string
+  sleep: (ms: number) => Promise<void>
+  perBindingDelayMs: number
 }
 
 async function postAlert(text: string): Promise<void> {
@@ -103,6 +105,12 @@ export function defaultSyncDeps(): SyncDeps {
     config: workbookConfigFromEnv(),
     enabled: projectControlSyncEnabled(),
     now: () => new Date().toISOString(),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    // A normalized project consumes several Sheets reads (metadata, project
+    // row, and supplemental tabs). Pace below Google's 60 reads/user/minute
+    // quota so a workbook-wide change converges instead of failing its later
+    // projects with 429 RESOURCE_EXHAUSTED.
+    perBindingDelayMs: 9_000,
   }
 }
 
@@ -154,7 +162,11 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
     let allOk = true
     let leaseLost = false
 
-    for (const b of bindings) {
+    for (let bindingIndex = 0; bindingIndex < bindings.length; bindingIndex++) {
+      const b = bindings[bindingIndex]
+      if (bindingIndex > 0 && deps.perBindingDelayMs > 0) {
+        await deps.sleep(deps.perBindingDelayMs)
+      }
       // Renew between bindings: a long pass must not outlive its lease and let a
       // reclaiming worker edit canvases concurrently. If we lost ownership, stop
       // the pass (do not advance the cursor) — the new holder owns the rest.

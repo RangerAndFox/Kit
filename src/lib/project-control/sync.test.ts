@@ -96,6 +96,8 @@ function makeDeps(over: { bindings?: BindingRow[]; cursor?: string | null; versi
     config: CONFIG,
     enabled: true,
     now: () => 't',
+    sleep: async () => {},
+    perBindingDelayMs: 0,
   }
   return { deps, edits, posts, store }
 }
