@@ -1980,6 +1980,8 @@ async function rebindIncompleteBinding(
       creativeDirectorName: await resolveUserDisplayName(client, form.creativeDirector),
       frameioUrl: links.frameio,
       dropboxUrl: links.dropbox,
+      harvestUrl: links.harvest,
+      boordsUrl: links.boords,
     },
     slackResult: { id: channelId, data: { channelId, controlTemplate, controlTemplateError } },
   })

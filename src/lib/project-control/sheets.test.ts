@@ -14,6 +14,7 @@ import {
   updateBoundRow,
   upsertProjectLinks,
   renameProjectLinks,
+  readProjectSupplement,
   seedNormalizedProjectTables,
   __setSheetsTransportForTests,
 } from './sheets'
@@ -285,6 +286,30 @@ describe('RF Production workbook adapter', () => {
     assert.equal(at('End Date'), '09/10/2026')
     assert.equal(at('Frame.io'), 'https://next.frame.io/project/fabric')
     assert.equal(at('Dropbox'), 'https://dropbox.com/fabric')
+  })
+
+  it('keeps a hyperlinked Link Type as its label while using the URL column hyperlink', async () => {
+    __setSheetsTransportForTests(async <T>(_method: string, url: string, body?: unknown): Promise<T> => {
+      if (!url.includes(':getByDataFilter')) throw new Error(`unexpected url ${url}`)
+      const gr = (body as any).dataFilters[0].gridRange
+      if (gr.sheetId === config.sheetId) {
+        return { sheets: [{ properties: { sheetId: config.sheetId }, data: [{ rowData: [
+          { values: [c('2637')] },
+        ] }] }] } as T
+      }
+      if (gr.sheetId === config.linksSheetId) {
+        const linkedType: SheetCell = { ...c('Frame.io'), hyperlink: 'http://Frame.io' }
+        const urlCell: SheetCell = { ...c('Open'), hyperlink: 'https://next.frame.io/project/fabric' }
+        return { sheets: [{ properties: { sheetId: config.linksSheetId }, data: [{ rowData: [
+          { values: [c('2637'), linkedType, c('Frame.io'), urlCell, c('TRUE'), c('20')] },
+        ] }] }] } as T
+      }
+      throw new Error(`wrong sheet ${gr.sheetId}`)
+    })
+
+    const supplement = await readProjectSupplement(config, '2637')
+    assert.equal(supplement.links[0]['Link Type'], 'Frame.io')
+    assert.equal(supplement.links[0].URL, 'https://next.frame.io/project/fabric')
   })
 
   it('writes new-layout fields to their physical Projects columns', async () => {
