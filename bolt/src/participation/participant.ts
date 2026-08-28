@@ -18,7 +18,7 @@
  *   2. Retrieval-first: the model sees ONLY fetched context and must answer
  *      from it or stay quiet — no general knowledge.
  *   3. High confidence bars (answer/asset 0.8, ping 0.9), one unprompted
- *      reply per thread, a per-channel cooldown, and a financial-content
+ *      reply per thread, a per-channel cooldown, and a sensitive-content
  *      output guard (channel replies are visible to everyone in it).
  *
  * Scope: channels with a brain OR a linked project. Kill switch:
@@ -28,6 +28,7 @@
 import type { App } from '@slack/bolt'
 import { anthropic, SPECIALIST_MODEL } from '../llm/client'
 import { gatherParticipationContext } from './context'
+import { containsSharedSurfaceSensitiveContent } from '../../../src/lib/privacy/shared-surface'
 
 // ─── Tunables ───────────────────────────────────────────────
 
@@ -97,9 +98,6 @@ export function _resetParticipationStateForTest(): void {
 // ─── Output safety ──────────────────────────────────────────
 
 /** Channel replies are visible to the whole channel — never volunteer money. */
-const FINANCIAL_RE = /\$\s?\d|\bbudget\b|\brevenue\b|\bmargin\b|\brate card\b|\binvoice\b|\bday rate\b/i
-
-
 // ─── Decision ───────────────────────────────────────────────
 
 const SYSTEM_PROMPT = `You are Kit, a production agent embedded in a video studio's Slack project channel. A teammate just posted a message (they did NOT address you). Decide whether you can add clear value by replying — and stay QUIET unless you are sure.
@@ -109,7 +107,6 @@ You will receive context blocks (any may be empty):
 - KNOWLEDGE: retrieved from the project's brain, notes, and knowledge base
 - DASHBOARD: structured project state — milestones, open action items
 - FEEDBACK: open feedback items on the project
-- LAST CALL: the most recent call transcript excerpt
 - CANVASES: the channel's Slack canvases (team-maintained docs/dashboards)
 - FRAMEIO COMMENTS: recent review comments on the latest cuts
 - THREAD: earlier messages in the thread the question was asked in
@@ -132,7 +129,7 @@ Rules:
 - "asset": the message asks for a link/location the PROJECT record has (Frame.io project, Dropbox folder). Reply with the link and nothing else fancy.
 - "ping": the question needs a HUMAN (a decision, approval, creative preference, or knowledge Kit lacks) AND one specific TEAM member is the obvious owner given their role. Reply like a helpful teammate: "That one's for <@ID> I think." Use this SPARINGLY.
 - "quiet": everything else. Rhetorical questions, banter, questions already being discussed, anything you're not certain about. When in doubt: quiet.
-- NEVER mention budgets, rates, costs, or any financial figure — this is a shared channel.
+- NEVER mention budgets, rates, costs, financial figures, client contacts, private transcript details, credentials, legal/contract details, or personal information — this is a shared channel.
 - Match the channel's tone: brief, casual, no corporate voice, at most one emoji.
 - Confidence: 0.9+ only when the context match is exact; below 0.8 output "quiet" instead.`
 
@@ -190,9 +187,6 @@ ${ctx.dashboardBlock || '(none)'}
 FEEDBACK:
 ${ctx.feedbackBlock || '(none open)'}
 
-LAST CALL:
-${ctx.transcriptBlock || '(no transcript)'}
-
 CANVASES:
 ${ctx.canvasBlock || '(none)'}
 
@@ -242,7 +236,7 @@ Decide. Output JSON only.`
 
     // Output guards: no financials in-channel; pings must reference a real
     // roster member and actually carry the mention.
-    if (FINANCIAL_RE.test(reply)) return
+    if (containsSharedSurfaceSensitiveContent(reply)) return
     if (action === 'ping') {
       const target = String(decision.mention_user_id || '')
       if (!roster.some((m) => m.slackId === target)) return

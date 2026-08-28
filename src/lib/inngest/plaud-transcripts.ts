@@ -120,7 +120,7 @@ export const plaudTranscriptScan = inngest.createFunction(
         await sb
           .from('project_documents')
           .delete()
-          .eq('doc_type', 'call_transcript')
+          .in('doc_type', ['call_transcript', 'call_transcript_safe'])
           .filter('metadata->>call_transcripts_id', 'eq', row.id)
 
         try {

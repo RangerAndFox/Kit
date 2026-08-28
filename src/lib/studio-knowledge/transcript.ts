@@ -9,6 +9,7 @@
 
 import { ingestLongDocument } from '../rag/ingest'
 import { createAdminClient } from '../supabase/admin'
+import { sanitizeTranscriptForSharedSurface } from '../privacy/shared-surface'
 
 export interface TranscriptInput {
   id: string
@@ -24,10 +25,10 @@ export interface TranscriptInput {
 }
 
 export function transcriptVisibilityTier(t: Pick<TranscriptInput, 'project_id' | 'source'>): 'team' | 'founder' {
-  if (t.project_id) return 'team'
-  // Plaud and its Drive/Zapier intake can contain personal or founder-only
-  // conversations. Until Kit positively matches one to a project, keep it
-  // out of producer-facing studio knowledge.
+  // Plaud and its Drive/Zapier intake can contain personal conversations even
+  // when a project matcher finds a plausible project. The raw source therefore
+  // remains founder-only unconditionally. Project-matched calls get a separate,
+  // deterministic redacted derivative below for team retrieval.
   if (t.source === 'plaud' || t.source === 'drive') return 'founder'
   return 'team'
 }
@@ -51,7 +52,7 @@ export function composeTranscriptTitle(t: TranscriptInput): string {
   return `${sourceLabel} transcript · ${date}${peopleSuffix}`
 }
 
-export async function embedTranscript(t: TranscriptInput): Promise<{ documentIds: string[]; chunks: number }> {
+export async function embedTranscript(t: TranscriptInput): Promise<{ documentIds: string[]; chunks: number; safeChunks: number }> {
   if (!t.transcript || t.transcript.trim().length === 0) {
     throw new Error('embedTranscript: transcript text is empty')
   }
@@ -73,7 +74,33 @@ export async function embedTranscript(t: TranscriptInput): Promise<{ documentIds
       call_transcripts_id: t.id,
     },
   })
-  return { documentIds: results.map((r) => r.documentId), chunks: results.length }
+
+  let safeResults: Array<{ documentId: string }> = []
+  if (t.project_id && (t.source === 'plaud' || t.source === 'drive')) {
+    const safeText = sanitizeTranscriptForSharedSurface(t.transcript)
+    // Empty is the safe outcome when every line contains restricted material.
+    if (safeText) {
+      safeResults = await ingestLongDocument({
+        workspaceId: t.workspace_id,
+        projectId: t.project_id,
+        docType: 'call_transcript_safe',
+        title: `${title} · shared-safe`,
+        content: safeText,
+        visibilityTier: 'team',
+        metadata: {
+          source: t.source,
+          redacted_for_shared_surfaces: true,
+          call_transcripts_id: t.id,
+          start_time: t.start_time,
+        },
+      })
+    }
+  }
+  return {
+    documentIds: [...results, ...safeResults].map((r) => r.documentId),
+    chunks: results.length,
+    safeChunks: safeResults.length,
+  }
 }
 
 /**
@@ -101,18 +128,25 @@ export async function backfillTranscriptsIntoRag(workspaceId: string): Promise<{
 
   for (const t of rows || []) {
     try {
-      // Skip if we already have a project_documents row for this transcript.
+      // A complete embedding has a raw source row and, for matched Plaud/Drive
+      // calls, a separate shared-safe row. Missing derivatives are repaired.
       const { data: existing } = await sb
         .from('project_documents')
-        .select('id')
-        .eq('doc_type', 'call_transcript')
+        .select('id, doc_type')
+        .in('doc_type', ['call_transcript', 'call_transcript_safe'])
         .filter('metadata->>call_transcripts_id', 'eq', t.id)
-        .limit(1)
-        .maybeSingle()
-      if (existing) {
+      const hasRaw = (existing || []).some((doc: any) => doc.doc_type === 'call_transcript')
+      const needsSafe = Boolean(t.project_id) && (t.source === 'plaud' || t.source === 'drive')
+      const hasSafe = (existing || []).some((doc: any) => doc.doc_type === 'call_transcript_safe')
+      if (hasRaw && (!needsSafe || hasSafe)) {
         skipped++
         continue
       }
+      await sb
+        .from('project_documents')
+        .delete()
+        .in('doc_type', ['call_transcript', 'call_transcript_safe'])
+        .filter('metadata->>call_transcripts_id', 'eq', t.id)
       await embedTranscript(t as any)
       embedded++
     } catch (err: any) {

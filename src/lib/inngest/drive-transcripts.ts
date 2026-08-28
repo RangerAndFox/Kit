@@ -102,12 +102,29 @@ export const driveTranscriptScan = inngest.createFunction(
           .eq('id', row.id)
         if (projectId) {
           matched++
-          // Keep the RAG chunks' project scoping in sync with the transcript.
+          // Rebuild into a founder-only raw source plus a shared-safe project
+          // derivative. Never promote raw transcript chunks to team visibility.
           await sb
             .from('project_documents')
-            .update({ project_id: projectId, visibility_tier: 'team' })
-            .eq('doc_type', 'call_transcript')
+            .delete()
+            .in('doc_type', ['call_transcript', 'call_transcript_safe'])
             .filter('metadata->>call_transcripts_id', 'eq', row.id)
+          try {
+            await embedTranscript({
+              id: row.id,
+              workspace_id: workspaceId,
+              project_id: projectId,
+              source: 'drive',
+              transcript: row.transcript || '',
+              participants: null,
+              start_time: null,
+              duration_seconds: null,
+              external_recording_id: null,
+              external_file_id: null,
+            })
+          } catch (err: any) {
+            console.warn(`[drive-transcripts] safe rematch embed failed for ${row.id}: ${err.message}`)
+          }
         }
       }
       return { attempted: (rows || []).length, matched }

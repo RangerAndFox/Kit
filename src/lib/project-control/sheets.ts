@@ -145,6 +145,16 @@ interface SpreadsheetMetadataResponse {
       sheetId?: number
       gridProperties?: { rowCount?: number }
     }
+    tables?: Array<{
+      tableId?: string
+      range?: {
+        sheetId?: number
+        startRowIndex?: number
+        endRowIndex?: number
+        startColumnIndex?: number
+        endColumnIndex?: number
+      }
+    }>
   }>
 }
 interface BatchUpdateResponse {
@@ -162,6 +172,62 @@ async function getSheetRowCount(config: WorkbookConfig, sheetId: number): Promis
     ?.properties?.gridProperties?.rowCount
   if (rowCount == null) throw new Error(`getSheetRowCount: configured sheet ${sheetId} not found`)
   return rowCount
+}
+
+interface NativeTable {
+  tableId: string
+  range: {
+    sheetId: number
+    startRowIndex: number
+    endRowIndex: number
+    startColumnIndex: number
+    endColumnIndex: number
+  }
+}
+
+/** Return the normalized source table on a sheet, when one exists. */
+async function getNativeTable(config: WorkbookConfig, sheetId: number): Promise<NativeTable | null> {
+  if (config.layout !== 'rf-production-v1') return null
+  const fields = encodeURIComponent('sheets(properties(sheetId),tables(tableId,range))')
+  const data = await api<SpreadsheetMetadataResponse>(
+    'GET',
+    `${SHEETS_BASE}/${config.spreadsheetId}?fields=${fields}`,
+  )
+  const sheet = data.sheets?.find((candidate) => candidate.properties?.sheetId === sheetId)
+  const table = sheet?.tables?.find((candidate) => {
+    const range = candidate.range
+    return range?.sheetId === sheetId &&
+      range.startRowIndex != null && range.endRowIndex != null &&
+      range.startColumnIndex != null && range.endColumnIndex != null &&
+      // The configured first data row must immediately follow the table header.
+      range.startRowIndex + 1 === config.headerRow
+  })
+  const range = table?.range
+  if (!table?.tableId || !range || range.sheetId == null || range.startRowIndex == null ||
+      range.endRowIndex == null || range.startColumnIndex == null || range.endColumnIndex == null) return null
+  return {
+    tableId: table.tableId,
+    range: {
+      sheetId: range.sheetId,
+      startRowIndex: range.startRowIndex,
+      endRowIndex: range.endRowIndex,
+      startColumnIndex: range.startColumnIndex,
+      endColumnIndex: range.endColumnIndex,
+    },
+  }
+}
+
+function expandTableRequest(table: NativeTable | null, endRowIndex: number): unknown | null {
+  if (!table || endRowIndex <= table.range.endRowIndex) return null
+  return {
+    updateTable: {
+      table: {
+        tableId: table.tableId,
+        range: { ...table.range, endRowIndex },
+      },
+      fields: 'range',
+    },
+  }
 }
 
 /**
@@ -442,8 +508,11 @@ export async function createBoundRow(
   if (existing) return { metadataId: existing.metadataId, rowIndex: existing.rowIndex, alreadyBound: true }
 
   const rowIndex = await findNextEmptyRowIndex(config)
+  const table = await getNativeTable(config, config.sheetId)
 
   const requests: unknown[] = buildCellRequests(config, rowIndex, ownedCells)
+  const tableExpansion = expandTableRequest(table, rowIndex + 1)
+  if (tableExpansion) requests.push(tableExpansion)
   requests.push({
     createDeveloperMetadata: {
       developerMetadata: {
@@ -591,6 +660,7 @@ async function appendRows(config: WorkbookConfig, sheetId: number, width: number
     normalizeCell(r.values?.[0]).display.trim() ? index : last, -1)
   const rowIndex = firstDataRowIndex + lastOccupied + 1
   const rowCount = await getSheetRowCount(config, sheetId)
+  const table = await getNativeTable(config, sheetId)
   const missingRows = Math.max(0, rowIndex + rows.length - rowCount)
   const requests: unknown[] = []
   if (missingRows > 0) {
@@ -601,6 +671,8 @@ async function appendRows(config: WorkbookConfig, sheetId: number, width: number
     rows: rows.map((row) => ({ values: row.map((value) => ({ userEnteredValue: userValue(value) })) })),
     fields: 'userEnteredValue',
   } })
+  const tableExpansion = expandTableRequest(table, rowIndex + rows.length)
+  if (tableExpansion) requests.push(tableExpansion)
   await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, {
     requests,
   })
