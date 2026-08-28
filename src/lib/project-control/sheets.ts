@@ -361,6 +361,17 @@ export async function readRow(config: WorkbookConfig, rowIndex: number): Promise
   return cells
 }
 
+/**
+ * Sync-specific row read. The normalized sync already loads the Links tab once
+ * through its invocation-scoped supplement snapshot, so reading the full Links
+ * tab again for every project is redundant and can time out as that table
+ * grows. Creation and legacy callers keep readRow's self-contained behavior.
+ */
+export async function readRowForSync(config: WorkbookConfig, rowIndex: number): Promise<SheetCell[]> {
+  if (config.layout === 'rf-production-v1') return readRfProductionRow(config, rowIndex, false)
+  return readRow(config, rowIndex)
+}
+
 function textCell(value: string | null | undefined): SheetCell {
   return value ? { formattedValue: value, effectiveValue: { stringValue: value } } : {}
 }
@@ -400,7 +411,7 @@ async function readRfLinkRows(config: WorkbookConfig): Promise<Array<{ rowIndex:
 
 /** Translate the RF Production Projects + Links tabs into the stable A:Y
  * semantic row consumed by the Canvas renderer and row hash. */
-async function readRfProductionRow(config: WorkbookConfig, rowIndex: number): Promise<SheetCell[]> {
+async function readRfProductionRow(config: WorkbookConfig, rowIndex: number, includeLinks = true): Promise<SheetCell[]> {
   const rowData = await getGridData(
     config,
     { startRowIndex: rowIndex, endRowIndex: rowIndex + 1, startColumnIndex: 0, endColumnIndex: RF_PRODUCTION_PROJECT_HEADERS.length },
@@ -429,7 +440,7 @@ async function readRfProductionRow(config: WorkbookConfig, rowIndex: number): Pr
   out[MASTER_HEADERS.indexOf('Last Share')] = lastShareUrl ? { ...lastShareLabel, hyperlink: lastShareUrl } : lastShareLabel
 
   const projectNumber = projectNumberFromCell(physical[0])
-  if (projectNumber && config.linksSheetId != null) {
+  if (includeLinks && projectNumber && config.linksSheetId != null) {
     const links = await readRfLinkRows(config)
     for (const link of links) {
       if (link.projectNumber !== projectNumber) continue
