@@ -23,6 +23,7 @@
 
 import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
+import { guardSharedSlackReply } from '../../../src/lib/privacy/shared-surface'
 import { resolveUserContext } from '../../../src/lib/inngest/access-control'
 import { messageHasFrameIoLink, handleFrameIoLink } from '../../../src/lib/frameio/slack-handler'
 import { handleAdhocHoursEntry, looksLikeHoursIntent } from '../checkins/adhoc'
@@ -411,9 +412,10 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
   const replyThreadTs = assistantThreadTs
 
   const postReply = async (text: string) => {
+    const safeText = channelType === 'im' ? text : guardSharedSlackReply(text)
     await app.client.chat.postMessage({
       channel: channelId,
-      text,
+      text: safeText,
       ...(replyThreadTs ? { thread_ts: replyThreadTs } : {}),
     })
   }

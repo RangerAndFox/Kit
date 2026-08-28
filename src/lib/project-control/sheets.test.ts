@@ -89,6 +89,7 @@ describe('createBoundRow RF Production placement safety', () => {
     const config: WorkbookConfig = { ...CONFIG, layout: 'rf-production-v1' }
     let requestedEndColumnIndex: number | undefined
     let metadataStartIndex: number | undefined
+    let expandedTableEndIndex: number | undefined
 
     __setSheetsTransportForTests(async <T>(_method: string, url: string, body?: unknown): Promise<T> => {
       if (url.includes('developerMetadata:search')) return { matchedDeveloperMetadata: [] } as T
@@ -104,10 +105,24 @@ describe('createBoundRow RF Production placement safety', () => {
           }],
         } as T
       }
+      if (decodeURIComponent(url).includes('tables(tableId,range)')) {
+        return { sheets: [{
+          properties: { sheetId: config.sheetId },
+          tables: [{ tableId: 'projects-table', range: {
+            sheetId: config.sheetId, startRowIndex: 2, endRowIndex: 4,
+            startColumnIndex: 0, endColumnIndex: 23,
+          } }],
+        }] } as T
+      }
       if (url.includes(':batchUpdate')) {
-        const requests = (body as { requests: Array<{ createDeveloperMetadata?: { developerMetadata: { location: { dimensionRange: { startIndex: number } } } } }> }).requests
+        const requests = (body as { requests: Array<{
+          createDeveloperMetadata?: { developerMetadata: { location: { dimensionRange: { startIndex: number } } } }
+          updateTable?: { table: { range: { endRowIndex: number } } }
+        }> }).requests
         metadataStartIndex = requests.find((request) => request.createDeveloperMetadata)
           ?.createDeveloperMetadata?.developerMetadata.location.dimensionRange.startIndex
+        expandedTableEndIndex = requests.find((request) => request.updateTable)
+          ?.updateTable?.table.range.endRowIndex
         return { replies: [{ createDeveloperMetadata: { developerMetadata: { metadataId: 101 } } }] } as T
       }
       throw new Error(`unexpected url ${url}`)
@@ -121,6 +136,7 @@ describe('createBoundRow RF Production placement safety', () => {
 
     assert.equal(requestedEndColumnIndex, 23, 'the RF layout scans every physical Projects column')
     assert.equal(metadataStartIndex, config.headerRow + 1, 'the occupied ID-less row is skipped')
+    assert.equal(expandedTableEndIndex, config.headerRow + 2, 'the native Projects table expands through the new row')
   })
 })
 
@@ -373,6 +389,7 @@ describe('RF Production workbook adapter', () => {
           start: { sheetId: number; rowIndex: number; columnIndex: number }
           rows: Array<{ values: unknown[] }>
         } }
+      | { updateTable: { table: { tableId: string; range: { endRowIndex: number } }; fields: string } }
     const batches: WorkbackBatchRequest[][] = []
     const readWidths: number[] = []
 
@@ -394,6 +411,15 @@ describe('RF Production workbook adapter', () => {
           })),
         ]
         return { sheets: [{ properties: { sheetId: workbackSheetId }, data: [{ rowData }] }] } as T
+      }
+      if (decodeURIComponent(url).includes('tables(tableId,range)')) {
+        return { sheets: [{
+          properties: { sheetId: workbackSheetId },
+          tables: [{ tableId: 'workback-table', range: {
+            sheetId: workbackSheetId, startRowIndex: 3, endRowIndex: 5,
+            startColumnIndex: 0, endColumnIndex: 12,
+          } }],
+        }] } as T
       }
       if (url.includes('?fields=') && _method === 'GET') {
         return { sheets: [{ properties: { sheetId: workbackSheetId, gridProperties: { rowCount: 10 } } }] } as T
@@ -427,6 +453,9 @@ describe('RF Production workbook adapter', () => {
       columnIndex: 0,
     })
     assert.equal(write.updateCells.rows.length, 9)
+    const tableUpdate = batches[0][2] as Extract<WorkbackBatchRequest, { updateTable: unknown }>
+    assert.equal(tableUpdate.updateTable.table.tableId, 'workback-table')
+    assert.equal(tableUpdate.updateTable.table.range.endRowIndex, 14)
   })
 })
 

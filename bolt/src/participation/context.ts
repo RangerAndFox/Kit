@@ -8,8 +8,9 @@
  *   - dashboard:  structured project state — status, delivery date, brief,
  *                 milestones, open action items (never financials)
  *   - feedback:   open feedback_items for the project
- *   - transcript: the latest call transcript snippet (guaranteed present
- *                 even if its embedding hasn't landed yet)
+ * Raw or redacted transcripts are deliberately excluded from this shared-
+ * channel surface. Full transcript context is reserved for access-controlled
+ * private interactions.
  *   - canvases:   the channel's Slack canvases (dashboards the team keeps)
  *   - frameio:    recent Frame.io comments — fetched only when the message
  *                 is review-flavored (comments/notes/cut/version…), since it
@@ -25,6 +26,9 @@ import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { brainFirstRetrieve } from '../../../src/lib/brain/retrieve'
 import { frameioHeaders } from '../../../src/lib/frameio/auth'
 import { getAssetComments } from '../../../src/lib/frameio/client'
+import {
+  sanitizeSharedContext,
+} from '../../../src/lib/privacy/shared-surface'
 
 const FRAMEIO_API = 'https://api.frame.io/v4'
 
@@ -164,26 +168,6 @@ async function loadFeedback(project: ChannelProject | null): Promise<string> {
     return (data || [])
       .map((f: any) => `[${f.priority || 'normal'} · ${f.status}] ${clip(f.content, 200)}`)
       .join('\n')
-  } catch {
-    return ''
-  }
-}
-
-// ─── Latest call transcript ─────────────────────────────────
-
-async function loadLatestTranscript(project: ChannelProject | null): Promise<string> {
-  if (!project) return ''
-  try {
-    const sb = createAdminClient()
-    const { data } = await sb
-      .from('call_transcripts')
-      .select('start_time, transcript')
-      .eq('project_id', project.id)
-      .order('start_time', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-    if (!data?.transcript) return ''
-    return `Last call (${data.start_time}): ${clip(data.transcript, 1200)}`
   } catch {
     return ''
   }
@@ -419,7 +403,7 @@ export async function gatherParticipationContext(opts: {
     }).catch(() => null),
     loadDashboard(opts.workspaceId, project),
     loadFeedback(project),
-    loadLatestTranscript(project),
+    Promise.resolve(''),
     loadChannelCanvases(opts.app, opts.channelId),
     wantsFrameioComments(opts.messageText)
       ? loadFrameioComments(project)
@@ -453,7 +437,11 @@ export async function gatherParticipationContext(opts: {
   }
   const knowledgeBlock = knowledgeResults
     .slice(0, 6)
-    .map((r: any, i: number) => `${i + 1}. [${r.title}] ${clip(r.content, 500)}`)
+    .map((r: any, i: number) => {
+      const safe = sanitizeSharedContext(r.content)
+      return safe ? `${i + 1}. [${r.title}] ${clip(safe, 500)}` : ''
+    })
+    .filter(Boolean)
     .join('\n')
 
   const hasAnySignal = !!(
@@ -471,13 +459,13 @@ export async function gatherParticipationContext(opts: {
   return {
     project,
     knowledgeBlock,
-    dashboardBlock,
-    feedbackBlock,
-    transcriptBlock,
-    canvasBlock,
-    frameioBlock,
-    historyBlock,
-    threadBlock,
+    dashboardBlock: sanitizeSharedContext(dashboardBlock),
+    feedbackBlock: sanitizeSharedContext(feedbackBlock),
+    transcriptBlock: sanitizeSharedContext(transcriptBlock),
+    canvasBlock: sanitizeSharedContext(canvasBlock),
+    frameioBlock: sanitizeSharedContext(frameioBlock),
+    historyBlock: sanitizeSharedContext(historyBlock),
+    threadBlock: sanitizeSharedContext(threadBlock),
     roster,
     hasAnySignal,
   }

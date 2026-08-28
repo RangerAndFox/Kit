@@ -45,7 +45,10 @@ async function gatherProjectContext(workspaceId: string, projectId: string): Pro
       .select('title, content, doc_type, created_at')
       .eq('workspace_id', workspaceId)
       .eq('project_id', projectId)
-      .in('doc_type', ['note', 'call_transcript'])
+      // Team-visible summaries must never be generated from the founder-only
+      // raw transcript. The safe derivative has already had private, contact,
+      // financial, legal and credential-bearing lines removed.
+      .in('doc_type', ['note', 'call_transcript_safe'])
       .order('created_at', { ascending: false })
       .limit(40),
     sb
@@ -56,7 +59,7 @@ async function gatherProjectContext(workspaceId: string, projectId: string): Pro
       .limit(10),
   ])
   const notes = (docs || []).filter((d: any) => d.doc_type === 'note').slice(0, 20)
-  const transcripts = (docs || []).filter((d: any) => d.doc_type === 'call_transcript').slice(0, 10)
+  const transcripts = (docs || []).filter((d: any) => d.doc_type === 'call_transcript_safe').slice(0, 10)
   return { project, notes, transcripts, actions: actions || [] }
 }
 
@@ -183,7 +186,7 @@ export async function regenerateAllProjectSummaries(workspaceId: string, opts: {
     .from('project_documents')
     .select('project_id, doc_type, created_at, indexed_at')
     .eq('workspace_id', workspaceId)
-    .in('doc_type', ['project_summary', 'note', 'call_transcript'])
+    .in('doc_type', ['project_summary', 'note', 'call_transcript_safe'])
   const summaryAt = new Map<string, number>()
   const newestSourceAt = new Map<string, number>()
   for (const d of docRows || []) {

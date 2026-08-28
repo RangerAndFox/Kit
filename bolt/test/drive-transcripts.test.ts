@@ -65,7 +65,7 @@ describe('transcriptVisibilityTier', () => {
     expect(transcriptVisibilityTier({ project_id: null, source: 'drive' })).toBe('founder')
   })
 
-  it('makes positively project-matched transcripts team-visible', () => {
-    expect(transcriptVisibilityTier({ project_id: 'project-1', source: 'drive' })).toBe('team')
+  it('keeps positively project-matched raw transcripts founder-only', () => {
+    expect(transcriptVisibilityTier({ project_id: 'project-1', source: 'drive' })).toBe('founder')
   })
 })
