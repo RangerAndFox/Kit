@@ -191,7 +191,11 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
           continue
         }
 
-        if (!b.canvas_id || !b.template_markdown) {
+        // Normalized RF Production projects render their three canvases from
+        // the workbook tables and intentionally have no legacy Slack template
+        // snapshot. A template is required only for the legacy single-canvas
+        // renderer; the persisted overview canvas is required in both modes.
+        if (!b.canvas_id || (!extra && !b.template_markdown)) {
           errored++
           allOk = false
           await deps.store.updateBinding(b.project_id, { sync_status: 'error', error: 'binding_incomplete' })
@@ -204,7 +208,7 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
         const title = controlCanvasTitle(spine || row['Project Name']?.display || 'Project')
         const markdown = extra
           ? renderOverviewView(row, extra)
-          : renderProjectControlCanvas(b.template_markdown, row)
+          : renderProjectControlCanvas(b.template_markdown!, row)
         // Ownership check immediately before the irreversible Canvas edit.
         if (!(await deps.store.renewWorkbookLease(config.spreadsheetId, 'sync', holder))) {
           leaseLost = true
@@ -218,6 +222,13 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
         if (extra && deps.store.listProjectCanvases && deps.store.updateProjectCanvas) {
           const viewHash = projectViewHash(row, extra)
           const canvases = await deps.store.listProjectCanvases(b.project_id)
+          const overview = canvases.find((view) => view.canvas_type === 'overview')
+          if (overview) {
+            await deps.store.updateProjectCanvas(b.project_id, 'overview', {
+              sync_status: 'synced', last_source_hash: viewHash,
+              last_synced_at: deps.now(), error: null,
+            })
+          }
           for (const view of canvases) {
             if (!view.canvas_id || view.canvas_type === 'overview') continue
             const viewTitle = `${spine || row['Project Name']?.display || 'Project'} — ${view.canvas_type === 'reference' ? 'Reference' : 'Schedule'}`
