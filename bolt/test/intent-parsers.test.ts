@@ -5,10 +5,24 @@ import { parseFrameioToggleIntent } from '../src/delivery/frameio-toggle'
 import { looksLikeHoursIntent } from '../src/checkins/adhoc'
 import { isUpdateProjectTrigger } from '../src/handlers/updateproject-card'
 import {
+  isDashboardTrigger,
   isNewProjectTrigger,
   isStoryboardTrigger,
   normalizeDmShortcutText,
 } from '../src/handlers/messages'
+
+describe('isDashboardTrigger (founder Control Center shortcut)', () => {
+  it('matches the short DM commands users naturally type', () => {
+    for (const text of ['dashboard', 'Dashboard!', 'kit dashboard', '/kit dashboard', 'control center']) {
+      expect(isDashboardTrigger(text)).toBe(true)
+    }
+  })
+
+  it('leaves conversational dashboard questions for the orchestrator', () => {
+    expect(isDashboardTrigger('what should we add to the dashboard?')).toBe(false)
+    expect(isDashboardTrigger('show me the project dashboard for 2637')).toBe(false)
+  })
+})
 
 describe('normalizeDmShortcutText (Slack AI relay attribution)', () => {
   it('removes ChatGPT-style trailing relay attribution without changing the command', () => {
@@ -22,7 +36,8 @@ describe('normalizeDmShortcutText (Slack AI relay attribution)', () => {
     expect(normalizeDmShortcutText('tell me about a new project')).toBe('tell me about a new project')
   })
 
-  it('restores all three strict card shortcuts after relay cleanup', () => {
+  it('restores strict card shortcuts after relay cleanup', () => {
+    expect(isDashboardTrigger(normalizeDmShortcutText('dashboard\nSent using <@UCHATGPT>'))).toBe(true)
     expect(isNewProjectTrigger(normalizeDmShortcutText('new project\nSent using <@UCHATGPT>'))).toBe(true)
     expect(isUpdateProjectTrigger(normalizeDmShortcutText('update project\nSent using <@UCHATGPT>'))).toBe(true)
     expect(isStoryboardTrigger(normalizeDmShortcutText('new storyboard\nSent using <@UCHATGPT>'))).toBe(true)

@@ -727,6 +727,25 @@ export function isNewProjectTrigger(text: string): boolean {
   return /^(new|make|create|start|spin up)\s+(a\s+)?project(\s+please)?\.?$/i.test(t)
 }
 
+/**
+ * Strict DM shortcut for the founder Control Center. Keeping this matcher
+ * narrow prevents ordinary questions that happen to mention a dashboard from
+ * bypassing the conversational orchestrator.
+ */
+export function isDashboardTrigger(text: string): boolean {
+  if (!text) return false
+  const t = text.toLowerCase().trim().replace(/[.!?]+$/, '')
+  if (t.length > 40) return false
+  return new Set([
+    'dashboard',
+    'kit dashboard',
+    '/kit dashboard',
+    'control center',
+    'kit control center',
+    '/kit control',
+  ]).has(t)
+}
+
 export function isStoryboardTrigger(text: string): boolean {
   if (!text) return false
   const t = text.toLowerCase().trim()
@@ -780,7 +799,7 @@ export function normalizeDmShortcutText(text: string): string {
 }
 
 type DmShortcut = {
-  id: 'storyboard' | 'new-project' | 'update-project' | 'archive-project'
+  id: 'dashboard' | 'storyboard' | 'new-project' | 'update-project' | 'archive-project'
   matches: (text: string) => boolean
   run: (app: App, context: DmShortcutContext) => Promise<void>
 }
@@ -791,6 +810,61 @@ type DmShortcut = {
  * Assistant threads and in the plain-message fallback at the same time.
  */
 export const DM_SHORTCUT_REGISTRY: readonly DmShortcut[] = [
+  {
+    id: 'dashboard',
+    matches: isDashboardTrigger,
+    run: async (app, context) => {
+      const post = async (message: Record<string, unknown>) => {
+        await app.client.chat.postMessage({
+          channel: context.channelId,
+          ...(context.threadTs ? { thread_ts: context.threadTs } : {}),
+          ...message,
+        })
+      }
+      const workspaceId =
+        (await resolveWorkspaceId(context.teamId)) ||
+        process.env.KIT_DEFAULT_WORKSPACE_ID ||
+        ''
+      if (!workspaceId) {
+        await post({ text: ':warning: Kit’s workspace has not been configured yet.' })
+        return
+      }
+      const email = await lookupUserEmail(app, context.userId)
+      const user = await resolveUserContext(workspaceId, context.userId, email)
+      if (user?.tier !== 'admin') {
+        await post({ text: ':lock: The Kit Control Center is currently founder/admin only.' })
+        return
+      }
+      const baseUrl = (process.env.KIT_DASHBOARD_URL || process.env.NEXT_PUBLIC_APP_URL || '').replace(/\/$/, '')
+      if (!baseUrl) {
+        await post({ text: ':warning: The dashboard URL has not been configured yet.' })
+        return
+      }
+      await post({
+        text: 'Open the live Kit Control Center.',
+        blocks: [
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: '*Kit Control Center*\nLive health, queues, usage, workers and project operations.',
+            },
+          },
+          {
+            type: 'actions',
+            elements: [
+              {
+                type: 'button',
+                style: 'primary',
+                text: { type: 'plain_text', text: 'Open dashboard' },
+                url: `${baseUrl}/control-center`,
+              },
+            ],
+          },
+        ],
+      })
+    },
+  },
   {
     id: 'storyboard',
     matches: isStoryboardTrigger,

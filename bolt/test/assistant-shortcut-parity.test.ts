@@ -18,6 +18,7 @@ const messagesTs = readFileSync(join(SRC, 'handlers', 'messages.ts'), 'utf8')
 describe('DM keyword shortcut registry', () => {
   it('contains every supported strict card shortcut in routing order', () => {
     expect(DM_SHORTCUT_REGISTRY.map((shortcut) => shortcut.id)).toEqual([
+      'dashboard',
       'storyboard',
       'new-project',
       'update-project',
@@ -40,6 +41,6 @@ describe('DM keyword shortcut registry', () => {
   })
 
   it('keeps trigger matching inside the registry rather than app.ts', () => {
-    expect(appTs).not.toMatch(/is(?:Storyboard|NewProject|UpdateProject|Archive)Trigger/)
+    expect(appTs).not.toMatch(/is(?:Dashboard|Storyboard|NewProject|UpdateProject|Archive)Trigger/)
   })
 })

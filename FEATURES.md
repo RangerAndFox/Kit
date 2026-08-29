@@ -612,7 +612,7 @@ A producer or admin runs `/kit archive project` (or DMs `archive project`) to op
 
 ## 15B. Founder Control Center
 
-`/control-center` is the founder/admin operational portal, also opened from `/kit dashboard`. It combines live provider health, automation freshness, durable queues, project risk, time logging, worker heartbeats, safe activity, privacy checks, and seven-day usage. Project rows open founder-only live drill-downs with workback milestones, Sheet→Canvas state, provider links, recent Frame.io shares, archive/Behance activity, and project financial totals.
+`/control-center` is the founder/admin operational portal, opened from `/kit dashboard` or by sending the exact word `dashboard` to Kit in a DM. It combines live provider health, automation freshness, durable queues, project risk, time logging, worker heartbeats, safe activity, privacy checks, and seven-day usage. Project rows open founder-only live drill-downs with workback milestones, Sheet→Canvas state, provider links, recent Frame.io shares, archive/Behance activity, and project financial totals.
 
 The dashboard also reports the current Vercel revision, runtime coverage for Railway and the dedicated Behance Mac, and exact stored accessibility-provider cost totals. Anthropic, OpenAI embedding, and infrastructure costs are explicitly shown as uninstrumented rather than estimated. Founder controls can request a Sheet→Slack Canvas reconcile or retry a failed private Behance draft; both require browser confirmation, verify workspace/project ownership on the server, and write a safe `kit_actions` audit record. Cross-site requests and non-founder sessions fail closed.
 
