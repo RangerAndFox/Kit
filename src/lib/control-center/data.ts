@@ -168,6 +168,7 @@ export async function loadControlCenterData(args: {
     transcriptDocuments,
     storyboards,
     agentRuns,
+    accessibilityJobs,
   ] = await Promise.all([
     runAllChecks().catch((error: any) => {
       console.warn(`[control-center] live checks: ${error?.message || error}`)
@@ -190,6 +191,7 @@ export async function loadControlCenterData(args: {
     safeRows(admin.from('project_documents').select('id, doc_type, visibility_tier, metadata, created_at').eq('workspace_id', args.workspaceId).eq('doc_type', 'call_transcript'), 'transcript privacy'),
     safeRows(workspaceQuery('storyboard_jobs').gte('created_at', daysAgo(30)), 'storyboards'),
     safeRows(workspaceQuery('agent_runs').gte('started_at', sinceSevenDays), 'agent runs'),
+    safeRows(admin.from('accessibility_jobs').select('whisper_cost_cents, vision_cost_cents, elevenlabs_cost_cents, created_at').gte('created_at', daysAgo(30)), 'accessibility costs'),
   ])
 
   const persistedChecks: HealthCheck[] = healthState.map((row) => ({
@@ -410,6 +412,13 @@ export async function loadControlCenterData(args: {
 
   const anyDanger = attention.some((item) => item.signal === 'danger')
   const overall = anyDanger ? 'incident' : attention.length ? 'attention' : 'operational'
+  const cost = (field: string) => accessibilityJobs.reduce((sum, row) => sum + Math.max(0, Number(row[field]) || 0), 0)
+  const whisperCost = cost('whisper_cost_cents')
+  const visionCost = cost('vision_cost_cents')
+  const elevenLabsCost = cost('elevenlabs_cost_cents')
+  const webRevision = process.env.VERCEL_GIT_COMMIT_SHA || process.env.KIT_RELEASE_SHA || null
+  const botCheck = integrations.find((check) => /slack|bolt|railway/i.test(`${check.key} ${check.label}`))
+  const behanceWorker = workers.find((worker) => worker.type === 'Behance')
 
   return {
     generatedAt: new Date().toISOString(),
@@ -439,6 +448,37 @@ export async function loadControlCenterData(args: {
       { key: 'storyboards', label: 'Storyboards created', value: storyboards.filter((row) => row.status === 'complete' && isRecent(row.updated_at)).length, detail: 'last 7 days' },
       { key: 'archives', label: 'Projects archived', value: archiveJobs.filter((row) => row.status === 'complete' && isRecent(row.completed_at || row.updated_at)).length, detail: 'publishing workflows completed' },
       { key: 'hours', label: 'Hours logged', value: hoursSevenDays, suffix: 'h', detail: 'last 7 days' },
+    ],
+    costs: {
+      trackedCentsThirtyDays: whisperCost + visionCost + elevenLabsCost,
+      byProvider: [
+        { key: 'whisper', label: 'Whisper', cents: whisperCost },
+        { key: 'vision', label: 'Vision', cents: visionCost },
+        { key: 'elevenlabs', label: 'ElevenLabs', cents: elevenLabsCost },
+      ],
+      coverage: [
+        { label: 'Accessibility AI', tracked: true, detail: 'Whisper, vision and ElevenLabs costs are stored per job.' },
+        { label: 'Anthropic', tracked: false, detail: 'Calls work, but token usage is not yet written to Kit’s ledger.' },
+        { label: 'OpenAI embeddings', tracked: false, detail: 'Calls work, but embedding usage is not yet written to Kit’s ledger.' },
+        { label: 'Infrastructure', tracked: false, detail: 'Vercel, Railway and Supabase billing are not connected to Kit.' },
+      ],
+    },
+    releases: [
+      {
+        key: 'web', label: 'Control Center', provider: 'Vercel', revision: webRevision ? webRevision.slice(0, 7) : null,
+        environment: process.env.VERCEL_ENV || process.env.NODE_ENV || 'unknown',
+        detail: process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'Current web deployment', signal: 'healthy',
+      },
+      {
+        key: 'bot', label: 'Slack bot', provider: 'Railway', revision: null, environment: 'production',
+        detail: botCheck ? (botCheck.ok ? 'Live health check passing; revision not reported.' : botCheck.detail || 'Health check failing.') : 'Revision is not reported to the dashboard yet.',
+        signal: botCheck ? (botCheck.ok ? 'healthy' : 'danger') : 'warning',
+      },
+      {
+        key: 'behance', label: 'Behance worker', provider: 'Studio Mac', revision: null, environment: 'dedicated worker',
+        detail: behanceWorker?.detail || (behanceWorker ? `Heartbeat ${behanceWorker.status}` : 'No heartbeat received yet.'),
+        signal: behanceWorker?.signal || 'warning',
+      },
     ],
     timeLogging: {
       loggedToday,

@@ -169,6 +169,23 @@ export async function launchBehanceContext(): Promise<BrowserContext> {
   return context
 }
 
+export async function isBehanceSignedIn(context: BrowserContext): Promise<boolean> {
+  const page = context.pages()[0] || await context.newPage()
+  await page.goto('https://www.behance.net/settings', { waitUntil: 'domcontentloaded', timeout: 60_000 })
+  await page.waitForTimeout(1_500)
+  const url = page.url()
+  if (/adobe\.com.*signin|behance\.net\/.*(?:login|signin)/i.test(url)) return false
+  return /^https:\/\/(?:www\.)?behance\.net\/settings(?:[/?#]|$)/i.test(url)
+}
+
+export async function behanceBrowserVersion(context: BrowserContext): Promise<string | null> {
+  const direct = context.browser()?.version()
+  if (direct) return direct
+  const page = context.pages()[0] || await context.newPage()
+  const userAgent = await page.evaluate(() => navigator.userAgent).catch(() => '')
+  return userAgent.match(/Chrome\/([\d.]+)/)?.[1] || null
+}
+
 export async function buildBehanceDraft(context: BrowserContext, job: BehanceDraftJob): Promise<{ draftUrl: string; proofPath: string; proofUrl: string | null }> {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), `kit-behance-${job.id}-`))
   const page = await context.newPage()

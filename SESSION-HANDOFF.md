@@ -1,10 +1,12 @@
 # Kit — Session handoff
 
-Current as of 2026-08-27. Repository: https://github.com/RangerAndFox/Kit. Production Supabase project: `ozsxrcgrezpffnpwlrnq`.
+Current as of 2026-08-29. Repository: https://github.com/RangerAndFox/Kit. Production Supabase project: `ozsxrcgrezpffnpwlrnq`.
 
 ## Current build state
 
 Kit is a Slack-native studio operations system with a persistent Bolt service on Railway, Next.js/Inngest work on Vercel, Supabase as the durable source of truth, and optional studio render workers. Project creation, existing-project updates, outgoing-file Frame.io mirroring, storyboards, hours tracking, meeting briefings, knowledge retrieval, and render coordination are implemented.
+
+The founder-only Kit Control Center is live at `/control-center` and via `/kit dashboard`. Its second layer now adds live project drill-downs, guarded Canvas reconcile and Behance retry controls with audit records, Vercel/runtime version visibility, measured API cost totals, and explicit instrumentation gaps. The dedicated Behance Mac profile is authenticated; its LaunchAgent is installed from `kit-behance-worker`, runs from Application Support, starts automatically at login, and reports an idle live heartbeat plus Chrome version. A complete approved-project archive/Behance draft remains the final provider-side proof.
 
 The main implementation risk is no longer a known code failure; it is deployment/provider verification. Vercel checks passed on the latest merged work. Railway could not be inspected in the final audit because its connector repeatedly restarted authentication.
 

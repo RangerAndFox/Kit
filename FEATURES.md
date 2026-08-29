@@ -28,6 +28,7 @@ Cross-cutting infrastructure (Supabase schema, Bolt server, deployment) is at th
 14. [Pre-Meeting Briefings](#14-pre-meeting-briefings)
 15. [Studio Knowledge (project history, contacts, notes, auto-summarization)](#15-studio-knowledge)
 15A. [Private Archive Publisher](#15a-private-archive-publisher)
+15B. [Founder Control Center](#15b-founder-control-center)
 16. [Infrastructure](#16-infrastructure)
 17. [Environment variables](#17-environment-variables)
 
@@ -608,6 +609,14 @@ A producer or admin runs `/kit archive project` (or DMs `archive project`) to op
 - Job ledger: `archive_jobs` and `archive_job_steps` (RLS enabled; `anon` and `authenticated` revoked)
 - Behance queue/worker ledger: `behance_draft_jobs` and `behance_workers` (RLS enabled; `anon` and `authenticated` revoked)
 - Dedicated browser worker: `kit-behance-worker/`; persistent local Chrome session, Dropbox-approved media only, explicit draft save, proof screenshot, and stale-job recovery
+
+## 15B. Founder Control Center
+
+`/control-center` is the founder/admin operational portal, also opened from `/kit dashboard`. It combines live provider health, automation freshness, durable queues, project risk, time logging, worker heartbeats, safe activity, privacy checks, and seven-day usage. Project rows open founder-only live drill-downs with workback milestones, Sheet→Canvas state, provider links, recent Frame.io shares, archive/Behance activity, and project financial totals.
+
+The dashboard also reports the current Vercel revision, runtime coverage for Railway and the dedicated Behance Mac, and exact stored accessibility-provider cost totals. Anthropic, OpenAI embedding, and infrastructure costs are explicitly shown as uninstrumented rather than estimated. Founder controls can request a Sheet→Slack Canvas reconcile or retry a failed private Behance draft; both require browser confirmation, verify workspace/project ownership on the server, and write a safe `kit_actions` audit record. Cross-site requests and non-founder sessions fail closed.
+
+The Behance Mac runs `kit-behance-worker` as `com.rangerandfox.kit-behance-worker` from `~/Library/Application Support/Kit/BehanceWorker`. The LaunchAgent starts at login, restarts after failure, checks the dedicated profile before claiming work, and publishes its current status and Chrome version to `behance_workers`. It remains draft-only and cannot publish.
 
 ## 16. Infrastructure
 

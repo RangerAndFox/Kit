@@ -4,13 +4,19 @@ import type { BehanceDraftJob, BehanceJobStatus } from './types.js'
 
 const now = () => new Date().toISOString()
 
-export async function heartbeat(status: 'idle' | 'working' | 'needs_login' | 'error', jobId?: string | null, error?: string | null): Promise<void> {
+export async function heartbeat(
+  status: 'idle' | 'working' | 'needs_login' | 'error',
+  jobId?: string | null,
+  error?: string | null,
+  browserVersion?: string | null,
+): Promise<void> {
   const { error: writeError } = await supabase.from('behance_workers').upsert({
     worker_id: config.workerId,
     display_name: config.displayName,
     status,
     current_job_id: jobId || null,
     last_error: error || null,
+    ...(browserVersion ? { browser_version: browserVersion } : {}),
     last_seen_at: now(),
     updated_at: now(),
   }, { onConflict: 'worker_id' })

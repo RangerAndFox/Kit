@@ -9,6 +9,7 @@
     "build": "tsc",
     "test": "node --import tsx --test src/*.test.ts",
     "login": "tsx src/login.ts",
+    "check-login": "tsx src/check-login.ts",
     "start": "tsx src/index.ts",
     "start:prod": "node dist/index.js"
   },

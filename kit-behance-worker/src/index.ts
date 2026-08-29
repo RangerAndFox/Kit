@@ -1,4 +1,4 @@
-import { buildBehanceDraft, BehanceLoginRequiredError, launchBehanceContext } from './behance.js'
+import { behanceBrowserVersion, buildBehanceDraft, BehanceLoginRequiredError, isBehanceSignedIn, launchBehanceContext } from './behance.js'
 import { config } from './config.js'
 import { claimNextJob, heartbeat, pulseJob, updateJob } from './store.js'
 
@@ -9,14 +9,25 @@ console.log(`Worker: ${config.displayName} (${config.workerId})`)
 console.log('Safety: draft save only; publish controls and publish mutations are blocked')
 
 const context = await launchBehanceContext()
+const browserVersion = await behanceBrowserVersion(context)
 let activeJobId: string | null = null
 let workerState: 'idle' | 'working' | 'needs_login' | 'error' = 'idle'
 let lastError: string | null = null
 
 const heartbeats = setInterval(() => {
-  void heartbeat(workerState, activeJobId, lastError).catch((error) => console.error('[heartbeat]', error.message))
+  void heartbeat(workerState, activeJobId, lastError, browserVersion).catch((error) => console.error('[heartbeat]', error.message))
   if (activeJobId) void pulseJob(activeJobId).catch((error) => console.error('[job-heartbeat]', error.message))
 }, config.heartbeatIntervalMs)
+
+if (!(await isBehanceSignedIn(context))) {
+  workerState = 'needs_login'
+  lastError = 'The dedicated Behance browser profile is signed out. Run npm run login.'
+  await heartbeat(workerState, null, lastError, browserVersion)
+  console.error(lastError)
+  await context.close()
+  process.exit(2)
+}
+await heartbeat('idle', null, null, browserVersion)
 
 process.once('SIGINT', async () => { clearInterval(heartbeats); await context.close(); process.exit(0) })
 process.once('SIGTERM', async () => { clearInterval(heartbeats); await context.close(); process.exit(0) })

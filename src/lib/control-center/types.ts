@@ -55,6 +55,22 @@ export interface UsageMetric {
   detail: string
 }
 
+export interface CostSummary {
+  trackedCentsThirtyDays: number
+  byProvider: Array<{ key: string; label: string; cents: number }>
+  coverage: Array<{ label: string; tracked: boolean; detail: string }>
+}
+
+export interface ReleaseSummary {
+  key: string
+  label: string
+  provider: string
+  revision: string | null
+  environment: string
+  detail: string
+  signal: Signal
+}
+
 export interface ReliabilityDay {
   date: string
   label: string
@@ -99,6 +115,8 @@ export interface ControlCenterPayload {
   workers: WorkerSummary[]
   projects: ProjectSummary[]
   usage: UsageMetric[]
+  costs: CostSummary
+  releases: ReleaseSummary[]
   timeLogging: TimeLoggingSummary
   reliability: ReliabilityDay[]
   recentActivity: ActivityItem[]
@@ -108,4 +126,27 @@ export interface ControlCenterPayload {
     sharedTranscriptLeakCount: number
     serviceRoleServerOnly: boolean
   }
+}
+
+export interface ControlCenterProjectPayload {
+  project: {
+    id: string
+    code: string
+    name: string
+    client: string
+    status: string
+    projectType: string | null
+    startDate: string | null
+    targetDelivery: string | null
+    brief: string | null
+    budgetTotal: number | null
+    budgetSpent: number | null
+    links: Array<{ label: string; url: string }>
+  }
+  milestones: Array<{ id: string; name: string; dueDate: string; status: string; completedAt: string | null }>
+  canvases: Array<{ id: string; type: string; status: string; url: string | null; lastSyncedAt: string | null; error: string | null }>
+  binding: { status: string; creationState: string; lastSyncedAt: string | null; error: string | null } | null
+  shares: Array<{ id: string; fileName: string; status: string; url: string; createdAt: string }>
+  operations: Array<{ id: string; type: string; status: string; detail: string; at: string }>
+  actions: { canReconcile: boolean; retryableBehanceJobId: string | null }
 }

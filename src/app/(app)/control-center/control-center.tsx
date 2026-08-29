@@ -11,6 +11,8 @@ import {
   CheckCircle2,
   Clock3,
   CloudCog,
+  Coins,
+  GitCommitHorizontal,
   ExternalLink,
   FolderKanban,
   Gauge,
@@ -200,7 +202,7 @@ export function ControlCenter({ initialData }: { initialData: ControlCenterPaylo
                     {data.projects.map((project) => (
                       <tr key={project.id} className="group">
                         <td className="py-3 pr-4">
-                          <Link href={`/projects/${project.id}`} className="flex items-center gap-3 font-medium text-white transition group-hover:text-indigo-300">
+                          <Link href={`/control-center/projects/${project.id}`} className="flex items-center gap-3 font-medium text-white transition group-hover:text-indigo-300">
                             <span className={`h-2.5 w-2.5 rounded-full ${signalStyles[project.signal].dot}`} />
                             <span className="font-mono text-xs text-indigo-300">{project.code}</span>
                             <span className="truncate">{project.name}</span>
@@ -269,6 +271,43 @@ export function ControlCenter({ initialData }: { initialData: ControlCenterPaylo
             <div className="max-h-[360px] space-y-4 overflow-y-auto pr-1">
               {data.recentActivity.map((item) => <ActivityRow key={item.id} item={item} now={clock} />)}
               {!data.recentActivity.length ? <EmptyState icon={History} title="No recent activity" detail="Completed Kit actions will appear here." /> : null}
+            </div>
+          </Panel>
+        </div>
+
+        <div className="grid gap-6 xl:grid-cols-2">
+          <Panel title="Deployments & versions" icon={GitCommitHorizontal} eyebrow="What code is actually running">
+            <div className="space-y-3">
+              {data.releases.map((release) => (
+                <div key={release.key} className="rounded-lg border border-white/[0.08] bg-black/10 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${signalStyles[release.signal].dot}`} />
+                      <div><p className="font-medium">{release.label}</p><p className="text-xs text-[#777f90]">{release.provider} · {release.environment}</p></div>
+                    </div>
+                    <span className="rounded-md bg-white/[0.05] px-2 py-1 font-mono text-xs text-indigo-200">{release.revision || 'unreported'}</span>
+                  </div>
+                  <p className="mt-2 break-all text-xs leading-5 text-[#8f97a7]">{release.detail}</p>
+                </div>
+              ))}
+            </div>
+          </Panel>
+
+          <Panel title="Tracked API costs" icon={Coins} eyebrow="Last 30 days · measured only">
+            <div className="mb-4 flex items-end justify-between rounded-lg border border-white/[0.08] bg-black/10 p-4">
+              <div><p className="text-xs uppercase tracking-[0.12em] text-[#747c8d]">Known spend</p><p className="mt-1 font-mono text-3xl font-semibold">${(data.costs.trackedCentsThirtyDays / 100).toFixed(2)}</p></div>
+              <p className="max-w-44 text-right text-xs leading-5 text-[#777f90]">Uninstrumented providers are excluded, never estimated.</p>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {data.costs.byProvider.map((provider) => <Metric key={provider.key} label={provider.label} value={`$${(provider.cents / 100).toFixed(2)}`} />)}
+            </div>
+            <div className="mt-4 space-y-2">
+              {data.costs.coverage.map((item) => (
+                <div key={item.label} className="flex items-start gap-2 text-xs">
+                  {item.tracked ? <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-emerald-300" /> : <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-300" />}
+                  <p><span className="font-medium text-[#d7d9df]">{item.label}:</span> <span className="text-[#7f8798]">{item.detail}</span></p>
+                </div>
+              ))}
             </div>
           </Panel>
         </div>

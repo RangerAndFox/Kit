@@ -162,7 +162,7 @@ describe('Frame.io reconcile (crash-after-create resume)', () => {
 describe('Slack reconcile (deterministic name + crash-after-create resume)', () => {
   beforeEach(() => { process.env.SLACK_BOT_TOKEN = 'xoxb-test' })
 
-  type Ch = { id: string; name: string; purpose: { value: string } }
+  type Ch = { id: string; name: string; purpose: { value: string }; creator?: string }
   function slackFetch(channels: Ch[], counters: { create: number }) {
     return (async (url: string | URL | Request, init?: RequestInit) => {
       const u = String(url)
@@ -170,7 +170,7 @@ describe('Slack reconcile (deterministic name + crash-after-create resume)', () 
       if (u.includes('conversations.create')) {
         counters.create++
         if (channels.some((c) => c.name === body.name)) return jsonResponse({ ok: false, error: 'name_taken' })
-        const ch: Ch = { id: `C${channels.length + 1}`, name: body.name, purpose: { value: '' } }
+        const ch: Ch = { id: `C${channels.length + 1}`, name: body.name, purpose: { value: '' }, creator: 'B_KIT' }
         channels.push(ch)
         return jsonResponse({ ok: true, channel: { id: ch.id, name: ch.name } })
       }
@@ -181,12 +181,13 @@ describe('Slack reconcile (deterministic name + crash-after-create resume)', () 
       }
       if (u.includes('conversations.setTopic')) return jsonResponse({ ok: true })
       if (u.includes('conversations.list')) return jsonResponse({ ok: true, channels, response_metadata: {} })
+      if (u.includes('auth.test')) return jsonResponse({ ok: true, user_id: 'B_KIT' })
       return jsonResponse({ ok: true })
     }) as unknown as typeof fetch
   }
   const shortId = (id: string) => id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toLowerCase()
 
-  it('deterministic name embeds the Kit short id; a resume reuses it (no second channel)', async () => {
+  it('uses the clean project name; a marker-backed resume reuses it (no second channel)', async () => {
     const channels: Ch[] = []
     const counters = { create: 0 }
     globalThis.fetch = slackFetch(channels, counters)
@@ -196,16 +197,16 @@ describe('Slack reconcile (deterministic name + crash-after-create resume)', () 
     assert.equal(channels.length, 1)
     assert.equal(r1.channelId, r2.channelId)
     assert.equal(r1.channelName, r2.channelName)
-    assert.ok(r1.channelName.endsWith(`-${shortId(args.projectId)}`))
+    assert.equal(r1.channelName, '2601-nike-sizzle')
     assert.equal(counters.create, 2) // 2nd create → name_taken → reconciled by exact name
   })
 
   it('crash after conversations.create but before setPurpose: resume reuses the same channel', async () => {
     const args = { projectId: 'KP2wxyz1', projectName: 'Sizzle', client: 'Nike', projectNumber: '2602' }
-    const name = `2602-nike-sizzle-${shortId(args.projectId)}`
-    // Pre-seed a channel with the deterministic name but EMPTY purpose (marker
-    // never got written — the crash-before-setPurpose window).
-    const channels: Ch[] = [{ id: 'C_PRE', name, purpose: { value: '' } }]
+    const name = '2602-nike-sizzle'
+    // Pre-seed a Kit-created clean channel with EMPTY purpose (marker never got
+    // written — the crash-before-setPurpose window).
+    const channels: Ch[] = [{ id: 'C_PRE', name, purpose: { value: '' }, creator: 'B_KIT' }]
     const counters = { create: 0 }
     globalThis.fetch = slackFetch(channels, counters)
     const r = await createProjectSlackChannel(args)
@@ -215,8 +216,9 @@ describe('Slack reconcile (deterministic name + crash-after-create resume)', () 
 
   it('an unrelated readable-name collision (base name, no Kit suffix) is NOT adopted', async () => {
     const args = { projectId: 'KP3aaaa2', projectName: 'Sizzle', client: 'Nike', projectNumber: '2603' }
-    // A human-made channel shares the BASE name but lacks our -shortId suffix.
-    const channels: Ch[] = [{ id: 'C_HUMAN', name: '2603-nike-sizzle', purpose: { value: '' } }]
+    // A human-made channel occupies the readable name, so Kit must use the
+    // internal suffix only for this positively confirmed collision.
+    const channels: Ch[] = [{ id: 'C_HUMAN', name: '2603-nike-sizzle', purpose: { value: '' }, creator: 'B_HUMAN' }]
     const counters = { create: 0 }
     globalThis.fetch = slackFetch(channels, counters)
     const r = await createProjectSlackChannel(args)
