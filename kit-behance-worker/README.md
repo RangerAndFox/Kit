@@ -13,12 +13,12 @@ It never publishes:
 ## One-time studio Mac setup
 
 1. Install Node.js 22 or newer and Google Chrome.
-2. Copy `.env.example` to `.env` and fill in the Supabase service-role and Dropbox credentials already used by Kit. Keep this file only on the trusted studio Mac.
+2. Copy `.env.example` to `.env`, or set `KIT_ENV_FILE` to an existing trusted Kit server environment file. Configure the Supabase service role and `DROPBOX_SYNC_PATH`, pointing at the local Dropbox folder that corresponds to cloud root `/`. The worker does not need a Dropbox API credential.
 3. Run `npm install` and `npm run build`.
 4. Run `npm run login`. Chrome opens with the dedicated profile. Sign into the Ranger & Fox Adobe/Behance account, return to Terminal, and press Enter.
 5. Run `npm start`. Leave the worker running, or configure macOS LaunchAgent/your process manager to run `npm run start:prod` at login.
 
-The browser profile directory contains the Behance session. It must not be synced, committed, or shared. No Behance password is stored in Kit or Supabase.
+The browser profile directory contains the Behance session. It must not be synced, committed, or shared. No Behance password is stored in Kit or Supabase. Approved archive media is read through Dropbox's local File Provider mount; Kit's cloud service creates the proof link after the screenshot syncs.
 
 ## Producer workflow
 

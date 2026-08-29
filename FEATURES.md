@@ -749,7 +749,8 @@ A producer or admin runs `/kit archive project` (or DMs `archive project`) to op
 
 ### Behance studio worker (configured only on the trusted studio Mac)
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` — server-only access to the private Behance queue
-- `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN` — downloads approved archive assets and stores the proof screenshot
+- `DROPBOX_SYNC_PATH` — local Dropbox folder corresponding to cloud root `/`; approved media is hydrated through Dropbox Sync and the proof screenshot is written back there
+- `KIT_ENV_FILE` — optional absolute path to an existing trusted Kit server environment file, avoiding a duplicate Supabase secret file
 - `BEHANCE_CHROME_PATH`, `BEHANCE_PROFILE_DIR`, `BEHANCE_HEADLESS=false` — dedicated persistent Chrome identity; authenticate once with `npm run login`
 - `BEHANCE_CREATIVE_FIELD` — default required Behance category; defaults to `Motion Graphics`
 - `WORKER_ID`, `WORKER_DISPLAY_NAME`, `POLL_INTERVAL_MS`, `HEARTBEAT_INTERVAL_MS`, `JOB_TIMEOUT_MS` — worker identity and recovery controls

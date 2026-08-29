@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { createAdminClient } from '../supabase/admin'
 import { getArchiveJob, updateArchiveJob } from './store'
+import { getDropboxSharedLink } from './dropbox'
 
 const db = () => createAdminClient() as any
 const now = () => new Date().toISOString()
@@ -63,6 +64,12 @@ export async function syncBehanceResultToArchive(row: any): Promise<any> {
   if (!archive) return null
   const previous = archive.results?.behance || {}
   const status = row.status === 'awaiting_review' ? 'awaiting_review' : 'failed'
+  const proofUrl = row.proof_url || (row.proof_dropbox_path
+    ? await getDropboxSharedLink(row.proof_dropbox_path)
+    : null)
+  if (row.status === 'awaiting_review' && row.proof_dropbox_path && !proofUrl) {
+    throw new Error('Behance proof screenshot is still syncing to Dropbox.')
+  }
   const results = {
     ...(archive.results || {}),
     behance: {
@@ -70,7 +77,7 @@ export async function syncBehanceResultToArchive(row: any): Promise<any> {
       status,
       draftJobId: row.id,
       url: row.draft_url || previous.url || null,
-      proofUrl: row.proof_url || null,
+      proofUrl,
       error: row.error || null,
     },
   }
