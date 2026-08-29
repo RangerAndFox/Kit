@@ -587,11 +587,13 @@ Existing `project_documents` (pgvector embedded column, `match_documents` RPC) +
 ## 15A. Private Archive Publisher
 
 ### Summary
-A producer or admin runs `/kit archive project` (or DMs `archive project`) to open a prefilled, private Slack workflow. Kit copies the approved delivery video into the standardized Dropbox portfolio archive, generates bounded stills and GIFs on Railway, and prepares an unlisted Vimeo video, WordPress draft, Buffer drafts, and a Behance handoff manifest. Nothing is published publicly.
+A producer or admin runs `/kit archive project` (or DMs `archive project`) to open a prefilled, private Slack workflow. Before the editable form appears, Kit drafts the portfolio title, subtitle, services, three website-copy sections, excerpt, social copy, and credits from public-safe project context and verified team records. Kit then copies the approved delivery video into the standardized Dropbox portfolio archive, generates bounded stills and GIFs on Railway, and prepares an unlisted Vimeo video, WordPress draft, Buffer drafts, and a Behance handoff manifest. Nothing is published publicly.
 
 ### Safeguards
 - The workflow is restricted to producer/admin access and the confirmation card is delivered by DM.
 - A rights/approval checkbox and a second confirmation are required before external work begins.
+- Copy generation removes financial, contact, legal, credential, private-feedback, and other non-public lines before prompting; generated copy is scanned again and falls back to deterministic safe text if it fails.
+- Credit names come only from verified producer, assignment, and onboarding records. Kit does not invent credits or include client contacts.
 - Vimeo is always unlisted; WordPress and Buffer are always drafts; Behance remains manual/preparation-only.
 - Every step is recorded in private, server-only Supabase tables and completed steps are not repeated on retry.
 - The FFmpeg endpoint requires a shared 24+ character secret, caps request bodies, queues one media job at a time, and cleans its exact temporary directory.

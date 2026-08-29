@@ -5,7 +5,8 @@ import { resolveUserContext } from '../../../src/lib/inngest/access-control'
 import { projectNumberFromCode } from '../../../src/lib/studio-knowledge/project-sync'
 import { inngest } from '../../../src/lib/inngest/client'
 import { configuredArchiveDestinations } from '../../../src/lib/archive/adapters'
-import { archiveSettingsFromSlack, buildArchiveConfirmationCard, buildArchiveModal, buildArchiveProgressCard, buildArchiveProjectCard } from '../../../src/lib/archive/blocks'
+import { archiveSettingsFromSlack, buildArchiveConfirmationCard, buildArchiveLoadingErrorModal, buildArchiveLoadingModal, buildArchiveModal, buildArchiveProgressCard, buildArchiveProjectCard } from '../../../src/lib/archive/blocks'
+import { generateArchiveCopyDraft } from '../../../src/lib/archive/draft'
 import { findDeliveryVideos } from '../../../src/lib/archive/dropbox'
 import { claimArchiveJob, createArchiveJob, getArchiveJob, requeueArchiveJob, saveArchiveSlackMessage, updateArchiveJob } from '../../../src/lib/archive/store'
 import { runArchiveJob } from '../../../src/lib/archive/workflow'
@@ -79,20 +80,36 @@ async function loadArchiveSnapshot(projectId: string): Promise<{ snapshot: Archi
 }
 
 async function openArchiveModal(client: any, triggerId: string, projectId: string, channelId: string, userId: string): Promise<void> {
-  const { snapshot, workspaceId } = await loadArchiveSnapshot(projectId)
-  if (!await archiveAccess(client, workspaceId, userId)) throw new Error('Archive publishing is restricted to producers and admins.')
-  const videos = snapshot.dropboxProjectPath ? await findDeliveryVideos(snapshot.dropboxProjectPath) : []
-  await client.views.open({
-    trigger_id: triggerId,
-    view: buildArchiveModal({
-      snapshot,
-      workspaceId,
-      channelId,
-      sourceVideoPath: videos[0]?.path,
-      detectedVideos: videos.map((video) => video.path),
-      destinations: configuredArchiveDestinations(),
-    }),
-  })
+  const opened = await client.views.open({ trigger_id: triggerId, view: buildArchiveLoadingModal(projectId, channelId) })
+  const viewId = opened?.view?.id
+  if (!viewId) throw new Error('Slack did not return an archive modal id.')
+  try {
+    const { snapshot, workspaceId } = await loadArchiveSnapshot(projectId)
+    if (!await archiveAccess(client, workspaceId, userId)) throw new Error('Archive publishing is restricted to producers and admins.')
+    const [videos, draft] = await Promise.all([
+      snapshot.dropboxProjectPath ? findDeliveryVideos(snapshot.dropboxProjectPath).catch((error: any) => {
+        console.warn('[archive-copy] Delivery video discovery failed:', error.message)
+        return []
+      }) : Promise.resolve([]),
+      generateArchiveCopyDraft(workspaceId, snapshot),
+    ])
+    await client.views.update({
+      view_id: viewId,
+      view: buildArchiveModal({
+        snapshot,
+        workspaceId,
+        channelId,
+        sourceVideoPath: videos[0]?.path,
+        detectedVideos: videos.map((video) => video.path),
+        destinations: configuredArchiveDestinations(),
+        draft,
+        draftNotice: ':sparkles: Website copy, social copy, services, and credits were drafted from Kit’s public-safe project context.',
+      }),
+    })
+  } catch (error: any) {
+    await client.views.update({ view_id: viewId, view: buildArchiveLoadingErrorModal(projectId, channelId, error.message) }).catch(() => {})
+    throw error
+  }
 }
 
 async function postPrivateConfirmation(client: any, userId: string, job: any): Promise<void> {

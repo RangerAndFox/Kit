@@ -51,8 +51,12 @@ export function buildArchiveModal(opts: {
   destinations: ArchiveDestination[]
   channelId: string
   workspaceId: string
+  draft?: Partial<ArchiveSettings>
+  draftNotice?: string
 }): any {
   const s = opts.snapshot
+  const draft = opts.draft || {}
+  const initial = (value: unknown) => String(value || '').trim() ? { initial_value: String(value).trim() } : {}
   const destinationOptions = opts.destinations.map((id) => ({ text: { type: 'plain_text', text: destinationLabels[id] }, value: id }))
   const detected = (opts.detectedVideos || []).slice(0, 4).map((path) => `• ${path}`).join('\n')
   return {
@@ -63,24 +67,50 @@ export function buildArchiveModal(opts: {
     submit: { type: 'plain_text', text: 'Review Archive' },
     close: { type: 'plain_text', text: 'Cancel' },
     blocks: [
-      { type: 'section', text: { type: 'mrkdwn', text: `*${plain(s.projectNumber)} — ${plain(s.client)} — ${plain(s.projectName)}*\nKit will only create drafts or unlisted media. Public publishing remains a human action.` } },
+      { type: 'section', text: { type: 'mrkdwn', text: `*${plain(s.projectNumber)} — ${plain(s.client)} — ${plain(s.projectName)}*\nKit prefilled the writing from approved project context. Review every field. External outputs remain drafts or unlisted.` } },
+      ...(opts.draftNotice ? [{ type: 'context', elements: [{ type: 'mrkdwn', text: opts.draftNotice }] }] : []),
       ...(detected ? [{ type: 'context', elements: [{ type: 'mrkdwn', text: `*Detected delivery videos:*\n${detected}` }] }] : []),
       { type: 'input', block_id: 'source_video', label: { type: 'plain_text', text: 'Dropbox source video' }, hint: { type: 'plain_text', text: 'Use the full Dropbox path to the approved final video.' }, element: { type: 'plain_text_input', action_id: 'val', ...(opts.sourceVideoPath ? { initial_value: opts.sourceVideoPath } : {}), placeholder: { type: 'plain_text', text: '/production/2026/…/09_Outgoing/02_Delivery/final.mp4' } } },
-      { type: 'input', block_id: 'title', label: { type: 'plain_text', text: 'Portfolio title' }, element: { type: 'plain_text_input', action_id: 'val', initial_value: `${s.client} | ${s.projectName}`.slice(0, 3000) } },
-      { type: 'input', block_id: 'subtitle', optional: true, label: { type: 'plain_text', text: 'Subtitle' }, element: { type: 'plain_text_input', action_id: 'val' } },
+      { type: 'input', block_id: 'title', label: { type: 'plain_text', text: 'Portfolio title' }, element: { type: 'plain_text_input', action_id: 'val', initial_value: String(draft.title || `${s.client} | ${s.projectName}`).slice(0, 3000) } },
+      { type: 'input', block_id: 'subtitle', optional: true, label: { type: 'plain_text', text: 'Subtitle' }, element: { type: 'plain_text_input', action_id: 'val', ...initial(draft.subtitle) } },
       { type: 'input', block_id: 'year', label: { type: 'plain_text', text: 'Year' }, element: { type: 'plain_text_input', action_id: 'val', initial_value: `20${s.projectNumber.slice(0, 2)}` } },
-      { type: 'input', block_id: 'services', optional: true, label: { type: 'plain_text', text: 'Services' }, hint: { type: 'plain_text', text: 'Comma-separated, for example: Design, Animation, Editorial' }, element: { type: 'plain_text_input', action_id: 'val' } },
-      { type: 'input', block_id: 'description_1', optional: true, label: { type: 'plain_text', text: 'Description 1 — hero intro' }, element: { type: 'plain_text_input', action_id: 'val', multiline: true, max_length: 3000 } },
-      { type: 'input', block_id: 'description_2', optional: true, label: { type: 'plain_text', text: 'Description 2 — project story' }, element: { type: 'plain_text_input', action_id: 'val', multiline: true, max_length: 3000 } },
-      { type: 'input', block_id: 'description_3', optional: true, label: { type: 'plain_text', text: 'Description 3 — additional story' }, element: { type: 'plain_text_input', action_id: 'val', multiline: true, max_length: 3000 } },
-      { type: 'input', block_id: 'credits', optional: true, label: { type: 'plain_text', text: 'Credits' }, hint: { type: 'plain_text', text: 'One credit per line. Do not include client contacts unless approved for publication.' }, element: { type: 'plain_text_input', action_id: 'val', multiline: true, max_length: 3000 } },
-      { type: 'input', block_id: 'social_copy', optional: true, label: { type: 'plain_text', text: 'Social copy' }, element: { type: 'plain_text_input', action_id: 'val', multiline: true, max_length: 3000 } },
-      { type: 'input', block_id: 'excerpt', optional: true, label: { type: 'plain_text', text: 'Website excerpt' }, element: { type: 'plain_text_input', action_id: 'val', multiline: true, max_length: 1000 } },
+      { type: 'input', block_id: 'services', optional: true, label: { type: 'plain_text', text: 'Services' }, hint: { type: 'plain_text', text: 'Comma-separated, for example: Design, Animation, Editorial' }, element: { type: 'plain_text_input', action_id: 'val', ...initial(Array.isArray(draft.services) ? draft.services.join(', ') : '') } },
+      { type: 'input', block_id: 'description_1', optional: true, label: { type: 'plain_text', text: 'Description 1 — hero intro' }, element: { type: 'plain_text_input', action_id: 'val', multiline: true, max_length: 3000, ...initial(draft.description1) } },
+      { type: 'input', block_id: 'description_2', optional: true, label: { type: 'plain_text', text: 'Description 2 — project story' }, element: { type: 'plain_text_input', action_id: 'val', multiline: true, max_length: 3000, ...initial(draft.description2) } },
+      { type: 'input', block_id: 'description_3', optional: true, label: { type: 'plain_text', text: 'Description 3 — additional story' }, element: { type: 'plain_text_input', action_id: 'val', multiline: true, max_length: 3000, ...initial(draft.description3) } },
+      { type: 'input', block_id: 'credits', optional: true, label: { type: 'plain_text', text: 'Credits' }, hint: { type: 'plain_text', text: 'Verified project team only. Review roles and publication permission.' }, element: { type: 'plain_text_input', action_id: 'val', multiline: true, max_length: 3000, ...initial(draft.credits) } },
+      { type: 'input', block_id: 'social_copy', optional: true, label: { type: 'plain_text', text: 'Social copy' }, element: { type: 'plain_text_input', action_id: 'val', multiline: true, max_length: 3000, ...initial(draft.socialCopy) } },
+      { type: 'input', block_id: 'excerpt', optional: true, label: { type: 'plain_text', text: 'Website excerpt' }, element: { type: 'plain_text_input', action_id: 'val', multiline: true, max_length: 1000, ...initial(draft.excerpt) } },
       { type: 'input', block_id: 'background_color', optional: true, label: { type: 'plain_text', text: 'Background color' }, element: { type: 'plain_text_input', action_id: 'val', initial_value: '#000000' } },
       { type: 'input', block_id: 'process', optional: true, label: { type: 'plain_text', text: 'Process section' }, element: { type: 'checkboxes', action_id: 'val', options: [{ text: { type: 'plain_text', text: 'Include approved process imagery when available' }, value: 'include' }] } },
       { type: 'input', block_id: 'destinations', label: { type: 'plain_text', text: 'Prepare destinations' }, element: { type: 'checkboxes', action_id: 'val', options: destinationOptions, initial_options: destinationOptions } },
       { type: 'input', block_id: 'rights', label: { type: 'plain_text', text: 'Approval and rights' }, element: { type: 'checkboxes', action_id: 'val', options: [{ text: { type: 'plain_text', text: 'I confirm this media and copy are approved for portfolio preparation' }, value: 'confirmed' }] } },
     ],
+  }
+}
+
+export function buildArchiveLoadingModal(projectId: string, channelId: string): any {
+  return {
+    type: 'modal',
+    callback_id: 'kit_archive_loading',
+    private_metadata: JSON.stringify({ projectId, channelId }),
+    title: { type: 'plain_text', text: 'Archive Project' },
+    close: { type: 'plain_text', text: 'Cancel' },
+    blocks: [
+      { type: 'section', text: { type: 'mrkdwn', text: ':hourglass_flowing_sand: *Kit is drafting the archive package…*\nGathering approved project context, verified credits, delivery media, website copy, and social copy.' } },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: 'Financial, contact, legal, credential, and private-feedback details are excluded.' }] },
+    ],
+  }
+}
+
+export function buildArchiveLoadingErrorModal(projectId: string, channelId: string, message: string): any {
+  return {
+    type: 'modal',
+    callback_id: 'kit_archive_loading_error',
+    private_metadata: JSON.stringify({ projectId, channelId }),
+    title: { type: 'plain_text', text: 'Archive Project' },
+    close: { type: 'plain_text', text: 'Close' },
+    blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `:warning: *Kit couldn't prepare the archive form.*\n${String(message || 'Unknown error').slice(0, 2500)}` } }],
   }
 }
 

@@ -1,9 +1,10 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { archiveFolderName, isArchiveTrigger, type ArchiveJob, type ArchiveProjectSnapshot } from './types'
-import { archiveSettingsFromSlack, buildArchiveConfirmationCard, buildArchiveModal, buildArchiveProgressCard } from './blocks'
+import { archiveSettingsFromSlack, buildArchiveConfirmationCard, buildArchiveLoadingErrorModal, buildArchiveLoadingModal, buildArchiveModal, buildArchiveProgressCard } from './blocks'
 import { configuredArchiveDestinations } from './adapters'
 import { derivativePlan } from './media-worker'
+import { normalizeArchiveCopyDraft, publicSafeContext } from './draft'
 
 const snapshot: ArchiveProjectSnapshot = {
   projectId: 'p1', projectNumber: '2637', client: 'Ranger & Fox', projectName: 'Fabric IQ / Sizzle',
@@ -37,11 +38,38 @@ describe('archive publisher Slack surface', () => {
   })
 
   it('builds a prefilled, draft-only modal', () => {
-    const modal = buildArchiveModal({ snapshot, workspaceId: 'w1', channelId: 'D1', sourceVideoPath: '/delivery/final.mp4', destinations: ['dropbox', 'behance'] })
+    const modal = buildArchiveModal({ snapshot, workspaceId: 'w1', channelId: 'D1', sourceVideoPath: '/delivery/final.mp4', destinations: ['dropbox', 'behance'], draft: { subtitle: 'A launch film', services: ['Design', 'Animation'], socialCopy: 'We made a thing.' } })
     assert.equal(modal.callback_id, 'kit_archive_project_submit')
     assert.match(modal.blocks[0].text.text, /drafts or unlisted/i)
     assert.equal(JSON.parse(modal.private_metadata).workspaceId, 'w1')
     assert.equal(modal.blocks.find((b: any) => b.block_id === 'source_video').element.initial_value, '/delivery/final.mp4')
+    assert.equal(modal.blocks.find((b: any) => b.block_id === 'subtitle').element.initial_value, 'A launch film')
+    assert.equal(modal.blocks.find((b: any) => b.block_id === 'services').element.initial_value, 'Design, Animation')
+  })
+
+  it('opens a safe loading modal while Kit drafts copy', () => {
+    const modal = buildArchiveLoadingModal('p1', 'D1')
+    assert.equal(modal.callback_id, 'kit_archive_loading')
+    assert.match(modal.blocks[1].elements[0].text, /Financial, contact, legal, credential/i)
+  })
+
+  it('turns loading failures into a visible modal instead of leaving a spinner', () => {
+    const modal = buildArchiveLoadingErrorModal('p1', 'D1', 'No project context')
+    assert.equal(modal.callback_id, 'kit_archive_loading_error')
+    assert.match(modal.blocks[0].text.text, /No project context/)
+  })
+
+  it('removes sensitive lines before public-copy drafting', () => {
+    const safe = publicSafeContext('Great animation work.\nBudget: $50,000\nContact jane@example.com\nPassword: secret\nBeautiful visual system.')
+    assert.equal(safe, 'Great animation work.\nBeautiful visual system.')
+  })
+
+  it('normalizes generated copy and falls back when fields are missing', () => {
+    const fallback = { title: 'Fallback', subtitle: '', services: [], description1: 'Intro', description2: '', description3: '', credits: '', socialCopy: 'Post', excerpt: 'Short' }
+    const draft = normalizeArchiveCopyDraft({ title: 'Draft', services: ['Design', 'Design'], description1: '' }, fallback)
+    assert.equal(draft.title, 'Draft')
+    assert.deepEqual(draft.services, ['Design'])
+    assert.equal(draft.description1, 'Intro')
   })
 
   it('requires rights confirmation in parsed settings', () => {
