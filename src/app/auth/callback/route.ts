@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
+import { getControlCenterAccess } from '@/lib/control-center/access'
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
@@ -13,11 +14,16 @@ export async function GET(request: Request) {
       const { data: { user } } = await supabase.auth.getUser()
 
       if (user) {
+        const founderAccess = await getControlCenterAccess()
+        if (founderAccess) {
+          return NextResponse.redirect(`${origin}/control-center`)
+        }
+
         const { data: member } = await supabase
           .from('team_members')
           .select('workspace_id')
-          .eq('user_id', user.id)
-          .single() as any
+          .eq('auth_user_id', user.id)
+          .single() as unknown as { data: { workspace_id: string } | null }
 
         if (member?.workspace_id) {
           return NextResponse.redirect(`${origin}/dashboard`)

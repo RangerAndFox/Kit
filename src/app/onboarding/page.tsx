@@ -18,7 +18,7 @@ export default async function OnboardingPage() {
 
   if (userError || !user) {
     // Redirect to auth/login page (you'll need to implement this)
-    redirect('/auth/login')
+    redirect('/login')
   }
 
   // Check if user already has a workspace
@@ -29,7 +29,7 @@ export default async function OnboardingPage() {
 
   if (userWorkspaces && userWorkspaces.length > 0) {
     // User already has a workspace, redirect to dashboard
-    redirect('/dashboard')
+    redirect('/control-center')
   }
 
   return <OnboardingWizard />

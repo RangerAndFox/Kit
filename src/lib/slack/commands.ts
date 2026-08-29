@@ -464,7 +464,7 @@ function buildWorkspaceStatusBlocks(
             type: 'plain_text',
             text: 'View Dashboard',
           },
-          url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`,
+          url: `${process.env.NEXT_PUBLIC_APP_URL}/control-center`,
         },
       ],
     },

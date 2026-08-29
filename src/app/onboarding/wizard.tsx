@@ -64,13 +64,13 @@ export function OnboardingWizard() {
   }
 
   const handleSkipSlack = () => {
-    router.push('/dashboard')
+    router.push('/control-center')
   }
 
   const handleConnectSlack = () => {
     // TODO: Implement Slack OAuth flow
     // For now, just redirect to dashboard
-    router.push('/dashboard')
+    router.push('/control-center')
   }
 
   const containerVariants = {
@@ -151,7 +151,7 @@ export function OnboardingWizard() {
                 <div className="space-y-2">
                   <h1 className="text-3xl sm:text-4xl font-bold text-white">Welcome to Kit</h1>
                   <p className="text-base text-[#b4b8c3]">
-                    Let's set up your studio workspace.
+                    Let&apos;s set up your studio workspace.
                   </p>
                 </div>
 

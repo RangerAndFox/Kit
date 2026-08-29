@@ -5,6 +5,7 @@
  * Handles slash commands. Currently supports:
  *   /kit newproject — opens the project intake modal
  *   /kit status     — quick project health check
+ *   /kit dashboard  — founder-only link to the live Control Center
  *   /kit archive    — private archive and portfolio-draft workflow
  *   /kit help       — lists available commands
  *
@@ -59,6 +60,42 @@ export function registerCommandHandlers(app: App) {
     const args = (command.text || '').trim().split(/\s+/).slice(1).join(' ')
 
     switch (subcommand) {
+      // ── Founder Control Center ──────────────────────────────
+      case 'dashboard':
+      case 'control': {
+        await ack()
+        const workspaceId = process.env.KIT_DEFAULT_WORKSPACE_ID
+        if (!workspaceId) {
+          await respond({ response_type: 'ephemeral', text: 'KIT_DEFAULT_WORKSPACE_ID is not set.' })
+          break
+        }
+        const user = await resolveCommandUser(client, workspaceId, command.user_id)
+        if (user.tier !== 'admin') {
+          await respond({ response_type: 'ephemeral', text: ':lock: The Kit Control Center is currently founder/admin only.' })
+          break
+        }
+        const baseUrl = (process.env.KIT_DASHBOARD_URL || process.env.NEXT_PUBLIC_APP_URL || '').replace(/\/$/, '')
+        if (!baseUrl) {
+          await respond({ response_type: 'ephemeral', text: ':warning: The dashboard URL has not been configured yet.' })
+          break
+        }
+        await respond({
+          response_type: 'ephemeral',
+          text: 'Open the live Kit Control Center.',
+          blocks: [
+            {
+              type: 'section',
+              text: { type: 'mrkdwn', text: '*Kit Control Center*\nLive health, queues, usage, workers and project operations.' },
+            },
+            {
+              type: 'actions',
+              elements: [{ type: 'button', style: 'primary', text: { type: 'plain_text', text: 'Open dashboard' }, url: `${baseUrl}/control-center` }],
+            },
+          ],
+        })
+        break
+      }
+
       // ── New Project ─────────────────────────────────────────
       case 'newproject':
       case 'new': {
@@ -895,6 +932,7 @@ export function registerCommandHandlers(app: App) {
           response_type: 'ephemeral',
           text:
             '*Kit Commands*\n\n' +
+            '`/kit dashboard` — Founder-only live health and operations portal\n' +
             '`/kit newproject` — Post the new-project card (pick services, fill in details)\n' +
             '`/kit update` — Edit an established project and ripple the change across every outlet\n' +
             '`/kit archive project` — Prepare an approved project for Dropbox, Vimeo, website, social, and Behance drafts\n' +

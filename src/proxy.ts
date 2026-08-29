@@ -36,7 +36,7 @@ export default async function proxy(request: NextRequest) {
   if (path === '/login' || path === '/auth/callback' || path === '/') {
     if (user && path === '/login') {
       const url = request.nextUrl.clone()
-      url.pathname = '/dashboard'
+      url.pathname = '/control-center'
       return NextResponse.redirect(url)
     }
     return supabaseResponse
