@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { archiveFolderName, isArchiveTrigger, type ArchiveJob, type ArchiveProjectSnapshot } from './types'
 import { archiveSettingsFromSlack, buildArchiveConfirmationCard, buildArchiveLoadingErrorModal, buildArchiveLoadingModal, buildArchiveModal, buildArchiveProgressCard } from './blocks'
-import { configuredArchiveDestinations } from './adapters'
+import { configuredArchiveDestinations, prepareBehanceManifest } from './adapters'
 import { derivativePlan } from './media-worker'
 import { normalizeArchiveCopyDraft, publicSafeContext } from './draft'
 
@@ -110,5 +110,37 @@ describe('archive publisher Slack surface', () => {
     const buttons = card.blocks.flatMap((block: any) => block.elements || [])
     assert.ok(buttons.some((button: any) => button.action_id === 'kit_behance_create_draft'))
     assert.ok(!buttons.some((button: any) => /publish/i.test(button.text?.text || '')))
+  })
+
+  it('hands Behance the exact website copy in the reference module order', () => {
+    const job = {
+      id: 'j-layout', workspace_id: 'w1', project_id: 'p1', requested_by_slack_user_id: 'U1', status: 'complete',
+      source_video_path: '/x/final.mp4', project_snapshot: snapshot,
+      settings: {
+        title: 'Microsoft Copilot Studio | Icon Animation', subtitle: 'Icon Announcement Video', year: '2026', services: ['Animation'],
+        description1: 'Hero introduction', description2: 'Creative approach', description3: 'Craft detail',
+        credits: 'Creative Director: Jonathan Larson', socialCopy: '', excerpt: 'Website excerpt',
+        backgroundColor: '#fff', includeProcess: true, rightsConfirmed: true,
+      },
+      destinations: ['dropbox', 'behance'], progress: {}, results: {}, error: null,
+      slack_channel_id: 'D1', slack_message_ts: '1', idempotency_key: 'layout', attempt: 1, created_at: '', updated_at: '',
+    } as ArchiveJob
+    const result = prepareBehanceManifest(job, null, [
+      { path: '/Archive/Main/hero.jpg', name: 'hero.jpg' },
+      { path: '/Archive/Main/detail.gif', name: 'detail.gif' },
+      { path: '/Archive/Process/boards.jpg', name: 'boards.jpg' },
+    ] as any, '/Archive')
+    assert.equal(result.excerpt, job.settings.excerpt)
+    assert.deepEqual(result.contentModules, [
+      { kind: 'text', role: 'title', text: `${job.settings.title}\n${job.settings.subtitle}` },
+      { kind: 'media', paths: ['/Archive/Main/hero.jpg'] },
+      { kind: 'text', role: 'description', text: job.settings.description1 },
+      { kind: 'media', paths: ['/Archive/Main/detail.gif'] },
+      { kind: 'text', role: 'description', text: job.settings.description2 },
+      { kind: 'text', role: 'heading', text: 'Process' },
+      { kind: 'media', paths: ['/Archive/Process/boards.jpg'] },
+      { kind: 'text', role: 'description', text: job.settings.description3 },
+      { kind: 'text', role: 'credits', text: job.settings.credits },
+    ])
   })
 })

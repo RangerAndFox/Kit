@@ -7,14 +7,21 @@ export interface BehanceManifest {
   title: string
   subtitle?: string
   descriptions: string[]
+  excerpt?: string
   credits?: string
   services: string[]
   tags: string[]
   media: string[]
+  contentModules?: BehanceContentModule[]
   vimeoUrl?: string | null
   archiveFolderPath?: string | null
   backgroundColor?: string
 }
+
+export type BehanceTextRole = 'title' | 'description' | 'heading' | 'credits'
+export type BehanceContentModule =
+  | { kind: 'text'; role: BehanceTextRole; text: string }
+  | { kind: 'media'; paths: string[] }
 
 export interface BehanceDraftJob {
   id: string

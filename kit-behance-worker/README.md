@@ -25,7 +25,7 @@ The browser profile directory contains the Behance session. It must not be synce
 
 1. Run `/kit archive project` and approve the archive package in Kit's private DM.
 2. When preparation finishes, click **Create Behance draft**.
-3. The studio worker downloads only the approved archive media, populates the Behance editor, saves the project as a draft, and stores a proof screenshot in the project's Dropbox archive.
+3. The studio worker downloads only the approved archive media and places the approved website copy into separate Behance modules: title/subtitle, opening media, first description, remaining main media, second description, optional Process heading and media, third description, and credits. It then saves the project as a draft and stores a proof screenshot in the project's Dropbox archive.
 4. Kit changes the private card to **Review Behance draft**. Open it, review every field, and manually publish only when ready.
 
 ## Recovery

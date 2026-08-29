@@ -192,15 +192,34 @@ export async function createBufferDrafts(job: ArchiveJob, vimeo: any | null): Pr
 }
 
 export function prepareBehanceManifest(job: ArchiveJob, vimeo: any | null, media: DropboxArchiveFile[], archiveFolderPath?: string): any {
+  const mainMedia = media.filter((item) => !/\/Process\//i.test(item.path)).map((item) => item.path)
+  const processMedia = job.settings.includeProcess
+    ? media.filter((item) => /\/Process\//i.test(item.path)).map((item) => item.path)
+    : []
+  const contentModules = [
+    { kind: 'text', role: 'title', text: [job.settings.title, job.settings.subtitle].filter(Boolean).join('\n') },
+    ...(mainMedia[0] ? [{ kind: 'media', paths: [mainMedia[0]] }] : []),
+    ...(job.settings.description1 ? [{ kind: 'text', role: 'description', text: job.settings.description1 }] : []),
+    ...(mainMedia.length > 1 ? [{ kind: 'media', paths: mainMedia.slice(1) }] : []),
+    ...(job.settings.description2 ? [{ kind: 'text', role: 'description', text: job.settings.description2 }] : []),
+    ...(processMedia.length ? [
+      { kind: 'text', role: 'heading', text: 'Process' },
+      { kind: 'media', paths: processMedia },
+    ] : []),
+    ...(job.settings.description3 ? [{ kind: 'text', role: 'description', text: job.settings.description3 }] : []),
+    ...(job.settings.credits ? [{ kind: 'text', role: 'credits', text: job.settings.credits }] : []),
+  ]
   return {
     status: 'ready',
     title: job.settings.title,
     subtitle: job.settings.subtitle,
     descriptions: [job.settings.description1, job.settings.description2, job.settings.description3].filter(Boolean),
+    excerpt: job.settings.excerpt,
     credits: job.settings.credits,
     services: job.settings.services,
     tags: [...new Set([job.project_snapshot.client, ...job.settings.services].filter(Boolean))],
     media: media.map((item) => item.path),
+    contentModules,
     vimeoUrl: vimeo?.url || null,
     archiveFolderPath: archiveFolderPath || null,
     backgroundColor: job.settings.backgroundColor,

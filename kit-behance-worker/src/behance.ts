@@ -5,8 +5,9 @@ import { chromium, type BrowserContext, type Locator, type Page } from 'playwrig
 import { config } from './config.js'
 import { downloadFiles, uploadProof } from './dropbox.js'
 import { installPublishLockout } from './safety.js'
+import { behanceContentModules } from './layout.js'
 import { pulseJob, updateJob } from './store.js'
-import type { BehanceDraftJob } from './types.js'
+import type { BehanceDraftJob, BehanceTextRole } from './types.js'
 
 export class BehanceLoginRequiredError extends Error {}
 
@@ -79,26 +80,33 @@ async function uploadProjectMedia(page: Page, paths: string[]): Promise<void> {
   await page.waitForLoadState('networkidle', { timeout: 180_000 }).catch(() => {})
 }
 
-async function addTextModule(page: Page, text: string): Promise<boolean> {
-  if (!text) return false
+async function addTextModule(page: Page, text: string, role: BehanceTextRole): Promise<void> {
+  if (!text) return
   const control = await visible([
     page.getByRole('button', { name: /^(add )?text$/i }),
     page.getByText(/^text$/i),
   ])
-  if (!control) return false
+  if (!control) throw new Error(`Behance editor changed: could not add the ${role} text module.`)
   await control.click()
   const editor = await visible([
     page.locator('[contenteditable="true"]').last(),
     page.locator('textarea').last(),
   ])
-  if (!editor) return false
+  if (!editor) throw new Error(`Behance editor changed: could not find the ${role} text editor.`)
   if (await editor.getAttribute('contenteditable') === 'true') await editor.fill(text)
   else await editor.fill(text)
+  // Ranger & Fox portfolio copy uses centered text modules. Alignment is a
+  // presentation enhancement, so an editor-label change must not discard the
+  // approved copy; missing content controls above remain terminal.
+  const center = await visible([
+    page.getByRole('button', { name: /^(align )?center$/i }),
+    page.locator('[aria-label*="align center" i], [title*="align center" i]'),
+  ])
+  if (center) await center.click().catch(() => {})
   const done = await visible([
     page.getByRole('button', { name: /^(done|save|add text)$/i }),
   ])
   if (done) await done.click()
-  return true
 }
 
 async function fillDetails(page: Page, job: BehanceDraftJob, coverPath: string): Promise<void> {
@@ -109,7 +117,7 @@ async function fillDetails(page: Page, job: BehanceDraftJob, coverPath: string):
     page.locator('input[name*="title" i]'),
   ], manifest.title)
 
-  const description = [manifest.subtitle, ...manifest.descriptions, manifest.credits && `Credits\n${manifest.credits}`].filter(Boolean).join('\n\n')
+  const description = manifest.excerpt || manifest.descriptions[0] || manifest.subtitle || ''
   await fillFirst([
     page.getByLabel(/project description/i),
     page.getByPlaceholder(/project description/i),
@@ -199,11 +207,18 @@ export async function buildBehanceDraft(context: BrowserContext, job: BehanceDra
     await pulseJob(job.id)
 
     const localMedia = await downloadFiles(job.manifest.media, temp)
+    const localByCloudPath = new Map(job.manifest.media.map((cloudPath, index) => [cloudPath, localMedia[index]]))
     await updateJob(job.id, 'uploading_media')
-    await uploadProjectMedia(page, localMedia)
-
-    const text = [job.manifest.subtitle, ...job.manifest.descriptions, job.manifest.credits && `Credits\n${job.manifest.credits}`].filter(Boolean).join('\n\n')
-    await addTextModule(page, text).catch(() => false)
+    for (const module of behanceContentModules(job.manifest)) {
+      if (module.kind === 'text') {
+        await addTextModule(page, module.text, module.role)
+      } else {
+        const paths = module.paths.map((cloudPath) => localByCloudPath.get(cloudPath)).filter((item): item is string => Boolean(item))
+        if (paths.length !== module.paths.length) throw new Error('The Behance layout referenced media outside the approved package.')
+        await uploadProjectMedia(page, paths)
+      }
+      await pulseJob(job.id)
+    }
     await clickRequired([
       page.getByRole('button', { name: /^continue$/i }),
       page.getByRole('button', { name: /^settings$/i }),
