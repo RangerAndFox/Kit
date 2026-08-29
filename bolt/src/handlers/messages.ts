@@ -47,6 +47,7 @@ import { buildNewProjectCard } from './newproject-card'
 import { isUpdateProjectTrigger } from './updateproject-card'
 import { buildUpdateProjectCardForContext } from './interactions'
 import { buildArchiveCardForContext } from '../archive/handlers'
+import { dashboardBaseUrl } from './dashboard-card'
 import { isArchiveTrigger } from '../../../src/lib/archive/types'
 import {
   findOpenCheckin,
@@ -835,11 +836,7 @@ export const DM_SHORTCUT_REGISTRY: readonly DmShortcut[] = [
         await post({ text: ':lock: The Kit Control Center is currently founder/admin only.' })
         return
       }
-      const baseUrl = (process.env.KIT_DASHBOARD_URL || process.env.NEXT_PUBLIC_APP_URL || '').replace(/\/$/, '')
-      if (!baseUrl) {
-        await post({ text: ':warning: The dashboard URL has not been configured yet.' })
-        return
-      }
+      const baseUrl = dashboardBaseUrl()
       await post({
         text: 'Open the live Kit Control Center.',
         blocks: [

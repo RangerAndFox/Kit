@@ -30,6 +30,7 @@ import { listAeRenders, getAeRenderStatus } from '../../../src/lib/delivery/ae-s
 import { buildRenderModal } from '../delivery/render-modal'
 import { handlePilotCommand } from './pilots'
 import { buildArchiveCardForContext } from '../archive/handlers'
+import { dashboardBaseUrl } from './dashboard-card'
 
 /**
  * Resolve the Slack user's Kit access context for a slash command.
@@ -74,11 +75,7 @@ export function registerCommandHandlers(app: App) {
           await respond({ response_type: 'ephemeral', text: ':lock: The Kit Control Center is currently founder/admin only.' })
           break
         }
-        const baseUrl = (process.env.KIT_DASHBOARD_URL || process.env.NEXT_PUBLIC_APP_URL || '').replace(/\/$/, '')
-        if (!baseUrl) {
-          await respond({ response_type: 'ephemeral', text: ':warning: The dashboard URL has not been configured yet.' })
-          break
-        }
+        const baseUrl = dashboardBaseUrl()
         await respond({
           response_type: 'ephemeral',
           text: 'Open the live Kit Control Center.',
