@@ -13,9 +13,28 @@ export class BehanceLoginRequiredError extends Error {}
 
 async function visible(locators: Locator[]): Promise<Locator | null> {
   for (const locator of locators) {
-    const first = locator.first()
-    if (await first.isVisible().catch(() => false)) return first
+    const count = await locator.count().catch(() => 0)
+    for (let index = 0; index < count; index += 1) {
+      const candidate = locator.nth(index)
+      if (await candidate.isVisible().catch(() => false)) return candidate
+    }
   }
+  return null
+}
+
+async function waitActionable(locators: Locator[], timeoutMs: number): Promise<Locator | null> {
+  const deadline = Date.now() + timeoutMs
+  do {
+    for (const locator of locators) {
+      const count = await locator.count().catch(() => 0)
+      for (let index = 0; index < count; index += 1) {
+        const candidate = locator.nth(index)
+        if (await candidate.isVisible().catch(() => false)
+          && await candidate.isEnabled().catch(() => false)) return candidate
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  } while (Date.now() < deadline)
   return null
 }
 
@@ -35,26 +54,48 @@ async function fillFirst(locators: Locator[], value: string): Promise<boolean> {
   return true
 }
 
+export function isReusableBehanceDraftUrl(value?: string | null): boolean {
+  if (!value) return false
+  try {
+    const url = new URL(value)
+    return /(^|\.)behance\.net$/i.test(url.hostname)
+      && /\/(?:portfolio|gallery)\/editor\/?$/i.test(url.pathname)
+      && Boolean(url.searchParams.get('project_id'))
+  } catch {
+    return false
+  }
+}
+
 async function openEditor(page: Page, existingUrl?: string | null): Promise<void> {
-  if (existingUrl?.startsWith('https://www.behance.net/')) {
-    await page.goto(existingUrl, { waitUntil: 'domcontentloaded' })
+  if (isReusableBehanceDraftUrl(existingUrl)) {
+    await page.goto(existingUrl!, { waitUntil: 'domcontentloaded' })
     return
   }
   await page.goto(config.startUrl, { waitUntil: 'domcontentloaded' })
   const share = await visible([
     page.getByRole('button', { name: /^share your work$/i }),
     page.getByRole('link', { name: /^share your work$/i }),
+    page.getByRole('link', { name: /^share work$/i }),
+    page.getByRole('button', { name: /^open share your work options$/i }),
     page.getByRole('button', { name: /^create$/i }),
   ])
-  if (share) {
-    await share.click()
+  if (!share) throw new Error('Behance editor changed: could not find the Share Work control.')
+  await share.click()
+  await page.waitForTimeout(700)
+
+  // Behance's current Share Work button opens a new project editor directly.
+  // Older versions opened a menu first, so retain the Project-menu fallback.
+  const editorReady = await visible([
+    page.getByRole('button', { name: /^text$/i }),
+    page.getByRole('button', { name: /^image$/i }),
+    page.getByRole('button', { name: /^save as draft$/i }),
+  ])
+  if (!editorReady) {
     await clickRequired([
       page.getByRole('menuitem', { name: /^project$/i }),
       page.getByRole('link', { name: /^project$/i }),
       page.getByRole('button', { name: /^project$/i }),
     ], 'the Project creation option')
-  } else {
-    await page.goto('https://www.behance.net/gallery/editor', { waitUntil: 'domcontentloaded' })
   }
   await page.waitForTimeout(1500)
   if (/adobe\.com.*signin|behance\.net\/.*(?:login|signin)/i.test(page.url())) throw new BehanceLoginRequiredError('The dedicated Behance browser profile is signed out. Run `npm run login` on the studio Mac.')
@@ -104,9 +145,11 @@ async function addTextModule(page: Page, text: string, role: BehanceTextRole): P
   ])
   if (center) await center.click().catch(() => {})
   const done = await visible([
-    page.getByRole('button', { name: /^(done|save|add text)$/i }),
+    page.getByRole('button', { name: /^(done|save)$/i }),
   ])
   if (done) await done.click()
+  else await editor.press('Escape').catch(() => {})
+  await page.waitForTimeout(150)
 }
 
 async function fillDetails(page: Page, job: BehanceDraftJob, coverPath: string): Promise<void> {
@@ -159,11 +202,16 @@ async function fillDetails(page: Page, job: BehanceDraftJob, coverPath: string):
 }
 
 async function saveDraft(page: Page): Promise<void> {
-  await clickRequired([
+  // Behance autosaves settings first and temporarily replaces both draft
+  // buttons with “Saving…”. Wait for the real draft action to return.
+  const draft = await waitActionable([
+    page.getByLabel(/^settings action buttons$/i).getByRole('button', { name: /^save as draft$/i }),
     page.getByRole('button', { name: /^save as draft$/i }),
     page.getByRole('button', { name: /^save draft$/i }),
     page.getByRole('button', { name: /^save$/i }),
-  ], 'the Save Draft control')
+  ], 60_000)
+  if (!draft) throw new Error('Behance editor changed: could not find the Save Draft control.')
+  await draft.click()
   await page.waitForLoadState('networkidle', { timeout: 120_000 }).catch(() => {})
 }
 
@@ -183,7 +231,16 @@ export async function isBehanceSignedIn(context: BrowserContext): Promise<boolea
   await page.waitForTimeout(1_500)
   const url = page.url()
   if (/adobe\.com.*signin|behance\.net\/.*(?:login|signin)/i.test(url)) return false
-  return /^https:\/\/(?:www\.)?behance\.net\/settings(?:[/?#]|$)/i.test(url)
+  const signedOutControl = await visible([
+    page.getByRole('button', { name: /^sign in$/i }),
+    page.getByRole('link', { name: /^sign in$/i }),
+  ])
+  if (signedOutControl) return false
+  const accountControl = await visible([
+    page.getByRole('button', { name: /open user options/i }),
+    page.getByRole('link', { name: /profile/i }),
+  ])
+  return /^https:\/\/(?:www\.)?behance\.net\/settings(?:[/?#]|$)/i.test(url) && Boolean(accountControl)
 }
 
 export async function behanceBrowserVersion(context: BrowserContext): Promise<string | null> {
@@ -219,9 +276,12 @@ export async function buildBehanceDraft(context: BrowserContext, job: BehanceDra
       }
       await pulseJob(job.id)
     }
+    await page.keyboard.press('Escape').catch(() => {})
+    await page.waitForTimeout(300)
     await clickRequired([
       page.getByRole('button', { name: /^continue$/i }),
-      page.getByRole('button', { name: /^settings$/i }),
+      page.getByRole('button', { name: /^(edit )?settings$/i }),
+      page.getByLabel(/^edit settings$/i),
     ], 'Continue or Settings')
 
     await updateJob(job.id, 'filling_details')
