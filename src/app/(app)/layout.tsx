@@ -37,7 +37,7 @@ export default async function AppLayout({
   }
 
   return (
-    <div className="flex min-h-screen bg-[#0C0E12]">
+    <div className="flex min-h-screen bg-[#08090a]">
       <AppNavigation />
       <main className="min-w-0 flex-1 overflow-hidden pb-16 md:pb-0">
         {children}

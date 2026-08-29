@@ -2,6 +2,22 @@
 @import url("https://api.fontshare.com/v2/css?f[]=satoshi@400,500,600,700&display=swap");
 @import "tailwindcss";
 
+@font-face {
+  font-family: "RF Plaak";
+  src: url("https://rangerandfox.studio/wp-content/themes/allday/fonts/p/h/p-h.woff") format("woff");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 700 900;
+}
+
+@font-face {
+  font-family: "RF Oakes";
+  src: url("https://rangerandfox.studio/wp-content/themes/allday/fonts/OakesGroteskRegular/font.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 400 600;
+}
+
 @theme {
   --color-background: #0c0e12;
   --color-surface: #181b24;
@@ -47,14 +63,19 @@ html.dark {
 }
 
 body {
-  background-color: #0c0e12;
-  color: #ffffff;
-  font-family: "Satoshi", sans-serif;
+  background-color: #08090a;
+  color: #f0f2f5;
+  font-family: "RF Oakes", "Satoshi", sans-serif;
   font-size: 14px;
   line-height: 1.6;
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+}
+
+::selection {
+  color: #08090a;
+  background: #00ff66;
 }
 
 /* Card Utilities */

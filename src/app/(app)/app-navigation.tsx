@@ -1,8 +1,9 @@
 'use client'
 
+import Image from 'next/image'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Activity, Bot, FolderKanban, Gauge, MessageSquareText, Settings, Zap } from 'lucide-react'
+import { Activity, FolderKanban, Gauge, MessageSquareText, Settings, Zap } from 'lucide-react'
 
 const links = [
   { href: '/control-center', label: 'Control Center', icon: Gauge },
@@ -18,12 +19,18 @@ export function AppNavigation() {
 
   return (
     <>
-      <aside className="hidden w-64 shrink-0 flex-col border-r border-white/[0.08] bg-[#11141b] md:flex">
-        <Link href="/control-center" className="flex items-center gap-3 border-b border-white/[0.08] px-6 py-6">
-          <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-500 text-white shadow-lg shadow-indigo-950/40"><Bot size={19} /></span>
-          <div><div className="text-base font-semibold tracking-tight text-white">Kit</div><div className="text-[11px] uppercase tracking-[0.15em] text-[#697183]">Studio OS</div></div>
+      <aside className="hidden w-[228px] shrink-0 flex-col border-r border-white/[0.12] bg-[#08090a] md:sticky md:top-0 md:flex md:h-screen">
+        <Link href="/control-center" className="flex h-[88px] items-center gap-3 border-b border-white/[0.12] px-5 transition hover:bg-white/[0.025]">
+          <Image src="/kit-icon.png" alt="Kit" width={46} height={46} className="h-[46px] w-[46px]" priority />
+          <div>
+            <div className="font-['RF_Plaak',Arial_Narrow,sans-serif] text-xl font-black uppercase leading-none tracking-[-0.04em] text-[#f0f2f5]">Kit</div>
+            <div className="mt-1 font-mono text-[9px] uppercase tracking-[0.18em] text-[#707985]">Studio system</div>
+          </div>
         </Link>
-        <nav className="flex-1 space-y-1 p-3" aria-label="Kit navigation">
+        <div className="flex items-center justify-between border-b border-white/[0.12] px-5 py-3 font-mono text-[9px] uppercase tracking-[0.16em] text-[#626b75]">
+          <span>Navigation</span><span>SYS / 01</span>
+        </div>
+        <nav className="flex-1" aria-label="Kit navigation">
           {links.map((link) => {
             const active = pathname === link.href || (link.href !== '/control-center' && pathname.startsWith(`${link.href}/`))
             const Icon = link.icon
@@ -31,24 +38,25 @@ export function AppNavigation() {
               <Link
                 key={link.href}
                 href={link.href}
-                className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${active ? 'bg-indigo-500/15 text-indigo-200' : 'text-[#8c94a5] hover:bg-white/[0.04] hover:text-white'}`}
+                className={`group flex min-h-[52px] items-center gap-3 border-b border-white/[0.08] px-5 text-sm transition ${active ? 'bg-[#00ff66] text-[#08090a]' : 'text-[#8a939e] hover:bg-white/[0.035] hover:text-[#f0f2f5]'}`}
               >
-                <Icon size={17} aria-hidden="true" />
-                {link.label}
+                <Icon size={16} strokeWidth={1.6} aria-hidden="true" />
+                <span className="flex-1">{link.label}</span>
+                <span className={`font-mono text-[9px] ${active ? 'text-[#08090a]/60' : 'text-[#4f5761] group-hover:text-[#7f8994]'}`}>0{links.indexOf(link) + 1}</span>
               </Link>
             )
           })}
         </nav>
-        <div className="border-t border-white/[0.08] p-5 text-xs leading-5 text-[#626b7b]">
-          Founder operations<br />Ranger &amp; Fox
+        <div className="border-t border-white/[0.12] p-5 font-mono text-[9px] uppercase leading-5 tracking-[0.12em] text-[#626b75]">
+          Ranger &amp; Fox<br /><span className="text-[#00ff66]">Detroit + distributed</span>
         </div>
       </aside>
-      <nav className="fixed inset-x-0 bottom-0 z-50 flex items-center justify-around border-t border-white/10 bg-[#11141b]/95 px-2 py-2 backdrop-blur md:hidden" aria-label="Kit mobile navigation">
+      <nav className="fixed inset-x-0 bottom-0 z-50 flex items-center justify-around border-t border-white/[0.12] bg-[#08090a]/95 px-2 py-2 backdrop-blur md:hidden" aria-label="Kit mobile navigation">
         {links.slice(0, 5).map((link) => {
           const active = pathname === link.href || (link.href !== '/control-center' && pathname.startsWith(`${link.href}/`))
           const Icon = link.icon
           return (
-            <Link key={link.href} href={link.href} className={`flex min-w-14 flex-col items-center gap-1 rounded-md px-2 py-1 text-[10px] ${active ? 'text-indigo-300' : 'text-[#767e8f]'}`}>
+            <Link key={link.href} href={link.href} className={`flex min-w-14 flex-col items-center gap-1 px-2 py-1 text-[10px] ${active ? 'text-[#00ff66]' : 'text-[#767e8f]'}`}>
               <Icon size={17} aria-hidden="true" />
               {link.label.replace('Control Center', 'Control')}
             </Link>
