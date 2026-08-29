@@ -191,15 +191,20 @@ export async function createBufferDrafts(job: ArchiveJob, vimeo: any | null): Pr
   return { status: 'draft', drafts, note: vimeo?.url ? `Attach the approved video manually: ${vimeo.url}` : undefined }
 }
 
-export function prepareBehanceManifest(job: ArchiveJob, vimeo: any | null, media: DropboxArchiveFile[]): any {
+export function prepareBehanceManifest(job: ArchiveJob, vimeo: any | null, media: DropboxArchiveFile[], archiveFolderPath?: string): any {
   return {
-    status: 'prepared',
+    status: 'ready',
     title: job.settings.title,
-    description: [job.settings.subtitle, job.settings.description1, job.settings.description2, job.settings.description3, job.settings.credits && `Credits\n${job.settings.credits}`].filter(Boolean).join('\n\n'),
+    subtitle: job.settings.subtitle,
+    descriptions: [job.settings.description1, job.settings.description2, job.settings.description3].filter(Boolean),
+    credits: job.settings.credits,
+    services: job.settings.services,
     tags: [...new Set([job.project_snapshot.client, ...job.settings.services].filter(Boolean))],
     media: media.map((item) => item.path),
     vimeoUrl: vimeo?.url || null,
-    note: 'Behance has no supported write API. This package is ready for the approved desktop/manual draft step; Kit never publishes it.',
+    archiveFolderPath: archiveFolderPath || null,
+    backgroundColor: job.settings.backgroundColor,
+    note: 'Ready for the dedicated studio browser worker. The worker saves a draft and is technically prevented from publishing it.',
   }
 }
 

@@ -587,14 +587,14 @@ Existing `project_documents` (pgvector embedded column, `match_documents` RPC) +
 ## 15A. Private Archive Publisher
 
 ### Summary
-A producer or admin runs `/kit archive project` (or DMs `archive project`) to open a prefilled, private Slack workflow. Before the editable form appears, Kit drafts the portfolio title, subtitle, services, three website-copy sections, excerpt, social copy, and credits from public-safe project context and verified team records. Kit then copies the approved delivery video into the standardized Dropbox portfolio archive, generates bounded stills and GIFs on Railway, and prepares an unlisted Vimeo video, WordPress draft, Buffer drafts, and a Behance handoff manifest. Nothing is published publicly.
+A producer or admin runs `/kit archive project` (or DMs `archive project`) to open a prefilled, private Slack workflow. Before the editable form appears, Kit drafts the portfolio title, subtitle, services, three website-copy sections, excerpt, social copy, and credits from public-safe project context and verified team records. Kit then copies the approved delivery video into the standardized Dropbox portfolio archive, generates bounded stills and GIFs on Railway, and prepares an unlisted Vimeo video, WordPress draft, Buffer drafts, and a Behance package. The producer can explicitly queue that package to a dedicated studio-Mac browser worker, which builds and saves a private Behance draft. Nothing is published publicly.
 
 ### Safeguards
 - The workflow is restricted to producer/admin access and the confirmation card is delivered by DM.
 - A rights/approval checkbox and a second confirmation are required before external work begins.
 - Copy generation removes financial, contact, legal, credential, private-feedback, and other non-public lines before prompting; generated copy is scanned again and falls back to deterministic safe text if it fails.
 - Credit names come only from verified producer, assignment, and onboarding records. Kit does not invent credits or include client contacts.
-- Vimeo is always unlisted; WordPress and Buffer are always drafts; Behance remains manual/preparation-only.
+- Vimeo is always unlisted; WordPress and Buffer are always drafts. The Behance worker disables Publish controls, blocks publish-like network mutations, and has no published state. A producer must review and publish manually.
 - Every step is recorded in private, server-only Supabase tables and completed steps are not repeated on retry.
 - The FFmpeg endpoint requires a shared 24+ character secret, caps request bodies, queues one media job at a time, and cleans its exact temporary directory.
 
@@ -606,6 +606,8 @@ A producer or admin runs `/kit archive project` (or DMs `archive project`) to op
 - Dropbox archive creation: `src/lib/archive/dropbox.ts`
 - Railway FFmpeg worker: `src/lib/archive/media-worker.ts` and `POST /internal/archive-media`
 - Job ledger: `archive_jobs` and `archive_job_steps` (RLS enabled; `anon` and `authenticated` revoked)
+- Behance queue/worker ledger: `behance_draft_jobs` and `behance_workers` (RLS enabled; `anon` and `authenticated` revoked)
+- Dedicated browser worker: `kit-behance-worker/`; persistent local Chrome session, Dropbox-approved media only, explicit draft save, proof screenshot, and stale-job recovery
 
 ## 16. Infrastructure
 
@@ -744,6 +746,13 @@ A producer or admin runs `/kit archive project` (or DMs `archive project`) to op
 - `WORDPRESS_TEMPLATE_POST_ID` — optional portfolio template post id; defaults to `6343`
 - `BUFFER_ACCESS_TOKEN`, `BUFFER_LINKEDIN_CHANNEL_ID`, `BUFFER_INSTAGRAM_CHANNEL_ID` — Buffer draft credentials/targets, configured on Vercel
 - `BUFFER_API_URL` — optional Buffer GraphQL endpoint override
+
+### Behance studio worker (configured only on the trusted studio Mac)
+- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` — server-only access to the private Behance queue
+- `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN` — downloads approved archive assets and stores the proof screenshot
+- `BEHANCE_CHROME_PATH`, `BEHANCE_PROFILE_DIR`, `BEHANCE_HEADLESS=false` — dedicated persistent Chrome identity; authenticate once with `npm run login`
+- `BEHANCE_CREATIVE_FIELD` — default required Behance category; defaults to `Motion Graphics`
+- `WORKER_ID`, `WORKER_DISPLAY_NAME`, `POLL_INTERVAL_MS`, `HEARTBEAT_INTERVAL_MS`, `JOB_TIMEOUT_MS` — worker identity and recovery controls
 
 ---
 

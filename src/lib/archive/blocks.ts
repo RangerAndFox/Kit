@@ -41,7 +41,7 @@ const destinationLabels: Record<ArchiveDestination, string> = {
   vimeo: 'Vimeo — unlisted video',
   wordpress: 'Website — WordPress draft',
   buffer: 'Buffer — social drafts',
-  behance: 'Behance — prepared draft package',
+  behance: 'Behance — private browser-built draft',
 }
 
 export function buildArchiveModal(opts: {
@@ -134,7 +134,7 @@ export function buildArchiveConfirmationCard(job: ArchiveJob): any {
         { type: 'mrkdwn', text: `*Source video*\n\`${job.source_video_path}\`` },
         { type: 'mrkdwn', text: `*Destinations*\n${job.destinations.map((d) => destinationLabels[d]).join('\n')}` },
       ] },
-      { type: 'section', text: { type: 'mrkdwn', text: ':lock: *Draft-only safeguard:* Vimeo will be unlisted; WordPress and social posts remain drafts; Behance is preparation-only.' } },
+      { type: 'section', text: { type: 'mrkdwn', text: ':lock: *Draft-only safeguard:* Vimeo will be unlisted; WordPress and social posts remain drafts; the Behance worker can save a draft but cannot publish.' } },
       { type: 'actions', elements: [
         { type: 'button', style: 'primary', text: { type: 'plain_text', text: 'Start archive' }, action_id: 'kit_archive_confirm', value: job.id, confirm: { title: { type: 'plain_text', text: 'Start archive job?' }, text: { type: 'mrkdwn', text: 'Kit will create private/unlisted assets and drafts. Nothing will be published publicly.' }, confirm: { type: 'plain_text', text: 'Start' }, deny: { type: 'plain_text', text: 'Go back' } } },
         { type: 'button', text: { type: 'plain_text', text: 'Cancel' }, action_id: 'kit_archive_cancel', value: job.id },
@@ -147,10 +147,29 @@ export function buildArchiveProgressCard(job: ArchiveJob): any {
   const resultLines = Object.entries(job.results || {}).flatMap(([key, value]: [string, any]) => {
     if (!value) return []
     const url = value.url || value.editUrl || value.videoUrl || value.folderUrl
-    return [`• *${key}:* ${url ? `<${url}|Open>` : value.status || 'prepared'}`]
+    return [
+      `• *${key}:* ${url ? `<${url}|Open>` : value.status || 'prepared'}`,
+      ...(value.proofUrl ? [`  ↳ <${value.proofUrl}|Draft proof screenshot>`] : []),
+    ]
   })
   const retry = ['failed', 'partial'].includes(job.status) ? [{
     type: 'actions', elements: [{ type: 'button', style: 'primary', text: { type: 'plain_text', text: 'Retry failed steps' }, action_id: 'kit_archive_retry', value: job.id }],
+  }] : []
+  const behance = job.results?.behance
+  const behanceActions = behance?.status === 'ready' ? [{
+    type: 'actions', elements: [{
+      type: 'button', style: 'primary', text: { type: 'plain_text', text: 'Create Behance draft' },
+      action_id: 'kit_behance_create_draft', value: job.id,
+      confirm: {
+        title: { type: 'plain_text', text: 'Build private draft?' },
+        text: { type: 'mrkdwn', text: 'The studio worker will populate and save a Behance draft. It cannot click Publish.' },
+        confirm: { type: 'plain_text', text: 'Create draft' }, deny: { type: 'plain_text', text: 'Cancel' },
+      },
+    }],
+  }] : behance?.status === 'failed' ? [{
+    type: 'actions', elements: [{ type: 'button', style: 'primary', text: { type: 'plain_text', text: 'Retry Behance draft' }, action_id: 'kit_behance_retry_draft', value: job.id }],
+  }] : behance?.status === 'awaiting_review' && behance.url ? [{
+    type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Review Behance draft' }, url: behance.url, action_id: 'kit_behance_open_draft' }],
   }] : []
   return {
     text: `Archive ${job.project_snapshot.projectNumber}: ${job.status}`,
@@ -160,6 +179,7 @@ export function buildArchiveProgressCard(job: ArchiveJob): any {
       ...(resultLines.length ? [{ type: 'section', text: { type: 'mrkdwn', text: `*Results*\n${resultLines.join('\n')}` } }] : []),
       ...(job.error ? [{ type: 'section', text: { type: 'mrkdwn', text: `:warning: ${job.error}` } }] : []),
       ...retry,
+      ...behanceActions,
       { type: 'context', elements: [{ type: 'mrkdwn', text: 'Kit only prepares drafts and unlisted assets. Review each destination before publishing.' }] },
     ],
   }

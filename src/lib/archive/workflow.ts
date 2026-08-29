@@ -116,7 +116,7 @@ export async function runArchiveJob(jobId: string): Promise<any> {
 
     if (job.destinations.includes('behance') && mediaReady) {
       await progress(jobId, 'preparing_behance', 'Preparing the Behance handoff package…', { results })
-      results.behance = await durableStep(jobId, 'behance', async () => prepareBehanceManifest(job!, vimeo, archiveMedia))
+      results.behance = await durableStep(jobId, 'behance', async () => prepareBehanceManifest(job!, vimeo, archiveMedia, prepared.folderPath))
     } else if (job.destinations.includes('behance')) {
       failures.push('Behance: waiting for media derivatives')
       results.behance = { status: 'blocked', error: 'Media derivatives must succeed first' }

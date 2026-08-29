@@ -11,6 +11,7 @@ import { findDeliveryVideos } from '../../../src/lib/archive/dropbox'
 import { claimArchiveJob, createArchiveJob, getArchiveJob, requeueArchiveJob, saveArchiveSlackMessage, updateArchiveJob } from '../../../src/lib/archive/store'
 import { runArchiveJob } from '../../../src/lib/archive/workflow'
 import type { ArchiveProjectSnapshot } from '../../../src/lib/archive/types'
+import { listUnsyncedBehanceDrafts, queueBehanceDraft, syncBehanceResultToArchive } from '../../../src/lib/archive/behance-store'
 
 const db = () => createAdminClient() as any
 
@@ -213,4 +214,42 @@ export function registerArchiveHandlers(app: App): void {
     const cancelled = await updateArchiveJob(job.id, { status: 'cancelled', progress: { message: 'Cancelled before any external work began.' }, completed_at: new Date().toISOString() } as any)
     await client.chat.update({ channel: cancelled.slack_channel_id, ts: cancelled.slack_message_ts, ...buildArchiveProgressCard(cancelled) })
   })
+
+  const queueDraft = async ({ ack, body, action, client }: any) => {
+    await ack()
+    try {
+      const archive = await getArchiveJob(action.value)
+      if (!archive || !await archiveAccess(client, archive.workspace_id, body.user.id)) {
+        await client.chat.postMessage({ channel: body.user.id, text: ':lock: Behance drafting is restricted to producers and admins.' })
+        return
+      }
+      await queueBehanceDraft(archive.id, body.user.id)
+      const updated = await getArchiveJob(archive.id)
+      if (updated?.slack_channel_id && updated?.slack_message_ts) {
+        await client.chat.update({ channel: updated.slack_channel_id, ts: updated.slack_message_ts, ...buildArchiveProgressCard(updated) })
+      }
+    } catch (error: any) {
+      await client.chat.postMessage({ channel: body.user.id, text: `:x: Kit couldn't queue the Behance draft: ${error.message}` })
+    }
+  }
+  app.action('kit_behance_create_draft', queueDraft)
+  app.action('kit_behance_retry_draft', queueDraft)
+  app.action('kit_behance_open_draft', async ({ ack }: any) => ack())
+}
+
+export async function reconcileBehanceDraftSlack(client: any): Promise<number> {
+  const pending = await listUnsyncedBehanceDrafts()
+  let updatedCount = 0
+  for (const row of pending) {
+    try {
+      const archive = await syncBehanceResultToArchive(row)
+      if (archive?.slack_channel_id && archive?.slack_message_ts) {
+        await client.chat.update({ channel: archive.slack_channel_id, ts: archive.slack_message_ts, ...buildArchiveProgressCard(archive) })
+      }
+      updatedCount++
+    } catch (error: any) {
+      console.error(`[behance-sync] ${row.id}:`, error.message)
+    }
+  }
+  return updatedCount
 }

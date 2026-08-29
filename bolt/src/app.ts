@@ -32,7 +32,7 @@ import { nudgePendingCheckins } from './checkins/daily-hours'
 import { recoverMissedCheckinReplies } from './checkins/reply-recovery'
 import { scanMissingTime } from './checkins/missing-time'
 import { dispatchAllPendingApprovals } from './brain/approvals'
-import { registerArchiveHandlers } from './archive/handlers'
+import { reconcileBehanceDraftSlack, registerArchiveHandlers } from './archive/handlers'
 import { enqueueArchiveMedia } from '../../src/lib/archive/media-worker'
 
 // ─── Boot ──────────────────────────────────────────────────
@@ -121,6 +121,12 @@ registerCommandHandlers(app)
 const { runProjectControlRecoverySweep } = registerInteractionHandlers(app)
 registerBrainApprovalHandlers(app)
 registerArchiveHandlers(app)
+
+// Reconcile studio-machine Behance draft results back into the private
+// producer DM. The worker never needs a Slack token.
+cron.schedule('* * * * *', () => {
+  void reconcileBehanceDraftSlack(app.client).catch((error) => console.error('[behance-sync]', error.message))
+})
 
 // Imported/synced projects can have Dropbox + Slack links before their
 // Frame.io id is known. Reconcile once at boot and hourly thereafter so they

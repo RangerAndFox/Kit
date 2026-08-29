@@ -38,6 +38,7 @@ yarn-error.log*
 
 # env files
 .env*
+!kit-behance-worker/.env.example
 
 # vercel
 .vercel

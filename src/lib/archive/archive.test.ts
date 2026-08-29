@@ -97,4 +97,18 @@ describe('archive publisher Slack surface', () => {
     const progress = buildArchiveProgressCard({ ...job, status: 'complete' })
     assert.match(progress.blocks.at(-1).elements[0].text, /Review each destination before publishing/)
   })
+
+  it('offers an explicit draft action only after the Behance package is ready', () => {
+    const job = {
+      id: 'j1', workspace_id: 'w1', project_id: 'p1', requested_by_slack_user_id: 'U1', status: 'complete',
+      source_video_path: '/x/final.mp4', project_snapshot: snapshot,
+      settings: { title: 'Title', subtitle: '', year: '2026', services: [], description1: '', description2: '', description3: '', credits: '', socialCopy: '', excerpt: '', backgroundColor: '#000', includeProcess: false, rightsConfirmed: true },
+      destinations: ['dropbox', 'behance'], progress: {}, results: { behance: { status: 'ready', title: 'Title' } }, error: null,
+      slack_channel_id: 'D1', slack_message_ts: '1', idempotency_key: 'k', attempt: 1, created_at: '', updated_at: '',
+    } as ArchiveJob
+    const card = buildArchiveProgressCard(job)
+    const buttons = card.blocks.flatMap((block: any) => block.elements || [])
+    assert.ok(buttons.some((button: any) => button.action_id === 'kit_behance_create_draft'))
+    assert.ok(!buttons.some((button: any) => /publish/i.test(button.text?.text || '')))
+  })
 })

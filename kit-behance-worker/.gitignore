@@ -1,0 +1,4 @@
+.env
+.behance-profile/
+dist/
+node_modules/

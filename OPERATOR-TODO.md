@@ -6,7 +6,7 @@ Current as of 2026-08-27. This list contains only checks that require live provi
 
 ### 0A. Configure and prove the private archive publisher
 
-Set the archive environment variables listed in `FEATURES.md` on Vercel and Railway. Use fresh provider credentials; do not copy credentials from the legacy Dropbox package or its publicly shared configuration file. Then run `/kit archive project` on one approved test project and verify: private producer-only card, standardized Dropbox archive, bounded still/GIF generation, unlisted Vimeo video, WordPress draft, Buffer drafts, Behance handoff, and successful retry of one deliberately interrupted step. Revoke the legacy `_AutoArchive` public edit link and rotate any token that was stored in that package before using the new workflow.
+Set the archive environment variables listed in `FEATURES.md` on Vercel and Railway. Use fresh provider credentials; do not copy credentials from the legacy Dropbox package or its publicly shared configuration file. Install `kit-behance-worker` on the dedicated studio Mac, complete its one-time Behance login, and leave the worker running. Then run `/kit archive project` on one approved test project and verify: private producer-only card, standardized Dropbox archive, bounded still/GIF generation, unlisted Vimeo video, WordPress draft, Buffer drafts, browser-built Behance draft plus proof screenshot, and successful retry of one deliberately interrupted step. Confirm the worker stops at the Behance review link and requires a human to click Publish. Revoke the legacy `_AutoArchive` public edit link and rotate any token that was stored in that package before using the new workflow.
 
 ### 0. Observe direct Plaud transcript sync
 
