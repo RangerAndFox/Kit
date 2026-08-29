@@ -1,8 +1,9 @@
 'use client'
 
+import Image from 'next/image'
 import { useState } from 'react'
 import { signInWithMagicLink, signInWithGoogle } from './actions'
-import { cn } from '@/lib/utils'
+import styles from './login.module.css'
 
 type AuthState = 'idle' | 'loading' | 'success' | 'error'
 
@@ -11,14 +12,13 @@ export default function LoginPage() {
   const [state, setState] = useState<AuthState>('idle')
   const [error, setError] = useState('')
 
-  const handleMagicLink = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
+  const handleMagicLink = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
     setError('')
     setState('loading')
 
     const formData = new FormData()
     formData.append('email', email)
-
     const result = await signInWithMagicLink(formData)
 
     if (result.error) {
@@ -33,100 +33,105 @@ export default function LoginPage() {
     setError('')
     setState('loading')
     try {
-      await signInWithGoogle()
+      const result = await signInWithGoogle()
+      if (result?.error) {
+        setError(result.error)
+        setState('error')
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to sign in with Google')
       setState('error')
     }
   }
 
+  const unavailable = state === 'loading' || state === 'success'
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#0C0E12] px-4">
-      <div className="w-full max-w-md">
-        {/* Logo */}
-        <div className="flex items-center justify-center gap-2 mb-12">
-          <span className="text-2xl font-bold text-white">Kit</span>
-          <div className="w-1.5 h-1.5 rounded-full bg-[#6366F1]"></div>
-        </div>
+    <main className={styles.page}>
+      <div className={styles.ambient} aria-hidden="true" />
 
-        {/* Card */}
-        <div className="bg-[#181B24] rounded-xl p-8 shadow-xl">
-          {/* Heading */}
-          <h1 className="text-2xl font-bold text-white text-center mb-2">
-            Sign in to Kit
-          </h1>
-          <p className="text-center text-[#B4B8C3] text-sm mb-8">
-            Production intelligence for creative studios
-          </p>
+      <section className={styles.shell} aria-labelledby="login-title">
+        <header className={styles.brand}>
+          <div className={styles.iconFrame}>
+            <Image
+              src="/kit-icon.png"
+              alt="Kit"
+              width={72}
+              height={72}
+              priority
+              className={styles.icon}
+            />
+          </div>
+          <p className={styles.eyebrow}>Ranger &amp; Fox studio operations</p>
+          <h1 id="login-title" className={styles.title}>Welcome back</h1>
+          <p className={styles.subtitle}>Sign in to your production control center.</p>
+        </header>
 
-          {/* Success Message */}
-          {state === 'success' && (
-            <div className="mb-6 p-4 bg-[#10B981]/10 border border-[#10B981] rounded-lg">
-              <p className="text-[#10B981] text-sm text-center font-medium">
-                Check your email for the magic link!
-              </p>
-            </div>
-          )}
+        <div className={styles.card}>
+          <div className={styles.cardIntro}>
+            <h2>Sign in to Kit</h2>
+            <p>Use your Ranger &amp; Fox email to continue.</p>
+          </div>
 
-          {/* Error Message */}
-          {state === 'error' && error && (
-            <div className="mb-6 p-4 bg-[#EF4444]/10 border border-[#EF4444] rounded-lg">
-              <p className="text-[#EF4444] text-sm text-center font-medium">
-                {error}
-              </p>
-            </div>
-          )}
+          <div className={styles.statusRegion} aria-live="polite">
+            {state === 'success' && (
+              <div className={`${styles.notice} ${styles.success}`}>
+                <span className={styles.noticeMark} aria-hidden="true">✓</span>
+                <div>
+                  <strong>Check your inbox</strong>
+                  <p>We sent a secure sign-in link to {email}.</p>
+                </div>
+              </div>
+            )}
 
-          {/* Magic Link Form */}
-          <form onSubmit={handleMagicLink} className="space-y-4">
-            <div>
-              <label htmlFor="email" className="block text-sm font-medium text-white mb-2">
-                Email address
-              </label>
-              <input
-                id="email"
-                type="email"
-                placeholder="you@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                disabled={state === 'loading' || state === 'success'}
-                className={cn(
-                  'w-full px-4 py-3 rounded-lg bg-[#0C0E12] border border-[#2A2F3D] text-white placeholder-[#6B7280] focus:outline-none focus:border-[#6366F1] focus:ring-1 focus:ring-[#6366F1] transition-colors text-sm',
-                  state === 'loading' && 'opacity-50 cursor-not-allowed'
-                )}
-                required
-              />
-            </div>
+            {state === 'error' && error && (
+              <div className={`${styles.notice} ${styles.error}`} role="alert">
+                <span className={styles.noticeMark} aria-hidden="true">!</span>
+                <div>
+                  <strong>We couldn’t sign you in</strong>
+                  <p>{error}</p>
+                </div>
+              </div>
+            )}
+          </div>
 
+          <form onSubmit={handleMagicLink} className={styles.form}>
+            <label htmlFor="email" className={styles.label}>Email address</label>
+            <input
+              id="email"
+              name="email"
+              type="email"
+              autoComplete="email"
+              inputMode="email"
+              placeholder="name@rangerandfox.tv"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              disabled={unavailable}
+              className={styles.input}
+              required
+            />
             <button
               type="submit"
-              disabled={state === 'loading' || state === 'success' || !email}
-              className={cn(
-                'w-full py-3 px-4 rounded-lg font-medium text-white text-sm transition-all duration-200',
-                state === 'loading' ? 'bg-[#6366F1]/70 cursor-not-allowed' : 'bg-[#6366F1] hover:bg-[#4F46E5] active:scale-95'
-              )}
+              disabled={unavailable || !email}
+              className={styles.primaryButton}
             >
-              {state === 'loading' ? 'Sending...' : 'Send Magic Link'}
+              {state === 'loading' ? 'Sending secure link…' : 'Email me a sign-in link'}
             </button>
           </form>
 
-          {/* Divider */}
-          <div className="flex items-center gap-4 my-6">
-            <div className="flex-1 h-px bg-[#2A2F3D]"></div>
-            <span className="text-xs font-medium text-[#6B7280]">or</span>
-            <div className="flex-1 h-px bg-[#2A2F3D]"></div>
+          <div className={styles.divider} aria-hidden="true">
+            <span />
+            <p>or continue with</p>
+            <span />
           </div>
 
-          {/* Google Button */}
           <button
+            type="button"
             onClick={handleGoogleSignIn}
-            disabled={state === 'loading' || state === 'success'}
-            className={cn(
-              'w-full py-3 px-4 rounded-lg font-medium text-white text-sm border border-[#2A2F3D] transition-all duration-200 flex items-center justify-center gap-2',
-              state === 'loading' ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#2A2F3D]/50 active:scale-95'
-            )}
+            disabled={unavailable}
+            className={styles.googleButton}
           >
-            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+            <svg className={styles.googleIcon} viewBox="0 0 24 24" aria-hidden="true">
               <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4" />
               <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853" />
               <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05" />
@@ -135,12 +140,14 @@ export default function LoginPage() {
             Continue with Google
           </button>
 
-          {/* Footer */}
-          <p className="text-xs text-center text-[#6B7280] mt-6">
-            We'll send you a magic link to sign in. No password needed.
-          </p>
+          <p className={styles.helper}>No password required. Magic links expire automatically.</p>
         </div>
-      </div>
-    </div>
+
+        <footer className={styles.footer}>
+          <span className={styles.lock} aria-hidden="true">●</span>
+          Private access for the Ranger &amp; Fox team
+        </footer>
+      </section>
+    </main>
   )
 }
