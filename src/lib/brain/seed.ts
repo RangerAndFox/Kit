@@ -23,7 +23,7 @@ import {
   type BrainProvenance,
   buildBrainId,
 } from './format'
-import { createBrain, getBrainByChannel, type LoadedBrain } from './store'
+import { createBrain, getBrainByChannel, saveReconciledBrain, type LoadedBrain } from './store'
 
 export interface SeedInput {
   workspaceId: string
@@ -197,6 +197,43 @@ export function buildInitialBrain(project: ProjectRow, notes: Array<{ title: str
   }
 }
 
+/** Refresh only the deterministic project-owned portions of an existing brain.
+ * Writer-added decisions, notes, risks and conventions are deliberately left
+ * untouched. Returns true when the stored brain needs a new revision. */
+export function reconcileProjectIdentity(brain: Brain, project: ProjectRow): boolean {
+  const fresh = buildInitialBrain(project, [])
+  let changed = false
+  const set = (target: Record<string, any>, key: string, value: any) => {
+    if (target[key] !== value) { target[key] = value; changed = true }
+  }
+
+  set(brain, 'title', fresh.title)
+  set(brain.frontmatter, 'project_code', fresh.frontmatter.project_code)
+  set(brain.frontmatter, 'project_id', fresh.frontmatter.project_id)
+  set(brain.frontmatter, 'slack_channel', fresh.frontmatter.slack_channel)
+
+  const replaceSeeded = (heading: string, prefixes: string[]) => {
+    const current = brain.sections.find((s) => s.heading === heading)
+    const source = fresh.sections.find((s) => s.heading === heading)
+    if (!current || !source) return
+    const kept = current.bullets.filter((b) => !prefixes.some((p) => b.text.startsWith(p)))
+    const seeded = source.bullets.filter((b) => prefixes.some((p) => b.text.startsWith(p)))
+    const next = [...seeded, ...kept]
+    if (JSON.stringify(next) !== JSON.stringify(current.bullets)) {
+      current.bullets = next
+      changed = true
+    }
+  }
+
+  replaceSeeded('Operating context', [
+    'Client:', 'Status:', 'Start date:', 'Target delivery:', 'Budget total:', 'Brief:',
+  ])
+  replaceSeeded('Watchlist (deadlines & risks)', ['⚠️ '])
+  replaceSeeded('People & roles', ['Producer:', 'No producer assigned yet.'])
+  replaceSeeded('Glossary / canonical IDs', ['Project code:', 'Internal project id:', 'Project type:'])
+  return changed
+}
+
 /**
  * Seed (or fetch existing) brain for the channel. Idempotent — if a brain
  * already exists for (workspace, channel), it's returned as-is and
@@ -204,9 +241,20 @@ export function buildInitialBrain(project: ProjectRow, notes: Array<{ title: str
  */
 export async function seedBrainForChannel(input: SeedInput): Promise<SeedResult> {
   const existing = await getBrainByChannel(input.workspaceId, input.slackChannelId)
-  if (existing) return { loaded: existing, created: false }
-
   const project = await resolveProjectForChannel(input.slackChannelId)
+  if (existing) {
+    if (!project) return { loaded: existing, created: false }
+    const changed = reconcileProjectIdentity(existing.brain, project)
+    if (!changed) return { loaded: existing, created: false }
+    const loaded = await saveReconciledBrain({
+      loaded: existing,
+      brain: existing.brain,
+      author: input.author,
+      diff: 'project identity refreshed from the authoritative projects row',
+    })
+    return { loaded, created: false }
+  }
+
   if (!project) {
     throw new Error(
       `seedBrainForChannel: no project linked to channel ${input.slackChannelId}. Link the channel to a project before seeding a brain.`,

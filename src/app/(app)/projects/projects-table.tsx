@@ -11,10 +11,10 @@ interface Project {
   name: string
   client_name: string
   code: string
-  status: 'planning' | 'in_progress' | 'in_review' | 'completed' | 'on_hold' | 'archived'
+  status: string
   budget: number
   spent: number
-  due_date: Date
+  due_date: string | null
   health: 'emerald' | 'amber' | 'coral'
 }
 
@@ -33,6 +33,9 @@ const statusOptions = [
 ]
 
 const statusLabels: Record<string, string> = {
+  active: 'Active',
+  draft: 'Draft',
+  wrapped: 'Wrapped',
   planning: 'Planning',
   in_progress: 'In Progress',
   in_review: 'In Review',
@@ -64,7 +67,10 @@ export function ProjectsTable({ projects }: ProjectsTableProps) {
     })
   }, [projects, searchQuery, statusFilter])
 
-  const formatDate = (date: Date) => {
+  const formatDate = (value: string | null) => {
+    if (!value) return '—'
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return '—'
     return new Intl.DateTimeFormat('en-US', {
       month: 'short',
       day: 'numeric',
@@ -190,35 +196,35 @@ export function ProjectsTable({ projects }: ProjectsTableProps) {
                     className="hover:bg-[#1f2332] transition-colors cursor-pointer group"
                   >
                     <td className="px-6 py-4">
-                      <Link href={`/projects/${project.id}`} className="block">
+                      <Link href={`/control-center/projects/${project.id}`} className="block">
                         <p className="font-medium text-white group-hover:text-indigo-400 transition-colors">
                           {project.name}
                         </p>
                       </Link>
                     </td>
                     <td className="px-6 py-4 text-[#b4b8c3]">
-                      <Link href={`/projects/${project.id}`}>{project.client_name}</Link>
+                      <Link href={`/control-center/projects/${project.id}`}>{project.client_name}</Link>
                     </td>
                     <td className="px-6 py-4">
-                      <Link href={`/projects/${project.id}`}>
+                      <Link href={`/control-center/projects/${project.id}`}>
                         <code className="px-2 py-1 rounded bg-[#0C0E12] text-[#6366F1] font-mono text-xs">
                           {project.code}
                         </code>
                       </Link>
                     </td>
                     <td className="px-6 py-4">
-                      <Link href={`/projects/${project.id}`}>
+                      <Link href={`/control-center/projects/${project.id}`}>
                         <Badge
                           variant="info"
                           size="sm"
                           className="capitalize"
                         >
-                          {statusLabels[project.status]}
+                          {statusLabels[project.status] || project.status.replaceAll('_', ' ')}
                         </Badge>
                       </Link>
                     </td>
                     <td className="px-6 py-4">
-                      <Link href={`/projects/${project.id}`}>
+                      <Link href={`/control-center/projects/${project.id}`}>
                         <div className="space-y-1">
                           <div className="w-24 h-2 bg-[#0C0E12] rounded-full overflow-hidden">
                             <motion.div
@@ -237,12 +243,12 @@ export function ProjectsTable({ projects }: ProjectsTableProps) {
                       </Link>
                     </td>
                     <td className="px-6 py-4 text-[#b4b8c3]">
-                      <Link href={`/projects/${project.id}`}>
+                      <Link href={`/control-center/projects/${project.id}`}>
                         {formatDate(project.due_date)}
                       </Link>
                     </td>
                     <td className="px-6 py-4">
-                      <Link href={`/projects/${project.id}`}>
+                      <Link href={`/control-center/projects/${project.id}`}>
                         <div
                           className="w-3 h-3 rounded-full"
                           style={{
@@ -257,7 +263,7 @@ export function ProjectsTable({ projects }: ProjectsTableProps) {
                       </Link>
                     </td>
                     <td className="px-6 py-4">
-                      <Link href={`/projects/${project.id}`}>
+                      <Link href={`/control-center/projects/${project.id}`}>
                         <ChevronRight
                           size={16}
                           className="text-[#6b7280] group-hover:translate-x-1 transition-transform"
@@ -279,7 +285,7 @@ export function ProjectsTable({ projects }: ProjectsTableProps) {
           >
             {filteredProjects.map((project) => (
               <motion.div key={project.id} variants={itemVariants}>
-                <Link href={`/projects/${project.id}`}>
+                <Link href={`/control-center/projects/${project.id}`}>
                   <div className="kit-card-interactive space-y-3">
                     {/* Header */}
                     <div className="flex items-start justify-between gap-3">
@@ -306,7 +312,7 @@ export function ProjectsTable({ projects }: ProjectsTableProps) {
                         {project.code}
                       </code>
                       <Badge variant="info" size="sm" className="capitalize">
-                        {statusLabels[project.status]}
+                        {statusLabels[project.status] || project.status.replaceAll('_', ' ')}
                       </Badge>
                     </div>
 

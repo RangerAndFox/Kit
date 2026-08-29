@@ -207,6 +207,52 @@ export async function applyPatches(opts: {
   )
 }
 
+/**
+ * Persist a reconciled brain snapshot while preserving optimistic concurrency.
+ * This is used for deterministic project-identity refreshes (rename, client,
+ * dates, producer) that also affect the title/frontmatter and therefore cannot
+ * be expressed as a section-only BrainPatch.
+ */
+export async function saveReconciledBrain(opts: {
+  loaded: LoadedBrain
+  brain: Brain
+  author?: string
+  diff?: string
+}): Promise<LoadedBrain> {
+  const { row, brain } = opts.loaded
+  const nextRevision = (row.revision || 0) + 1
+  brain.frontmatter.revision = nextRevision
+  brain.frontmatter.updated = new Date().toISOString()
+  const markdown = serializeBrain(brain)
+  const sb = createAdminClient()
+  const { data, error } = await sb
+    .from('brains')
+    .update({
+      markdown,
+      revision: nextRevision,
+      project_code: brain.frontmatter.project_code ?? row.project_code,
+      project_id: brain.frontmatter.project_id ?? row.project_id,
+      slack_channel: brain.frontmatter.slack_channel ?? row.slack_channel,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', row.id)
+    .eq('revision', row.revision ?? 0)
+    .select('*')
+    .maybeSingle()
+  if (error) throw new Error(`saveReconciledBrain: ${error.message}`)
+  if (!data) throw new Error('saveReconciledBrain: revision conflict; retry refresh')
+
+  await sb.from('brain_revisions').insert({
+    brain_id: row.id,
+    revision: nextRevision,
+    operation: 'identity_refresh',
+    diff: opts.diff ?? 'project identity reconciled',
+    author: opts.author ?? 'system',
+  })
+  await embedBrainSections(row.workspace_id, row.id, row.project_id, brain, null)
+  return { row: data as BrainRow, brain }
+}
+
 export async function setCanvasHandle(brainId: string, canvasId: string, canvasUrl: string | null): Promise<void> {
   const sb = createAdminClient()
   const { error } = await sb

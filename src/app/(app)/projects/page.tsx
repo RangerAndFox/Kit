@@ -1,24 +1,47 @@
-// @ts-nocheck
+import { redirect } from 'next/navigation'
 import { ProjectsTable } from './projects-table'
 import { ProjectsHeader } from './projects-header'
+import { getControlCenterAccess } from '@/lib/control-center/access'
+import { createAdminClient } from '@/lib/supabase/admin'
 
-const mockProjects = [
-  { id: 'proj-1', name: 'Nike Summer Campaign', client_name: 'Nike Global', code: 'NIKE-2026-SUM', status: 'active' as const, budget: 150000, spent: 87500, due_date: '2026-04-25', health: 'amber' as const },
-  { id: 'proj-2', name: 'Spotify Wrapped 2026', client_name: 'Spotify', code: 'SPOTIFY-WRAP', status: 'active' as const, budget: 200000, spent: 145000, due_date: '2026-04-18', health: 'emerald' as const },
-  { id: 'proj-3', name: 'Netflix Title Sequence', client_name: 'Netflix', code: 'NETFLIX-TS', status: 'active' as const, budget: 180000, spent: 165000, due_date: '2026-04-13', health: 'coral' as const },
-  { id: 'proj-4', name: 'Apple Product Launch', client_name: 'Apple', code: 'APPLE-PROD', status: 'draft' as const, budget: 220000, spent: 0, due_date: '2026-06-10', health: 'emerald' as const },
-  { id: 'proj-5', name: 'Google Brand Film', client_name: 'Google', code: 'GOOGLE-BF', status: 'on_hold' as const, budget: 160000, spent: 128000, due_date: '2026-05-26', health: 'amber' as const },
-  { id: 'proj-6', name: 'Meta Campaign', client_name: 'Meta', code: 'META-2026', status: 'wrapped' as const, budget: 135000, spent: 125000, due_date: '2026-04-04', health: 'emerald' as const },
-  { id: 'proj-7', name: 'Adidas Animation', client_name: 'Adidas', code: 'ADIDAS-ANIM', status: 'active' as const, budget: 175000, spent: 92000, due_date: '2026-05-11', health: 'emerald' as const },
-  { id: 'proj-8', name: 'Tesla Brand Refresh', client_name: 'Tesla', code: 'TESLA-BR', status: 'archived' as const, budget: 145000, spent: 145000, due_date: '2026-03-12', health: 'emerald' as const },
-]
+export const dynamic = 'force-dynamic'
 
-export default function ProjectsPage() {
-  const existingClients = Array.from(new Set(mockProjects.map((p) => p.client_name))).sort()
+function projectHealth(status: string, dueDate: string | null): 'emerald' | 'amber' | 'coral' {
+  if (['archived', 'completed', 'wrapped'].includes(status)) return 'emerald'
+  if (dueDate && Date.parse(dueDate) < Date.now()) return 'coral'
+  if (status === 'on_hold') return 'amber'
+  return 'emerald'
+}
+
+export default async function ProjectsPage() {
+  const access = await getControlCenterAccess()
+  if (!access) redirect('/login')
+
+  const admin = createAdminClient()
+  const { data, error } = await admin
+    .from('projects')
+    .select('id, name, client, project_code, status, budget_total, budget_spent, target_delivery')
+    .eq('workspace_id', access.workspaceId)
+    .order('updated_at', { ascending: false })
+
+  if (error) throw new Error(`Unable to load projects: ${error.message}`)
+
+  const projects = (data || []).map((row) => ({
+    id: row.id,
+    name: row.name || '(untitled project)',
+    client_name: row.client || 'Internal',
+    code: row.project_code || '—',
+    status: row.status || 'unknown',
+    budget: Number(row.budget_total || 0),
+    spent: Number(row.budget_spent || 0),
+    due_date: row.target_delivery || null,
+    health: projectHealth(row.status || 'unknown', row.target_delivery || null),
+  }))
+  const existingClients = Array.from(new Set(projects.map((p) => p.client_name))).sort()
   return (
     <div className="space-y-6">
-      <ProjectsHeader existingClients={existingClients} projectCount={mockProjects.length} />
-      <ProjectsTable projects={mockProjects} />
+      <ProjectsHeader existingClients={existingClients} projectCount={projects.length} />
+      <ProjectsTable projects={projects} />
     </div>
   )
 }

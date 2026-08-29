@@ -1941,7 +1941,18 @@ export function registerInteractionHandlers(app: App) {
           if (result.status === 'error' || result.status === 'deferred') {
             return { success: false, error: result.reason || result.status }
           }
-          return { success: true, message: result.status === 'skipped' ? `skipped: ${result.reason}` : 'three canvases refreshed' }
+          // The private project brain is also a projection of project identity.
+          // Reconcile only its deterministic title/context fields after the
+          // authoritative row is current; accumulated decisions remain intact.
+          if (fresh.slackChannelId) {
+            const { seedBrainForChannel } = await import('../../../src/lib/brain/seed')
+            await seedBrainForChannel({
+              workspaceId: process.env.KIT_DEFAULT_WORKSPACE_ID || '',
+              slackChannelId: fresh.slackChannelId,
+              author: 'project-update',
+            })
+          }
+          return { success: true, message: result.status === 'skipped' ? `skipped: ${result.reason}` : 'three canvases and project brain refreshed' }
         },
         ledger: {
           getSteps: (rk) => getUpdateSteps(rk),
