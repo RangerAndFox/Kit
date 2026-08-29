@@ -1,6 +1,7 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import { authRedirectBaseUrl } from '@/lib/auth/redirect-url'
 import { redirect } from 'next/navigation'
 
 export async function signInWithMagicLink(formData: FormData) {
@@ -10,7 +11,7 @@ export async function signInWithMagicLink(formData: FormData) {
   const { error } = await supabase.auth.signInWithOtp({
     email,
     options: {
-      emailRedirectTo: `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'}/auth/callback`,
+      emailRedirectTo: `${authRedirectBaseUrl()}/auth/callback`,
     },
   })
 
@@ -21,12 +22,15 @@ export async function signInWithMagicLink(formData: FormData) {
 }
 
 export async function signInWithGoogle() {
+  if (process.env.NEXT_PUBLIC_GOOGLE_AUTH_ENABLED !== 'true') {
+    return { error: 'Google sign-in is not configured. Use the secure email link instead.' }
+  }
   const supabase = await createClient()
 
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
-      redirectTo: `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'}/auth/callback`,
+      redirectTo: `${authRedirectBaseUrl()}/auth/callback`,
     },
   })
 
