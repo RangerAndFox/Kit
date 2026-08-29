@@ -46,6 +46,8 @@ import { projectNameFromFilename } from '../../../src/lib/storyboard/parser'
 import { buildNewProjectCard } from './newproject-card'
 import { isUpdateProjectTrigger } from './updateproject-card'
 import { buildUpdateProjectCardForContext } from './interactions'
+import { buildArchiveCardForContext } from '../archive/handlers'
+import { isArchiveTrigger } from '../../../src/lib/archive/types'
 import {
   findOpenCheckin,
   handleCheckinReply,
@@ -778,7 +780,7 @@ export function normalizeDmShortcutText(text: string): string {
 }
 
 type DmShortcut = {
-  id: 'storyboard' | 'new-project' | 'update-project'
+  id: 'storyboard' | 'new-project' | 'update-project' | 'archive-project'
   matches: (text: string) => boolean
   run: (app: App, context: DmShortcutContext) => Promise<void>
 }
@@ -819,6 +821,23 @@ export const DM_SHORTCUT_REGISTRY: readonly DmShortcut[] = [
         client: app.client,
       })
       await app.client.chat.postMessage(card)
+    },
+  },
+  {
+    id: 'archive-project',
+    matches: isArchiveTrigger,
+    run: async (app, context) => {
+      const card = await buildArchiveCardForContext({
+        teamId: context.teamId,
+        channelId: context.channelId,
+        userId: context.userId,
+        client: app.client,
+      })
+      await app.client.chat.postMessage({
+        channel: context.channelId,
+        ...(context.threadTs ? { thread_ts: context.threadTs } : {}),
+        ...card,
+      })
     },
   },
 ]

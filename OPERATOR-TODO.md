@@ -4,6 +4,10 @@ Current as of 2026-08-27. This list contains only checks that require live provi
 
 ## Immediate production verification
 
+### 0A. Configure and prove the private archive publisher
+
+Set the archive environment variables listed in `FEATURES.md` on Vercel and Railway. Use fresh provider credentials; do not copy credentials from the legacy Dropbox package or its publicly shared configuration file. Then run `/kit archive project` on one approved test project and verify: private producer-only card, standardized Dropbox archive, bounded still/GIF generation, unlisted Vimeo video, WordPress draft, Buffer drafts, Behance handoff, and successful retry of one deliberately interrupted step. Revoke the legacy `_AutoArchive` public edit link and rotate any token that was stored in that package before using the new workflow.
+
 ### 0. Observe direct Plaud transcript sync
 
 Authorization and production cutover were completed on 2026-08-27. Plaud is enabled, the Drive fallback is disabled, and raw historical transcript chunks were made founder-only. Confirm the next scheduled scan remains fresh in Kit health and inspect the first new recording's project match. Keep the Zap and Drive configuration intact but disabled so rollback remains a flag change.

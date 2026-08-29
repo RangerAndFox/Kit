@@ -4,6 +4,11 @@
 
 FROM node:20-slim
 
+# Archive media worker: frame extraction, GIF generation, and duration probes.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ffmpeg \
+  && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Install deps at /app so both /app/bolt/src/** and /app/src/lib/**

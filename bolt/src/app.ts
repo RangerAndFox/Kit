@@ -8,6 +8,7 @@
 
 import 'dotenv/config'
 import http from 'node:http'
+import crypto from 'node:crypto'
 import { App, Assistant, LogLevel } from '@slack/bolt'
 import {
   registerMessageHandlers,
@@ -31,6 +32,8 @@ import { nudgePendingCheckins } from './checkins/daily-hours'
 import { recoverMissedCheckinReplies } from './checkins/reply-recovery'
 import { scanMissingTime } from './checkins/missing-time'
 import { dispatchAllPendingApprovals } from './brain/approvals'
+import { registerArchiveHandlers } from './archive/handlers'
+import { enqueueArchiveMedia } from '../../src/lib/archive/media-worker'
 
 // ─── Boot ──────────────────────────────────────────────────
 
@@ -117,6 +120,7 @@ registerMessageHandlers(app)
 registerCommandHandlers(app)
 const { runProjectControlRecoverySweep } = registerInteractionHandlers(app)
 registerBrainApprovalHandlers(app)
+registerArchiveHandlers(app)
 
 // Imported/synced projects can have Dropbox + Slack links before their
 // Frame.io id is known. Reconcile once at boot and hourly thereafter so they
@@ -257,6 +261,51 @@ http
         processDropboxNotification(app).catch((err) => {
           console.error('[Dropbox webhook] processing failed:', err)
         })
+      })
+      return
+    }
+
+    // Private archive-media worker. Vercel's durable archive workflow calls
+    // this Railway endpoint for FFmpeg work that cannot safely run inside a
+    // short-lived serverless function. It is never a user-facing API.
+    if (req.method === 'POST' && url.startsWith('/internal/archive-media')) {
+      const expected = process.env.KIT_ARCHIVE_WORKER_SECRET || ''
+      const supplied = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '')
+      const authorized = expected.length >= 24 && supplied.length === expected.length &&
+        crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))
+      if (!authorized) {
+        res.writeHead(401, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }))
+        return
+      }
+      const chunks: Buffer[] = []
+      let size = 0
+      req.on('data', (chunk) => {
+        size += chunk.length
+        if (size <= 64 * 1024) chunks.push(Buffer.from(chunk))
+      })
+      req.on('end', () => {
+        if (size > 64 * 1024) {
+          res.writeHead(413, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: 'request_too_large' }))
+          return
+        }
+        let body: any
+        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: 'invalid_json' }))
+          return
+        }
+        enqueueArchiveMedia(body)
+          .then((result) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ ok: true, result }))
+          })
+          .catch((error) => {
+            console.error('[archive-media] worker failed:', error.message)
+            res.writeHead(500, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ ok: false, error: error.message }))
+          })
       })
       return
     }

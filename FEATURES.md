@@ -27,6 +27,7 @@ Cross-cutting infrastructure (Supabase schema, Bolt server, deployment) is at th
 13. [Meeting Transcript Ingest (Direct Plaud + Drive fallback)](#13-meeting-transcript-ingest-direct-plaud--drive-fallback)
 14. [Pre-Meeting Briefings](#14-pre-meeting-briefings)
 15. [Studio Knowledge (project history, contacts, notes, auto-summarization)](#15-studio-knowledge)
+15A. [Private Archive Publisher](#15a-private-archive-publisher)
 16. [Infrastructure](#16-infrastructure)
 17. [Environment variables](#17-environment-variables)
 
@@ -583,6 +584,27 @@ Existing `project_documents` (pgvector embedded column, `match_documents` RPC) +
 
 ---
 
+## 15A. Private Archive Publisher
+
+### Summary
+A producer or admin runs `/kit archive project` (or DMs `archive project`) to open a prefilled, private Slack workflow. Kit copies the approved delivery video into the standardized Dropbox portfolio archive, generates bounded stills and GIFs on Railway, and prepares an unlisted Vimeo video, WordPress draft, Buffer drafts, and a Behance handoff manifest. Nothing is published publicly.
+
+### Safeguards
+- The workflow is restricted to producer/admin access and the confirmation card is delivered by DM.
+- A rights/approval checkbox and a second confirmation are required before external work begins.
+- Vimeo is always unlisted; WordPress and Buffer are always drafts; Behance remains manual/preparation-only.
+- Every step is recorded in private, server-only Supabase tables and completed steps are not repeated on retry.
+- The FFmpeg endpoint requires a shared 24+ character secret, caps request bodies, queues one media job at a time, and cleans its exact temporary directory.
+
+### Technical breakdown
+- Slack entry/actions: `bolt/src/archive/handlers.ts`
+- Cards and modal: `src/lib/archive/blocks.ts`
+- Durable workflow and retries: `src/lib/archive/workflow.ts`, registered through Inngest
+- Provider adapters: `src/lib/archive/adapters.ts`
+- Dropbox archive creation: `src/lib/archive/dropbox.ts`
+- Railway FFmpeg worker: `src/lib/archive/media-worker.ts` and `POST /internal/archive-media`
+- Job ledger: `archive_jobs` and `archive_job_steps` (RLS enabled; `anon` and `authenticated` revoked)
+
 ## 16. Infrastructure
 
 ### Bolt server
@@ -709,6 +731,17 @@ Existing `project_documents` (pgvector embedded column, `match_documents` RPC) +
 - `DROPBOX_SYNC_PATH` — local Dropbox sync folder
 - `FFMPEG_PATH` — `ffmpeg` if on PATH, else full path
 - `CPU_THRESHOLD`, `MIN_DISK_FREE_GB`, `HEARTBEAT_INTERVAL_MS`, `POLL_INTERVAL_MS`, `FALLBACK_DELAY_SECONDS`
+
+### Private archive publisher
+- `KIT_ARCHIVE_DESTINATIONS` — comma-separated destinations exposed in Slack; recommended `dropbox,vimeo,wordpress,buffer,behance`
+- `KIT_ARCHIVE_ROOT` — optional Dropbox archive root; defaults to `/production/_ProjectArchive/01_Website/01_Projects`
+- `KIT_ARCHIVE_MEDIA_WORKER_URL` — Railway service URL, configured on Vercel
+- `KIT_ARCHIVE_WORKER_SECRET` — same random 24+ character secret on Vercel and Railway
+- `VIMEO_ACCESS_TOKEN` — Vimeo token with upload access, configured on Vercel
+- `WORDPRESS_SITE_URL`, `WORDPRESS_USERNAME`, `WORDPRESS_APP_PASSWORD` — WordPress draft credentials, configured on Vercel
+- `WORDPRESS_TEMPLATE_POST_ID` — optional portfolio template post id; defaults to `6343`
+- `BUFFER_ACCESS_TOKEN`, `BUFFER_LINKEDIN_CHANNEL_ID`, `BUFFER_INSTAGRAM_CHANNEL_ID` — Buffer draft credentials/targets, configured on Vercel
+- `BUFFER_API_URL` — optional Buffer GraphQL endpoint override
 
 ---
 

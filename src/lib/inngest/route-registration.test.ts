@@ -48,6 +48,10 @@ describe('canonical Inngest registration list', () => {
     assert.ok(ids.includes('project-control-sync-on-edit'), 'event fn missing')
   })
 
+  it('registers the private archive publisher workflow', () => {
+    assert.ok(ids.includes('archive-publisher'), 'archive publisher missing')
+  })
+
   it('registers project-control-sync immediately before project-control-sync-on-edit (adjacent + ordered)', () => {
     const cronIdx = ids.indexOf('project-control-sync')
     assert.notEqual(cronIdx, -1, 'cron not found')

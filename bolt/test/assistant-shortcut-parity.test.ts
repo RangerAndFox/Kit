@@ -21,6 +21,7 @@ describe('DM keyword shortcut registry', () => {
       'storyboard',
       'new-project',
       'update-project',
+      'archive-project',
     ])
   })
 
@@ -39,6 +40,6 @@ describe('DM keyword shortcut registry', () => {
   })
 
   it('keeps trigger matching inside the registry rather than app.ts', () => {
-    expect(appTs).not.toMatch(/is(?:Storyboard|NewProject|UpdateProject)Trigger/)
+    expect(appTs).not.toMatch(/is(?:Storyboard|NewProject|UpdateProject|Archive)Trigger/)
   })
 })

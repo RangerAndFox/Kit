@@ -5,6 +5,7 @@
  * Handles slash commands. Currently supports:
  *   /kit newproject — opens the project intake modal
  *   /kit status     — quick project health check
+ *   /kit archive    — private archive and portfolio-draft workflow
  *   /kit help       — lists available commands
  *
  * Bolt handles signature verification and ack() automatically.
@@ -27,6 +28,7 @@ import { setWorkerOptOut, setWorkerOptIn, listProfiles } from '../../../src/lib/
 import { listAeRenders, getAeRenderStatus } from '../../../src/lib/delivery/ae-storage'
 import { buildRenderModal } from '../delivery/render-modal'
 import { handlePilotCommand } from './pilots'
+import { buildArchiveCardForContext } from '../archive/handlers'
 
 /**
  * Resolve the Slack user's Kit access context for a slash command.
@@ -99,6 +101,26 @@ export function registerCommandHandlers(app: App) {
             response_type: 'ephemeral',
             text: `Couldn't post the update card: ${err.data?.error || err.message}`,
           })
+        }
+        break
+      }
+
+      // ── Archive & portfolio publishing ─────────────────────
+      case 'archive':
+      case 'publish': {
+        await ack()
+        try {
+          const card = await buildArchiveCardForContext({
+            teamId: command.team_id,
+            channelId: command.channel_id,
+            userId: command.user_id,
+            client,
+          })
+          // Project selection is private: archive metadata and portfolio copy
+          // never appear in a shared channel merely because the command was run there.
+          await respond({ response_type: 'ephemeral', ...card })
+        } catch (err: any) {
+          await respond({ response_type: 'ephemeral', text: `Couldn't open archive publishing: ${err.message}` })
         }
         break
       }
@@ -875,6 +897,7 @@ export function registerCommandHandlers(app: App) {
             '*Kit Commands*\n\n' +
             '`/kit newproject` — Post the new-project card (pick services, fill in details)\n' +
             '`/kit update` — Edit an established project and ripple the change across every outlet\n' +
+            '`/kit archive project` — Prepare an approved project for Dropbox, Vimeo, website, social, and Behance drafts\n' +
             '`/kit onboard` — Onboard a freelancer to a project (Slack/Dropbox/Frame.io/Harvest)\n' +
             '`/kit status <name>` — Quick project lookup\n' +
             '`/kit note [project | body]` — Save a freeform note to a project (or current channel\'s project)\n' +
@@ -893,7 +916,7 @@ export function registerCommandHandlers(app: App) {
             '`/kit meme` — Admin only: post this week’s timesheet meme to the team channel now\n' +
             '`/kit backfill-time` — Admin only: preview confirmable back-dated check-ins; `run` to log them to Harvest\n' +
             '`/kit help` — Show this message\n\n' +
-            'You can also DM me and type *new project*, *update project*, or *new storyboard* to get the same cards. Or @mention me to ask about projects, budgets, files, reviews, or to log time.',
+            'You can also DM me and type *new project*, *update project*, *archive project*, or *new storyboard* to get the same cards. Or @mention me to ask about projects, budgets, files, reviews, or to log time.',
         })
         break
       }
