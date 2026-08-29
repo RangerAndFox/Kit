@@ -22,9 +22,6 @@ export async function signInWithMagicLink(formData: FormData) {
 }
 
 export async function signInWithGoogle() {
-  if (process.env.NEXT_PUBLIC_GOOGLE_AUTH_ENABLED !== 'true') {
-    return { error: 'Google sign-in is not configured. Use the secure email link instead.' }
-  }
   const supabase = await createClient()
 
   const { data, error } = await supabase.auth.signInWithOAuth({
