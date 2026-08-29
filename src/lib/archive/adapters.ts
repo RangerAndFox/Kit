@@ -188,6 +188,9 @@ export async function createBufferDrafts(job: ArchiveJob, vimeo: any | null): Pr
       mode: 'addToQueue',
       saveToDraft: true,
       source: 'kit-archive',
+      ...(name === 'instagram'
+        ? { metadata: { instagram: { type: 'post', shouldShareToFeed: true } } }
+        : {}),
     }
     const response = await fetchJson(apiUrl, {
       method: 'POST',
