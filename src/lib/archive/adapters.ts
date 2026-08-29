@@ -178,7 +178,17 @@ export async function createBufferDrafts(job: ArchiveJob, vimeo: any | null): Pr
   const text = job.settings.socialCopy || [job.settings.description1, job.settings.description2].filter(Boolean).join('\n\n')
   const drafts = []
   for (const [name, channelId] of channels) {
-    const input = { channelId, text, saveToDraft: true, source: 'kit-archive' }
+    // Buffer's current CreatePostInput requires an explicit scheduling type and
+    // share mode even when the post is saved as a draft. `saveToDraft` remains
+    // the safeguard that prevents either value from scheduling or publishing.
+    const input = {
+      channelId,
+      text,
+      schedulingType: 'automatic',
+      mode: 'addToQueue',
+      saveToDraft: true,
+      source: 'kit-archive',
+    }
     const response = await fetchJson(apiUrl, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
