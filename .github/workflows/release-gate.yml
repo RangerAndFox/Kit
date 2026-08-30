@@ -1,0 +1,76 @@
+name: Release gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Unit tests
+        run: find src -name '*.test.ts' -print0 | xargs -0 node --import tsx --test
+      - name: Production build
+        run: npx next build --webpack
+
+  slack:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bolt
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: bolt/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npx tsc --noEmit
+
+  render-worker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: kit-render-worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: kit-render-worker/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  browser-worker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: kit-behance-worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: kit-behance-worker/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build

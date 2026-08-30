@@ -1,9 +1,13 @@
 /**
  * Run: npx tsx --test bolt/src/roles/keyword.test.ts
  */
-import { describe, it } from 'node:test'
-import assert from 'node:assert/strict'
+import { describe, expect, it } from 'vitest'
 import { parseRoleIntent } from './keyword'
+
+const assert = {
+  equal: (actual: unknown, expected: unknown) => expect(actual).toBe(expected),
+  deepEqual: (actual: unknown, expected: unknown) => expect(actual).toEqual(expected),
+}
 
 describe('parseRoleIntent', () => {
   it('"make @U a producer"', () => {

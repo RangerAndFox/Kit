@@ -251,21 +251,24 @@ export async function behanceBrowserVersion(context: BrowserContext): Promise<st
   return userAgent.match(/Chrome\/([\d.]+)/)?.[1] || null
 }
 
-export async function buildBehanceDraft(context: BrowserContext, job: BehanceDraftJob): Promise<{ draftUrl: string; proofPath: string; proofUrl: string | null }> {
+export async function buildBehanceDraft(context: BrowserContext, job: BehanceDraftJob, signal?: AbortSignal): Promise<{ draftUrl: string; proofPath: string; proofUrl: string | null }> {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), `kit-behance-${job.id}-`))
   const page = await context.newPage()
+  const abort = () => { void page.close().catch(() => {}) }
+  signal?.addEventListener('abort', abort, { once: true })
+  if (signal?.aborted) abort()
   await installPublishLockout(page)
   try {
-    await updateJob(job.id, 'opening_editor')
+    await updateJob(job, 'opening_editor')
     await openEditor(page, job.draft_url)
     // Persist the editor location before any upload. If the process stops,
     // the retry returns to this draft instead of creating a duplicate.
-    await updateJob(job.id, 'opening_editor', { draft_url: page.url() })
-    await pulseJob(job.id)
+    await updateJob(job, 'opening_editor', { draft_url: page.url() })
+    await pulseJob(job)
 
     const localMedia = await downloadFiles(job.manifest.media, temp)
     const localByCloudPath = new Map(job.manifest.media.map((cloudPath, index) => [cloudPath, localMedia[index]]))
-    await updateJob(job.id, 'uploading_media')
+    await updateJob(job, 'uploading_media')
     for (const module of behanceContentModules(job.manifest)) {
       if (module.kind === 'text') {
         await addTextModule(page, module.text, module.role)
@@ -274,7 +277,7 @@ export async function buildBehanceDraft(context: BrowserContext, job: BehanceDra
         if (paths.length !== module.paths.length) throw new Error('The Behance layout referenced media outside the approved package.')
         await uploadProjectMedia(page, paths)
       }
-      await pulseJob(job.id)
+      await pulseJob(job)
     }
     await page.keyboard.press('Escape').catch(() => {})
     await page.waitForTimeout(300)
@@ -284,9 +287,9 @@ export async function buildBehanceDraft(context: BrowserContext, job: BehanceDra
       page.getByLabel(/^edit settings$/i),
     ], 'Continue or Settings')
 
-    await updateJob(job.id, 'filling_details')
+    await updateJob(job, 'filling_details')
     await fillDetails(page, job, localMedia[0])
-    await updateJob(job.id, 'saving_draft')
+    await updateJob(job, 'saving_draft')
     await saveDraft(page)
 
     const draftUrl = page.url()
@@ -298,6 +301,7 @@ export async function buildBehanceDraft(context: BrowserContext, job: BehanceDra
       : { path: '', url: null }
     return { draftUrl, proofPath: proof.path, proofUrl: proof.url }
   } finally {
+    signal?.removeEventListener('abort', abort)
     await page.close().catch(() => {})
     await fs.rm(temp, { recursive: true, force: true }).catch(() => {})
   }

@@ -37,7 +37,7 @@ async function processTranscodeJob(job: ClaimedJob): Promise<void> {
   const startedAt = new Date()
 
   try {
-    await markStatus(job.id, 'processing', {
+    await markStatus(job, 'processing', {
       processing_started_at: startedAt.toISOString(),
       progress_message: 'Starting transcode...',
       progress_percent: 0,
@@ -69,7 +69,7 @@ async function processTranscodeJob(job: ClaimedJob): Promise<void> {
     }
 
     // ── Probe duration for progress tracking (from the picture) ──
-    await updateProgress(job.id, 5, 'Probing source duration...')
+    await updateProgress(job, 5, 'Probing source duration...')
     const duration = await probeDurationSeconds(config.ffmpegPath, resolvedVideo.localPath, config.ffprobePath)
 
     // ── Build output path ────────────────────────────────────
@@ -81,15 +81,17 @@ async function processTranscodeJob(job: ClaimedJob): Promise<void> {
     // spec-intake transcodes of farm renders deliver next to their source.
     const outputDir = (job.ae_output_dir && resolveDropboxDir(job.ae_output_dir)) ||
       path.join(sourceDir, 'delivery')
-    const outputPath = path.join(outputDir, outputFilename)
+    let outputPath = path.join(outputDir, outputFilename)
     ensureOutputDir(outputPath)
+    const attemptPath = path.join(outputDir, `.kit-attempt-${job.id}-${path.basename(outputFilename)}`)
+    try { fs.unlinkSync(attemptPath) } catch {}
 
     // ── Pass 1: loudness analysis (if profile sets lufs_target) ──
     // Measure the stream pass 2 will normalize: the external mix when present,
     // otherwise the picture's embedded audio.
     let loudness = null
     if (profile.lufs_target != null) {
-      await updateProgress(job.id, 10, 'Pass 1/2: Analyzing loudness...')
+      await updateProgress(job, 10, 'Pass 1/2: Analyzing loudness...')
       loudness = await runLoudnessAnalysis({
         ffmpegPath: config.ffmpegPath,
         profile,
@@ -106,17 +108,17 @@ async function processTranscodeJob(job: ClaimedJob): Promise<void> {
         ? [{ path: resolvedAudio.localPath, type: 'audio', size_bytes: resolvedAudio.sizeBytes }]
         : []),
     ]
-    const args = buildFFmpegArgs({ profile, sourceFiles: builderSources, outputPath, loudness })
+    const args = buildFFmpegArgs({ profile, sourceFiles: builderSources, outputPath: attemptPath, loudness })
     const cmdStr = argsToShellCommand(args, config.ffmpegPath)
 
-    await ownedUpdate(job.id, {
+    await ownedUpdate(job, {
       ffmpeg_command: cmdStr,
       output_path: outputPath,
       output_filename: outputFilename,
     })
 
     const passLabel = loudness ? 'Pass 2/2' : 'Encoding'
-    await updateProgress(job.id, 15, `${passLabel}: Encoding video + audio...`)
+    await updateProgress(job, 15, `${passLabel}: Encoding video + audio...`)
 
     let lastReportTs = 0
     const result = await runFFmpeg({
@@ -130,25 +132,25 @@ async function processTranscodeJob(job: ClaimedJob): Promise<void> {
         // Scale 15-95% to the FFmpeg progress band (loudness took 5-15%, finalize 95-100)
         const scaled = Math.round(15 + (info.percent * 0.8))
         const eta = info.eta_seconds != null ? ` (ETA ${Math.round(info.eta_seconds)}s)` : ''
-        updateProgress(job.id, scaled, `${passLabel}: ${info.percent}%${eta}`).catch(() => {})
+        updateProgress(job, scaled, `${passLabel}: ${info.percent}%${eta}`).catch(() => {})
       },
     })
 
     if (result.exitCode !== 0) {
       // Best-effort cleanup of partial output
-      try { fs.unlinkSync(outputPath) } catch {}
+      try { fs.unlinkSync(attemptPath) } catch {}
       const tail = result.stderr.split(/\r?\n/).slice(-10).join('\n')
       throw new Error(`FFmpeg exited with code ${result.exitCode}.\nLast lines:\n${tail}`)
     }
 
     // ── QC: ffprobe the output and confirm it matches the spec ──
-    await updateProgress(job.id, 97, 'QC: verifying output against spec...')
+    await updateProgress(job, 97, 'QC: verifying output against spec...')
     let qcStatus = null
     try {
       const report = await runQualityControl({
         ffmpegPath: config.ffmpegPath,
         ffprobePath: config.ffprobePath,
-        outputPath,
+        outputPath: attemptPath,
         profile,
       })
       qcStatus = report.checks.map((c) => ({
@@ -162,27 +164,42 @@ async function processTranscodeJob(job: ClaimedJob): Promise<void> {
     }
 
     // ── Finalize ─────────────────────────────────────────────
+    const stillOwned = await ownedUpdate(job, {
+      progress_percent: 99,
+      progress_message: 'Finalizing output...',
+    })
+    if (!stillOwned) {
+      console.warn(`[processor] Job ${job.id} lost its claim before publish; preserving canonical output`)
+      try { fs.unlinkSync(attemptPath) } catch {}
+      return
+    }
+
+    // Never overwrite or delete an existing canonical deliverable. A naming
+    // collision gets an attempt-specific suffix and remains visible for
+    // operator reconciliation.
+    if (fs.existsSync(outputPath)) {
+      const ext = path.extname(outputPath)
+      outputPath = `${outputPath.slice(0, -ext.length)}__kit-${job.id.slice(0, 8)}${ext}`
+    }
+    fs.renameSync(attemptPath, outputPath)
     const outStat = fs.statSync(outputPath)
     const elapsedSeconds = (Date.now() - startedAt.getTime()) / 1000
-    const finalized = await ownedUpdate(job.id, {
+    const finalized = await ownedUpdate(job, {
       status: 'complete',
       completed_at: new Date().toISOString(),
       progress_percent: 100,
       progress_message: 'Complete',
       output_size_bytes: outStat.size,
+      output_path: outputPath,
+      output_filename: path.basename(outputPath),
       duration_seconds: elapsedSeconds,
       qc_checklist_status: qcStatus,
     })
 
     if (!finalized) {
-      // The stale-worker sweep reassigned this job while we were rendering
-      // (our heartbeats stalled). Another worker owns it now — remove our
-      // output so we don't leave a duplicate/conflicting deliverable in the
-      // Dropbox-synced folder.
       console.warn(
-        `[processor] Job ${job.id} was reassigned while we rendered — discarding our output`,
+        `[processor] Job ${job.id} lost its claim after atomic publish — preserving output for reconciliation`,
       )
-      try { fs.unlinkSync(outputPath) } catch {}
       return
     }
 
@@ -192,7 +209,7 @@ async function processTranscodeJob(job: ClaimedJob): Promise<void> {
     console.error(`[processor] Job ${job.id} failed:`, message)
     // Ownership-guarded: if the job was reassigned, don't stamp 'failed' over
     // another worker's in-progress row.
-    await ownedUpdate(job.id, { status: 'failed', error_message: message })
+    await ownedUpdate(job, { status: 'failed', error_message: message })
   } finally {
     setCurrentJob(null)
   }
@@ -204,20 +221,24 @@ async function processTranscodeJob(job: ClaimedJob): Promise<void> {
  * writes match zero rows instead of clobbering the new owner's state.
  * Returns true if the row was still ours.
  */
-async function ownedUpdate(jobId: string, patch: Record<string, any>): Promise<boolean> {
-  const { data } = await supabase
+async function ownedUpdate(job: ClaimedJob, patch: Record<string, any>): Promise<boolean> {
+  const { data, error } = await supabase
     .from('render_jobs')
     .update({ ...patch, updated_at: new Date().toISOString() })
-    .eq('id', jobId)
+    .eq('id', job.id)
     .eq('claimed_by', config.hostname)
+    .eq('claimed_at', job.claimed_at)
     .select('id')
+  if (error) throw new Error(`render job ownership update failed: ${error.message}`)
   return (data?.length || 0) > 0
 }
 
-async function markStatus(jobId: string, status: string, extras: Record<string, any> = {}): Promise<void> {
-  await ownedUpdate(jobId, { status, ...extras })
+async function markStatus(job: ClaimedJob, status: string, extras: Record<string, any> = {}): Promise<void> {
+  if (!(await ownedUpdate(job, { status, ...extras }))) throw new Error('Render claim was lost before processing started.')
 }
 
-async function updateProgress(jobId: string, percent: number, message: string): Promise<void> {
-  await ownedUpdate(jobId, { progress_percent: percent, progress_message: message })
+async function updateProgress(job: ClaimedJob, percent: number, message: string): Promise<void> {
+  if (!(await ownedUpdate(job, { progress_percent: percent, progress_message: message }))) {
+    throw new Error('Render claim was lost during processing.')
+  }
 }

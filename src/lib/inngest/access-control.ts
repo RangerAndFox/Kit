@@ -17,6 +17,7 @@
 
 import { createAdminClient } from '@/lib/supabase/admin'
 import type { TablesUpdate } from '@/types/supabase'
+import { getAgent } from './agents/registry'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -135,8 +136,8 @@ export async function resolveUserContext(
 }
 
 // ─── Gateway Rules ──────────────────────────────────────────
-// These define which agent:action pairs each tier can access.
-// If an action isn't listed, it's allowed for everyone.
+// These define which agent:action pairs each tier can access. Registered
+// mutations omitted from this list fail closed to producer+ below.
 
 interface GatewayRule {
   /** Minimum tier required (admin > producer > artist) */
@@ -165,6 +166,7 @@ const GATEWAY_RULES: Record<string, GatewayRule> = {
   // to log their own time + pick a project). Field-level filter strips
   // budget / client / dates / brief from project results before they reach
   // an artist's reply (see PRODUCER_FIELDS).
+  'harvest:log_time':           { minTier: 'artist' },
   'harvest:get_budget':         { minTier: 'producer', requiresFinancialAccess: true },
   'harvest:get_time_entries':   { minTier: 'producer' },
   'harvest:get_summary':        { minTier: 'producer' },
@@ -241,8 +243,18 @@ export function checkGateway(
   const key = `${agentId}:${action}`
   const rule = GATEWAY_RULES[key]
 
-  // No rule → open to all
-  if (!rule) return { allowed: true }
+  // Registered mutations must never become artist-accessible merely because a
+  // new capability was added without a matching policy entry.
+  if (!rule) {
+    const capability = getAgent(agentId)?.capabilities.find((candidate) => candidate.action === action)
+    if (capability?.mutates && user.tier === 'artist') {
+      return {
+        allowed: false,
+        reason: `Sorry, that action changes studio or client data. You'd need producer-level access for this.`,
+      }
+    }
+    return { allowed: true }
+  }
 
   // Check tier
   if (TIER_RANK[user.tier] < TIER_RANK[rule.minTier]) {

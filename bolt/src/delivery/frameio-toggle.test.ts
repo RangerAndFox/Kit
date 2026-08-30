@@ -1,9 +1,12 @@
 /**
  * Run: npx tsx --test bolt/src/delivery/frameio-toggle.test.ts
  */
-import { describe, it } from 'node:test'
-import assert from 'node:assert/strict'
+import { describe, expect, it } from 'vitest'
 import { parseFrameioToggleIntent } from './frameio-toggle'
+
+const assert = {
+  equal: (actual: unknown, expected: unknown) => expect(actual).toBe(expected),
+}
 
 describe('parseFrameioToggleIntent', () => {
   it('"turn off Frame.io upload" → disable', () => {
@@ -14,8 +17,8 @@ describe('parseFrameioToggleIntent', () => {
     assert.equal(parseFrameioToggleIntent('disable frame upload')?.action, 'disable')
   })
 
-  it('"no frame for this project" → disable', () => {
-    assert.equal(parseFrameioToggleIntent('no frame for this project')?.action, 'disable')
+  it('ignores ambiguous "no frame for this project" language', () => {
+    assert.equal(parseFrameioToggleIntent('no frame for this project'), null)
   })
 
   it('"skip frame.io" → disable', () => {
@@ -26,8 +29,8 @@ describe('parseFrameioToggleIntent', () => {
     assert.equal(parseFrameioToggleIntent('turn on Frame.io upload')?.action, 'enable')
   })
 
-  it('"re-enable frame for this project" → enable', () => {
-    assert.equal(parseFrameioToggleIntent('re-enable frame for this project')?.action, 'enable')
+  it('ignores ambiguous "re-enable frame for this project" language', () => {
+    assert.equal(parseFrameioToggleIntent('re-enable frame for this project'), null)
   })
 
   it('"is frame upload on?" → status', () => {

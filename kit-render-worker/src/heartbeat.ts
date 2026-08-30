@@ -25,7 +25,7 @@ export async function sendHeartbeat(): Promise<void> {
   const status = _currentJobId ? 'busy' : 'online'
 
   // Use upsert so the first heartbeat registers the worker.
-  await supabase.from('render_workers').upsert(
+  const { error } = await supabase.from('render_workers').upsert(
     {
       hostname: config.hostname,
       display_name: config.displayName || config.hostname,
@@ -48,6 +48,7 @@ export async function sendHeartbeat(): Promise<void> {
     },
     { onConflict: 'hostname' },
   )
+  if (error) throw new Error(`render worker heartbeat failed: ${error.message}`)
 }
 
 export function startHeartbeat(): NodeJS.Timeout {

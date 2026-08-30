@@ -2,6 +2,7 @@
 import { NextResponse } from 'next/server'
 import { getAgentRegistry } from '@/lib/managed-agents/agent-registry'
 import { ALL_AGENTS } from '../../../../../agents'
+import { authorizeAgentRegistration } from './auth'
 
 /**
  * POST /api/agents/register
@@ -9,8 +10,9 @@ import { ALL_AGENTS } from '../../../../../agents'
 export async function POST(request: Request) {
   try {
     const authHeader = request.headers.get('authorization')
-    const expectedKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-    if (authHeader !== `Bearer ${expectedKey}`) {
+    const expectedKey = process.env.KIT_AGENT_REGISTRATION_SECRET?.trim()
+    const suppliedKey = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : ''
+    if (!authorizeAgentRegistration(suppliedKey, expectedKey)) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
@@ -49,7 +51,7 @@ export async function POST(request: Request) {
   } catch (error: any) {
     console.error('[Agent Registration] Error:', error)
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Registration failed' },
+      { error: 'Registration failed' },
       { status: 500 }
     )
   }

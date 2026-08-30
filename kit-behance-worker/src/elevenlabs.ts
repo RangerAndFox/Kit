@@ -82,11 +82,15 @@ async function findExisting(page: Page, name: string): Promise<string | null> {
 export async function buildElevenLabsDraft(
   context: BrowserContext,
   job: ElevenLabsStudioJob,
+  signal?: AbortSignal,
 ): Promise<{ projectId: string; url: string }> {
   const page = await context.newPage()
+  const abort = () => { void page.close().catch(() => {}) }
+  signal?.addEventListener('abort', abort, { once: true })
+  if (signal?.aborted) abort()
   try {
     await installDraftLockout(page)
-    await updateElevenLabsJob(job.id, 'opening_studio')
+    await updateElevenLabsJob(job, 'opening_studio')
     const resumableUrl = job.studio_url && /^https:\/\/elevenlabs\.io\/app\/studio\//i.test(job.studio_url)
       ? job.studio_url
       : null
@@ -117,16 +121,16 @@ export async function buildElevenLabsDraft(
       await audioProject.click()
       await page.waitForURL(/\/app\/studio\/[^/?#]+/i, { timeout: 60_000 })
       const checkpoint = parseStudioProject(page.url())
-      await updateElevenLabsJob(job.id, 'opening_studio', {
+      await updateElevenLabsJob(job, 'opening_studio', {
         studio_project_id: checkpoint.projectId,
         studio_url: checkpoint.url,
       })
     } else {
       await page.waitForURL(/\/app\/studio\/[^/?#]+/i, { timeout: 60_000 })
     }
-    await pulseElevenLabsJob(job.id)
+    await pulseElevenLabsJob(job)
 
-    await updateElevenLabsJob(job.id, 'filling_project')
+    await updateElevenLabsJob(job, 'filling_project')
     const editName = await waitVisible([
       page.getByRole('button', { name: /edit field/i }),
       page.locator('[aria-label*="edit field" i]'),
@@ -165,11 +169,12 @@ export async function buildElevenLabsDraft(
       if (!rendered) throw new Error('ElevenLabs Studio did not retain every voiceover paragraph.')
     }
 
-    await updateElevenLabsJob(job.id, 'saving_draft')
+    await updateElevenLabsJob(job, 'saving_draft')
     await page.waitForTimeout(2_500)
-    await pulseElevenLabsJob(job.id)
+    await pulseElevenLabsJob(job)
     return parseStudioProject(page.url())
   } finally {
+    signal?.removeEventListener('abort', abort)
     await page.close().catch(() => {})
   }
 }

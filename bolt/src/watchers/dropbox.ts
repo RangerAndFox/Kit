@@ -138,11 +138,12 @@ async function dbxPost(endpoint: string, body: any): Promise<any> {
 
 async function loadCursor(): Promise<string | null> {
   const sb = createAdminClient()
-  const { data } = await sb
+  const { data, error } = await sb
     .from('dropbox_state')
     .select('cursor')
     .eq('id', 'singleton')
-    .single()
+    .maybeSingle()
+  if (error) throw new Error(`loadCursor failed: ${error.message}`)
   return data?.cursor || null
 }
 
@@ -215,9 +216,13 @@ async function fetchDeltas(initial: string): Promise<{ entries: DropEntry[]; new
 // just flags a re-run so its deltas are picked up when the current pass ends.
 let _running = false
 let _rerunRequested = false
-// One-retry memory for a failing batch: if the same cursor fails twice we
-// advance anyway so a poison entry can't wedge the watcher forever.
-let _lastFailedCursor: string | null = null
+
+/** A Dropbox revision is acknowledged only after every matched side effect
+ * succeeds. Poison entries must be dead-lettered durably before any future
+ * implementation advances past them; process memory is not a safe ledger. */
+export function shouldAdvanceDeliveryCursor(failedEntries: number): boolean {
+  return failedEntries === 0
+}
 
 export async function processDropboxNotification(app: App): Promise<void> {
   if (_running) {
@@ -324,19 +329,12 @@ async function processDeltasOnce(app: App): Promise<void> {
   }
 
   // Advance the cursor only after processing, and only if the batch didn't
-  // fail — saving it up front permanently consumed the delta, so a Frame.io
-  // outage during processing silently lost client deliveries. A batch that
-  // fails twice in a row (same cursor) advances anyway per the poison guard.
-  if (failed === 0 || _lastFailedCursor === cursor) {
-    if (failed > 0) {
-      console.error(
-        `[dropbox-watcher] batch failed twice for the same cursor — advancing past ${failed} failed entr(ies) to avoid wedging`,
-      )
-    }
+  // fail — saving it up front permanently consumes the delta. Never advance
+  // merely because the same cursor failed twice; that permanently loses the
+  // client delivery after a provider outage or process restart.
+  if (shouldAdvanceDeliveryCursor(failed)) {
     await saveCursor(newCursor)
-    _lastFailedCursor = null
   } else {
-    _lastFailedCursor = cursor
     console.error(
       `[dropbox-watcher] ${failed}/${matched} deliveries failed — cursor NOT advanced; batch retries on the next notification`,
     )

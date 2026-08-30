@@ -1,4 +1,4 @@
-import { FarmDashboard } from './farm-dashboard'
+import { UnavailableSurface } from '@/components/unavailable-surface'
 
 export const metadata = {
   title: 'Render Farm — Kit',
@@ -6,18 +6,5 @@ export const metadata = {
 }
 
 export default function RenderFarmPage() {
-  return (
-    <div className="flex-1 overflow-auto">
-      <div className="px-8 py-8">
-        <div className="max-w-7xl">
-          <div className="mb-8">
-            <h1 className="text-3xl font-bold text-white mb-2">Render Farm</h1>
-            <p className="text-[#9ca3af]">Monitor your render farm health</p>
-          </div>
-
-          <FarmDashboard />
-        </div>
-      </div>
-    </div>
-  )
+  return <UnavailableSurface title="Render Farm dashboard is not connected" detail="This page previously showed demonstration nodes. Use the authenticated Control Center worker status until the live farm telemetry source is connected here." />
 }

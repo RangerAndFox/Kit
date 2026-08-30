@@ -349,7 +349,7 @@ export function registerInteractionHandlers(app: App) {
     await ack()
     const checkinId = (body as any).actions?.[0]?.value || ''
     if (!checkinId) return
-    handleCheckinConfirm({ app, client, body, checkinId }).catch((err) =>
+    handleCheckinConfirm({ app, client, body, checkinId, actorSlackUserId: (body as any).user?.id || '' }).catch((err) =>
       console.error('[checkin] confirm failed:', err),
     )
   })
@@ -358,7 +358,7 @@ export function registerInteractionHandlers(app: App) {
     await ack()
     const checkinId = (body as any).actions?.[0]?.value || ''
     if (!checkinId) return
-    handleCheckinRedo({ app, client, body, checkinId }).catch((err) =>
+    handleCheckinRedo({ app, client, body, checkinId, actorSlackUserId: (body as any).user?.id || '' }).catch((err) =>
       console.error('[checkin] redo failed:', err),
     )
   })
@@ -367,7 +367,7 @@ export function registerInteractionHandlers(app: App) {
     await ack()
     const checkinId = (body as any).actions?.[0]?.value || ''
     if (!checkinId) return
-    handleCheckinRetryFailed({ app, checkinId }).catch((err) =>
+    handleCheckinRetryFailed({ app, checkinId, actorSlackUserId: (body as any).user?.id || '' }).catch((err) =>
       console.error('[checkin] partial retry failed:', err),
     )
   })

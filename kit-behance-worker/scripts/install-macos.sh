@@ -10,7 +10,13 @@ plist="$agent_dir/$label.plist"
 env_file="${KIT_ENV_FILE:-$HOME/atlas-setup/Kit/bolt/.env}"
 dropbox_path="${DROPBOX_SYNC_PATH:-$HOME/Library/CloudStorage/Dropbox-Ranger&Fox/Ranger & Fox}"
 profile_dir="${BEHANCE_PROFILE_DIR:-$HOME/Library/Application Support/Kit/BehanceProfile}"
-node_path="$(command -v node)"
+node_path="${KIT_WORKER_NODE:-$(command -v node)}"
+node_major="$($node_path -p 'Number(process.versions.node.split(".")[0])')"
+if (( node_major < 22 )); then
+  echo "Kit's browser worker requires Node.js 22 or newer; found $($node_path --version) at $node_path." >&2
+  echo "Set KIT_WORKER_NODE to a supported Node.js binary and run the installer again." >&2
+  exit 1
+fi
 
 plist_value() {
   print -r -- "$1" | sed -e 's/&/\\\&amp;/g' -e 's/|/\\|/g'

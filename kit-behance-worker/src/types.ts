@@ -34,6 +34,7 @@ export interface BehanceDraftJob {
   proof_dropbox_path: string | null
   proof_url: string | null
   claimed_by: string | null
+  claimed_at: string | null
   heartbeat_at: string | null
   attempt: number
   error: string | null
@@ -56,6 +57,7 @@ export interface ElevenLabsStudioJob {
   studio_project_id: string | null
   studio_url: string | null
   claimed_by: string | null
+  claimed_at: string | null
   heartbeat_at: string | null
   attempt: number
   error: string | null

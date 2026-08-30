@@ -118,6 +118,14 @@ describe('checkGateway — harvest', () => {
   })
 })
 
+describe('checkGateway — default policy for newly registered capabilities', () => {
+  it('fails closed for an unlisted mutation while preserving unlisted reads', () => {
+    assert.equal(checkGateway(artist(), 'delivery', 'render_project').allowed, false)
+    assert.equal(checkGateway(producer(), 'delivery', 'render_project').allowed, true)
+    assert.equal(checkGateway(artist(), 'delivery', 'list_profiles').allowed, true)
+  })
+})
+
 describe('filterResultData — artist receives a name-only project record', () => {
   const fullProject = {
     id: 'p-1',

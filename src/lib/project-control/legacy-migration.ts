@@ -309,6 +309,13 @@ async function removeMigrationDuplicates(
   for (const duplicates of groups.values()) {
     if (duplicates.length < 2) continue
     duplicates.sort((a, b) => clean(a.created_at).localeCompare(clean(b.created_at)))
+    if (!legacyDuplicateDeletionAuthorized()) {
+      console.error(
+        `[project-control migration] duplicate cleanup blocked: ${duplicates.length} rows for ` +
+        `${duplicates[0]?.project_code || '(unknown)'} require PITR confirmation and the explicit destructive token`,
+      )
+      continue
+    }
     for (const duplicate of duplicates.slice(1)) {
       const canvases = await listProjectCanvases(duplicate.id)
       for (const canvas of canvases) {
@@ -322,6 +329,14 @@ async function removeMigrationDuplicates(
       console.log(`[project-control migration] removed duplicate ${duplicate.project_code} (${duplicate.id})`)
     }
   }
+}
+
+/** A single feature flag must never authorize cascading project deletion. */
+export function legacyDuplicateDeletionAuthorized(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return env.PROJECT_CONTROL_LEGACY_PITR_CONFIRMED === 'true'
+    && env.PROJECT_CONTROL_LEGACY_DESTRUCTIVE_CONFIRMATION === 'DELETE_CONFIRMED_LEGACY_DUPLICATES'
 }
 
 export async function runLegacyProjectControlMigration(): Promise<LegacyMigrationResult> {

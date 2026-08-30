@@ -35,6 +35,16 @@ interface StaffRow {
   full_name: string | null
 }
 
+/** Slack action values are row ids, never authorization. Only the owner of a
+ * check-in may operate its card. Administrative repair uses the separate,
+ * audited recovery tooling instead of impersonating a person's DM action. */
+export function isCheckinActorAuthorized(
+  checkinSlackUserId: string | null | undefined,
+  actorSlackUserId: string | null | undefined,
+): boolean {
+  return Boolean(checkinSlackUserId && actorSlackUserId && checkinSlackUserId === actorSlackUserId)
+}
+
 async function loadCheckin(checkinId: string): Promise<CheckinRow | null> {
   const sb = createAdminClient()
   const { data, error } = await sb
@@ -90,11 +100,16 @@ export async function handleCheckinConfirm(opts: {
   client: any
   body: any
   checkinId: string
+  actorSlackUserId: string
 }): Promise<void> {
   const { app, checkinId } = opts
   const checkin = await loadCheckin(checkinId)
   if (!checkin) {
     console.warn(`[checkin-confirm] checkin ${checkinId} not found`)
+    return
+  }
+  if (!isCheckinActorAuthorized(checkin.slack_user_id, opts.actorSlackUserId)) {
+    console.warn(`[checkin-confirm] denied actor ${opts.actorSlackUserId || '(missing)'} for ${checkinId}`)
     return
   }
   console.log(`[checkin-confirm] confirming ${checkinId} (status=${checkin.status})`)
@@ -264,14 +279,22 @@ export async function handleCheckinConfirm(opts: {
  * Harvest ids stay attached to the row; the next reply replaces only the
  * failed parsed_entries and confirmation appends new ids without duplication.
  */
-export async function handleCheckinRetryFailed(opts: { app: App; checkinId: string }): Promise<void> {
+export async function handleCheckinRetryFailed(opts: {
+  app: App
+  checkinId: string
+  actorSlackUserId: string
+}): Promise<void> {
   const sb = createAdminClient()
   const { data: row, error } = await sb
     .from('daily_hours_checkins')
-    .select('id, dm_channel_id, check_in_date, status, harvest_entry_ids')
+    .select('id, slack_user_id, dm_channel_id, check_in_date, status, harvest_entry_ids')
     .eq('id', opts.checkinId)
     .maybeSingle()
   if (error || !row || row.status !== 'failed' || !Array.isArray(row.harvest_entry_ids) || !row.harvest_entry_ids.length) {
+    return
+  }
+  if (!isCheckinActorAuthorized(row.slack_user_id, opts.actorSlackUserId)) {
+    console.warn(`[checkin-confirm] denied partial retry actor ${opts.actorSlackUserId || '(missing)'} for ${opts.checkinId}`)
     return
   }
   const { data: changed } = await sb
@@ -301,13 +324,18 @@ export async function handleCheckinRedo(opts: {
   client: any
   body: any
   checkinId: string
+  actorSlackUserId: string
 }): Promise<void> {
   const { app, checkinId } = opts
   const checkin = await loadCheckin(checkinId)
   if (!checkin) return
+  if (!isCheckinActorAuthorized(checkin.slack_user_id, opts.actorSlackUserId)) {
+    console.warn(`[checkin-confirm] denied redo actor ${opts.actorSlackUserId || '(missing)'} for ${checkinId}`)
+    return
+  }
 
   const sb = createAdminClient()
-  await sb
+  const { data: changed, error } = await sb
     .from('daily_hours_checkins')
     .update({
       status: 'sent',
@@ -316,6 +344,11 @@ export async function handleCheckinRedo(opts: {
       updated_at: new Date().toISOString(),
     })
     .eq('id', checkin.id)
+    .eq('status', 'parsed')
+    .select('id')
+
+  if (error) throw new Error(`check-in redo failed: ${error.message}`)
+  if (!changed?.length) return
 
   await postResult({
     app,

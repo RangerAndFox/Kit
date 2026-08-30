@@ -24,6 +24,7 @@ import { readSystemSnapshot } from './system/cpu-monitor'
 
 export interface ClaimedJob {
   id: string
+  claimed_at: string
   job_type: 'transcode' | 'ae_inspect' | 'ae_chunk' | 'ae_stitch'
   source_files: any[]
   profile_snapshot: any
@@ -53,7 +54,7 @@ export interface ClaimedJob {
 }
 
 const CLAIM_FIELDS =
-  'id, job_type, source_files, profile_snapshot, naming_fields, requested_by, slack_channel, slack_thread_ts, ' +
+  'id, claimed_at, job_type, source_files, profile_snapshot, naming_fields, requested_by, slack_channel, slack_thread_ts, ' +
   'parent_job_id, chunk_index, chunk_count, frame_start, frame_end, total_frames, frame_rate, ' +
   'ae_project_path, ae_comp, ae_render_settings_template, ae_output_module_template, ' +
   'ae_output_pattern, ae_output_dir, ae_rqindex, ae_is_movie, delivery_profile_id, output_filename'
@@ -99,12 +100,13 @@ export async function tryClaimJob(): Promise<ClaimedJob | null> {
 
   // Attempt to claim. The .eq('status','pending') in the update ensures we
   // only succeed if no other worker beat us to it.
+  const claimedAt = new Date().toISOString()
   const { data: claimed, error: claimErr } = await supabase
     .from('render_jobs')
     .update({
       status: 'claimed',
       claimed_by: config.hostname,
-      claimed_at: new Date().toISOString(),
+      claimed_at: claimedAt,
       updated_at: new Date().toISOString(),
     })
     .eq('id', candidateId)
