@@ -794,7 +794,7 @@ export function registerInteractionHandlers(app: App) {
       await client.chat.postMessage(postOpts({
         text:
           `⚙️ Parsing script (${scriptSource}, mode: ${form.mode}) and creating ` +
-          `*${form.projectName}* in Boords…`,
+          `*${form.projectName}* in Boords and ElevenLabs Studio…`,
       }))
     }
 
@@ -830,6 +830,7 @@ export function registerInteractionHandlers(app: App) {
       const secs = runtimeSec % 60
       const runtime = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
       const url = result.url || data.url
+      const elevenLabsUrl = data.elevenLabsUrl
       const preview = Array.isArray(data.preview) ? data.preview : []
 
       const blocks: any[] = [
@@ -838,7 +839,8 @@ export function registerInteractionHandlers(app: App) {
           text: {
             type: 'mrkdwn',
             text:
-              `:clapper: *${data.storyboardName || form.projectName}* is ready in Boords.\n` +
+              `:clapper: *${data.storyboardName || form.projectName}* is ready in Boords` +
+              `${elevenLabsUrl ? ' and ElevenLabs Studio' : ''}.\n` +
               `${frames} frame${frames === 1 ? '' : 's'} · ${runtime} · ` +
               `${form.aspectRatio}${data.detectedTable ? ' · A/V table detected' : ''}`,
           },
@@ -861,18 +863,28 @@ export function registerInteractionHandlers(app: App) {
           },
         })
       }
-      if (url) {
+      if (url || elevenLabsUrl) {
+        const elements: any[] = []
+        if (url) {
+          elements.push({
+            type: 'button',
+            style: 'primary',
+            text: { type: 'plain_text', text: 'Open in Boords' },
+            url,
+            action_id: 'kit_open_storyboard_url',
+          })
+        }
+        if (elevenLabsUrl) {
+          elements.push({
+            type: 'button',
+            text: { type: 'plain_text', text: 'Open VO in ElevenLabs' },
+            url: elevenLabsUrl,
+            action_id: 'kit_open_elevenlabs_studio_url',
+          })
+        }
         blocks.push({
           type: 'actions',
-          elements: [
-            {
-              type: 'button',
-              style: 'primary',
-              text: { type: 'plain_text', text: 'Open in Boords' },
-              url,
-              action_id: 'kit_open_storyboard_url',
-            },
-          ],
+          elements,
         })
       }
 
@@ -891,6 +903,9 @@ export function registerInteractionHandlers(app: App) {
   // The "Open in Boords" link button is link-only; ack so Slack doesn't
   // warn about an unhandled action.
   app.action('kit_open_storyboard_url', async ({ ack }) => {
+    await ack()
+  })
+  app.action('kit_open_elevenlabs_studio_url', async ({ ack }) => {
     await ack()
   })
 

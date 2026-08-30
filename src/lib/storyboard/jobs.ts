@@ -30,6 +30,10 @@ export interface StoryboardJob {
   modeUsed: string | null
   boordsStoryboardId: string | null
   boordsUrl: string | null
+  elevenLabsProjectId: string | null
+  elevenLabsUrl: string | null
+  elevenLabsStatus: 'pending' | 'complete' | 'skipped' | 'failed' | null
+  elevenLabsError: string | null
   lastError: string | null
 }
 
@@ -69,6 +73,10 @@ function fromRow(row: any): StoryboardJob {
     modeUsed: row.mode_used,
     boordsStoryboardId: row.boords_storyboard_id,
     boordsUrl: row.boords_url,
+    elevenLabsProjectId: row.elevenlabs_project_id,
+    elevenLabsUrl: row.elevenlabs_url,
+    elevenLabsStatus: row.elevenlabs_status,
+    elevenLabsError: row.elevenlabs_error,
     lastError: row.last_error,
   }
 }
@@ -137,6 +145,34 @@ export async function setJobBoordsId(
   url?: string,
 ): Promise<void> {
   await update(jobId, { boords_storyboard_id: boordsId, boords_url: url || null })
+}
+
+export async function setJobElevenLabsPending(jobId: string): Promise<void> {
+  await update(jobId, { elevenlabs_status: 'pending', elevenlabs_error: null })
+}
+
+export async function setJobElevenLabsProject(
+  jobId: string,
+  projectId: string,
+  url: string,
+): Promise<void> {
+  await update(jobId, {
+    elevenlabs_project_id: projectId,
+    elevenlabs_url: url,
+    elevenlabs_status: 'complete',
+    elevenlabs_error: null,
+  })
+}
+
+export async function skipJobElevenLabs(jobId: string): Promise<void> {
+  await update(jobId, { elevenlabs_status: 'skipped', elevenlabs_error: null })
+}
+
+export async function failJobElevenLabs(jobId: string, error: string): Promise<void> {
+  await update(jobId, {
+    elevenlabs_status: 'failed',
+    elevenlabs_error: error.slice(0, 1000),
+  })
 }
 
 export async function advanceJobIndex(jobId: string, index: number): Promise<void> {

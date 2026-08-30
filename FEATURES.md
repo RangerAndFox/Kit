@@ -214,7 +214,7 @@ Harvest's API requires `budget` to be set at project-creation time. It cannot be
 ## 6. Storyboard Auto-Creation
 
 ### Summary
-A producer drops a script file (or types `storyboard`) in their Slack DM with Kit. Kit opens a small modal to confirm the project name + AR, then creates a Boords storyboard with each scene auto-split, posts the share link back into the thread.
+A producer drops a script file (or types `storyboard`) in their Slack DM with Kit. Kit opens a small modal to confirm the project name + AR, creates a Boords storyboard with each scene auto-split, and creates an ElevenLabs Studio project containing only the extracted VO. Kit posts links to both projects back into the thread.
 
 ### Trigger
 - File drop in a Slack Assistant thread (script file types: `.txt, .md, .docx`, etc.)

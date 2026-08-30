@@ -147,7 +147,8 @@ export function buildStoryboardModal(args: BuildStoryboardModalArgs) {
           type: 'mrkdwn',
           text:
             ':sparkles: Kit will parse the script, create the storyboard in Boords, ' +
-            'and post the link back here.',
+            'and create an ElevenLabs Studio project populated with the VO. ' +
+            'Kit will post both links back here.',
         },
       ],
     },

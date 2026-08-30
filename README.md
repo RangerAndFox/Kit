@@ -10,7 +10,7 @@ Production repository: https://github.com/RangerAndFox/Kit
 - Updates an existing project's details and ripples approved changes across connected systems.
 - Reconciles the update picker against live Slack project channels, adopting channels that exist in Slack but are missing from Kit and excluding deleted test channels.
 - Mirrors files from a project's Dropbox `09_Outgoing/01_Client Progress` and `09_Outgoing/02_Delivery` folders into the corresponding Frame.io project and creates a public review share.
-- Creates Boords storyboards from `.docx` or text scripts.
+- Creates Boords storyboards from `.docx` or text scripts and matching ElevenLabs Studio projects populated with VO.
 - Sends durable, timezone-aware daily hours prompts and writes confirmed entries to Harvest.
 - Prepares concise meeting briefings with meeting information, external-attendee background, and Ranger & Fox positioning.
 - Ingests meeting transcripts and studio knowledge for conversational project/client Q&A.

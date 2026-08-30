@@ -3403,6 +3403,10 @@ export type Database = {
           aspect_ratio: string | null
           boords_storyboard_id: string | null
           boords_url: string | null
+          elevenlabs_error: string | null
+          elevenlabs_project_id: string | null
+          elevenlabs_status: string | null
+          elevenlabs_url: string | null
           channel_id: string | null
           created_at: string
           frames: Json
@@ -3422,6 +3426,10 @@ export type Database = {
           aspect_ratio?: string | null
           boords_storyboard_id?: string | null
           boords_url?: string | null
+          elevenlabs_error?: string | null
+          elevenlabs_project_id?: string | null
+          elevenlabs_status?: string | null
+          elevenlabs_url?: string | null
           channel_id?: string | null
           created_at?: string
           frames: Json
@@ -3441,6 +3449,10 @@ export type Database = {
           aspect_ratio?: string | null
           boords_storyboard_id?: string | null
           boords_url?: string | null
+          elevenlabs_error?: string | null
+          elevenlabs_project_id?: string | null
+          elevenlabs_status?: string | null
+          elevenlabs_url?: string | null
           channel_id?: string | null
           created_at?: string
           frames?: Json

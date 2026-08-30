@@ -12,6 +12,7 @@
  */
 
 import { createStoryboard, appendFrames, listProjects, listStoryboards } from '@/lib/boords/client'
+import { createStudioProject, voiceoverParagraphs } from '@/lib/elevenlabs/studio'
 import { parseScript } from '@/lib/storyboard/parser'
 import type { ExtractionMode } from '@/lib/storyboard/parser'
 import {
@@ -21,6 +22,10 @@ import {
   markJobFailed,
   markJobInProgress,
   setJobBoordsId,
+  setJobElevenLabsPending,
+  setJobElevenLabsProject,
+  skipJobElevenLabs,
+  failJobElevenLabs,
   advanceJobIndex,
 } from '@/lib/storyboard/jobs'
 import type { AgentDefinition, AgentResult } from './types'
@@ -99,6 +104,7 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
     ? `Style: ${videoStyle} • ${aspectRatio} • ${secondsPerFrame}s per frame`
     : `${aspectRatio} • ${secondsPerFrame}s per frame`
 
+  let stage: 'boords' | 'elevenlabs' = 'boords'
   try {
     const { storyboard } = await createStoryboard({
       name: projectName,
@@ -110,8 +116,30 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
 
     if (jobId) {
       await setJobBoordsId(jobId, storyboard.id, storyboard.url)
-      await markJobComplete(jobId, frames.length)
+      // createStoryboard sends every frame inline, so checkpoint that fact
+      // before the independent ElevenLabs call. A Studio retry must never
+      // append the same Boords frames a second time.
+      await advanceJobIndex(jobId, frames.length)
     }
+
+    let elevenLabsProject: Awaited<ReturnType<typeof createStudioProject>> | null = null
+    const hasVoiceover = !blank && voiceoverParagraphs(frames).length > 0
+    if (hasVoiceover) {
+      stage = 'elevenlabs'
+      if (jobId) await setJobElevenLabsPending(jobId)
+      elevenLabsProject = await createStudioProject({
+        name: projectName,
+        frames,
+        reconcileExisting: true,
+      })
+      if (jobId) {
+        await setJobElevenLabsProject(jobId, elevenLabsProject.id, elevenLabsProject.url)
+      }
+    } else if (jobId) {
+      await skipJobElevenLabs(jobId)
+    }
+
+    if (jobId) await markJobComplete(jobId, frames.length)
 
     const totalSeconds = frames.length * secondsPerFrame
     const mins = Math.floor(totalSeconds / 60)
@@ -127,7 +155,7 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       message:
         blank
           ? `Created blank storyboard "${storyboard.name}" (1 placeholder frame)`
-          : `Created "${storyboard.name}" with ${frames.length} frame${frames.length === 1 ? '' : 's'} (${runtime}, via ${modeUsed}${detectedTable ? ' — A/V table detected' : ''})`,
+          : `Created "${storyboard.name}" in Boords and ElevenLabs Studio with ${frames.length} frame${frames.length === 1 ? '' : 's'} (${runtime}, via ${modeUsed}${detectedTable ? ' — A/V table detected' : ''})`,
       data: {
         jobId,
         storyboardId: storyboard.id,
@@ -136,6 +164,8 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
         runtimeSeconds: totalSeconds,
         modeUsed,
         detectedTable,
+        elevenLabsProjectId: elevenLabsProject?.id || null,
+        elevenLabsUrl: elevenLabsProject?.url || null,
         // Surface a small preview for the summary card to render.
         preview: frames.slice(0, 3).map((f) => ({
           label: f.label,
@@ -145,12 +175,18 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       },
     }
   } catch (err: any) {
+    if (jobId && stage === 'elevenlabs') {
+      await failJobElevenLabs(jobId, err.message || String(err))
+    }
     if (jobId) await markJobFailed(jobId, err.message || String(err))
     return {
       agent: 'boords',
       action: 'provision',
       success: false,
-      error: err.message || String(err),
+      error:
+        stage === 'elevenlabs'
+          ? `Boords was created, but ElevenLabs Studio failed: ${err.message || String(err)}`
+          : err.message || String(err),
       data: jobId
         ? { jobId, hint: `Retry with: /storyboard resume ${jobId}` }
         : undefined,
@@ -206,9 +242,13 @@ async function resume(payload: Record<string, unknown>): Promise<AgentResult> {
     ? `Style: ${job.videoStyle} • ${aspectRatio} • ${secondsPerFrame}s per frame`
     : `${aspectRatio} • ${secondsPerFrame}s per frame`
 
+  let stage: 'boords' | 'elevenlabs' = 'boords'
   try {
+    let boordsStoryboardId = job.boordsStoryboardId
+    let boordsUrl: string | null | undefined = job.boordsUrl
+
     // No Boords storyboard yet → retry the whole create.
-    if (!job.boordsStoryboardId) {
+    if (!boordsStoryboardId) {
       const { storyboard } = await createStoryboard({
         name: job.projectName,
         description,
@@ -217,58 +257,63 @@ async function resume(payload: Record<string, unknown>): Promise<AgentResult> {
         reconcileExisting: true,
       })
       await setJobBoordsId(jobId, storyboard.id, storyboard.url)
-      await markJobComplete(jobId, job.frames.length)
-      return {
-        agent: 'boords',
-        action: 'resume',
-        success: true,
-        url: storyboard.url,
-        id: storyboard.id,
-        message: `Resumed: created "${storyboard.name}" with ${job.frames.length} frame${
-          job.frames.length === 1 ? '' : 's'
-        }.`,
-        data: {
-          jobId,
-          storyboardId: storyboard.id,
-          storyboardName: storyboard.name,
-          frameCount: job.frames.length,
-        },
+      await advanceJobIndex(jobId, job.frames.length)
+      boordsStoryboardId = storyboard.id
+      boordsUrl = storyboard.url
+    } else {
+      // Storyboard exists but some frames are missing → append only the rest.
+      const remaining = job.frames.slice(job.lastFrameIndex)
+      if (remaining.length > 0) {
+        await appendFrames(boordsStoryboardId, remaining, job.lastFrameIndex)
+        await advanceJobIndex(jobId, job.frames.length)
       }
     }
 
-    // Storyboard exists but some frames are missing → append the rest.
-    const remaining = job.frames.slice(job.lastFrameIndex)
-    if (remaining.length === 0) {
-      await markJobComplete(jobId, job.frames.length)
-      return {
-        agent: 'boords',
-        action: 'resume',
-        success: true,
-        url: job.boordsUrl || undefined,
-        id: job.boordsStoryboardId,
-        message: 'Nothing left to resume — all frames are already in Boords.',
-        data: { jobId, frameCount: job.frames.length },
-      }
+    stage = 'elevenlabs'
+    let elevenLabsProjectId = job.elevenLabsProjectId
+    let elevenLabsUrl = job.elevenLabsUrl
+    if (!elevenLabsProjectId && voiceoverParagraphs(job.frames).length > 0) {
+      await setJobElevenLabsPending(jobId)
+      const studio = await createStudioProject({
+        name: job.projectName,
+        frames: job.frames,
+        reconcileExisting: true,
+      })
+      await setJobElevenLabsProject(jobId, studio.id, studio.url)
+      elevenLabsProjectId = studio.id
+      elevenLabsUrl = studio.url
+    } else if (!elevenLabsProjectId) {
+      await skipJobElevenLabs(jobId)
     }
-    await appendFrames(job.boordsStoryboardId, remaining, job.lastFrameIndex)
-    await advanceJobIndex(jobId, job.frames.length)
+
     await markJobComplete(jobId, job.frames.length)
     return {
       agent: 'boords',
       action: 'resume',
       success: true,
-      url: job.boordsUrl || undefined,
-      id: job.boordsStoryboardId,
-      message: `Resumed: appended ${remaining.length} frame${remaining.length === 1 ? '' : 's'}.`,
-      data: { jobId, frameCount: job.frames.length },
+      url: boordsUrl || undefined,
+      id: boordsStoryboardId || undefined,
+      message: `Resumed: completed Boords and ElevenLabs Studio for "${job.projectName}".`,
+      data: {
+        jobId,
+        storyboardId: boordsStoryboardId,
+        storyboardName: job.projectName,
+        frameCount: job.frames.length,
+        elevenLabsProjectId,
+        elevenLabsUrl,
+      },
     }
   } catch (err: any) {
+    if (stage === 'elevenlabs') await failJobElevenLabs(jobId, err.message || String(err))
     await markJobFailed(jobId, err.message || String(err))
     return {
       agent: 'boords',
       action: 'resume',
       success: false,
-      error: err.message || String(err),
+      error:
+        stage === 'elevenlabs'
+          ? `Boords is complete, but ElevenLabs Studio failed: ${err.message || String(err)}`
+          : err.message || String(err),
       data: { jobId, hint: `Retry with: /storyboard resume ${jobId}` },
     }
   }
@@ -321,12 +366,12 @@ export const boordsAgent: AgentDefinition = {
   domain: 'Boords (storyboards)',
   expertise:
     'Storyboards and visual scripts. Turn a script (pasted text, .docx, or .txt) into a Boords storyboard with one frame per beat — voiceover in the sound field, visuals in the action field. Auto-detects Audio/Visual tables; falls back to sentence split or AI scene extraction.',
-  requiredEnvVars: ['BOORDS_API_KEY'],
+  requiredEnvVars: ['BOORDS_API_KEY', 'ELEVENLABS_API_KEY'],
   capabilities: [
     {
       action: 'provision',
       description:
-        'Create a Boords storyboard from a script. Each line/sentence/scene becomes a frame with voiceover in the sound field and visuals in the action field. Supports blank mode for an empty placeholder storyboard.',
+        'Create a Boords storyboard from a script and a matching ElevenLabs Studio project populated only with the extracted voiceover. Each line/sentence/scene becomes a Boords frame with voiceover in the sound field and visuals in the action field. Supports blank mode for an empty Boords placeholder; ElevenLabs is skipped when there is no VO.',
       inputDescription:
         'projectName (required, the storyboard title — also used as the Boords project name), script (the script text — required unless blank=true), blank (true for a placeholder storyboard with one empty frame), mode ("auto" | "sentence" | "table" | "ai"; defaults to auto which tries A/V table first then falls back to sentence split), aspectRatio ("16:9" | "9:16" | "1:1" | "4:5" | "21:9"; default 16:9), secondsPerFrame (number; default 5), videoStyle (free text e.g. "Realistic" / "Animated"), boordsProjectId (optional — drop this storyboard into an existing Boords project; omit to auto-create a fresh project)',
       mutates: true,
