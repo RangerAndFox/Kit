@@ -16,8 +16,8 @@ jobs:
   web:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -29,19 +29,22 @@ jobs:
 
   slack:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: bolt
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: bolt/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            bolt/package-lock.json
       - run: npm ci
+      - run: npm ci
+        working-directory: bolt
       - run: npm test
+        working-directory: bolt
       - run: npx tsc --noEmit
+        working-directory: bolt
 
   render-worker:
     runs-on: ubuntu-latest
@@ -49,8 +52,8 @@ jobs:
       run:
         working-directory: kit-render-worker
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -65,8 +68,8 @@ jobs:
       run:
         working-directory: kit-behance-worker
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
