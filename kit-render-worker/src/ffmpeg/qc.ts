@@ -91,10 +91,11 @@ export function compareToProfile(probe: ProbeResult, profile: DeliveryProfile): 
 /** ffprobe the output file and compare it to the profile. */
 export async function runQualityControl(opts: {
   ffmpegPath: string
+  ffprobePath?: string | null
   outputPath: string
   profile: DeliveryProfile
 }): Promise<QCReport> {
-  const ffprobePath = opts.ffmpegPath.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1')
+  const ffprobePath = opts.ffprobePath || opts.ffmpegPath.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1')
   const json = await new Promise<any>((resolve, reject) => {
     const proc = spawn(
       ffprobePath,

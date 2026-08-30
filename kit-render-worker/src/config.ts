@@ -3,7 +3,9 @@ import * as os from 'os'
 import * as fs from 'fs'
 import * as dotenv from 'dotenv'
 
-dotenv.config()
+// Production workers can reuse Kit's existing protected environment file
+// without copying service-role credentials into this standalone package.
+dotenv.config(process.env.KIT_ENV_FILE ? { path: process.env.KIT_ENV_FILE } : undefined)
 
 function need(key: string): string {
   const v = process.env[key]
@@ -24,7 +26,7 @@ function num(key: string, def: number): number {
 }
 
 export const config = {
-  supabaseUrl: need('SUPABASE_URL'),
+  supabaseUrl: process.env.SUPABASE_URL || need('NEXT_PUBLIC_SUPABASE_URL'),
   supabaseServiceRoleKey: need('SUPABASE_SERVICE_ROLE_KEY'),
   hostname: optional('WORKER_HOSTNAME', os.hostname()),
   displayName: process.env.WORKER_DISPLAY_NAME || null,
@@ -32,6 +34,7 @@ export const config = {
   priority: num('WORKER_PRIORITY', 10),
   dropboxSyncPath: optional('DROPBOX_SYNC_PATH', ''),
   ffmpegPath: optional('FFMPEG_PATH', 'ffmpeg'),
+  ffprobePath: process.env.FFPROBE_PATH || null,
 
   // After Effects render farm. A worker is AE-capable when AERENDER_PATH points
   // at an existing aerender binary (or AE_CAPABLE=true is forced). Non-capable
@@ -58,7 +61,9 @@ config.aeCapable = process.env.AE_CAPABLE
 // Derive AfterFX.exe from the aerender path if not explicitly set (same dir).
 if (!config.afterfxPath && config.aerenderPath) {
   const dir = config.aerenderPath.replace(/[\\/][^\\/]*$/, '')
-  config.afterfxPath = `${dir}\\AfterFX.exe`
+  config.afterfxPath = process.platform === 'win32'
+    ? `${dir}\\AfterFX.exe`
+    : `${dir}/Adobe After Effects 2026.app/Contents/MacOS/After Effects`
 }
 
 function fileExists(p: string): boolean {

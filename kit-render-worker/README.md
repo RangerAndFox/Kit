@@ -1,5 +1,10 @@
 # Kit Render Worker
 
+The worker supports Windows studio nodes and the dedicated studio Mac. On macOS,
+run `scripts/install-macos.sh` after `npm ci`; it installs an auto-start
+LaunchAgent, reuses Kit's protected environment file, registers a primary
+worker heartbeat, and enables both FFmpeg delivery jobs and After Effects 2026.
+
 A standalone Node.js worker for the Kit render fleet. Polls Supabase for jobs and runs them locally:
 - **Transcode jobs** — FFmpeg, per delivery profile (the Delivery Pipeline).
 - **After Effects render jobs** — `aerender.exe` frame-range chunks + an FFmpeg stitch (the AE Render Farm).

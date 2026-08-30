@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>__LABEL__</string>
+  <key>ProgramArguments</key>
+  <array><string>__NODE__</string><string>__WORKER_DIR__/dist/index.js</string></array>
+  <key>WorkingDirectory</key><string>__WORKER_DIR__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>KIT_ENV_FILE</key><string>__ENV_FILE__</string>
+    <key>DROPBOX_SYNC_PATH</key><string>__DROPBOX_PATH__</string>
+    <key>FFMPEG_PATH</key><string>__FFMPEG__</string>
+    <key>FFPROBE_PATH</key><string>__FFPROBE__</string>
+    <key>AERENDER_PATH</key><string>__AERENDER__</string>
+    <key>AFTERFX_PATH</key><string>__AFTERFX__</string>
+    <key>AE_VERSION</key><string>2026</string>
+    <key>WORKER_HOSTNAME</key><string>kit-studio-mac</string>
+    <key>WORKER_DISPLAY_NAME</key><string>Kit Studio Mac</string>
+    <key>WORKER_ROLE</key><string>primary</string>
+    <key>WORKER_PRIORITY</key><string>1</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>__LOG_DIR__/render-worker.log</string>
+  <key>StandardErrorPath</key><string>__LOG_DIR__/render-worker-error.log</string>
+</dict>
+</plist>

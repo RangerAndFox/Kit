@@ -49,6 +49,30 @@ export interface FFmpegBuildInput {
 }
 
 /**
+ * FFmpeg's loudnorm filter only accepts TP targets from -9 to 0 dBTP. Studio
+ * delivery specs can be stricter (Ignite is -10). For those profiles, analyze
+ * and normalize one dB hotter, then apply the exact compensating gain after
+ * loudnorm. That preserves the requested integrated target while bringing the
+ * final peak ceiling down to the profile value.
+ */
+export function loudnormTargets(profile: DeliveryProfile): {
+  integrated: number
+  truePeak: number
+  postGainDb: number
+} {
+  const integrated = Number(profile.lufs_target)
+  const requestedPeak = profile.true_peak_limit ?? -1
+  if (requestedPeak > 0) throw new Error(`Invalid true_peak_limit ${requestedPeak}; expected <= 0 dBTP`)
+  if (requestedPeak >= -9) return { integrated, truePeak: requestedPeak, postGainDb: 0 }
+  const postGainDb = requestedPeak - (-9)
+  return {
+    integrated: integrated - postGainDb,
+    truePeak: -9,
+    postGainDb,
+  }
+}
+
+/**
  * Pass 1 — loudness analysis only. No output file.
  * Use the JSON print_format so the result can be parsed with loudness-parser.ts.
  * Note: the trailing '-' is the posix null device; the worker replaces it with
@@ -58,12 +82,11 @@ export function buildLoudnessAnalysisArgs(profile: DeliveryProfile, primarySourc
   if (profile.lufs_target == null) {
     throw new Error('buildLoudnessAnalysisArgs called on a profile with no lufs_target')
   }
-  const lufs = profile.lufs_target
-  const tp = profile.true_peak_limit ?? -1
+  const targets = loudnormTargets(profile)
   const lra = profile.lufs_lra ?? 11
   return [
     '-i', primarySource,
-    '-af', `loudnorm=I=${lufs}:TP=${tp}:LRA=${lra}:print_format=json`,
+    '-af', `loudnorm=I=${targets.integrated}:TP=${targets.truePeak}:LRA=${lra}:print_format=json`,
     '-f', 'null',
     '-',  // posix; the worker swaps '-' for 'NUL' on Windows when invoking
   ]
@@ -158,17 +181,17 @@ export function buildFFmpegArgs(input: FFmpegBuildInput): string[] {
   // Audio filter chain: loudnorm (if applicable) + channel mapping
   const audioFilters: string[] = []
   if (profile.lufs_target != null && loudness) {
-    const lufs = profile.lufs_target
-    const tp = profile.true_peak_limit ?? -1
+    const targets = loudnormTargets(profile)
     const lra = profile.lufs_lra ?? 11
     audioFilters.push(
-      `loudnorm=I=${lufs}:TP=${tp}:LRA=${lra}:` +
+      `loudnorm=I=${targets.integrated}:TP=${targets.truePeak}:LRA=${lra}:` +
         `measured_I=${loudness.input_i}:` +
         `measured_TP=${loudness.input_tp}:` +
         `measured_LRA=${loudness.input_lra}:` +
         `measured_thresh=${loudness.input_thresh}:` +
         `offset=${loudness.target_offset}:linear=true`,
     )
+    if (targets.postGainDb) audioFilters.push(`volume=${targets.postGainDb}dB`)
   }
   const channelFilter = buildChannelMapFilter(profile.audio_channels)
   if (channelFilter) audioFilters.push(channelFilter)

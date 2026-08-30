@@ -225,7 +225,12 @@ export async function loadControlCenterData(args: {
   const openRenders = renderJobs.filter((row) => !['complete', 'cancelled'].includes(row.status))
   const openArchives = archiveJobs.filter((row) => !['complete', 'cancelled'].includes(row.status))
   const openBehance = behanceJobs.filter((row) => !['awaiting_review', 'cancelled'].includes(row.status))
-  const openHours = checkins.filter((row) => !['logged', 'skipped', 'expired'].includes(row.status))
+  // A sent/nudged DM with no reply is not a time entry waiting for
+  // confirmation: Kit has no hours to log yet. Keep those rows available for
+  // reminder telemetry, but do not turn ordinary non-replies into an operator
+  // queue or a Control Center warning. Only rows with parsed hours (or an
+  // actual logging failure) are actionable here.
+  const openHours = checkins.filter((row) => ['parsed', 'failed', 'logging'].includes(row.status))
 
   const queues: QueueSummary[] = [
     queue('provisioning', 'Project provisioning', openCreations, new Set(['error'])),
@@ -235,7 +240,7 @@ export async function loadControlCenterData(args: {
     queue('renders', 'Render jobs', openRenders, new Set(['failed'])),
     queue('archives', 'Archive publishing', openArchives, new Set(['failed', 'partial'])),
     queue('behance', 'Behance drafts', openBehance, new Set(['failed']), new Set(['retryable', 'needs_login'])),
-    queue('hours', 'Time confirmations', openHours, new Set(['failed', 'logging']), new Set(['parsed', 'sent', 'nudged'])),
+    queue('hours', 'Time confirmations', openHours, new Set(['failed', 'logging']), new Set(['parsed'])),
   ]
 
   const attention: AttentionItem[] = []
@@ -277,7 +282,7 @@ export async function loadControlCenterData(args: {
       timestamp: row.updated_at,
     })
   }
-  const awaitingHours = openHours.filter((row) => ['parsed', 'sent', 'nudged'].includes(row.status))
+  const awaitingHours = openHours.filter((row) => row.status === 'parsed')
   if (awaitingHours.length) {
     attention.push({
       id: 'hours:awaiting',
@@ -483,7 +488,7 @@ export async function loadControlCenterData(args: {
     timeLogging: {
       loggedToday,
       hoursSevenDays,
-      awaitingConfirmation: openHours.filter((row) => ['parsed', 'sent', 'nudged'].includes(row.status)).length,
+      awaitingConfirmation: openHours.filter((row) => row.status === 'parsed').length,
       needsClarification: openHours.filter((row) => row.status === 'parsed' && Array.isArray(row.parsed_entries) && row.parsed_entries.some((entry: any) => entry?.resolution !== 'matched')).length,
       failed: openHours.filter((row) => row.status === 'failed').length,
       stuck: openHours.filter((row) => row.status === 'logging').length,

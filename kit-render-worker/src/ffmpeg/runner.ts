@@ -62,9 +62,9 @@ export async function runFFmpeg(opts: RunOptions): Promise<RunResult> {
  * Read source video duration in seconds via ffprobe. Falls back to 0 if it
  * can't determine duration (caller can default progress to "indeterminate").
  */
-export async function probeDurationSeconds(ffmpegPath: string, sourcePath: string): Promise<number> {
+export async function probeDurationSeconds(ffmpegPath: string, sourcePath: string, explicitFfprobePath?: string | null): Promise<number> {
   // ffmpegPath might be "ffmpeg" — ffprobe lives next to it. Try replacing.
-  const ffprobePath = ffmpegPath.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1')
+  const ffprobePath = explicitFfprobePath || ffmpegPath.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1')
   return new Promise((resolve) => {
     const proc = spawn(ffprobePath, [
       '-v', 'error',

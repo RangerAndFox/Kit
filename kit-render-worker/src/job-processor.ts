@@ -70,7 +70,7 @@ async function processTranscodeJob(job: ClaimedJob): Promise<void> {
 
     // ── Probe duration for progress tracking (from the picture) ──
     await updateProgress(job.id, 5, 'Probing source duration...')
-    const duration = await probeDurationSeconds(config.ffmpegPath, resolvedVideo.localPath)
+    const duration = await probeDurationSeconds(config.ffmpegPath, resolvedVideo.localPath, config.ffprobePath)
 
     // ── Build output path ────────────────────────────────────
     const outputFilename = profile.naming_template && job.naming_fields
@@ -147,6 +147,7 @@ async function processTranscodeJob(job: ClaimedJob): Promise<void> {
     try {
       const report = await runQualityControl({
         ffmpegPath: config.ffmpegPath,
+        ffprobePath: config.ffprobePath,
         outputPath,
         profile,
       })
