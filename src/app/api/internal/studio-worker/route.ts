@@ -1,16 +1,9 @@
-import crypto from 'node:crypto'
 import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { isStudioWorkerAuthorized } from './auth'
 
 export const maxDuration = 30
 const now = () => new Date().toISOString()
-
-export function isStudioWorkerAuthorized(request: Request, env: Record<string, string | undefined> = process.env): boolean {
-  const expected = env.KIT_STUDIO_WORKER_SECRET || ''
-  const supplied = String(request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '')
-  return expected.length >= 32 && supplied.length === expected.length &&
-    crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(supplied))
-}
 
 const browserStatuses = new Set(['idle', 'working', 'needs_login', 'error'])
 const behanceJobStatuses = new Set(['opening_editor', 'uploading_media', 'filling_details', 'saving_draft', 'awaiting_review', 'retryable', 'failed', 'cancelled'])

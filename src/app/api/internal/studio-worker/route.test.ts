@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { isStudioWorkerAuthorized } from './route'
+import { isStudioWorkerAuthorized } from './auth'
 
 describe('studio worker broker authentication', () => {
   const secret = 'a'.repeat(48)
