@@ -56,3 +56,10 @@ next-env.d.ts
 
 # Brainstorm session files from superpowers/brainstorming skill
 .superpowers/
+
+# Operational handbook captures can contain client, staff, project, or provider
+# information. Keep real captures and rendered handbooks outside Git. Only
+# synthetic/redacted fixtures approved for repository use may be committed
+# under a different artifact directory.
+/artifacts/kit-handbook-2697/
+/artifacts/kit-operator-handbook/
