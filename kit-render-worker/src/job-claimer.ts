@@ -18,7 +18,7 @@
  * Primary workers skip the delay check and claim immediately.
  */
 
-import { supabase } from './supabase'
+import { workerRequest } from './api'
 import { config } from './config'
 import { readSystemSnapshot } from './system/cpu-monitor'
 
@@ -53,12 +53,6 @@ export interface ClaimedJob {
   output_filename: string | null
 }
 
-const CLAIM_FIELDS =
-  'id, claimed_at, job_type, source_files, profile_snapshot, naming_fields, requested_by, slack_channel, slack_thread_ts, ' +
-  'parent_job_id, chunk_index, chunk_count, frame_start, frame_end, total_frames, frame_rate, ' +
-  'ae_project_path, ae_comp, ae_render_settings_template, ae_output_module_template, ' +
-  'ae_output_pattern, ae_output_dir, ae_rqindex, ae_is_movie, delivery_profile_id, output_filename'
-
 export async function tryClaimJob(): Promise<ClaimedJob | null> {
   // Fallback workers: pre-flight system checks
   if (config.role !== 'primary') {
@@ -78,46 +72,9 @@ export async function tryClaimJob(): Promise<ClaimedJob | null> {
   // Which job types may this worker run? AE chunks need an aerender binary;
   // every worker can run transcode + stitch (both FFmpeg). The 'ae_render'
   // parent row is a tracker and is never pending, so it's excluded implicitly.
-  const claimableTypes = config.aeCapable
-    ? ['transcode', 'ae_inspect', 'ae_chunk', 'ae_stitch']
-    : ['transcode', 'ae_stitch']
-
-  // Find oldest pending job of a type this worker can run
-  let query = supabase
-    .from('render_jobs')
-    .select('id')
-    .eq('status', 'pending')
-    .in('job_type', claimableTypes)
-    .order('created_at', { ascending: true })
-    .limit(1)
-  if (ageThresholdIso) {
-    query = query.lt('created_at', ageThresholdIso)
-  }
-
-  const { data: candidates } = await query
-  if (!candidates || candidates.length === 0) return null
-  const candidateId = candidates[0].id
-
-  // Attempt to claim. The .eq('status','pending') in the update ensures we
-  // only succeed if no other worker beat us to it.
-  const claimedAt = new Date().toISOString()
-  const { data: claimed, error: claimErr } = await supabase
-    .from('render_jobs')
-    .update({
-      status: 'claimed',
-      claimed_by: config.hostname,
-      claimed_at: claimedAt,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', candidateId)
-    .eq('status', 'pending')
-    .select(CLAIM_FIELDS)
-    .maybeSingle()
-
-  if (claimErr) {
-    console.error('[claim] update failed:', claimErr.message)
-    return null
-  }
-  if (!claimed) return null // someone else got it
-  return claimed as ClaimedJob
+  const result = await workerRequest<{ ok: true; job: ClaimedJob | null }>('render.claim', {
+    aeCapable: config.aeCapable,
+    ageThresholdIso,
+  })
+  return result.job
 }

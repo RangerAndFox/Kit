@@ -19,7 +19,7 @@
 
 import * as path from 'path'
 import * as fs from 'fs'
-import { supabase } from './supabase'
+import { workerRequest } from './api'
 import { config } from './config'
 import { setCurrentJob } from './heartbeat'
 import type { ClaimedJob } from './job-claimer'
@@ -30,7 +30,7 @@ import { buildStitchArgs } from './aerender/stitch-builder'
 import { inspectRenderQueue } from './aerender/inspect-runner'
 import { runFFmpeg } from './ffmpeg/runner'
 
-const FINALIZE_SENTINEL = 'FINALIZED'
+const activeClaims = new Map<string, string>()
 
 /** Split [start..start+total-1] into `count` near-even contiguous ranges. */
 function planChunks(total: number, count: number, start = 0) {
@@ -50,6 +50,7 @@ function planChunks(total: number, count: number, start = 0) {
 // ─── AE inspect: read the project's render queue, fan out chunks ─────────────
 
 export async function processAeInspect(job: ClaimedJob): Promise<void> {
+  activeClaims.set(job.id, job.claimed_at)
   setCurrentJob(job.id)
   try {
     await update(job.id, { status: 'processing', progress_message: 'Reading After Effects render queue...' })
@@ -70,11 +71,7 @@ export async function processAeInspect(job: ClaimedJob): Promise<void> {
     }
 
     // How many AE-capable workers can share the load right now?
-    const { count: aeWorkers } = await supabase
-      .from('render_workers')
-      .select('hostname', { count: 'exact', head: true })
-      .eq('ae_capable', true)
-      .eq('status', 'online')
+    const { count: aeWorkers } = await workerRequest<{ ok: true; count: number }>('render.ae_worker_count')
     const workerCount = Math.max(1, aeWorkers || 1)
 
     const projectDir = dropboxDirname(job.ae_project_path)
@@ -120,8 +117,7 @@ export async function processAeInspect(job: ClaimedJob): Promise<void> {
       })
     }
 
-    const { error: insErr } = await supabase.from('render_jobs').insert(chunkRows)
-    if (insErr) throw new Error(`creating chunks: ${insErr.message}`)
+    await workerRequest('render.insert_jobs', { rows: chunkRows })
 
     // Record the discovered queue + totals on the parent for visibility.
     if (job.parent_job_id) {
@@ -143,6 +139,7 @@ export async function processAeInspect(job: ClaimedJob): Promise<void> {
       await update(job.parent_job_id, { status: 'failed', error_message: `Render-queue inspection failed: ${message}` })
     }
   } finally {
+    activeClaims.delete(job.id)
     setCurrentJob(null)
   }
 }
@@ -150,6 +147,7 @@ export async function processAeInspect(job: ClaimedJob): Promise<void> {
 // ─── AE chunk ──────────────────────────────────────────────────────────────
 
 export async function processAeChunk(job: ClaimedJob): Promise<void> {
+  activeClaims.set(job.id, job.claimed_at)
   setCurrentJob(job.id)
   const startedAt = new Date()
 
@@ -241,6 +239,7 @@ export async function processAeChunk(job: ClaimedJob): Promise<void> {
       await failParent(job.parent_job_id, `Chunk ${job.chunk_index ?? '?'} failed: ${message}`)
     }
   } finally {
+    activeClaims.delete(job.id)
     setCurrentJob(null)
   }
 }
@@ -249,29 +248,18 @@ export async function processAeChunk(job: ClaimedJob): Promise<void> {
 
 async function maybeFinalizeParent(parentId: string): Promise<void> {
   // Count siblings and how many are complete.
-  const { data: chunks } = await supabase
-    .from('render_jobs')
-    .select('id, status, frame_start')
-    .eq('parent_job_id', parentId)
-    .eq('job_type', 'ae_chunk')
+  const { chunks } = await workerRequest<{ ok: true; chunks: any[] }>('render.list_chunks', { parentId })
 
   if (!chunks || chunks.length === 0) return
   const allComplete = chunks.every((c: any) => c.status === 'complete')
   if (!allComplete) return
 
   // Atomically claim finalize rights on the parent. Only one worker wins.
-  const { data: won } = await supabase
-    .from('render_jobs')
-    .update({ claimed_by: FINALIZE_SENTINEL, updated_at: new Date().toISOString() })
-    .eq('id', parentId)
-    .eq('job_type', 'ae_render')
-    .is('claimed_by', null)
-    .select('id')
-    .maybeSingle()
+  const { won } = await workerRequest<{ ok: true; won: boolean }>('render.claim_finalize', { parentId })
 
   if (!won) return // another worker is finalizing
 
-  const { data: parent } = await supabase.from('render_jobs').select('*').eq('id', parentId).maybeSingle()
+  const { job: parent } = await workerRequest<{ ok: true; job: any | null }>('render.get_job', { jobId: parentId })
   if (!parent) return
 
   // Only stitch when a delivery profile was attached AND we have a single shared
@@ -297,7 +285,7 @@ async function maybeFinalizeParent(parentId: string): Promise<void> {
     progress_message: 'All chunks rendered — queuing stitch...',
   })
 
-  await supabase.from('render_jobs').insert({
+  await workerRequest('render.insert_jobs', { row: {
     job_type: 'ae_stitch',
     status: 'pending',
     parent_job_id: parentId,
@@ -314,29 +302,20 @@ async function maybeFinalizeParent(parentId: string): Promise<void> {
     delivery_profile_id: parent.delivery_profile_id,
     profile_snapshot: parent.profile_snapshot,
     output_filename: parent.output_filename,
-  })
+  } })
 
   console.log(`[ae] parent ${parentId}: all chunks complete, stitch job queued`)
 }
 
 async function failParent(parentId: string, message: string): Promise<void> {
   // Guard with the same sentinel so we don't clobber a successful finalize.
-  await supabase
-    .from('render_jobs')
-    .update({
-      status: 'failed',
-      claimed_by: FINALIZE_SENTINEL,
-      error_message: message,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', parentId)
-    .eq('job_type', 'ae_render')
-    .is('claimed_by', null)
+  await workerRequest('render.fail_parent', { parentId, error: message })
 }
 
 // ─── AE stitch ───────────────────────────────────────────────────────────────
 
 export async function processAeStitch(job: ClaimedJob): Promise<void> {
+  activeClaims.set(job.id, job.claimed_at)
   setCurrentJob(job.id)
   const startedAt = new Date()
 
@@ -433,6 +412,7 @@ export async function processAeStitch(job: ClaimedJob): Promise<void> {
       await update(job.parent_job_id, { status: 'failed', error_message: `Stitch failed: ${message}` })
     }
   } finally {
+    activeClaims.delete(job.id)
     setCurrentJob(null)
   }
 }
@@ -445,8 +425,11 @@ function aeBracketToPrintf(pattern: string): string {
 }
 
 async function update(jobId: string, patch: Record<string, any>): Promise<void> {
-  await supabase
-    .from('render_jobs')
-    .update({ ...patch, updated_at: new Date().toISOString() })
-    .eq('id', jobId)
+  const claimedAt = activeClaims.get(jobId)
+  if (claimedAt) {
+    const result = await workerRequest<{ ok: true; updated: boolean }>('render.owned_update', { jobId, claimedAt, patch })
+    if (!result.updated) throw new Error('Render job claim was lost during processing.')
+    return
+  }
+  await workerRequest('render.parent_update', { jobId, patch })
 }

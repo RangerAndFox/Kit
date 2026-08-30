@@ -3,7 +3,7 @@
 # Usage: .\install.ps1
 #
 # Prompts for worker role, priority, Dropbox sync path, FFmpeg location,
-# then writes .env and registers the worker in Supabase (via first heartbeat
+# then writes .env and registers the worker through Kit (via first heartbeat
 # when the worker is started). Does NOT install as a Windows service by
 # default - operator can do that via NSSM, sc.exe, or Task Scheduler.
 
@@ -25,9 +25,10 @@ if (-not $ffmpegCmd) {
 }
 
 # Prompts
-$supabaseUrl = Read-Host "SUPABASE_URL (e.g. https://xxx.supabase.co)"
-$supabaseKey = Read-Host "SUPABASE_SERVICE_ROLE_KEY" -AsSecureString
-$supabaseKeyPlain = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($supabaseKey))
+$workerApiUrl = Read-Host "Kit worker API URL (default: https://kit-amber.vercel.app/api/internal/studio-worker)"
+if ([string]::IsNullOrWhiteSpace($workerApiUrl)) { $workerApiUrl = "https://kit-amber.vercel.app/api/internal/studio-worker" }
+$workerSecret = Read-Host "KIT_STUDIO_WORKER_SECRET" -AsSecureString
+$workerSecretPlain = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($workerSecret))
 
 $hostname = Read-Host "Worker hostname (default: $env:COMPUTERNAME)"
 if ([string]::IsNullOrWhiteSpace($hostname)) { $hostname = $env:COMPUTERNAME }
@@ -60,8 +61,8 @@ if ($aerenderPath) {
 # Write .env
 $envFile = Join-Path $PSScriptRoot ".env"
 @"
-SUPABASE_URL=$supabaseUrl
-SUPABASE_SERVICE_ROLE_KEY=$supabaseKeyPlain
+KIT_STUDIO_WORKER_API_URL=$workerApiUrl
+KIT_STUDIO_WORKER_SECRET=$workerSecretPlain
 WORKER_HOSTNAME=$hostname
 WORKER_ROLE=$role
 WORKER_PRIORITY=$priority

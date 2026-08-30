@@ -6,7 +6,7 @@
  * the worker, then on a setInterval until shutdown.
  */
 
-import { supabase } from './supabase'
+import { workerRequest } from './api'
 import { config } from './config'
 import { readSystemSnapshot } from './system/cpu-monitor'
 
@@ -25,9 +25,8 @@ export async function sendHeartbeat(): Promise<void> {
   const status = _currentJobId ? 'busy' : 'online'
 
   // Use upsert so the first heartbeat registers the worker.
-  const { error } = await supabase.from('render_workers').upsert(
-    {
-      hostname: config.hostname,
+  await workerRequest('render.heartbeat', {
+    heartbeat: {
       display_name: config.displayName || config.hostname,
       role: config.role,
       priority: config.priority,
@@ -46,9 +45,7 @@ export async function sendHeartbeat(): Promise<void> {
       aerender_path: config.aerenderPath || null,
       ae_version: config.aeVersion,
     },
-    { onConflict: 'hostname' },
-  )
-  if (error) throw new Error(`render worker heartbeat failed: ${error.message}`)
+  })
 }
 
 export function startHeartbeat(): NodeJS.Timeout {

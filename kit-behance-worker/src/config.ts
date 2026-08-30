@@ -1,5 +1,6 @@
 import os from 'node:os'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import * as dotenv from 'dotenv'
 
 dotenv.config({ path: process.env.KIT_ENV_FILE || path.resolve('../.env.local') })
@@ -15,10 +16,21 @@ const num = (key: string, fallback: number): number => {
   if (!Number.isFinite(value) || value <= 0) throw new Error(`${key} must be a positive number.`)
   return value
 }
+const workerSecret = (): string => {
+  const fromEnv = process.env.KIT_STUDIO_WORKER_SECRET?.trim()
+  if (fromEnv) return fromEnv
+  try {
+    const value = execFileSync('security', ['find-generic-password', '-w', '-s', 'com.rangerandfox.kit-studio-worker'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    if (value) return value
+  } catch {}
+  throw new Error('Missing KIT_STUDIO_WORKER_SECRET (environment or macOS Keychain item com.rangerandfox.kit-studio-worker).')
+}
 
 export const config = {
-  supabaseUrl: process.env.SUPABASE_URL || need('NEXT_PUBLIC_SUPABASE_URL'),
-  supabaseServiceRoleKey: need('SUPABASE_SERVICE_ROLE_KEY'),
+  workerApiUrl: process.env.KIT_STUDIO_WORKER_API_URL || 'https://kit-amber.vercel.app/api/internal/studio-worker',
+  workerApiSecret: workerSecret(),
   chromePath: process.env.BEHANCE_CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   profileDir: path.resolve(process.env.BEHANCE_PROFILE_DIR || './.behance-profile'),
   headless: process.env.BEHANCE_HEADLESS === 'true',

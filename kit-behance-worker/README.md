@@ -13,7 +13,7 @@ It never publishes:
 ## One-time studio Mac setup
 
 1. Install Node.js 22 or newer and Google Chrome.
-2. Copy `.env.example` to `.env`, or set `KIT_ENV_FILE` to an existing trusted Kit server environment file. Configure the Supabase service role and `DROPBOX_SYNC_PATH`, pointing at the local Dropbox folder that corresponds to cloud root `/`. The worker does not need a Dropbox API credential.
+2. Copy `.env.example` to the dedicated worker environment file (the installer defaults to `~/Library/Application Support/Kit/BehanceWorker/.env`). Configure the narrow Kit worker URL and `DROPBOX_SYNC_PATH`. The worker secret lives in macOS Keychain under `com.rangerandfox.kit-studio-worker`; never copy a Supabase service-role key into this machine's worker configuration.
 3. Run `npm install` and `npm run build`.
 4. Run `npm run login`. Chrome opens with the dedicated profile. Sign into the Ranger & Fox Adobe/Behance account, return to Terminal, and press Enter.
 5. Run `npm run login:elevenlabs`, sign into ElevenLabs in the same dedicated profile, return to Terminal, and press Enter.
@@ -21,6 +21,8 @@ It never publishes:
 7. Run `scripts/install-macos.sh` to install and start the LaunchAgent. It restarts automatically at login and after a crash.
 
 The browser profile directory contains the Behance and ElevenLabs sessions. It must not be synced, committed, or shared. No provider password is stored in Kit or Supabase. Approved archive media is read through Dropbox's local File Provider mount; Kit's cloud service creates the proof link after the screenshot syncs.
+
+The studio worker has no direct database credential. Its Keychain-backed secret can call only Kit's worker broker operations (heartbeat, claim, fenced progress, and completion); it cannot issue arbitrary Supabase queries.
 
 ## Producer workflow
 

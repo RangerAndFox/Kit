@@ -12,7 +12,7 @@
 
 import * as path from 'path'
 import * as fs from 'fs'
-import { supabase } from './supabase'
+import { workerRequest } from './api'
 import { config } from './config'
 import { setCurrentJob } from './heartbeat'
 import type { ClaimedJob } from './job-claimer'
@@ -222,15 +222,10 @@ async function processTranscodeJob(job: ClaimedJob): Promise<void> {
  * Returns true if the row was still ours.
  */
 async function ownedUpdate(job: ClaimedJob, patch: Record<string, any>): Promise<boolean> {
-  const { data, error } = await supabase
-    .from('render_jobs')
-    .update({ ...patch, updated_at: new Date().toISOString() })
-    .eq('id', job.id)
-    .eq('claimed_by', config.hostname)
-    .eq('claimed_at', job.claimed_at)
-    .select('id')
-  if (error) throw new Error(`render job ownership update failed: ${error.message}`)
-  return (data?.length || 0) > 0
+  const result = await workerRequest<{ ok: true; updated: boolean }>('render.owned_update', {
+    jobId: job.id, claimedAt: job.claimed_at, patch,
+  })
+  return result.updated
 }
 
 async function markStatus(job: ClaimedJob, status: string, extras: Record<string, any> = {}): Promise<void> {

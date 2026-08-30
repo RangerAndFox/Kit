@@ -7,7 +7,7 @@ label="com.rangerandfox.kit-behance-worker"
 agent_dir="$HOME/Library/LaunchAgents"
 log_dir="$HOME/Library/Logs/Kit"
 plist="$agent_dir/$label.plist"
-env_file="${KIT_ENV_FILE:-$HOME/atlas-setup/Kit/bolt/.env}"
+env_file="${KIT_ENV_FILE:-$HOME/Library/Application Support/Kit/BehanceWorker/.env}"
 dropbox_path="${DROPBOX_SYNC_PATH:-$HOME/Library/CloudStorage/Dropbox-Ranger&Fox/Ranger & Fox}"
 profile_dir="${BEHANCE_PROFILE_DIR:-$HOME/Library/Application Support/Kit/BehanceProfile}"
 node_path="${KIT_WORKER_NODE:-$(command -v node)}"
@@ -30,6 +30,14 @@ profile_dir_plist="$(plist_value "$profile_dir")"
 log_dir_plist="$(plist_value "$log_dir")"
 
 mkdir -p "$agent_dir" "$log_dir" "$profile_dir" "$install_dir"
+if [[ -f "$env_file" ]] && grep -q '^SUPABASE_SERVICE_ROLE_KEY=' "$env_file"; then
+  echo "Refusing to install: the dedicated worker environment must not contain SUPABASE_SERVICE_ROLE_KEY." >&2
+  exit 1
+fi
+if ! security find-generic-password -s com.rangerandfox.kit-studio-worker >/dev/null 2>&1; then
+  echo "Missing macOS Keychain item: com.rangerandfox.kit-studio-worker" >&2
+  exit 1
+fi
 npm run build
 ditto "$source_dir/dist" "$install_dir/dist"
 ditto "$source_dir/node_modules" "$install_dir/node_modules"

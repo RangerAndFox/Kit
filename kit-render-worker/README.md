@@ -2,10 +2,10 @@
 
 The worker supports Windows studio nodes and the dedicated studio Mac. On macOS,
 run `scripts/install-macos.sh` after `npm ci`; it installs an auto-start
-LaunchAgent, reuses Kit's protected environment file, registers a primary
+LaunchAgent, uses the narrow Keychain-backed worker credential, registers a primary
 worker heartbeat, and enables both FFmpeg delivery jobs and After Effects 2026.
 
-A standalone Node.js worker for the Kit render fleet. Polls Supabase for jobs and runs them locally:
+A standalone Node.js worker for the Kit render fleet. Polls Kit's restricted worker broker for jobs and runs them locally:
 - **Transcode jobs** — FFmpeg, per delivery profile (the Delivery Pipeline).
 - **After Effects render jobs** — `aerender.exe` frame-range chunks + an FFmpeg stitch (the AE Render Farm).
 
@@ -22,13 +22,13 @@ npm start
 ```
 
 The installer prompts for:
-- Supabase URL + service role key
+- Kit worker API URL + dedicated worker secret (never a Supabase key)
 - Worker role (`primary` or `fallback`) and priority
 - Dropbox sync folder path
 - FFmpeg binary path (defaults to `ffmpeg` on PATH)
 - `aerender.exe` path (auto-detected; leave blank on machines without After Effects)
 
-The first heartbeat after `npm start` registers the worker in the `render_workers` Supabase table.
+The first heartbeat after `npm start` registers the worker through Kit's narrow worker broker. The render machine must never hold a Supabase service-role key.
 
 ## Run as a service
 
@@ -42,11 +42,11 @@ For unattended operation, recommended options:
 See `DELIVERY-PIPELINE-SPEC.md` (transcode) and `AE-RENDER-FARM-SPEC.md` (After Effects) at the repo root for the full system architecture.
 
 This worker:
-1. Heartbeats to Supabase every 10s (registers itself + reports CPU/memory/disk).
+1. Heartbeats through Kit every 10s (registers itself + reports CPU/memory/disk).
 2. Polls `render_jobs` for `status='pending'` rows.
 3. Primary workers claim immediately; fallback workers claim only after `FALLBACK_DELAY_SECONDS` (default 30) and only if CPU is below `CPU_THRESHOLD`.
 4. Resolves Dropbox paths via `DROPBOX_SYNC_PATH` (must be a local Dropbox sync folder — the worker doesn't talk to Dropbox's HTTP API in v1).
-5. Runs the job: FFmpeg for transcode/stitch (two-pass if loudness is enabled), or `aerender` for an AE frame chunk. Streams progress back to Supabase.
+5. Runs the job: FFmpeg for transcode/stitch (two-pass if loudness is enabled), or `aerender` for an AE frame chunk. Streams progress through Kit's restricted broker.
 6. Marks the job `complete` or `failed`. For AE renders, the worker that finishes the last chunk enqueues the stitch; the stitch worker marks the parent render complete.
 
 If a worker goes offline mid-job, Kit's stale-worker sweep (`resetStaleJobs` in `src/lib/delivery/storage.ts`) reassigns the job to another worker after 60s.

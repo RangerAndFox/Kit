@@ -2,6 +2,7 @@
 import * as os from 'os'
 import * as fs from 'fs'
 import * as dotenv from 'dotenv'
+import { execFileSync } from 'child_process'
 
 // Production workers can reuse Kit's existing protected environment file
 // without copying service-role credentials into this standalone package.
@@ -25,9 +26,22 @@ function num(key: string, def: number): number {
   return n
 }
 
+function workerSecret(): string {
+  if (process.env.KIT_STUDIO_WORKER_SECRET) return process.env.KIT_STUDIO_WORKER_SECRET
+  if (process.platform === 'darwin') {
+    try {
+      const value = execFileSync('security', ['find-generic-password', '-w', '-s', 'com.rangerandfox.kit-studio-worker'], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim()
+      if (value) return value
+    } catch {}
+  }
+  throw new Error('Missing KIT_STUDIO_WORKER_SECRET (environment or the Kit studio-worker Keychain item on macOS).')
+}
+
 export const config = {
-  supabaseUrl: process.env.SUPABASE_URL || need('NEXT_PUBLIC_SUPABASE_URL'),
-  supabaseServiceRoleKey: need('SUPABASE_SERVICE_ROLE_KEY'),
+  workerApiUrl: process.env.KIT_STUDIO_WORKER_API_URL || 'https://kit-amber.vercel.app/api/internal/studio-worker',
+  workerApiSecret: workerSecret(),
   hostname: optional('WORKER_HOSTNAME', os.hostname()),
   displayName: process.env.WORKER_DISPLAY_NAME || null,
   role: (optional('WORKER_ROLE', 'fallback') as 'primary' | 'fallback'),
