@@ -37,6 +37,14 @@ export async function completeStoryboardElevenLabs(job: Pick<ElevenLabsStudioJob
   await workerRequest('elevenlabs.complete', { jobId: job.id, claimedAt: job.claimed_at, projectId, url })
 }
 
-export async function failStoryboardElevenLabs(storyboardJobId: string, errorMessage: string): Promise<void> {
-  await workerRequest('elevenlabs.fail_storyboard', { storyboardJobId, error: errorMessage })
+export async function failStoryboardElevenLabs(
+  job: Pick<ElevenLabsStudioJob, 'id' | 'storyboard_job_id' | 'claimed_at'>,
+  errorMessage: string,
+): Promise<void> {
+  await workerRequest('elevenlabs.fail_storyboard', {
+    jobId: job.id,
+    storyboardJobId: job.storyboard_job_id,
+    claimedAt: job.claimed_at,
+    error: errorMessage,
+  })
 }

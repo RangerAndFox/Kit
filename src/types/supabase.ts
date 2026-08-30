@@ -275,6 +275,158 @@ export type Database = {
           },
         ]
       }
+      archive_job_steps: {
+        Row: {
+          attempt: number
+          claim_token: string | null
+          claimed_at: string | null
+          claimed_by: string | null
+          completed_at: string | null
+          created_at: string
+          error: string | null
+          id: string
+          job_id: string
+          result: Json
+          started_at: string | null
+          status: string
+          step_name: string
+          updated_at: string
+        }
+        Insert: {
+          attempt?: number
+          claim_token?: string | null
+          claimed_at?: string | null
+          claimed_by?: string | null
+          completed_at?: string | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          job_id: string
+          result?: Json
+          started_at?: string | null
+          status?: string
+          step_name: string
+          updated_at?: string
+        }
+        Update: {
+          attempt?: number
+          claim_token?: string | null
+          claimed_at?: string | null
+          claimed_by?: string | null
+          completed_at?: string | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          job_id?: string
+          result?: Json
+          started_at?: string | null
+          status?: string
+          step_name?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "archive_job_steps_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "archive_jobs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      archive_jobs: {
+        Row: {
+          attempt: number
+          claim_token: string | null
+          claimed_at: string | null
+          claimed_by: string | null
+          completed_at: string | null
+          created_at: string
+          destinations: string[]
+          error: string | null
+          id: string
+          idempotency_key: string
+          progress: Json
+          project_id: string
+          project_snapshot: Json
+          requested_by_slack_user_id: string
+          results: Json
+          settings: Json
+          slack_channel_id: string | null
+          slack_message_ts: string | null
+          source_video_path: string
+          started_at: string | null
+          status: string
+          updated_at: string
+          workspace_id: string
+        }
+        Insert: {
+          attempt?: number
+          claim_token?: string | null
+          claimed_at?: string | null
+          claimed_by?: string | null
+          completed_at?: string | null
+          created_at?: string
+          destinations?: string[]
+          error?: string | null
+          id?: string
+          idempotency_key: string
+          progress?: Json
+          project_id: string
+          project_snapshot?: Json
+          requested_by_slack_user_id: string
+          results?: Json
+          settings?: Json
+          slack_channel_id?: string | null
+          slack_message_ts?: string | null
+          source_video_path: string
+          started_at?: string | null
+          status?: string
+          updated_at?: string
+          workspace_id: string
+        }
+        Update: {
+          attempt?: number
+          claim_token?: string | null
+          claimed_at?: string | null
+          claimed_by?: string | null
+          completed_at?: string | null
+          created_at?: string
+          destinations?: string[]
+          error?: string | null
+          id?: string
+          idempotency_key?: string
+          progress?: Json
+          project_id?: string
+          project_snapshot?: Json
+          requested_by_slack_user_id?: string
+          results?: Json
+          settings?: Json
+          slack_channel_id?: string | null
+          slack_message_ts?: string | null
+          source_video_path?: string
+          started_at?: string | null
+          status?: string
+          updated_at?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "archive_jobs_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "archive_jobs_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       artifacts: {
         Row: {
           artifact_type: string
@@ -365,6 +517,141 @@ export type Database = {
           },
         ]
       }
+      behance_draft_jobs: {
+        Row: {
+          archive_job_id: string
+          attempt: number
+          claimed_at: string | null
+          claimed_by: string | null
+          completed_at: string | null
+          created_at: string
+          draft_url: string | null
+          error: string | null
+          heartbeat_at: string | null
+          id: string
+          manifest: Json
+          project_id: string
+          proof_dropbox_path: string | null
+          proof_url: string | null
+          requested_by_slack_user_id: string
+          slack_synced_at: string | null
+          started_at: string | null
+          status: string
+          updated_at: string
+          workspace_id: string
+        }
+        Insert: {
+          archive_job_id: string
+          attempt?: number
+          claimed_at?: string | null
+          claimed_by?: string | null
+          completed_at?: string | null
+          created_at?: string
+          draft_url?: string | null
+          error?: string | null
+          heartbeat_at?: string | null
+          id?: string
+          manifest?: Json
+          project_id: string
+          proof_dropbox_path?: string | null
+          proof_url?: string | null
+          requested_by_slack_user_id: string
+          slack_synced_at?: string | null
+          started_at?: string | null
+          status?: string
+          updated_at?: string
+          workspace_id: string
+        }
+        Update: {
+          archive_job_id?: string
+          attempt?: number
+          claimed_at?: string | null
+          claimed_by?: string | null
+          completed_at?: string | null
+          created_at?: string
+          draft_url?: string | null
+          error?: string | null
+          heartbeat_at?: string | null
+          id?: string
+          manifest?: Json
+          project_id?: string
+          proof_dropbox_path?: string | null
+          proof_url?: string | null
+          requested_by_slack_user_id?: string
+          slack_synced_at?: string | null
+          started_at?: string | null
+          status?: string
+          updated_at?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "behance_draft_jobs_archive_job_id_fkey"
+            columns: ["archive_job_id"]
+            isOneToOne: true
+            referencedRelation: "archive_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "behance_draft_jobs_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "behance_draft_jobs_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      behance_workers: {
+        Row: {
+          browser_version: string | null
+          created_at: string
+          current_job_id: string | null
+          display_name: string | null
+          last_error: string | null
+          last_seen_at: string
+          status: string
+          updated_at: string
+          worker_id: string
+        }
+        Insert: {
+          browser_version?: string | null
+          created_at?: string
+          current_job_id?: string | null
+          display_name?: string | null
+          last_error?: string | null
+          last_seen_at?: string
+          status?: string
+          updated_at?: string
+          worker_id: string
+        }
+        Update: {
+          browser_version?: string | null
+          created_at?: string
+          current_job_id?: string | null
+          display_name?: string | null
+          last_error?: string | null
+          last_seen_at?: string
+          status?: string
+          updated_at?: string
+          worker_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "behance_workers_current_job_id_fkey"
+            columns: ["current_job_id"]
+            isOneToOne: false
+            referencedRelation: "behance_draft_jobs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       bible_versions: {
         Row: {
           changelog: string
@@ -405,6 +692,30 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      birthdays: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          full_name: string | null
+          month_day: string
+          slack_user_id: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          full_name?: string | null
+          month_day: string
+          slack_user_id: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          full_name?: string | null
+          month_day?: string
+          slack_user_id?: string
+        }
+        Relationships: []
       }
       brain_revisions: {
         Row: {
@@ -844,6 +1155,21 @@ export type Database = {
         }
         Relationships: []
       }
+      cron_heartbeats: {
+        Row: {
+          cron_id: string
+          last_success_at: string
+        }
+        Insert: {
+          cron_id: string
+          last_success_at?: string
+        }
+        Update: {
+          cron_id?: string
+          last_success_at?: string
+        }
+        Relationships: []
+      }
       daily_hours_checkins: {
         Row: {
           candidate_projects: Json | null
@@ -905,6 +1231,81 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "daily_hours_checkins_staff_id_fkey"
+            columns: ["staff_id"]
+            isOneToOne: false
+            referencedRelation: "staff"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      daily_hours_reminders: {
+        Row: {
+          attempts: number
+          check_in_id: string | null
+          claimed_at: string | null
+          created_at: string
+          error: string | null
+          id: string
+          lease_expires_at: string | null
+          local_date: string
+          reminder_type: string
+          resolved_timezone: string | null
+          skip_reason: string | null
+          slack_channel_id: string | null
+          slack_message_ts: string | null
+          slack_user_id: string
+          staff_id: string
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          attempts?: number
+          check_in_id?: string | null
+          claimed_at?: string | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          lease_expires_at?: string | null
+          local_date: string
+          reminder_type?: string
+          resolved_timezone?: string | null
+          skip_reason?: string | null
+          slack_channel_id?: string | null
+          slack_message_ts?: string | null
+          slack_user_id: string
+          staff_id: string
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          attempts?: number
+          check_in_id?: string | null
+          claimed_at?: string | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          lease_expires_at?: string | null
+          local_date?: string
+          reminder_type?: string
+          resolved_timezone?: string | null
+          skip_reason?: string | null
+          slack_channel_id?: string | null
+          slack_message_ts?: string | null
+          slack_user_id?: string
+          staff_id?: string
+          status?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "daily_hours_reminders_check_in_id_fkey"
+            columns: ["check_in_id"]
+            isOneToOne: false
+            referencedRelation: "daily_hours_checkins"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "daily_hours_reminders_staff_id_fkey"
             columns: ["staff_id"]
             isOneToOne: false
             referencedRelation: "staff"
@@ -1233,6 +1634,111 @@ export type Database = {
           },
         ]
       }
+      delivery_specs_scan_frontier: {
+        Row: {
+          created_at: string
+          path: string
+        }
+        Insert: {
+          created_at?: string
+          path: string
+        }
+        Update: {
+          created_at?: string
+          path?: string
+        }
+        Relationships: []
+      }
+      delivery_specs_scan_state: {
+        Row: {
+          backlog_complete: boolean
+          cursor: string | null
+          fence: number
+          id: string
+          lease_expires_at: string | null
+          lease_holder: string | null
+          phase: string
+          updated_at: string
+        }
+        Insert: {
+          backlog_complete?: boolean
+          cursor?: string | null
+          fence?: number
+          id?: string
+          lease_expires_at?: string | null
+          lease_holder?: string | null
+          phase?: string
+          updated_at?: string
+        }
+        Update: {
+          backlog_complete?: boolean
+          cursor?: string | null
+          fence?: number
+          id?: string
+          lease_expires_at?: string | null
+          lease_holder?: string | null
+          phase?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      dropbox_event_inbox: {
+        Row: {
+          attempt_count: number
+          claim_token: string | null
+          claimed_at: string | null
+          claimed_by: string | null
+          completed_at: string | null
+          created_at: string
+          event_key: string
+          event_type: string
+          id: string
+          last_error: string | null
+          max_attempts: number
+          next_attempt_at: string
+          payload: Json
+          source_cursor: string
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          attempt_count?: number
+          claim_token?: string | null
+          claimed_at?: string | null
+          claimed_by?: string | null
+          completed_at?: string | null
+          created_at?: string
+          event_key: string
+          event_type: string
+          id?: string
+          last_error?: string | null
+          max_attempts?: number
+          next_attempt_at?: string
+          payload: Json
+          source_cursor: string
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          attempt_count?: number
+          claim_token?: string | null
+          claimed_at?: string | null
+          claimed_by?: string | null
+          completed_at?: string | null
+          created_at?: string
+          event_key?: string
+          event_type?: string
+          id?: string
+          last_error?: string | null
+          max_attempts?: number
+          next_attempt_at?: string
+          payload?: Json
+          source_cursor?: string
+          status?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       dropbox_state: {
         Row: {
           cursor: string | null
@@ -1294,6 +1800,134 @@ export type Database = {
             columns: ["project_id"]
             isOneToOne: false
             referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      elevenlabs_studio_jobs: {
+        Row: {
+          attempt: number
+          claimed_at: string | null
+          claimed_by: string | null
+          completed_at: string | null
+          created_at: string
+          error: string | null
+          heartbeat_at: string | null
+          id: string
+          project_name: string
+          requested_by_slack_user_id: string | null
+          slack_channel_id: string | null
+          slack_thread_ts: string | null
+          started_at: string | null
+          status: string
+          storyboard_job_id: string
+          studio_project_id: string | null
+          studio_url: string | null
+          updated_at: string
+          voiceover_paragraphs: Json
+          workspace_id: string | null
+        }
+        Insert: {
+          attempt?: number
+          claimed_at?: string | null
+          claimed_by?: string | null
+          completed_at?: string | null
+          created_at?: string
+          error?: string | null
+          heartbeat_at?: string | null
+          id?: string
+          project_name: string
+          requested_by_slack_user_id?: string | null
+          slack_channel_id?: string | null
+          slack_thread_ts?: string | null
+          started_at?: string | null
+          status?: string
+          storyboard_job_id: string
+          studio_project_id?: string | null
+          studio_url?: string | null
+          updated_at?: string
+          voiceover_paragraphs?: Json
+          workspace_id?: string | null
+        }
+        Update: {
+          attempt?: number
+          claimed_at?: string | null
+          claimed_by?: string | null
+          completed_at?: string | null
+          created_at?: string
+          error?: string | null
+          heartbeat_at?: string | null
+          id?: string
+          project_name?: string
+          requested_by_slack_user_id?: string | null
+          slack_channel_id?: string | null
+          slack_thread_ts?: string | null
+          started_at?: string | null
+          status?: string
+          storyboard_job_id?: string
+          studio_project_id?: string | null
+          studio_url?: string | null
+          updated_at?: string
+          voiceover_paragraphs?: Json
+          workspace_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "elevenlabs_studio_jobs_storyboard_job_id_fkey"
+            columns: ["storyboard_job_id"]
+            isOneToOne: true
+            referencedRelation: "storyboard_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "elevenlabs_studio_jobs_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      elevenlabs_workers: {
+        Row: {
+          browser_version: string | null
+          created_at: string
+          current_job_id: string | null
+          display_name: string
+          last_error: string | null
+          last_seen_at: string
+          status: string
+          updated_at: string
+          worker_id: string
+        }
+        Insert: {
+          browser_version?: string | null
+          created_at?: string
+          current_job_id?: string | null
+          display_name: string
+          last_error?: string | null
+          last_seen_at?: string
+          status?: string
+          updated_at?: string
+          worker_id: string
+        }
+        Update: {
+          browser_version?: string | null
+          created_at?: string
+          current_job_id?: string | null
+          display_name?: string
+          last_error?: string | null
+          last_seen_at?: string
+          status?: string
+          updated_at?: string
+          worker_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "elevenlabs_workers_current_job_id_fkey"
+            columns: ["current_job_id"]
+            isOneToOne: false
+            referencedRelation: "elevenlabs_studio_jobs"
             referencedColumns: ["id"]
           },
         ]
@@ -1544,18 +2178,27 @@ export type Database = {
       }
       frameio_token_state: {
         Row: {
+          access_expires_at: string | null
+          access_token: string | null
           id: string
           refresh_token: string | null
+          refreshing_until: string | null
           updated_at: string
         }
         Insert: {
+          access_expires_at?: string | null
+          access_token?: string | null
           id?: string
           refresh_token?: string | null
+          refreshing_until?: string | null
           updated_at?: string
         }
         Update: {
+          access_expires_at?: string | null
+          access_token?: string | null
           id?: string
           refresh_token?: string | null
+          refreshing_until?: string | null
           updated_at?: string
         }
         Relationships: []
@@ -2208,6 +2851,69 @@ export type Database = {
         }
         Relationships: []
       }
+      meeting_briefing_deliveries: {
+        Row: {
+          attempts: number
+          claimed_at: string | null
+          created_at: string
+          error: string | null
+          id: string
+          internal_recipient_id: string
+          lease_expires_at: string | null
+          meeting_briefing_id: string
+          slack_channel_id: string | null
+          slack_message_ts: string | null
+          slack_user_id: string
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          attempts?: number
+          claimed_at?: string | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          internal_recipient_id: string
+          lease_expires_at?: string | null
+          meeting_briefing_id: string
+          slack_channel_id?: string | null
+          slack_message_ts?: string | null
+          slack_user_id: string
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          attempts?: number
+          claimed_at?: string | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          internal_recipient_id?: string
+          lease_expires_at?: string | null
+          meeting_briefing_id?: string
+          slack_channel_id?: string | null
+          slack_message_ts?: string | null
+          slack_user_id?: string
+          status?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "meeting_briefing_deliveries_internal_recipient_id_fkey"
+            columns: ["internal_recipient_id"]
+            isOneToOne: false
+            referencedRelation: "staff"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "meeting_briefing_deliveries_meeting_briefing_id_fkey"
+            columns: ["meeting_briefing_id"]
+            isOneToOne: false
+            referencedRelation: "meeting_briefings"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       meeting_briefings: {
         Row: {
           attendees_json: Json | null
@@ -2569,6 +3275,322 @@ export type Database = {
           },
         ]
       }
+      pilot_evidence: {
+        Row: {
+          author: string
+          category: string
+          created_at: string
+          id: string
+          label: string | null
+          metric_key: string | null
+          observed_at: string | null
+          pilot_id: string
+          provenance: Json | null
+          unit: string | null
+          value_numeric: number | null
+          value_text: string | null
+        }
+        Insert: {
+          author: string
+          category: string
+          created_at?: string
+          id?: string
+          label?: string | null
+          metric_key?: string | null
+          observed_at?: string | null
+          pilot_id: string
+          provenance?: Json | null
+          unit?: string | null
+          value_numeric?: number | null
+          value_text?: string | null
+        }
+        Update: {
+          author?: string
+          category?: string
+          created_at?: string
+          id?: string
+          label?: string | null
+          metric_key?: string | null
+          observed_at?: string | null
+          pilot_id?: string
+          provenance?: Json | null
+          unit?: string | null
+          value_numeric?: number | null
+          value_text?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pilot_evidence_pilot_id_fkey"
+            columns: ["pilot_id"]
+            isOneToOne: false
+            referencedRelation: "pilots"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      pilot_generations: {
+        Row: {
+          acceptance: string
+          accepted_at: string | null
+          accepted_by: string | null
+          author: string
+          created_at: string
+          external_ref: string | null
+          id: string
+          kind: string | null
+          label: string | null
+          notes: string | null
+          pilot_id: string
+          provenance: Json | null
+          source: string | null
+        }
+        Insert: {
+          acceptance?: string
+          accepted_at?: string | null
+          accepted_by?: string | null
+          author: string
+          created_at?: string
+          external_ref?: string | null
+          id?: string
+          kind?: string | null
+          label?: string | null
+          notes?: string | null
+          pilot_id: string
+          provenance?: Json | null
+          source?: string | null
+        }
+        Update: {
+          acceptance?: string
+          accepted_at?: string | null
+          accepted_by?: string | null
+          author?: string
+          created_at?: string
+          external_ref?: string | null
+          id?: string
+          kind?: string | null
+          label?: string | null
+          notes?: string | null
+          pilot_id?: string
+          provenance?: Json | null
+          source?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pilot_generations_pilot_id_fkey"
+            columns: ["pilot_id"]
+            isOneToOne: false
+            referencedRelation: "pilots"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      pilot_material_maps: {
+        Row: {
+          author: string
+          created_at: string
+          external_ref: string | null
+          id: string
+          map_type: string
+          package_name: string
+          pilot_id: string
+          provenance: Json | null
+          purpose: string
+        }
+        Insert: {
+          author: string
+          created_at?: string
+          external_ref?: string | null
+          id?: string
+          map_type: string
+          package_name: string
+          pilot_id: string
+          provenance?: Json | null
+          purpose: string
+        }
+        Update: {
+          author?: string
+          created_at?: string
+          external_ref?: string | null
+          id?: string
+          map_type?: string
+          package_name?: string
+          pilot_id?: string
+          provenance?: Json | null
+          purpose?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pilot_material_maps_pilot_id_fkey"
+            columns: ["pilot_id"]
+            isOneToOne: false
+            referencedRelation: "pilots"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      pilot_references: {
+        Row: {
+          author: string
+          created_at: string
+          description: string | null
+          id: string
+          label: string | null
+          pilot_id: string
+          provenance: Json | null
+          ref_type: string
+          url: string | null
+        }
+        Insert: {
+          author: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          label?: string | null
+          pilot_id: string
+          provenance?: Json | null
+          ref_type: string
+          url?: string | null
+        }
+        Update: {
+          author?: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          label?: string | null
+          pilot_id?: string
+          provenance?: Json | null
+          ref_type?: string
+          url?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pilot_references_pilot_id_fkey"
+            columns: ["pilot_id"]
+            isOneToOne: false
+            referencedRelation: "pilots"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      pilot_validations: {
+        Row: {
+          author: string
+          created_at: string
+          evidence_ref: string
+          id: string
+          note: string | null
+          passed: boolean
+          pilot_id: string
+          provenance: Json | null
+          subject: string | null
+          tool: string
+        }
+        Insert: {
+          author: string
+          created_at?: string
+          evidence_ref: string
+          id?: string
+          note?: string | null
+          passed?: boolean
+          pilot_id: string
+          provenance?: Json | null
+          subject?: string | null
+          tool: string
+        }
+        Update: {
+          author?: string
+          created_at?: string
+          evidence_ref?: string
+          id?: string
+          note?: string | null
+          passed?: boolean
+          pilot_id?: string
+          provenance?: Json | null
+          subject?: string | null
+          tool?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pilot_validations_pilot_id_fkey"
+            columns: ["pilot_id"]
+            isOneToOne: false
+            referencedRelation: "pilots"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      pilots: {
+        Row: {
+          canvas_id: string | null
+          canvas_url: string | null
+          created_at: string
+          created_by: string | null
+          id: string
+          pilot_type: string
+          project_id: string
+          recommendation: string | null
+          recommendation_at: string | null
+          recommendation_by: string | null
+          recommendation_rationale: string | null
+          status: string
+          title: string | null
+          updated_at: string
+          visual_language: string | null
+          workspace_id: string | null
+        }
+        Insert: {
+          canvas_id?: string | null
+          canvas_url?: string | null
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          pilot_type?: string
+          project_id: string
+          recommendation?: string | null
+          recommendation_at?: string | null
+          recommendation_by?: string | null
+          recommendation_rationale?: string | null
+          status?: string
+          title?: string | null
+          updated_at?: string
+          visual_language?: string | null
+          workspace_id?: string | null
+        }
+        Update: {
+          canvas_id?: string | null
+          canvas_url?: string | null
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          pilot_type?: string
+          project_id?: string
+          recommendation?: string | null
+          recommendation_at?: string | null
+          recommendation_by?: string | null
+          recommendation_rationale?: string | null
+          status?: string
+          title?: string | null
+          updated_at?: string
+          visual_language?: string | null
+          workspace_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pilots_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "pilots_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       pitch_log: {
         Row: {
           budget_range: string | null
@@ -2625,6 +3647,33 @@ export type Database = {
           },
         ]
       }
+      plaud_token_state: {
+        Row: {
+          access_expires_at: string | null
+          access_token: string | null
+          id: string
+          refresh_token: string | null
+          refreshing_until: string | null
+          updated_at: string
+        }
+        Insert: {
+          access_expires_at?: string | null
+          access_token?: string | null
+          id: string
+          refresh_token?: string | null
+          refreshing_until?: string | null
+          updated_at?: string
+        }
+        Update: {
+          access_expires_at?: string | null
+          access_token?: string | null
+          id?: string
+          refresh_token?: string | null
+          refreshing_until?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       project_access: {
         Row: {
           added_at: string | null
@@ -2679,6 +3728,211 @@ export type Database = {
           },
           {
             foreignKeyName: "project_access_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      project_control_bindings: {
+        Row: {
+          canvas_id: string | null
+          canvas_url: string | null
+          created_at: string
+          creation_state: string
+          error: string | null
+          error_notified_key: string | null
+          id: string
+          last_row_hash: string | null
+          last_synced_at: string | null
+          project_id: string
+          row_metadata_id: number | null
+          sheet_id: number
+          source_template_file_id: string | null
+          source_template_hash: string | null
+          spreadsheet_id: string
+          sync_status: string
+          template_markdown: string | null
+          updated_at: string
+        }
+        Insert: {
+          canvas_id?: string | null
+          canvas_url?: string | null
+          created_at?: string
+          creation_state?: string
+          error?: string | null
+          error_notified_key?: string | null
+          id?: string
+          last_row_hash?: string | null
+          last_synced_at?: string | null
+          project_id: string
+          row_metadata_id?: number | null
+          sheet_id: number
+          source_template_file_id?: string | null
+          source_template_hash?: string | null
+          spreadsheet_id: string
+          sync_status?: string
+          template_markdown?: string | null
+          updated_at?: string
+        }
+        Update: {
+          canvas_id?: string | null
+          canvas_url?: string | null
+          created_at?: string
+          creation_state?: string
+          error?: string | null
+          error_notified_key?: string | null
+          id?: string
+          last_row_hash?: string | null
+          last_synced_at?: string | null
+          project_id?: string
+          row_metadata_id?: number | null
+          sheet_id?: number
+          source_template_file_id?: string | null
+          source_template_hash?: string | null
+          spreadsheet_id?: string
+          sync_status?: string
+          template_markdown?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "project_control_bindings_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: true
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      project_control_canvases: {
+        Row: {
+          canvas_id: string | null
+          canvas_type: string
+          canvas_url: string | null
+          created_at: string
+          error: string | null
+          id: string
+          last_source_hash: string | null
+          last_synced_at: string | null
+          project_id: string
+          source_template_file_id: string | null
+          source_template_hash: string | null
+          sync_status: string
+          template_markdown: string | null
+          updated_at: string
+        }
+        Insert: {
+          canvas_id?: string | null
+          canvas_type: string
+          canvas_url?: string | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          last_source_hash?: string | null
+          last_synced_at?: string | null
+          project_id: string
+          source_template_file_id?: string | null
+          source_template_hash?: string | null
+          sync_status?: string
+          template_markdown?: string | null
+          updated_at?: string
+        }
+        Update: {
+          canvas_id?: string | null
+          canvas_type?: string
+          canvas_url?: string | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          last_source_hash?: string | null
+          last_synced_at?: string | null
+          project_id?: string
+          source_template_file_id?: string | null
+          source_template_hash?: string | null
+          sync_status?: string
+          template_markdown?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "project_control_canvases_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      project_creation_requests: {
+        Row: {
+          attempts: number
+          claimed_at: string | null
+          claimed_by: string | null
+          created_at: string
+          decision: string | null
+          error: string | null
+          fence: number
+          id: string
+          lease_expires_at: string | null
+          project_id: string | null
+          replace_target_project_id: string | null
+          request_key: string
+          requested_by_slack_user_id: string | null
+          status: string
+          submission: Json
+          updated_at: string
+          workspace_id: string | null
+        }
+        Insert: {
+          attempts?: number
+          claimed_at?: string | null
+          claimed_by?: string | null
+          created_at?: string
+          decision?: string | null
+          error?: string | null
+          fence?: number
+          id?: string
+          lease_expires_at?: string | null
+          project_id?: string | null
+          replace_target_project_id?: string | null
+          request_key: string
+          requested_by_slack_user_id?: string | null
+          status?: string
+          submission?: Json
+          updated_at?: string
+          workspace_id?: string | null
+        }
+        Update: {
+          attempts?: number
+          claimed_at?: string | null
+          claimed_by?: string | null
+          created_at?: string
+          decision?: string | null
+          error?: string | null
+          fence?: number
+          id?: string
+          lease_expires_at?: string | null
+          project_id?: string | null
+          replace_target_project_id?: string | null
+          request_key?: string
+          requested_by_slack_user_id?: string | null
+          status?: string
+          submission?: Json
+          updated_at?: string
+          workspace_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "project_creation_requests_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "project_creation_requests_workspace_id_fkey"
             columns: ["workspace_id"]
             isOneToOne: false
             referencedRelation: "workspaces"
@@ -2746,6 +4000,71 @@ export type Database = {
           },
         ]
       }
+      project_provisioning_steps: {
+        Row: {
+          attempts: number
+          claim_holder: string | null
+          claimed_at: string | null
+          created_at: string
+          error: string | null
+          external_id: string | null
+          external_url: string | null
+          fence: number
+          id: string
+          input_hash: string | null
+          lease_expires_at: string | null
+          project_id: string
+          result: Json | null
+          service: string
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          attempts?: number
+          claim_holder?: string | null
+          claimed_at?: string | null
+          created_at?: string
+          error?: string | null
+          external_id?: string | null
+          external_url?: string | null
+          fence?: number
+          id?: string
+          input_hash?: string | null
+          lease_expires_at?: string | null
+          project_id: string
+          result?: Json | null
+          service: string
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          attempts?: number
+          claim_holder?: string | null
+          claimed_at?: string | null
+          created_at?: string
+          error?: string | null
+          external_id?: string | null
+          external_url?: string | null
+          fence?: number
+          id?: string
+          input_hash?: string | null
+          lease_expires_at?: string | null
+          project_id?: string
+          result?: Json | null
+          service?: string
+          status?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "project_provisioning_steps_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       project_settings: {
         Row: {
           frameio_upload_enabled: boolean
@@ -2775,6 +4094,218 @@ export type Database = {
           },
         ]
       }
+      project_share_events: {
+        Row: {
+          created_at: string
+          decided_at: string | null
+          decided_by_slack_user_id: string | null
+          dropbox_file_id: string
+          dropbox_rev: string
+          file_name: string
+          id: string
+          match_confidence: string | null
+          project_id: string
+          share_url: string
+          slack_channel_id: string | null
+          slack_message_ts: string | null
+          status: string
+          suggested_milestone: string | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          decided_at?: string | null
+          decided_by_slack_user_id?: string | null
+          dropbox_file_id: string
+          dropbox_rev: string
+          file_name: string
+          id?: string
+          match_confidence?: string | null
+          project_id: string
+          share_url: string
+          slack_channel_id?: string | null
+          slack_message_ts?: string | null
+          status?: string
+          suggested_milestone?: string | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          decided_at?: string | null
+          decided_by_slack_user_id?: string | null
+          dropbox_file_id?: string
+          dropbox_rev?: string
+          file_name?: string
+          id?: string
+          match_confidence?: string | null
+          project_id?: string
+          share_url?: string
+          slack_channel_id?: string | null
+          slack_message_ts?: string | null
+          status?: string
+          suggested_milestone?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "project_share_events_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      project_update_requests: {
+        Row: {
+          attempts: number
+          claimed_at: string | null
+          claimed_by: string | null
+          created_at: string
+          decision: string | null
+          error: string | null
+          fence: number
+          id: string
+          lease_expires_at: string | null
+          plan: Json
+          project_id: string
+          request_key: string
+          requested_by_slack_user_id: string | null
+          status: string
+          submission: Json
+          updated_at: string
+          workspace_id: string | null
+        }
+        Insert: {
+          attempts?: number
+          claimed_at?: string | null
+          claimed_by?: string | null
+          created_at?: string
+          decision?: string | null
+          error?: string | null
+          fence?: number
+          id?: string
+          lease_expires_at?: string | null
+          plan?: Json
+          project_id: string
+          request_key: string
+          requested_by_slack_user_id?: string | null
+          status?: string
+          submission?: Json
+          updated_at?: string
+          workspace_id?: string | null
+        }
+        Update: {
+          attempts?: number
+          claimed_at?: string | null
+          claimed_by?: string | null
+          created_at?: string
+          decision?: string | null
+          error?: string | null
+          fence?: number
+          id?: string
+          lease_expires_at?: string | null
+          plan?: Json
+          project_id?: string
+          request_key?: string
+          requested_by_slack_user_id?: string | null
+          status?: string
+          submission?: Json
+          updated_at?: string
+          workspace_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "project_update_requests_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "project_update_requests_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      project_update_steps: {
+        Row: {
+          attempts: number
+          claim_holder: string | null
+          claimed_at: string | null
+          created_at: string
+          error: string | null
+          external_id: string | null
+          external_url: string | null
+          fence: number
+          id: string
+          input_hash: string | null
+          lease_expires_at: string | null
+          project_id: string
+          result: Json | null
+          service: string
+          status: string
+          update_request_id: string
+          updated_at: string
+        }
+        Insert: {
+          attempts?: number
+          claim_holder?: string | null
+          claimed_at?: string | null
+          created_at?: string
+          error?: string | null
+          external_id?: string | null
+          external_url?: string | null
+          fence?: number
+          id?: string
+          input_hash?: string | null
+          lease_expires_at?: string | null
+          project_id: string
+          result?: Json | null
+          service: string
+          status?: string
+          update_request_id: string
+          updated_at?: string
+        }
+        Update: {
+          attempts?: number
+          claim_holder?: string | null
+          claimed_at?: string | null
+          created_at?: string
+          error?: string | null
+          external_id?: string | null
+          external_url?: string | null
+          fence?: number
+          id?: string
+          input_hash?: string | null
+          lease_expires_at?: string | null
+          project_id?: string
+          result?: Json | null
+          service?: string
+          status?: string
+          update_request_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "project_update_steps_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "project_update_steps_update_request_id_fkey"
+            columns: ["update_request_id"]
+            isOneToOne: false
+            referencedRelation: "project_update_requests"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       projects: {
         Row: {
           brief_summary: string | null
@@ -2783,6 +4314,7 @@ export type Database = {
           budget_total: number | null
           client: string
           created_at: string | null
+          creation_request_id: string | null
           external_ids: Json | null
           external_links: Json | null
           financial_sheet_url: string | null
@@ -2813,6 +4345,7 @@ export type Database = {
           budget_total?: number | null
           client: string
           created_at?: string | null
+          creation_request_id?: string | null
           external_ids?: Json | null
           external_links?: Json | null
           financial_sheet_url?: string | null
@@ -2843,6 +4376,7 @@ export type Database = {
           budget_total?: number | null
           client?: string
           created_at?: string | null
+          creation_request_id?: string | null
           external_ids?: Json | null
           external_links?: Json | null
           financial_sheet_url?: string | null
@@ -3344,6 +4878,48 @@ export type Database = {
           },
         ]
       }
+      sheet_sync_state: {
+        Row: {
+          created_at: string
+          creation_fence: number
+          creation_lease_expires_at: string | null
+          creation_lease_holder: string | null
+          cursor_advanced_at: string | null
+          drive_version: string | null
+          spreadsheet_id: string
+          sync_fence: number
+          sync_lease_expires_at: string | null
+          sync_lease_holder: string | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          creation_fence?: number
+          creation_lease_expires_at?: string | null
+          creation_lease_holder?: string | null
+          cursor_advanced_at?: string | null
+          drive_version?: string | null
+          spreadsheet_id: string
+          sync_fence?: number
+          sync_lease_expires_at?: string | null
+          sync_lease_holder?: string | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          creation_fence?: number
+          creation_lease_expires_at?: string | null
+          creation_lease_holder?: string | null
+          cursor_advanced_at?: string | null
+          drive_version?: string | null
+          spreadsheet_id?: string
+          sync_fence?: number
+          sync_lease_expires_at?: string | null
+          sync_lease_holder?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       staff: {
         Row: {
           briefing_channel_id: string | null
@@ -3398,17 +4974,58 @@ export type Database = {
         }
         Relationships: []
       }
+      staff_time_off: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          end_date: string
+          id: string
+          kind: string
+          note: string | null
+          staff_id: string
+          start_date: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          end_date: string
+          id?: string
+          kind?: string
+          note?: string | null
+          staff_id: string
+          start_date: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          end_date?: string
+          id?: string
+          kind?: string
+          note?: string | null
+          staff_id?: string
+          start_date?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "staff_time_off_staff_id_fkey"
+            columns: ["staff_id"]
+            isOneToOne: false
+            referencedRelation: "staff"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       storyboard_jobs: {
         Row: {
           aspect_ratio: string | null
           boords_storyboard_id: string | null
           boords_url: string | null
+          channel_id: string | null
+          created_at: string
           elevenlabs_error: string | null
           elevenlabs_project_id: string | null
           elevenlabs_status: string | null
           elevenlabs_url: string | null
-          channel_id: string | null
-          created_at: string
           frames: Json
           id: string
           last_error: string | null
@@ -3426,12 +5043,12 @@ export type Database = {
           aspect_ratio?: string | null
           boords_storyboard_id?: string | null
           boords_url?: string | null
+          channel_id?: string | null
+          created_at?: string
           elevenlabs_error?: string | null
           elevenlabs_project_id?: string | null
           elevenlabs_status?: string | null
           elevenlabs_url?: string | null
-          channel_id?: string | null
-          created_at?: string
           frames: Json
           id?: string
           last_error?: string | null
@@ -3449,12 +5066,12 @@ export type Database = {
           aspect_ratio?: string | null
           boords_storyboard_id?: string | null
           boords_url?: string | null
+          channel_id?: string | null
+          created_at?: string
           elevenlabs_error?: string | null
           elevenlabs_project_id?: string | null
           elevenlabs_status?: string | null
           elevenlabs_url?: string | null
-          channel_id?: string | null
-          created_at?: string
           frames?: Json
           id?: string
           last_error?: string | null
@@ -3543,6 +5160,30 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      system_health: {
+        Row: {
+          checked_at: string
+          detail: string | null
+          key: string
+          since: string
+          status: string
+        }
+        Insert: {
+          checked_at?: string
+          detail?: string | null
+          key: string
+          since?: string
+          status: string
+        }
+        Update: {
+          checked_at?: string
+          detail?: string | null
+          key?: string
+          since?: string
+          status?: string
+        }
+        Relationships: []
       }
       team_members: {
         Row: {
@@ -3912,7 +5553,120 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      acquire_archive_job_lease: {
+        Args: {
+          p_job_id: string
+          p_lease_seconds?: number
+          p_worker_id: string
+        }
+        Returns: {
+          attempt: number
+          claim_token: string | null
+          claimed_at: string | null
+          claimed_by: string | null
+          completed_at: string | null
+          created_at: string
+          destinations: string[]
+          error: string | null
+          id: string
+          idempotency_key: string
+          progress: Json
+          project_id: string
+          project_snapshot: Json
+          requested_by_slack_user_id: string
+          results: Json
+          settings: Json
+          slack_channel_id: string | null
+          slack_message_ts: string | null
+          source_video_path: string
+          started_at: string | null
+          status: string
+          updated_at: string
+          workspace_id: string
+        }[]
+        SetofOptions: {
+          from: "*"
+          to: "archive_jobs"
+          isOneToOne: false
+          isSetofReturn: true
+        }
+      }
       check_slug_available: { Args: { p_slug: string }; Returns: boolean }
+      claim_archive_step: {
+        Args: {
+          p_job_id: string
+          p_lease_seconds?: number
+          p_step_name: string
+          p_worker_id: string
+        }
+        Returns: {
+          attempt: number
+          claim_token: string | null
+          claimed_at: string | null
+          claimed_by: string | null
+          completed_at: string | null
+          created_at: string
+          error: string | null
+          id: string
+          job_id: string
+          result: Json
+          started_at: string | null
+          status: string
+          step_name: string
+          updated_at: string
+        }[]
+        SetofOptions: {
+          from: "*"
+          to: "archive_job_steps"
+          isOneToOne: false
+          isSetofReturn: true
+        }
+      }
+      claim_dropbox_events: {
+        Args: {
+          p_lease_seconds?: number
+          p_limit?: number
+          p_worker_id: string
+        }
+        Returns: {
+          attempt_count: number
+          claim_token: string | null
+          claimed_at: string | null
+          claimed_by: string | null
+          completed_at: string | null
+          created_at: string
+          event_key: string
+          event_type: string
+          id: string
+          last_error: string | null
+          max_attempts: number
+          next_attempt_at: string
+          payload: Json
+          source_cursor: string
+          status: string
+          updated_at: string
+        }[]
+        SetofOptions: {
+          from: "*"
+          to: "dropbox_event_inbox"
+          isOneToOne: false
+          isSetofReturn: true
+        }
+      }
+      complete_dropbox_event: {
+        Args: { p_claim_token: string; p_event_id: string }
+        Returns: boolean
+      }
+      complete_elevenlabs_studio_job: {
+        Args: {
+          p_claimed_at: string
+          p_job_id: string
+          p_project_id: string
+          p_url: string
+          p_worker_id: string
+        }
+        Returns: boolean
+      }
       create_workspace: {
         Args: {
           p_name: string
@@ -3922,8 +5676,31 @@ export type Database = {
         }
         Returns: Json
       }
+      fail_dropbox_event: {
+        Args: { p_claim_token: string; p_error: string; p_event_id: string }
+        Returns: string
+      }
+      finish_archive_step_fenced: {
+        Args: {
+          p_claim_token: string
+          p_error?: string
+          p_job_id: string
+          p_result?: Json
+          p_status: string
+          p_step_name: string
+        }
+        Returns: boolean
+      }
       get_user_tier: { Args: { ws_id: string }; Returns: string }
       get_user_workspace_ids: { Args: never; Returns: string[] }
+      ingest_dropbox_event_batch: {
+        Args: {
+          p_events: Json
+          p_new_cursor: string
+          p_previous_cursor: string
+        }
+        Returns: number
+      }
       is_founder: { Args: { ws_id: string }; Returns: boolean }
       is_founder_or_producer: { Args: { ws_id: string }; Returns: boolean }
       match_documents: {
@@ -3945,6 +5722,19 @@ export type Database = {
           title: string
           workspace_id: string
         }[]
+      }
+      specs_backlog_commit_folder: {
+        Args: {
+          p_children: string[]
+          p_fence: number
+          p_holder: string
+          p_parent: string
+        }
+        Returns: boolean
+      }
+      specs_backlog_mark_complete_if_empty: {
+        Args: { p_fence: number; p_holder: string }
+        Returns: boolean
       }
     }
     Enums: {

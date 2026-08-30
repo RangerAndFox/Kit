@@ -117,6 +117,11 @@ export async function POST(request: Request) {
     }
 
     if (body.action === 'elevenlabs.fail_storyboard') {
+      const { data: ownedJob, error: ownershipError } = await sb.from('elevenlabs_studio_jobs')
+        .select('id').eq('id', body.jobId).eq('storyboard_job_id', body.storyboardJobId)
+        .eq('claimed_by', workerId).eq('claimed_at', body.claimedAt).eq('status', 'failed').maybeSingle()
+      if (ownershipError) throw ownershipError
+      if (!ownedJob) return NextResponse.json({ ok: false, error: 'claim lost' }, { status: 409 })
       const { error } = await sb.from('storyboard_jobs').update({
         elevenlabs_status: 'failed',
         elevenlabs_error: String(body.error || 'Unknown worker failure').slice(0, 1000),

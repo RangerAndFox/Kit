@@ -102,7 +102,7 @@ async function processElevenLabs(): Promise<boolean> {
       await updateElevenLabsJob(job, retry ? 'retryable' : 'failed', { error: message })
       failureOwned = true
     } catch {}
-    if (!retry && failureOwned) await failStoryboardElevenLabs(job.storyboard_job_id, message).catch(() => {})
+    if (!retry && failureOwned) await failStoryboardElevenLabs(job, message).catch(() => {})
     await elevenLabsHeartbeat(needsLogin ? 'needs_login' : 'error', job.id, message, browserVersion).catch(() => {})
   } finally {
     elevenLabsJobId = null
