@@ -185,6 +185,59 @@ interface DropEntry {
   rev?: string  // revision — changes on every content update
 }
 
+export type DropboxInboxEvent = {
+  event_key: string
+  event_type: 'accessibility_srt' | 'ae_render' | 'frameio_delivery'
+  payload: Record<string, unknown>
+}
+
+function stableDropboxEventKey(kind: string, entry: DropEntry): string {
+  const identity = `${kind}:${entry.id || entry.path_lower}:${entry.rev || 'unversioned'}`
+  return `dbx:${crypto.createHash('sha256').update(identity).digest('hex')}`
+}
+
+/** Convert one Dropbox delta into durable work, or null when Kit does not own
+ * the path. Kept pure so routing and dedupe identities can be contract-tested. */
+export function classifyDropboxEntry(entry: DropEntry): DropboxInboxEvent | null {
+  if (entry.tag !== 'file') return null
+
+  const safeName = matchAccessibilitySrt(entry.path_display)
+  if (safeName) return {
+    event_key: stableDropboxEventKey('accessibility_srt', entry),
+    event_type: 'accessibility_srt',
+    payload: { path: entry.path_display, safeName, sizeBytes: entry.size || 0 },
+  }
+
+  const ae = matchAeRenderFarmDrop(entry.path_display)
+  if (ae) return {
+    event_key: stableDropboxEventKey('ae_render', entry),
+    event_type: 'ae_render',
+    payload: {
+      ...ae,
+      dropboxId: entry.id || entry.path_lower,
+      rev: entry.rev || '',
+    },
+  }
+
+  const match = entry.path_display.match(PATH_RE)
+  if (!match) return null
+  const [, year, projectSafeName, subfolder, filename] = match
+  if (isDeniedDeliveryFile(filename)) return null
+  return {
+    event_key: stableDropboxEventKey('frameio_delivery', entry),
+    event_type: 'frameio_delivery',
+    payload: {
+      path: entry.path_display,
+      name: filename,
+      safeName: projectSafeName,
+      subfolder,
+      year,
+      dropboxId: entry.id || entry.path_lower,
+      rev: entry.rev || '',
+    },
+  }
+}
+
 async function fetchDeltas(initial: string): Promise<{ entries: DropEntry[]; newCursor: string }> {
   const entries: DropEntry[] = []
   let cursor = initial
@@ -217,13 +270,6 @@ async function fetchDeltas(initial: string): Promise<{ entries: DropEntry[]; new
 let _running = false
 let _rerunRequested = false
 
-/** A Dropbox revision is acknowledged only after every matched side effect
- * succeeds. Poison entries must be dead-lettered durably before any future
- * implementation advances past them; process memory is not a safe ledger. */
-export function shouldAdvanceDeliveryCursor(failedEntries: number): boolean {
-  return failedEntries === 0
-}
-
 export async function processDropboxNotification(app: App): Promise<void> {
   if (_running) {
     _rerunRequested = true
@@ -245,104 +291,100 @@ async function processDeltasOnce(app: App): Promise<void> {
   if (!cursor) {
     await seedCursor()
     console.log('[dropbox-watcher] seeded cursor on first run; no deltas to process')
+    await drainDropboxInbox(app)
     return
   }
 
   const { entries, newCursor } = await fetchDeltas(cursor)
-
-  let matched = 0
-  let failed = 0
-  for (const entry of entries) {
-    if (entry.tag !== 'file') continue
-
-    // Accessibility SRT → generate TTML/VTT/TXT siblings in the same folder.
-    // Checked before PATH_RE (captions live in an accessibility folder, not
-    // 09_Outgoing). Our own .ttml/.vtt/.txt uploads don't re-match (not .srt).
-    const accSafeName = matchAccessibilitySrt(entry.path_display)
-    if (accSafeName) {
-      matched++
-      try {
-        await handleAccessibilitySrt(app, {
-          path: entry.path_display,
-          safeName: accSafeName,
-          sizeBytes: entry.size || 0,
-        })
-      } catch (err: any) {
-        failed++
-        console.error(`[dropbox-watcher] accessibility SRT failed for ${entry.path_display}: ${err.message}`)
-      }
-      continue
-    }
-
-    // AE render-farm watch folder: an .aep in 08_AE/03_RenderFarm → submit to
-    // the Deadline farm. Checked before PATH_RE (different subtree).
-    const aeDrop = matchAeRenderFarmDrop(entry.path_display)
-    if (aeDrop) {
-      matched++
-      try {
-        await handleAeRenderFarmDrop(app, {
-          ...aeDrop,
-          dropboxId: entry.id || entry.path_lower,
-          rev: entry.rev || '',
-        })
-      } catch (err: any) {
-        failed++
-        console.error(`[dropbox-watcher] AE render drop failed for ${entry.path_display}: ${err.message}`)
-      }
-      continue
-    }
-
-    const m = entry.path_display.match(PATH_RE)
-    if (!m) continue
-    const [, year, safeName, subfolder, filename] = m
-    // Skip denied file types (e.g. .aac audio sidecars) so they aren't
-    // mirrored to Frame.io alongside the video deliverables.
-    if (isDeniedDeliveryFile(filename)) {
-      console.log(`[dropbox-watcher] skipping ${entry.path_display} (denied extension)`)
-      continue
-    }
-    matched++
-    try {
-      await handleNewDelivery(app, {
-        path: entry.path_display,
-        name: filename,
-        safeName,
-        subfolder,
-        year,
-        dropboxId: entry.id || entry.path_lower,
-        rev: entry.rev || '',
-      })
-      // Celebrate a real delivery (02_Delivery only) with a meme in the team
-      // channel — one per project per day (deduped downstream). Fire-and-forget
-      // so it can never slow or break the delivery mirror.
-      if (/02_Delivery/i.test(subfolder)) {
-        const projectName =
-          safeName.replace(/^\d+[A-Za-z]?[_-]/, '').replace(/[_-]+/g, ' ').trim() || safeName
-        import('../celebrations/celebrations')
-          .then(({ postDeliveryCelebration }) => postDeliveryCelebration(app, projectName))
-          .catch((e) => console.warn(`[dropbox-watcher] delivery celebration failed: ${e?.message || e}`))
-      }
-    } catch (err: any) {
-      failed++
-      console.error(`[dropbox-watcher] failed for ${entry.path_display}: ${err.message}`)
-    }
-  }
-
-  // Advance the cursor only after processing, and only if the batch didn't
-  // fail — saving it up front permanently consumes the delta. Never advance
-  // merely because the same cursor failed twice; that permanently loses the
-  // client delivery after a provider outage or process restart.
-  if (shouldAdvanceDeliveryCursor(failed)) {
-    await saveCursor(newCursor)
-  } else {
-    console.error(
-      `[dropbox-watcher] ${failed}/${matched} deliveries failed — cursor NOT advanced; batch retries on the next notification`,
-    )
-  }
+  const events = entries.map(classifyDropboxEntry).filter(Boolean) as DropboxInboxEvent[]
+  const sb = createAdminClient()
+  const { data: inserted, error } = await sb.rpc('ingest_dropbox_event_batch', {
+    p_previous_cursor: cursor,
+    p_new_cursor: newCursor,
+    p_events: events,
+  })
+  if (error) throw new Error(`Dropbox inbox ingest failed: ${error.message}`)
 
   console.log(
-    `[dropbox-watcher] processed ${entries.length} entries, ${matched} matched outgoing pattern`,
+    `[dropbox-watcher] ingested ${inserted || 0}/${events.length} actionable events from ${entries.length} deltas`,
   )
+  await drainDropboxInbox(app)
+}
+
+type ClaimedDropboxEvent = DropboxInboxEvent & {
+  id: string
+  claim_token: string
+  attempt_count: number
+}
+
+async function dispatchDropboxEvent(app: App, event: ClaimedDropboxEvent): Promise<void> {
+  const payload = event.payload as any
+  if (event.event_type === 'accessibility_srt') {
+    await handleAccessibilitySrt(app, payload)
+    return
+  }
+  if (event.event_type === 'ae_render') {
+    await handleAeRenderFarmDrop(app, payload)
+    return
+  }
+  await handleNewDelivery(app, payload)
+  if (/02_Delivery/i.test(payload.subfolder || '')) {
+    const safeName = String(payload.safeName || '')
+    const projectName = safeName.replace(/^\d+[A-Za-z]?[_-]/, '').replace(/[_-]+/g, ' ').trim() || safeName
+    import('../celebrations/celebrations')
+      .then(({ postDeliveryCelebration }) => postDeliveryCelebration(app, projectName))
+      .catch((e) => console.warn(`[dropbox-watcher] delivery celebration failed: ${e?.message || e}`))
+  }
+}
+
+/** Drain due events. Claims are fenced in Postgres, so overlapping Railway
+ * instances and expired leases cannot complete or fail one another's work. */
+export async function drainDropboxInbox(
+  app: App,
+  options: { workerId?: string; batchSize?: number; maxBatches?: number } = {},
+): Promise<{ claimed: number; completed: number; failed: number; deadLettered: number }> {
+  const sb = createAdminClient()
+  const workerId = options.workerId || `bolt:${process.pid}:${crypto.randomUUID()}`
+  const batchSize = Math.min(Math.max(options.batchSize || 10, 1), 100)
+  const maxBatches = Math.min(Math.max(options.maxBatches || 10, 1), 100)
+  const result = { claimed: 0, completed: 0, failed: 0, deadLettered: 0 }
+
+  for (let batch = 0; batch < maxBatches; batch++) {
+    const { data, error } = await sb.rpc('claim_dropbox_events', {
+      p_worker_id: workerId,
+      p_limit: batchSize,
+      p_lease_seconds: 300,
+    })
+    if (error) throw new Error(`Dropbox inbox claim failed: ${error.message}`)
+    const claimed = (data || []) as ClaimedDropboxEvent[]
+    if (claimed.length === 0) break
+    result.claimed += claimed.length
+
+    for (const event of claimed) {
+      try {
+        await dispatchDropboxEvent(app, event)
+        const { data: completed, error: completeError } = await sb.rpc('complete_dropbox_event', {
+          p_event_id: event.id,
+          p_claim_token: event.claim_token,
+        })
+        if (completeError) throw new Error(`completion checkpoint failed: ${completeError.message}`)
+        if (!completed) throw new Error('completion lease was lost')
+        result.completed++
+      } catch (error: any) {
+        result.failed++
+        const message = error?.message || String(error)
+        const { data: status, error: failError } = await sb.rpc('fail_dropbox_event', {
+          p_event_id: event.id,
+          p_claim_token: event.claim_token,
+          p_error: message,
+        })
+        if (failError) console.error(`[dropbox-inbox] could not checkpoint ${event.id}: ${failError.message}`)
+        if (status === 'dead_letter') result.deadLettered++
+        console.error(`[dropbox-inbox] ${event.event_type} ${event.id} ${status || 'lease-lost'}: ${message}`)
+      }
+    }
+  }
+  return result
 }
 
 // ─── Per-file pipeline ──────────────────────────────────────

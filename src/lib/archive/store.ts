@@ -29,9 +29,47 @@ export async function getArchiveJob(id: string): Promise<ArchiveJob | null> {
   return data as ArchiveJob | null
 }
 
+export async function listRecoverableArchiveJobs(leaseSeconds = 7200): Promise<ArchiveJob[]> {
+  const cutoff = new Date(Date.now() - leaseSeconds * 1000).toISOString()
+  const { data, error } = await db().from('archive_jobs')
+    .select('*')
+    .in('status', ['queued', 'validating', 'preparing_media', 'uploading_vimeo', 'creating_wordpress', 'creating_buffer', 'preparing_behance'])
+    .or(`claim_token.is.null,claimed_at.lt.${cutoff}`)
+    .order('updated_at', { ascending: true })
+    .limit(25)
+  if (error) throw new Error(`recoverable archive job scan failed: ${error.message}`)
+  return (data || []) as ArchiveJob[]
+}
+
 export async function updateArchiveJob(id: string, patch: Partial<ArchiveJob> & { status?: ArchiveJobStatus }): Promise<ArchiveJob> {
   const { data, error } = await db().from('archive_jobs').update({ ...patch, updated_at: now() }).eq('id', id).select('*').single()
   if (error || !data) throw new Error(`archive job update failed: ${error?.message || 'no row returned'}`)
+  return data as ArchiveJob
+}
+
+export async function acquireArchiveJobLease(id: string, workerId: string): Promise<ArchiveJob | null> {
+  const { data, error } = await db().rpc('acquire_archive_job_lease', {
+    p_job_id: id,
+    p_worker_id: workerId,
+    p_lease_seconds: 7200,
+  })
+  if (error) throw new Error(`archive job lease failed: ${error.message}`)
+  return (data?.[0] || null) as ArchiveJob | null
+}
+
+export async function updateClaimedArchiveJob(
+  id: string,
+  claimToken: string,
+  patch: Partial<ArchiveJob> & { status?: ArchiveJobStatus },
+): Promise<ArchiveJob> {
+  const { data, error } = await db().from('archive_jobs')
+    .update({ ...patch, updated_at: now() })
+    .eq('id', id)
+    .eq('claim_token', claimToken)
+    .select('*')
+    .maybeSingle()
+  if (error) throw new Error(`claimed archive job update failed: ${error.message}`)
+  if (!data) throw new Error('archive job lease was lost')
   return data as ArchiveJob
 }
 
@@ -71,28 +109,26 @@ export async function getArchiveStep(jobId: string, stepName: string): Promise<a
   return data
 }
 
-export async function startArchiveStep(jobId: string, stepName: string): Promise<void> {
-  const previous = await getArchiveStep(jobId, stepName)
-  const { error } = await db().from('archive_job_steps').upsert({
-    job_id: jobId,
-    step_name: stepName,
-    status: 'running',
-    attempt: Number(previous?.attempt || 0) + 1,
-    error: null,
-    started_at: now(),
-    completed_at: null,
-    updated_at: now(),
-  }, { onConflict: 'job_id,step_name' })
-  if (error) throw new Error(`archive step start failed: ${error.message}`)
+export async function startArchiveStep(jobId: string, stepName: string, workerId: string): Promise<any | null> {
+  const { data, error } = await db().rpc('claim_archive_step', {
+    p_job_id: jobId,
+    p_step_name: stepName,
+    p_worker_id: workerId,
+    p_lease_seconds: 7200,
+  })
+  if (error) throw new Error(`archive step claim failed: ${error.message}`)
+  return data?.[0] || null
 }
 
-export async function finishArchiveStep(jobId: string, stepName: string, status: 'complete' | 'failed' | 'skipped', result: any = {}, errorMessage?: string): Promise<void> {
-  const { error } = await db().from('archive_job_steps').update({
-    status,
-    result: result || {},
-    error: errorMessage || null,
-    completed_at: now(),
-    updated_at: now(),
-  }).eq('job_id', jobId).eq('step_name', stepName)
+export async function finishArchiveStep(jobId: string, stepName: string, claimToken: string, status: 'complete' | 'failed' | 'skipped', result: any = {}, errorMessage?: string): Promise<void> {
+  const { data, error } = await db().rpc('finish_archive_step_fenced', {
+    p_job_id: jobId,
+    p_step_name: stepName,
+    p_claim_token: claimToken,
+    p_status: status,
+    p_result: result || {},
+    p_error: errorMessage || null,
+  })
   if (error) throw new Error(`archive step finish failed: ${error.message}`)
+  if (!data) throw new Error('archive step lease was lost')
 }

@@ -50,6 +50,7 @@ describe('canonical Inngest registration list', () => {
 
   it('registers the private archive publisher workflow', () => {
     assert.ok(ids.includes('archive-publisher'), 'archive publisher missing')
+    assert.ok(ids.includes('archive-recovery'), 'archive recovery missing')
   })
 
   it('registers project-control-sync immediately before project-control-sync-on-edit (adjacent + ordered)', () => {

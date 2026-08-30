@@ -75,6 +75,19 @@ export async function runIntegrationProbes(): Promise<CheckResult[]> {
       const { error } = await createAdminClient().from('projects').select('id').limit(1)
       if (error) throw new Error(error.message)
     }),
+    probe('dropbox-inbox', 'Dropbox delivery queue', async () => {
+      const { data, error } = await createAdminClient()
+        .from('dropbox_event_inbox')
+        .select('id, event_type, last_error')
+        .eq('status', 'dead_letter')
+        .limit(1)
+      if (error) throw new Error(error.message)
+      if (data?.length) {
+        const event = data[0]
+        throw new Error(`${event.event_type} requires manual review: ${event.last_error || event.id}`)
+      }
+      return 'no dead-lettered events'
+    }),
   ]
 
   if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON && driveTranscriptsFolderId()) {

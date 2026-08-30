@@ -48,6 +48,9 @@ export interface ArchiveJob {
   slack_message_ts: string | null
   idempotency_key: string
   attempt: number
+  claim_token?: string | null
+  claimed_by?: string | null
+  claimed_at?: string | null
   created_at: string
   updated_at: string
 }

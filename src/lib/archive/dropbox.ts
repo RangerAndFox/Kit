@@ -25,6 +25,7 @@ async function listAll(path: string, recursive: boolean): Promise<any[]> {
     cursor = next.cursor
     hasMore = !!next.has_more
   }
+  if (hasMore) throw new Error(`Dropbox listing exceeded the 20-page safety limit for ${path}; archive is incomplete.`)
   return entries
 }
 
@@ -65,6 +66,18 @@ async function copyIfMissing(source: string, destination: string): Promise<void>
     await dropboxRpc('/files/copy_v2', { from_path: source, to_path: destination, autorename: false }, 60_000)
   } catch (error: any) {
     if (!/conflict/i.test(error?.message || '')) throw error
+    // A name conflict is not proof of idempotency. Only reuse the destination
+    // when Dropbox proves it contains the same bytes as the approved source.
+    const [sourceMeta, destinationMeta] = await Promise.all([
+      dropboxRpc('/files/get_metadata', { path: source }, 20_000),
+      dropboxRpc('/files/get_metadata', { path: destination }, 20_000),
+    ])
+    const sameHash = sourceMeta.content_hash && destinationMeta.content_hash &&
+      sourceMeta.content_hash === destinationMeta.content_hash
+    const sameIdentity = sourceMeta.id && destinationMeta.id && sourceMeta.id === destinationMeta.id
+    if (!sameHash && !sameIdentity) {
+      throw new Error(`Dropbox archive destination already exists with different content: ${destination}`)
+    }
   }
 }
 

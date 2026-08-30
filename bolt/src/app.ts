@@ -23,6 +23,7 @@ import { registerBrainApprovalHandlers } from './brain/approvals'
 import {
   verifyDropboxSignature,
   processDropboxNotification,
+  drainDropboxInbox,
   reconcileMissingFrameioProjectLinks,
   reconcilePendingProjectShares,
 } from './watchers/dropbox'
@@ -158,6 +159,24 @@ const runProjectShareRecovery = () => {
 }
 setTimeout(runProjectShareRecovery, 15_000)
 cron.schedule('*/2 * * * *', runProjectShareRecovery, { timezone: 'UTC' })
+
+// Dropbox webhooks are only wake-up hints. Polling the stream and draining the
+// durable inbox every minute recovers missed webhooks, provider outages, process
+// restarts, and rolling deploy overlap without replaying successful events.
+let dropboxInboxSweepRunning = false
+const runDropboxInboxSweep = () => {
+  if (dropboxInboxSweepRunning) return
+  dropboxInboxSweepRunning = true
+  processDropboxNotification(app)
+    .then(() => drainDropboxInbox(app))
+    .then((result) => {
+      if (result.claimed || result.failed) console.log('[dropbox-inbox-sweep]', result)
+    })
+    .catch((err) => console.error('[dropbox-inbox-sweep] failed:', err))
+    .finally(() => { dropboxInboxSweepRunning = false })
+}
+setTimeout(runDropboxInboxSweep, 20_000)
+cron.schedule('* * * * *', runDropboxInboxSweep, { timezone: 'UTC' })
 
 // ─── Resilience + Diagnostics ──────────────────────────────
 

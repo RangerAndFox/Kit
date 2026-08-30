@@ -30,6 +30,19 @@ export function configuredArchiveDestinations(env: Record<string, string | undef
 export async function createUnlistedVimeo(job: ArchiveJob, videoPath: string, size: number): Promise<any> {
   const token = process.env.VIMEO_ACCESS_TOKEN
   if (!token) throw new Error('Vimeo is not configured in Kit.')
+  const marker = `kit-archive-id: ${job.id}`
+  // Reconcile an earlier request whose provider response was lost before the
+  // database checkpoint. The marker is intentionally retained while unlisted
+  // and should be removed during the human publishing review.
+  const search = await fetchJson(
+    `https://api.vimeo.com/me/videos?query=${encodeURIComponent(marker)}&per_page=100&fields=uri,link,description`,
+    { method: 'GET', headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.vimeo.*+json;version=3.4' } },
+  )
+  const existing = (search?.data || []).find((video: any) => String(video.description || '').includes(marker))
+  if (existing) {
+    const existingId = String(existing.uri || '').split('/').pop()
+    if (existingId) return { status: 'unlisted', id: existingId, url: existing.link || `https://vimeo.com/${existingId}`, reconciled: true }
+  }
   const link = await getDropboxTemporaryLink(videoPath)
   // Vimeo's pull approach lets Vimeo ingest directly from Dropbox, avoiding a
   // giant video buffer in Kit and preserving resumability at the provider edge.
@@ -39,7 +52,7 @@ export async function createUnlistedVimeo(job: ArchiveJob, videoPath: string, si
     body: JSON.stringify({
       upload: { approach: 'pull', link, size },
       name: job.settings.title,
-      description: [job.settings.description1, job.settings.description2, job.settings.description3].filter(Boolean).join('\n\n'),
+      description: [...[job.settings.description1, job.settings.description2, job.settings.description3].filter(Boolean), marker].join('\n\n'),
       privacy: { view: 'unlisted' },
     }),
   }, 60_000)
@@ -55,7 +68,16 @@ function wordpressHeaders(): Record<string, string> {
   return { Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`, 'Content-Type': 'application/json' }
 }
 
-async function uploadWordpressMedia(file: DropboxArchiveFile): Promise<{ id: number; url?: string; fileName: string }> {
+async function uploadWordpressMedia(job: ArchiveJob, file: DropboxArchiveFile): Promise<{ id: number; url?: string; fileName: string }> {
+  const uploadName = `kit-${job.id.slice(0, 8)}-${file.name}`.replace(/[^a-zA-Z0-9._-]/g, '-')
+  const slug = uploadName.replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '')
+  const existing = await fetchJson(
+    `${wpBase()}/wp-json/wp/v2/media?slug=${encodeURIComponent(slug)}&context=edit&per_page=1`,
+    { method: 'GET', headers: wordpressHeaders() },
+  )
+  if (existing?.[0]?.id) {
+    return { id: Number(existing[0].id), url: existing[0].source_url, fileName: file.name }
+  }
   const sourceUrl = await getDropboxTemporaryLink(file.path)
   const source = await fetch(sourceUrl, { signal: AbortSignal.timeout(60_000) })
   if (!source.ok) throw new Error(`Could not download ${file.name} from Dropbox for WordPress.`)
@@ -67,7 +89,7 @@ async function uploadWordpressMedia(file: DropboxArchiveFile): Promise<{ id: num
     headers: {
       ...wordpressHeaders(),
       'Content-Type': contentType,
-      'Content-Disposition': `attachment; filename="${file.name.replace(/["\\]/g, '_')}"`,
+      'Content-Disposition': `attachment; filename="${uploadName.replace(/["\\]/g, '_')}"`,
     },
     body: bytes,
     signal: AbortSignal.timeout(120_000),
@@ -125,9 +147,15 @@ const wpBase = () => {
 export async function createWordpressDraft(job: ArchiveJob, vimeo: any | null, media: DropboxArchiveFile[]): Promise<any> {
   const templateId = process.env.WORDPRESS_TEMPLATE_POST_ID || '6343'
   const slug = job.settings.title.normalize('NFKD').replace(/[^a-zA-Z0-9\s-]/g, '').trim().replace(/\s+/g, '-').toLowerCase()
-  const duplicated = await fetchJson(`${wpBase()}/wp-json/rf/v1/duplicate-work/${templateId}`, {
-    method: 'POST', headers: wordpressHeaders(), body: JSON.stringify({ title: job.settings.title, slug }),
-  })
+  const matches = await fetchJson(
+    `${wpBase()}/wp-json/wp/v2/work?slug=${encodeURIComponent(slug)}&status=draft,pending,private,publish&context=edit&per_page=1`,
+    { method: 'GET', headers: wordpressHeaders() },
+  )
+  const duplicated = matches?.[0]?.id
+    ? { new_post_id: matches[0].id, edit_url: `${wpBase()}/wp-admin/post.php?post=${matches[0].id}&action=edit`, reconciled: true }
+    : await fetchJson(`${wpBase()}/wp-json/rf/v1/duplicate-work/${templateId}`, {
+      method: 'POST', headers: wordpressHeaders(), body: JSON.stringify({ title: job.settings.title, slug }),
+    })
   const postId = duplicated.new_post_id || duplicated.post_id || duplicated.id
   if (!postId) throw new Error('WordPress returned no draft post id.')
 
@@ -136,9 +164,9 @@ export async function createWordpressDraft(job: ArchiveJob, vimeo: any | null, m
   const gifs = mainCandidates.filter((item) => /\.gif$/i.test(item.name)).slice(0, 8)
   const processCandidates = job.settings.includeProcess ? media.filter((item) => /\/Process\//i.test(item.path)).slice(0, 8) : []
   const uploadedMain = []
-  for (const item of [hero, ...gifs].filter(Boolean)) uploadedMain.push(await uploadWordpressMedia(item))
+  for (const item of [hero, ...gifs].filter(Boolean)) uploadedMain.push(await uploadWordpressMedia(job, item))
   const uploadedProcess = []
-  for (const item of processCandidates) uploadedProcess.push(await uploadWordpressMedia(item))
+  for (const item of processCandidates) uploadedProcess.push(await uploadWordpressMedia(job, item))
 
   const current = await fetchJson(`${wpBase()}/wp-json/rf/v1/work/${postId}/acf-fields`, { method: 'GET', headers: wordpressHeaders() })
   const pageModules = updatePortfolioModules(current?.fields?.page_modules || [], job, uploadedMain, uploadedProcess)
@@ -163,44 +191,47 @@ export async function createWordpressDraft(job: ArchiveJob, vimeo: any | null, m
   await fetchJson(`${wpBase()}/wp-json/rf/v1/work/${postId}/update-fields`, {
     method: 'POST', headers: wordpressHeaders(), body: JSON.stringify(fields),
   })
-  return { status: 'draft', id: String(postId), editUrl: duplicated.edit_url || `${wpBase()}/wp-admin/post.php?post=${postId}&action=edit`, mediaUploaded: uploadedMain.length + uploadedProcess.length }
+  return { status: 'draft', id: String(postId), editUrl: duplicated.edit_url || `${wpBase()}/wp-admin/post.php?post=${postId}&action=edit`, mediaUploaded: uploadedMain.length + uploadedProcess.length, reconciled: !!duplicated.reconciled }
 }
 
-export async function createBufferDrafts(job: ArchiveJob, vimeo: any | null): Promise<any> {
+export function configuredBufferChannels(env: Record<string, string | undefined> = process.env): Array<{ name: string; channelId: string }> {
+  return [
+    { name: 'linkedin', channelId: env.BUFFER_LINKEDIN_CHANNEL_ID || '' },
+    { name: 'instagram', channelId: env.BUFFER_INSTAGRAM_CHANNEL_ID || '' },
+  ].filter((channel) => channel.channelId)
+}
+
+export async function createBufferDraft(job: ArchiveJob, vimeo: any | null, channel: { name: string; channelId: string }): Promise<any> {
   const token = process.env.BUFFER_ACCESS_TOKEN
   const apiUrl = process.env.BUFFER_API_URL || 'https://api.buffer.com/'
   if (!token) throw new Error('Buffer is not configured in Kit.')
-  const channels = [
-    ['linkedin', process.env.BUFFER_LINKEDIN_CHANNEL_ID],
-    ['instagram', process.env.BUFFER_INSTAGRAM_CHANNEL_ID],
-  ].filter(([, id]) => id)
-  if (!channels.length) throw new Error('Buffer has no configured LinkedIn or Instagram channel.')
   const text = job.settings.socialCopy || [job.settings.description1, job.settings.description2].filter(Boolean).join('\n\n')
-  const drafts = []
-  for (const [name, channelId] of channels) {
-    // Buffer's current CreatePostInput requires an explicit scheduling type and
-    // share mode even when the post is saved as a draft. `saveToDraft` remains
-    // the safeguard that prevents either value from scheduling or publishing.
-    const input = {
-      channelId,
-      text,
-      schedulingType: 'automatic',
-      mode: 'addToQueue',
-      saveToDraft: true,
-      source: 'kit-archive',
-      ...(name === 'instagram'
-        ? { metadata: { instagram: { type: 'post', shouldShareToFeed: true } } }
-        : {}),
-    }
-    const response = await fetchJson(apiUrl, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: 'mutation CreatePost($input: CreatePostInput!) { createPost(input: $input) { ... on PostActionSuccess { post { id status } } ... on InvalidInputError { message } ... on LimitReachedError { message } } }', variables: { input } }),
-    })
-    const post = response?.data?.createPost?.post
-    if (!post?.id) throw new Error(`Buffer did not create the ${name} draft: ${response?.data?.createPost?.message || response?.errors?.[0]?.message || 'unknown response'}`)
-    drafts.push({ channel: name, id: post.id, status: post.status || 'draft', videoAttachmentRequired: !!vimeo?.url })
+  const input = {
+    channelId: channel.channelId,
+    text,
+    schedulingType: 'automatic',
+    mode: 'addToQueue',
+    saveToDraft: true,
+    source: `kit-archive:${job.id}:${channel.name}`,
+    ...(channel.name === 'instagram'
+      ? { metadata: { instagram: { type: 'post', shouldShareToFeed: true } } }
+      : {}),
   }
+  const response = await fetchJson(apiUrl, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: 'mutation CreatePost($input: CreatePostInput!) { createPost(input: $input) { ... on PostActionSuccess { post { id status } } ... on InvalidInputError { message } ... on LimitReachedError { message } } }', variables: { input } }),
+  })
+  const post = response?.data?.createPost?.post
+  if (!post?.id) throw new Error(`Buffer did not create the ${channel.name} draft: ${response?.data?.createPost?.message || response?.errors?.[0]?.message || 'unknown response'}`)
+  return { channel: channel.name, id: post.id, status: post.status || 'draft', videoAttachmentRequired: !!vimeo?.url }
+}
+
+export async function createBufferDrafts(job: ArchiveJob, vimeo: any | null): Promise<any> {
+  const channels = configuredBufferChannels()
+  if (!channels.length) throw new Error('Buffer has no configured LinkedIn or Instagram channel.')
+  const drafts = []
+  for (const channel of channels) drafts.push(await createBufferDraft(job, vimeo, channel))
   return { status: 'draft', drafts, note: vimeo?.url ? `Attach the approved video manually: ${vimeo.url}` : undefined }
 }
 
