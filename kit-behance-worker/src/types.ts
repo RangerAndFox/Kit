@@ -38,3 +38,25 @@ export interface BehanceDraftJob {
   attempt: number
   error: string | null
 }
+
+export type ElevenLabsJobStatus =
+  | 'queued' | 'claimed' | 'opening_studio' | 'filling_project'
+  | 'saving_draft' | 'complete' | 'retryable' | 'failed' | 'cancelled'
+
+export interface ElevenLabsStudioJob {
+  id: string
+  storyboard_job_id: string
+  workspace_id: string | null
+  requested_by_slack_user_id: string | null
+  slack_channel_id: string | null
+  slack_thread_ts: string | null
+  status: ElevenLabsJobStatus
+  project_name: string
+  voiceover_paragraphs: string[]
+  studio_project_id: string | null
+  studio_url: string | null
+  claimed_by: string | null
+  heartbeat_at: string | null
+  attempt: number
+  error: string | null
+}

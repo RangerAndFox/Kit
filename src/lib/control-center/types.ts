@@ -27,7 +27,7 @@ export interface QueueSummary {
 export interface WorkerSummary {
   id: string
   label: string
-  type: 'Render' | 'Behance'
+  type: 'Render' | 'Behance' | 'ElevenLabs'
   status: string
   lastSeenAt: string | null
   currentJob: string | null
@@ -84,6 +84,7 @@ export interface ActivityItem {
   detail: string
   at: string
   signal: Signal
+  href?: string
 }
 
 export interface TimeLoggingSummary {

@@ -1,6 +1,6 @@
-# Kit Behance Worker
+# Kit Studio Browser Worker
 
-This trusted studio-Mac worker turns an approved Kit archive package into a **private Behance draft**. It uses a dedicated persistent Chrome profile because Behance does not provide a supported write API.
+This trusted studio-Mac worker creates **private Behance drafts** from approved archive packages and **private ElevenLabs Studio drafts** from storyboard voiceover. It uses a dedicated persistent Chrome profile for browser-only operations.
 
 It never publishes:
 
@@ -16,10 +16,11 @@ It never publishes:
 2. Copy `.env.example` to `.env`, or set `KIT_ENV_FILE` to an existing trusted Kit server environment file. Configure the Supabase service role and `DROPBOX_SYNC_PATH`, pointing at the local Dropbox folder that corresponds to cloud root `/`. The worker does not need a Dropbox API credential.
 3. Run `npm install` and `npm run build`.
 4. Run `npm run login`. Chrome opens with the dedicated profile. Sign into the Ranger & Fox Adobe/Behance account, return to Terminal, and press Enter.
-5. Run `npm run check-login` to verify the dedicated profile (a normal Chrome profile does not count).
-6. Run `scripts/install-macos.sh` to install and start the LaunchAgent. It restarts automatically at login and after a crash.
+5. Run `npm run login:elevenlabs`, sign into ElevenLabs in the same dedicated profile, return to Terminal, and press Enter.
+6. Run `npm run check-login` to verify Behance (a normal Chrome profile does not count).
+7. Run `scripts/install-macos.sh` to install and start the LaunchAgent. It restarts automatically at login and after a crash.
 
-The browser profile directory contains the Behance session. It must not be synced, committed, or shared. No Behance password is stored in Kit or Supabase. Approved archive media is read through Dropbox's local File Provider mount; Kit's cloud service creates the proof link after the screenshot syncs.
+The browser profile directory contains the Behance and ElevenLabs sessions. It must not be synced, committed, or shared. No provider password is stored in Kit or Supabase. Approved archive media is read through Dropbox's local File Provider mount; Kit's cloud service creates the proof link after the screenshot syncs.
 
 ## Producer workflow
 
@@ -36,3 +37,13 @@ The browser profile directory contains the Behance session. It must not be synce
 - An existing draft URL is reused on retry, preventing duplicate projects.
 
 Behance's official help notes that drafts do not auto-save. The worker therefore performs an explicit draft save and captures proof after that save.
+
+## Storyboard voiceover workflow
+
+1. Upload a supported script through Kit's storyboard flow.
+2. Kit creates the Boords storyboard. When the script contains voiceover, it also queues a private ElevenLabs Studio job if the account-level Studio API is unavailable.
+3. The worker creates or resumes one Studio project, names it after the storyboard project, and enters every VO paragraph as a separate speech clip.
+4. The private Studio link appears in Kit's authenticated Control Center when the job completes. It is not posted into a shared project channel.
+5. A producer opens the draft, chooses a voice, and generates audio manually if approved.
+
+The ElevenLabs worker never clicks Generate, Share, Export, or Publish. Those controls are blocked in the browser session. A new Studio URL is checkpointed immediately so retries resume the same draft instead of creating duplicates.

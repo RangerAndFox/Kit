@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { createStudioProject, studioProjectUrl, voiceoverParagraphs } from './studio'
+import {
+  createStudioProject,
+  requiresStudioBrowserFallback,
+  studioProjectUrl,
+  voiceoverParagraphs,
+} from './studio'
 
 const originalFetch = globalThis.fetch
 const originalKey = process.env.ELEVENLABS_API_KEY
@@ -72,5 +77,22 @@ describe('ElevenLabs Studio', () => {
     })
     assert.equal(project.id, 'existing-1')
     assert.equal(postCount, 0)
+  })
+
+  it('identifies the account-level Studio API restriction for browser fallback', async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      detail: {
+        status: 'invalid_subscription',
+        message: 'Studio API access requires account approval.',
+      },
+    }), { status: 403 })) as typeof fetch
+
+    await assert.rejects(
+      createStudioProject({
+        name: 'Fallback Test',
+        frames: [{ label: '1', sound: 'VO', action: '' }],
+      }),
+      (error: unknown) => requiresStudioBrowserFallback(error),
+    )
   })
 })

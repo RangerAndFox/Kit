@@ -831,6 +831,7 @@ export function registerInteractionHandlers(app: App) {
       const runtime = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
       const url = result.url || data.url
       const elevenLabsUrl = data.elevenLabsUrl
+      const elevenLabsQueued = Boolean(data.elevenLabsQueued)
       const preview = Array.isArray(data.preview) ? data.preview : []
 
       const blocks: any[] = [
@@ -842,7 +843,10 @@ export function registerInteractionHandlers(app: App) {
               `:clapper: *${data.storyboardName || form.projectName}* is ready in Boords` +
               `${elevenLabsUrl ? ' and ElevenLabs Studio' : ''}.\n` +
               `${frames} frame${frames === 1 ? '' : 's'} · ${runtime} · ` +
-              `${form.aspectRatio}${data.detectedTable ? ' · A/V table detected' : ''}`,
+              `${form.aspectRatio}${data.detectedTable ? ' · A/V table detected' : ''}` +
+              (elevenLabsQueued
+                ? '\nElevenLabs Studio is queued on the studio Mac. Its private draft link will appear in Kit’s authenticated dashboard when ready.'
+                : ''),
           },
         },
       ]

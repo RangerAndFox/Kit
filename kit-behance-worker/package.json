@@ -2,13 +2,14 @@
   "name": "kit-behance-worker",
   "version": "0.1.0",
   "private": true,
-  "description": "Dedicated studio-machine browser worker that builds private Behance drafts for Kit.",
+  "description": "Dedicated studio-machine browser worker that builds private Behance and ElevenLabs Studio drafts for Kit.",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
     "test": "node --import tsx --test src/*.test.ts",
     "login": "tsx src/login.ts",
+    "login:elevenlabs": "tsx src/login-elevenlabs.ts",
     "check-login": "tsx src/check-login.ts",
     "start": "tsx src/index.ts",
     "start:prod": "node dist/index.js"

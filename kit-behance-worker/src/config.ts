@@ -30,4 +30,6 @@ export const config = {
   pollIntervalMs: num('POLL_INTERVAL_MS', 5000),
   heartbeatIntervalMs: num('HEARTBEAT_INTERVAL_MS', 10000),
   jobTimeoutMs: num('JOB_TIMEOUT_MS', 1_200_000),
+  elevenLabsStartUrl: process.env.ELEVENLABS_START_URL || 'https://elevenlabs.io/app/studio',
+  slackBotToken: process.env.SLACK_BOT_TOKEN?.trim() || null,
 }

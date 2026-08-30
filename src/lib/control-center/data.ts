@@ -107,8 +107,9 @@ function activity(
   detail: string,
   at: string | null | undefined,
   signal: Signal = 'healthy',
+  href?: string,
 ): ActivityItem | null {
-  return at ? { id, title, detail, at, signal } : null
+  return at ? { id, title, detail, at, signal, href } : null
 }
 
 function countByDay(rows: Row[], dateField: string, failedStatuses: Set<string>): ReliabilityDay[] {
@@ -163,6 +164,8 @@ export async function loadControlCenterData(args: {
     archiveJobs,
     behanceJobs,
     behanceWorkers,
+    elevenLabsJobs,
+    elevenLabsWorkers,
     meetingBriefings,
     transcripts,
     transcriptDocuments,
@@ -186,6 +189,8 @@ export async function loadControlCenterData(args: {
     safeRows(workspaceQuery('archive_jobs').gte('created_at', daysAgo(30)), 'archive jobs'),
     safeRows(workspaceQuery('behance_draft_jobs').gte('created_at', daysAgo(30)), 'behance jobs'),
     safeRows(admin.from('behance_workers').select('*'), 'behance workers'),
+    safeRows(workspaceQuery('elevenlabs_studio_jobs').gte('created_at', daysAgo(30)), 'ElevenLabs jobs'),
+    safeRows(admin.from('elevenlabs_workers').select('*'), 'ElevenLabs workers'),
     safeRows(admin.from('meeting_briefings').select('*').gte('created_at', sinceSevenDays), 'meeting briefings'),
     safeRows(admin.from('call_transcripts').select('id, source, created_at, ingest_status, ingest_error').eq('workspace_id', args.workspaceId).gte('created_at', sinceSevenDays), 'transcripts'),
     safeRows(admin.from('project_documents').select('id, doc_type, visibility_tier, metadata, created_at').eq('workspace_id', args.workspaceId).eq('doc_type', 'call_transcript'), 'transcript privacy'),
@@ -225,6 +230,7 @@ export async function loadControlCenterData(args: {
   const openRenders = renderJobs.filter((row) => !['complete', 'cancelled'].includes(row.status))
   const openArchives = archiveJobs.filter((row) => !['complete', 'cancelled'].includes(row.status))
   const openBehance = behanceJobs.filter((row) => !['awaiting_review', 'cancelled'].includes(row.status))
+  const openElevenLabs = elevenLabsJobs.filter((row) => !['complete', 'cancelled'].includes(row.status))
   // A sent/nudged DM with no reply is not a time entry waiting for
   // confirmation: Kit has no hours to log yet. Keep those rows available for
   // reminder telemetry, but do not turn ordinary non-replies into an operator
@@ -240,6 +246,7 @@ export async function loadControlCenterData(args: {
     queue('renders', 'Render jobs', openRenders, new Set(['failed'])),
     queue('archives', 'Archive publishing', openArchives, new Set(['failed', 'partial'])),
     queue('behance', 'Behance drafts', openBehance, new Set(['failed']), new Set(['retryable', 'needs_login'])),
+    queue('elevenlabs', 'ElevenLabs drafts', openElevenLabs, new Set(['failed']), new Set(['queued', 'retryable'])),
     queue('hours', 'Time confirmations', openHours, new Set(['failed', 'logging']), new Set(['parsed'])),
   ]
 
@@ -331,6 +338,20 @@ export async function loadControlCenterData(args: {
         signal: status === 'idle' || status === 'working' ? 'healthy' : status === 'needs_login' ? 'warning' : 'danger',
       }
     }),
+    ...elevenLabsWorkers.map((row): WorkerSummary => {
+      const stale = !row.last_seen_at || Date.parse(row.last_seen_at) < Date.now() - 3 * 60_000
+      const status = stale ? 'offline' : row.status
+      return {
+        id: `elevenlabs:${row.worker_id}`,
+        label: row.display_name || row.worker_id || 'ElevenLabs worker',
+        type: 'ElevenLabs',
+        status,
+        lastSeenAt: row.last_seen_at,
+        currentJob: row.current_job_id,
+        detail: row.last_error || (row.browser_version ? `Chrome ${row.browser_version}` : null),
+        signal: status === 'idle' || status === 'working' ? 'healthy' : status === 'needs_login' ? 'warning' : 'danger',
+      }
+    }),
   ]
   for (const worker of workers.filter((item) => item.signal === 'danger')) {
     attention.push({
@@ -380,6 +401,15 @@ export async function loadControlCenterData(args: {
       const project = projectMap.get(row.project_id)
       return activity(`behance:${row.id}`, `${project?.project_code || 'Project'} Behance draft ready`, 'Draft saved privately and is awaiting human review.', row.completed_at || row.updated_at)
     }),
+    ...elevenLabsJobs.filter((row) => row.status === 'complete').map((row) =>
+      activity(
+        `elevenlabs:${row.id}`,
+        `${row.project_name} VO draft ready`,
+        'Private ElevenLabs Studio draft created; no audio generated.',
+        row.completed_at || row.updated_at,
+        'healthy',
+        row.studio_url || undefined,
+      )),
   ]
     .filter((item): item is ActivityItem => item !== null)
     .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
@@ -391,6 +421,7 @@ export async function loadControlCenterData(args: {
     ...renderJobs,
     ...archiveJobs,
     ...behanceJobs,
+    ...elevenLabsJobs,
     ...meetingBriefings,
     ...storyboards,
     ...agentRuns.map((row) => ({ ...row, created_at: row.started_at })),

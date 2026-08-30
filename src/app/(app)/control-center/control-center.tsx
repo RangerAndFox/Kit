@@ -445,7 +445,7 @@ function Safeguard({ label, ok, detail }: { label: string; ok: boolean; detail: 
 }
 
 function ActivityRow({ item, now }: { item: ActivityItem; now: number }) {
-  return (
+  const content = (
     <div className="flex gap-3">
       <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${signalStyles[item.signal].dot}`} />
       <div className="min-w-0 flex-1">
@@ -453,8 +453,12 @@ function ActivityRow({ item, now }: { item: ActivityItem; now: number }) {
         <p className="mt-0.5 line-clamp-2 text-xs leading-5 text-[#7e8696]">{item.detail}</p>
       </div>
       <span className="shrink-0 text-[11px] text-[#697183]">{timeAgo(item.at, now)}</span>
+      {item.href ? <ArrowUpRight size={14} className="mt-0.5 shrink-0 text-[#7f8798]" aria-hidden="true" /> : null}
     </div>
   )
+  return item.href
+    ? <a href={item.href} target="_blank" rel="noreferrer" className="block">{content}</a>
+    : content
 }
 
 function EmptyState({ icon: Icon, title, detail }: { icon: typeof Bot; title: string; detail: string }) {

@@ -12,7 +12,12 @@
  */
 
 import { createStoryboard, appendFrames, listProjects, listStoryboards } from '@/lib/boords/client'
-import { createStudioProject, voiceoverParagraphs } from '@/lib/elevenlabs/studio'
+import {
+  createStudioProject,
+  requiresStudioBrowserFallback,
+  voiceoverParagraphs,
+} from '@/lib/elevenlabs/studio'
+import { queueElevenLabsStudioJob } from '@/lib/elevenlabs/browser-queue'
 import { parseScript } from '@/lib/storyboard/parser'
 import type { ExtractionMode } from '@/lib/storyboard/parser'
 import {
@@ -31,6 +36,40 @@ import {
 import type { AgentDefinition, AgentResult } from './types'
 
 // ─── Action Handlers ───────────────────────────────────────
+
+async function createOrQueueStudio(input: {
+  jobId: string | null
+  workspaceId: string | null
+  slackUserId: string | null
+  channelId: string | null
+  projectName: string
+  frames: any[]
+}): Promise<{
+  project: Awaited<ReturnType<typeof createStudioProject>> | null
+  queued: boolean
+}> {
+  try {
+    return {
+      project: await createStudioProject({
+        name: input.projectName,
+        frames: input.frames,
+        reconcileExisting: true,
+      }),
+      queued: false,
+    }
+  } catch (error) {
+    if (!requiresStudioBrowserFallback(error) || !input.jobId) throw error
+    await queueElevenLabsStudioJob({
+      storyboardJobId: input.jobId,
+      workspaceId: input.workspaceId,
+      requestedBySlackUserId: input.slackUserId,
+      slackChannelId: input.channelId,
+      projectName: input.projectName,
+      voiceoverParagraphs: voiceoverParagraphs(input.frames),
+    })
+    return { project: null, queued: true }
+  }
+}
 
 async function provision(payload: Record<string, unknown>): Promise<AgentResult> {
   const script = String(payload.script || payload.text || '').trim()
@@ -123,16 +162,22 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
     }
 
     let elevenLabsProject: Awaited<ReturnType<typeof createStudioProject>> | null = null
+    let elevenLabsQueued = false
     const hasVoiceover = !blank && voiceoverParagraphs(frames).length > 0
     if (hasVoiceover) {
       stage = 'elevenlabs'
       if (jobId) await setJobElevenLabsPending(jobId)
-      elevenLabsProject = await createStudioProject({
-        name: projectName,
+      const studio = await createOrQueueStudio({
+        jobId,
+        workspaceId,
+        slackUserId,
+        channelId,
+        projectName,
         frames,
-        reconcileExisting: true,
       })
-      if (jobId) {
+      elevenLabsProject = studio.project
+      elevenLabsQueued = studio.queued
+      if (jobId && elevenLabsProject) {
         await setJobElevenLabsProject(jobId, elevenLabsProject.id, elevenLabsProject.url)
       }
     } else if (jobId) {
@@ -155,7 +200,7 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       message:
         blank
           ? `Created blank storyboard "${storyboard.name}" (1 placeholder frame)`
-          : `Created "${storyboard.name}" in Boords and ElevenLabs Studio with ${frames.length} frame${frames.length === 1 ? '' : 's'} (${runtime}, via ${modeUsed}${detectedTable ? ' — A/V table detected' : ''})`,
+          : `Created "${storyboard.name}" in Boords${elevenLabsQueued ? '; ElevenLabs Studio is queued on the studio Mac' : ' and ElevenLabs Studio'} with ${frames.length} frame${frames.length === 1 ? '' : 's'} (${runtime}, via ${modeUsed}${detectedTable ? ' — A/V table detected' : ''})`,
       data: {
         jobId,
         storyboardId: storyboard.id,
@@ -166,6 +211,7 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
         detectedTable,
         elevenLabsProjectId: elevenLabsProject?.id || null,
         elevenLabsUrl: elevenLabsProject?.url || null,
+        elevenLabsQueued,
         // Surface a small preview for the summary card to render.
         preview: frames.slice(0, 3).map((f) => ({
           label: f.label,
@@ -272,16 +318,23 @@ async function resume(payload: Record<string, unknown>): Promise<AgentResult> {
     stage = 'elevenlabs'
     let elevenLabsProjectId = job.elevenLabsProjectId
     let elevenLabsUrl = job.elevenLabsUrl
+    let elevenLabsQueued = false
     if (!elevenLabsProjectId && voiceoverParagraphs(job.frames).length > 0) {
       await setJobElevenLabsPending(jobId)
-      const studio = await createStudioProject({
-        name: job.projectName,
+      const studio = await createOrQueueStudio({
+        jobId,
+        workspaceId: job.workspaceId,
+        slackUserId: job.userId,
+        channelId: job.channelId,
+        projectName: job.projectName,
         frames: job.frames,
-        reconcileExisting: true,
       })
-      await setJobElevenLabsProject(jobId, studio.id, studio.url)
-      elevenLabsProjectId = studio.id
-      elevenLabsUrl = studio.url
+      elevenLabsQueued = studio.queued
+      if (studio.project) {
+        await setJobElevenLabsProject(jobId, studio.project.id, studio.project.url)
+        elevenLabsProjectId = studio.project.id
+        elevenLabsUrl = studio.project.url
+      }
     } else if (!elevenLabsProjectId) {
       await skipJobElevenLabs(jobId)
     }
@@ -293,7 +346,9 @@ async function resume(payload: Record<string, unknown>): Promise<AgentResult> {
       success: true,
       url: boordsUrl || undefined,
       id: boordsStoryboardId || undefined,
-      message: `Resumed: completed Boords and ElevenLabs Studio for "${job.projectName}".`,
+      message: elevenLabsQueued
+        ? `Resumed Boords for "${job.projectName}"; ElevenLabs Studio is queued on the studio Mac.`
+        : `Resumed: completed Boords and ElevenLabs Studio for "${job.projectName}".`,
       data: {
         jobId,
         storyboardId: boordsStoryboardId,
@@ -301,6 +356,7 @@ async function resume(payload: Record<string, unknown>): Promise<AgentResult> {
         frameCount: job.frames.length,
         elevenLabsProjectId,
         elevenLabsUrl,
+        elevenLabsQueued,
       },
     }
   } catch (err: any) {

@@ -3,6 +3,23 @@ import type { BoordsFrame } from '../boords/client'
 const BASE_URL = 'https://api.elevenlabs.io/v1'
 const DEFAULT_TIMEOUT_MS = 45_000
 
+export class ElevenLabsApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly providerCode: string | null = null,
+  ) {
+    super(message)
+    this.name = 'ElevenLabsApiError'
+  }
+}
+
+export function requiresStudioBrowserFallback(error: unknown): boolean {
+  return error instanceof ElevenLabsApiError
+    && error.status === 403
+    && error.providerCode === 'invalid_subscription'
+}
+
 export interface ElevenLabsStudioProject {
   id: string
   name: string
@@ -47,7 +64,20 @@ async function request(path: string, init: RequestInit = {}, timeoutMs = DEFAULT
 
   if (!response.ok) {
     const detail = (await response.text()).slice(0, 500)
-    throw new Error(`ElevenLabs ${path}: ${response.status}${detail ? ` ${detail}` : ''}`)
+    let providerCode: string | null = null
+    let providerMessage = ''
+    try {
+      const parsed = JSON.parse(detail)
+      providerCode = parsed?.detail?.status || parsed?.status || null
+      providerMessage = parsed?.detail?.message || parsed?.message || ''
+    } catch {
+      providerMessage = detail
+    }
+    throw new ElevenLabsApiError(
+      `ElevenLabs ${path}: ${response.status}${providerMessage ? ` ${providerMessage}` : ''}`,
+      response.status,
+      providerCode,
+    )
   }
   return response.json() as Promise<any>
 }
