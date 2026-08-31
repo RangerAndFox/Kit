@@ -5691,8 +5691,6 @@ export type Database = {
         }
         Returns: boolean
       }
-      get_user_tier: { Args: { ws_id: string }; Returns: string }
-      get_user_workspace_ids: { Args: never; Returns: string[] }
       ingest_dropbox_event_batch: {
         Args: {
           p_events: Json
@@ -5701,8 +5699,6 @@ export type Database = {
         }
         Returns: number
       }
-      is_founder: { Args: { ws_id: string }; Returns: boolean }
-      is_founder_or_producer: { Args: { ws_id: string }; Returns: boolean }
       match_documents: {
         Args: {
           filter_project_id?: string

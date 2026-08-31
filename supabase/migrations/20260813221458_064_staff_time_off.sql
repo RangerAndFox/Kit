@@ -1,3 +1,3 @@
--- Production migration-history marker (20260822021700 enforce_transcript_visibility).
+-- Production migration-history marker (20260813221458 064_staff_time_off).
 -- Its schema effect is already included in 00000000000000_production_schema_baseline.sql.
 -- Keep this file as a no-op so clean environments and the production ledger remain aligned.

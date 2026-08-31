@@ -15,10 +15,21 @@ export async function createWorkspace(name: string, slug: string) {
       return { success: false, error: 'Not authenticated' }
     }
 
+    const email = user.email
+    if (!email) {
+      return { success: false, error: 'Your account does not have an email address' }
+    }
+
+    const displayName =
+      user.user_metadata?.full_name ??
+      user.user_metadata?.name ??
+      email.split('@')[0]
+
     const { data, error } = await supabase.rpc('create_workspace' as any, {
-      workspace_name: name,
-      workspace_slug: slug,
-      user_id: user.id,
+      p_name: name,
+      p_slug: slug,
+      p_user_name: displayName,
+      p_user_email: email,
     } as any)
 
     if (error) {
