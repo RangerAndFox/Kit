@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Status renderers for delivery jobs + workers.
  */

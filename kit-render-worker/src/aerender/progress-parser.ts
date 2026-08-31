@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Parse aerender stdout into a per-chunk progress percentage.
  *

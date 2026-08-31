@@ -1,4 +1,3 @@
-// @ts-nocheck
 import * as os from 'os'
 import * as fs from 'fs'
 import * as dotenv from 'dotenv'
@@ -58,6 +57,7 @@ export const config = {
   // project's render queue (aerender itself can't dump the queue). Overridable.
   afterfxPath: optional('AFTERFX_PATH', ''),
   aeVersion: process.env.AE_VERSION || null,
+  aeCapable: false,
   cpuThreshold: num('CPU_THRESHOLD', 50),
   minDiskFreeGb: num('MIN_DISK_FREE_GB', 10),
   heartbeatIntervalMs: num('HEARTBEAT_INTERVAL_MS', 10000),

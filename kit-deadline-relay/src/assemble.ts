@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Assemble step — after Deadline finishes a comp's PNG sequence, encode it to
  * the artist's original output-module format (sniffed from the OM settings the

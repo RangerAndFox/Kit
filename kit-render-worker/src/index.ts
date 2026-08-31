@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Render worker entry point.
  *

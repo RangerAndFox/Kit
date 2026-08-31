@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { NextResponse } from 'next/server'
 import { getAgentRegistry } from '@/lib/managed-agents/agent-registry'
 import { ALL_AGENTS } from '../../../../../agents'

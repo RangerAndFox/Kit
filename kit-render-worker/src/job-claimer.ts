@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Atomic job claim — picks one pending job and marks it claimed by this worker.
  *

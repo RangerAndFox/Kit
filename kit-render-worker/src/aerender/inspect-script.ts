@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Generate the ExtendScript (.jsx) that dumps a project's After Effects render
  * queue to a JSON file. aerender can't enumerate the queue, so we script the

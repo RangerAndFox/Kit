@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Public liveness only. Privileged provider probes belong in authenticated
  * Control Center data and internal health jobs, never in an anonymous route.

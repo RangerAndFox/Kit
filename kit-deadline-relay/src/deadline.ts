@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Thin wrappers around `deadlinecommand` (the Deadline CLI). Submitting via the
  * CLI keeps the relay dependency-free and needs no Web Service / networking —

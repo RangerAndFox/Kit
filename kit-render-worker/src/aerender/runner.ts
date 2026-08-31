@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Spawn aerender as a child process for one chunk. aerender writes progress to
  * stdout (unlike FFmpeg, which uses stderr), so we parse stdout and debounce

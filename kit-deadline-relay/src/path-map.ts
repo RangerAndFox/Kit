@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Normalize an incoming .aep path to the exact path the Deadline render nodes
  * read. Files live on the production SAN (e.g. \\thewire\production\...), which

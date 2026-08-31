@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Poll the Deadline jobs a parent submitted and roll their state up into the
  * render_jobs row. When a comp's PNG-sequence job completes, run the ASSEMBLE

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Audio pass — image sequences carry no audio, so the prepare script queued a
  * WAV duplicate of each audible comp in the farm copy. The relay renders that

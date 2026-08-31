@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * One call that produces the full health picture — integration probes plus
  * cron freshness. Shared by the /api/status route and the watchdog cron so

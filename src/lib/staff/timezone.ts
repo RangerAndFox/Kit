@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Staff timezone lookup for src/lib code, which has no Slack client.
  * staff.timezone is a cache of the Slack profile tz, refreshed by the

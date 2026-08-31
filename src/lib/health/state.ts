@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Supabase I/O for the health monitor: last-known status (for alert de-dup +
  * "down since" timing) and cron heartbeats (for freshness).

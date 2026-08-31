@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Supabase access for the relay. Deadline-backed renders are ae_render parent
  * rows with render_backend='deadline'. The relay claims unclaimed ones, submits

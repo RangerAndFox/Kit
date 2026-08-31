@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Stitch builder — turns the rendered image sequence into a single movie with
  * FFmpeg. This is the join step after all aerender chunks complete.

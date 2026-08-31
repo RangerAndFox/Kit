@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Shared helpers for the seen_dropbox_files stability ledger used by both
  * Dropbox pollers (delivery queue + specs folders).

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Run AfterFX.exe headlessly against a generated inspect.jsx and read back the
  * render-queue JSON it writes. Used by the ae_inspect job to discover what the

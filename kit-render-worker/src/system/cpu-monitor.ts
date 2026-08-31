@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Reads CPU / memory / disk usage. Returns a snapshot used by heartbeat and
  * fallback-worker pre-claim checks.

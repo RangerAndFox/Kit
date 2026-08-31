@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Post a message to Slack as Kit's bot (chat.postMessage). A `channel` of a
  * user id (U…) opens/uses that person's DM, so this doubles as "DM a user".

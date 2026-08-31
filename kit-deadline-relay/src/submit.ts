@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Turn one Kit render request (an ae_render parent) into Deadline jobs:
  *   1. PREPARE: script AfterFX on this box — capture each queued item's real
