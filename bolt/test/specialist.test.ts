@@ -99,6 +99,45 @@ describe('runSpecialist', () => {
     expect(createMock).toHaveBeenCalledTimes(2)
   })
 
+  it('returns a result for every tool requested in the same turn', async () => {
+    createMock.mockResolvedValueOnce({
+      stop_reason: 'tool_use',
+      content: [
+        {
+          type: 'tool_use',
+          id: 'toolu_status',
+          name: 'harvest_find_projects',
+          input: { payload: { query: '2637' } },
+        },
+        {
+          type: 'tool_use',
+          id: 'toolu_budget',
+          name: 'harvest_get_budget',
+          input: { payload: { project: '2637' } },
+        },
+      ],
+    })
+    createMock.mockResolvedValueOnce({
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: '2637 is active and on budget.' }],
+    })
+    dispatchMock
+      .mockResolvedValueOnce({ success: true, data: { name: '2637', status: 'active' } })
+      .mockResolvedValueOnce({ success: true, data: { budget_total: 100 } })
+
+    const result = await runSpecialist('harvest', 'status and budget for 2637', fakeUser)
+
+    expect(result).toBe('2637 is active and on budget.')
+    expect(dispatchMock).toHaveBeenCalledTimes(2)
+    const followup = createMock.mock.calls[1][0].messages[2]
+    expect(followup.role).toBe('user')
+    expect(followup.content).toHaveLength(2)
+    expect(followup.content.map((block: { tool_use_id: string }) => block.tool_use_id)).toEqual([
+      'toolu_status',
+      'toolu_budget',
+    ])
+  })
+
   it('returns the assistant text directly when no tool call is made', async () => {
     createMock.mockResolvedValueOnce({
       stop_reason: 'end_turn',
