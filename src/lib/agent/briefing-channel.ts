@@ -103,6 +103,36 @@ async function findExistingChannelByName(
   return null
 }
 
+async function verifyExclusiveBriefingChannel(
+  token: string,
+  channelId: string,
+  intendedRecipient: string,
+): Promise<boolean> {
+  const [info, identity] = await Promise.all([
+    slackCall('conversations.info', token, { channel: channelId }),
+    slackCall('auth.test', token, {}),
+  ])
+  if (!info.ok || !identity.ok || !identity.user_id) return false
+  if (!info.channel?.is_private || info.channel?.is_archived) return false
+
+  const members = new Set<string>()
+  let cursor = ''
+  for (let page = 0; page < 20; page++) {
+    const result = await slackCall('conversations.members', token, {
+      channel: channelId,
+      limit: 200,
+      ...(cursor ? { cursor } : {}),
+    })
+    if (!result.ok) return false
+    for (const member of result.members || []) members.add(member)
+    cursor = result.response_metadata?.next_cursor || ''
+    if (!cursor) break
+    if (page === 19) return false
+  }
+  const expected = new Set([intendedRecipient, identity.user_id])
+  return members.size === expected.size && [...members].every((member) => expected.has(member))
+}
+
 /**
  * Resolve (or lazily create) the private 1:1 briefing channel for a staffer,
  * ensure the recipient is a member, and return the channel id.
@@ -126,13 +156,17 @@ export async function resolvePersonalBriefingChannel(opts: {
     .eq('slack_user_id', slackUserId)
     .maybeSingle()
 
-  // 1. Cached channel — reuse it (best-effort re-invite).
+  // 1. Cached channel — reuse only after revalidating privacy and exact
+  // membership. A stale cache or extra member must never receive a briefing.
   if (staffRow?.briefing_channel_id) {
-    await slackCall('conversations.invite', token, {
+    const invite = await slackCall('conversations.invite', token, {
       channel: staffRow.briefing_channel_id,
       users: slackUserId,
     })
-    return staffRow.briefing_channel_id
+    if ((invite.ok || invite.error === 'already_in_channel') && await verifyExclusiveBriefingChannel(token, staffRow.briefing_channel_id, slackUserId)) {
+      return staffRow.briefing_channel_id
+    }
+    await sb.from('staff').update({ briefing_channel_id: null }).eq('id', staffRow.id)
   }
 
   // 2. Create a private channel, trying each candidate name until one sticks.
@@ -162,6 +196,13 @@ export async function resolvePersonalBriefingChannel(opts: {
   // exists (cache was lost). Find and reuse it instead of failing.
   if (!channelId && lastErr === 'name_taken') {
     channelId = await findExistingChannelByName(token, candidates)
+    if (channelId && !await verifyExclusiveBriefingChannel(token, channelId, slackUserId)) {
+      channelId = null
+      const rotatedName = `kit-briefings-${slackUserId.toLowerCase()}-${Date.now().toString(36).slice(-6)}`.slice(0, 80)
+      const rotated = await slackCall('conversations.create', token, { name: rotatedName, is_private: true })
+      if (rotated.ok) channelId = rotated.channel.id
+      else lastErr = rotated.error || 'privacy_revalidation_failed'
+    }
   }
 
   if (!channelId) {
@@ -173,8 +214,9 @@ export async function resolvePersonalBriefingChannel(opts: {
     channel: channelId,
     users: slackUserId,
   })
-  if (!inv.ok && inv.error !== 'already_in_channel') {
-    console.warn(`[briefing-channel] invite ${slackUserId} failed: ${inv.error}`)
+  if (!inv.ok && inv.error !== 'already_in_channel') throw new Error('could not isolate briefing recipient')
+  if (!await verifyExclusiveBriefingChannel(token, channelId, slackUserId)) {
+    throw new Error('briefing channel privacy verification failed')
   }
 
   // 4. Cache the channel id so we create only once.

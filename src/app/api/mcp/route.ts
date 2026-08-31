@@ -16,6 +16,7 @@ import { checkMcpAuth } from '@/lib/mcp/auth'
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
+const MAX_MCP_BYTES = 256 * 1024
 
 export async function POST(request: Request) {
   const auth = checkMcpAuth(request)
@@ -26,9 +27,18 @@ export async function POST(request: Request) {
     )
   }
 
+  const declaredLength = Number(request.headers.get('content-length') || '0')
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_MCP_BYTES) {
+    return NextResponse.json({ error: 'Request too large.' }, { status: 413 })
+  }
+
   let body: unknown
   try {
-    body = await request.json()
+    const rawBody = await request.text()
+    if (Buffer.byteLength(rawBody, 'utf8') > MAX_MCP_BYTES) {
+      return NextResponse.json({ error: 'Request too large.' }, { status: 413 })
+    }
+    body = JSON.parse(rawBody)
   } catch {
     return NextResponse.json(
       { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } },
@@ -38,14 +48,14 @@ export async function POST(request: Request) {
 
   // Batch support per JSON-RPC 2.0
   if (Array.isArray(body)) {
-    const results = await Promise.all(body.map((req) => handleRpc(req)))
+    const results = await Promise.all(body.map((req) => handleRpc(req, auth.principal)))
     const filtered = results.filter((r) => r !== null)
     // If every call was a notification, respond with 204
     if (filtered.length === 0) return new NextResponse(null, { status: 204 })
     return NextResponse.json(filtered)
   }
 
-  const response = await handleRpc(body)
+  const response = await handleRpc(body, auth.principal)
   if (response === null) return new NextResponse(null, { status: 204 })
   return NextResponse.json(response)
 }

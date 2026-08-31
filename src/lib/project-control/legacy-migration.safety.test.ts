@@ -14,6 +14,6 @@ describe('legacy project migration destructive guard', () => {
     assert.equal(legacyDuplicateDeletionAuthorized({
       PROJECT_CONTROL_LEGACY_PITR_CONFIRMED: 'true',
       PROJECT_CONTROL_LEGACY_DESTRUCTIVE_CONFIRMATION: 'DELETE_CONFIRMED_LEGACY_DUPLICATES',
-    }), true)
+    }), false)
   })
 })

@@ -45,7 +45,7 @@ export async function POST(request: Request) {
       failures,
       env: {
         has_app_url: !!process.env.NEXT_PUBLIC_APP_URL,
-        has_kit_mcp_secret: !!process.env.KIT_MCP_SECRET,
+        privileged_mcp_exported: false,
       },
     })
   } catch (error: any) {

@@ -400,6 +400,7 @@ export async function gatherParticipationContext(opts: {
       channelId: opts.channelId,
       workspaceId: opts.workspaceId,
       limit: 6,
+      visibilityTiers: ['team'],
     }).catch(() => null),
     loadDashboard(opts.workspaceId, project),
     loadFeedback(project),

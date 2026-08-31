@@ -320,7 +320,6 @@ function normLabel(s: string): string {
 // them — a deliberate non-guess (see mission field-ownership contract).
 const LABEL_TO_HEADER: Record<string, MasterHeader> = {
   [normLabel('Client')]: 'Client',
-  [normLabel('Contacts')]: 'Client Contact',
   [normLabel('Producer')]: 'Producer',
   [normLabel('CD')]: 'Creative Director',
   [normLabel('VO')]: 'VO',

@@ -19,7 +19,7 @@ export interface IngestOptions {
   title: string
   content: string
   sourceUrl?: string | null
-  visibilityTier?: 'team' | 'producer' | 'freelancer' | 'founder'
+  visibilityTier: 'team' | 'producer' | 'freelancer' | 'founder'
   metadata?: Record<string, unknown>
 }
 
@@ -45,7 +45,7 @@ export async function ingestDocument(opts: IngestOptions): Promise<IngestResult>
       source_url: opts.sourceUrl ?? null,
       embedding: asVectorParam(embedding),
       metadata: (opts.metadata ?? null) as Json,
-      visibility_tier: opts.visibilityTier ?? 'team',
+      visibility_tier: opts.visibilityTier,
       indexed_at: new Date().toISOString(),
     })
     .select('id')
@@ -87,7 +87,7 @@ export async function upsertDocument(opts: IngestOptions): Promise<IngestResult>
         source_url: opts.sourceUrl ?? null,
         embedding: asVectorParam(embedding),
         metadata: (opts.metadata ?? null) as Json,
-        visibility_tier: opts.visibilityTier ?? 'team',
+        visibility_tier: opts.visibilityTier,
         indexed_at: new Date().toISOString(),
       })
       .eq('id', existing.id)
@@ -119,7 +119,7 @@ export async function ingestLongDocument(opts: IngestOptions): Promise<IngestRes
     source_url: opts.sourceUrl ?? null,
     embedding: asVectorParam(embeddings[i]),
     metadata: { ...(opts.metadata ?? {}), chunk_index: i, chunk_total: chunks.length } as Json,
-    visibility_tier: opts.visibilityTier ?? 'team',
+    visibility_tier: opts.visibilityTier,
     indexed_at: new Date().toISOString(),
   }))
   const { data, error } = await sb
@@ -129,4 +129,3 @@ export async function ingestLongDocument(opts: IngestOptions): Promise<IngestRes
   if (error) throw new Error(`ingestLongDocument insert failed: ${error.message}`)
   return (data || []).map((r) => ({ documentId: r.id }))
 }
-

@@ -7,9 +7,8 @@
  * as 'failed' until `/storyboard resume <jobId>` is invoked, which loads
  * the parsed frames and retries the create / append.
  *
- * Supabase isn't always present in dev (createAdminClient throws if env
- * vars are missing), so every helper is best-effort: errors are logged
- * and swallowed. A missing checkpoint never blocks a create.
+ * Checkpoints are mandatory. Provider writes never start or advance when the
+ * durable job/progress checkpoint cannot be written.
  */
 
 import { createAdminClient } from '../supabase/admin'
@@ -50,11 +49,7 @@ export interface CreateJobInput {
 }
 
 function client() {
-  try {
-    return createAdminClient()
-  } catch {
-    return null
-  }
+  return createAdminClient()
 }
 
 function fromRow(row: any): StoryboardJob {
@@ -81,11 +76,9 @@ function fromRow(row: any): StoryboardJob {
   }
 }
 
-export async function createJob(input: CreateJobInput): Promise<string | null> {
+export async function createJob(input: CreateJobInput): Promise<string> {
   const supabase = client()
-  if (!supabase) return null
-  try {
-    const { data, error } = await supabase
+  const { data, error } = await supabase
       .from('storyboard_jobs')
       .insert({
         workspace_id: input.workspaceId || null,
@@ -102,29 +95,19 @@ export async function createJob(input: CreateJobInput): Promise<string | null> {
       })
       .select('id')
       .single()
-    if (error) throw error
-    return data.id as string
-  } catch (err: any) {
-    console.warn('[storyboard.jobs] createJob failed (continuing):', err.message)
-    return null
-  }
+  if (error) throw new Error(`storyboard job checkpoint failed: ${error.message}`)
+  return data.id as string
 }
 
 export async function loadJob(jobId: string): Promise<StoryboardJob | null> {
   const supabase = client()
-  if (!supabase) return null
-  try {
-    const { data, error } = await supabase
+  const { data, error } = await supabase
       .from('storyboard_jobs')
       .select('*')
       .eq('id', jobId)
       .maybeSingle()
-    if (error) throw error
-    return data ? fromRow(data) : null
-  } catch (err: any) {
-    console.warn('[storyboard.jobs] loadJob failed:', err.message)
-    return null
-  }
+  if (error) throw new Error(`storyboard job read failed: ${error.message}`)
+  return data ? fromRow(data) : null
 }
 
 export async function markJobInProgress(jobId: string): Promise<void> {
@@ -181,14 +164,11 @@ export async function advanceJobIndex(jobId: string, index: number): Promise<voi
 
 async function update(jobId: string, patch: Record<string, unknown>): Promise<void> {
   const supabase = client()
-  if (!supabase) return
-  try {
-    const { error } = await supabase
+  const { data, error } = await supabase
       .from('storyboard_jobs')
       .update({ ...patch, updated_at: new Date().toISOString() })
       .eq('id', jobId)
-    if (error) throw error
-  } catch (err: any) {
-    console.warn(`[storyboard.jobs] update(${jobId}) failed:`, err.message)
-  }
+      .select('id')
+  if (error) throw new Error(`storyboard job update failed: ${error.message}`)
+  if (!data?.length) throw new Error(`storyboard job ${jobId} no longer exists`)
 }

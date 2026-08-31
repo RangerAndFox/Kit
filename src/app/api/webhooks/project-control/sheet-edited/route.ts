@@ -22,9 +22,17 @@ import { handleSheetEditNotification, type SheetEditEvent } from '@/lib/project-
 // Tiny, fast route: authenticate + enqueue one event. The heavy sync runs in the
 // Inngest function, not here.
 export const maxDuration = 10
+const MAX_WEBHOOK_BYTES = 32 * 1024
 
 export async function POST(request: NextRequest): Promise<Response> {
+  const declaredLength = Number(request.headers.get('content-length') || '0')
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_WEBHOOK_BYTES) {
+    return Response.json({ ok: false }, { status: 413 })
+  }
   const rawBody = await request.text()
+  if (Buffer.byteLength(rawBody, 'utf8') > MAX_WEBHOOK_BYTES) {
+    return Response.json({ ok: false }, { status: 413 })
+  }
   const signature =
     request.headers.get('x-kit-signature') || request.headers.get('x-signature') || ''
 

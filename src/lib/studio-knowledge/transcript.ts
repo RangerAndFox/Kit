@@ -9,7 +9,6 @@
 
 import { ingestLongDocument } from '../rag/ingest'
 import { createAdminClient } from '../supabase/admin'
-import { sanitizeTranscriptForSharedSurface } from '../privacy/shared-surface'
 
 export interface TranscriptInput {
   id: string
@@ -25,12 +24,11 @@ export interface TranscriptInput {
 }
 
 export function transcriptVisibilityTier(t: Pick<TranscriptInput, 'project_id' | 'source'>): 'team' | 'founder' {
-  // Plaud and its Drive/Zapier intake can contain personal conversations even
-  // when a project matcher finds a plausible project. The raw source therefore
-  // remains founder-only unconditionally. Project-matched calls get a separate,
-  // deterministic redacted derivative below for team retrieval.
-  if (t.source === 'plaud' || t.source === 'drive') return 'founder'
-  return 'team'
+  void t
+  // Full transcripts are sensitive regardless of source. Team-facing context
+  // must be authored separately from structured, approved facts; regex output
+  // is not treated as an independently safe derivative.
+  return 'founder'
 }
 
 export function composeTranscriptTitle(t: TranscriptInput): string {
@@ -75,31 +73,10 @@ export async function embedTranscript(t: TranscriptInput): Promise<{ documentIds
     },
   })
 
-  let safeResults: Array<{ documentId: string }> = []
-  if (t.project_id && (t.source === 'plaud' || t.source === 'drive')) {
-    const safeText = sanitizeTranscriptForSharedSurface(t.transcript)
-    // Empty is the safe outcome when every line contains restricted material.
-    if (safeText) {
-      safeResults = await ingestLongDocument({
-        workspaceId: t.workspace_id,
-        projectId: t.project_id,
-        docType: 'call_transcript_safe',
-        title: `${title} · shared-safe`,
-        content: safeText,
-        visibilityTier: 'team',
-        metadata: {
-          source: t.source,
-          redacted_for_shared_surfaces: true,
-          call_transcripts_id: t.id,
-          start_time: t.start_time,
-        },
-      })
-    }
-  }
   return {
-    documentIds: [...results, ...safeResults].map((r) => r.documentId),
+    documentIds: results.map((r) => r.documentId),
     chunks: results.length,
-    safeChunks: safeResults.length,
+    safeChunks: 0,
   }
 }
 
@@ -128,17 +105,15 @@ export async function backfillTranscriptsIntoRag(workspaceId: string): Promise<{
 
   for (const t of rows || []) {
     try {
-      // A complete embedding has a raw source row and, for matched Plaud/Drive
-      // calls, a separate shared-safe row. Missing derivatives are repaired.
+      // A complete embedding has a founder-only raw source row. Shared
+      // derivatives are deliberately not generated from transcripts.
       const { data: existing } = await sb
         .from('project_documents')
         .select('id, doc_type')
         .in('doc_type', ['call_transcript', 'call_transcript_safe'])
         .filter('metadata->>call_transcripts_id', 'eq', t.id)
       const hasRaw = (existing || []).some((doc: any) => doc.doc_type === 'call_transcript')
-      const needsSafe = Boolean(t.project_id) && (t.source === 'plaud' || t.source === 'drive')
-      const hasSafe = (existing || []).some((doc: any) => doc.doc_type === 'call_transcript_safe')
-      if (hasRaw && (!needsSafe || hasSafe)) {
+      if (hasRaw) {
         skipped++
         continue
       }

@@ -12,7 +12,7 @@ export interface ProjectSupplement {
 
 // Bump when generated Canvas markup changes so the sync cursor performs one
 // complete regeneration even if the workbook itself has not changed.
-export const PROJECT_VIEW_RENDER_VERSION = '2'
+export const PROJECT_VIEW_RENDER_VERSION = '3'
 
 const val = (row: NormalizedRow, key: string) => row[key]?.display || '—'
 const link = (label: string, url?: string) => url ? `[${label}](${url})` : '—'
@@ -48,7 +48,9 @@ export function renderReferenceView(row: NormalizedRow, extra: ProjectSupplement
   const s = extra.specs
   return `${GENERATED_VIEW_NOTICE}\n\n# ${val(row, 'Project Number')} — Reference\n\n` +
     `## Project reference\n${table(['Field', 'Value'], [
-      ['Client / Contact', `${val(row, 'Client')} / ${val(row, 'Client Contact')}`],
+      // Client contacts stay in the producer-controlled Sheet. Project-channel
+      // canvases can include artists, so the projection intentionally omits it.
+      ['Client', val(row, 'Client')],
       ['Producer / CD', `${val(row, 'Producer')} / ${val(row, 'Creative Director')}`],
       ['Delivery Date', val(row, 'End Date')], ['VO', val(row, 'VO')], ['Music', val(row, 'Music')],
     ])}\n\n## Project specs\n${table(['Spec', 'Value'], [

@@ -1003,7 +1003,7 @@ export function registerCommandHandlers(app: App) {
       return
     }
 
-    const stashToken = stashIntake({
+    const stashToken = await stashIntake({
       channelId: command.channel_id,
       userId: command.user_id,
     })

@@ -8,6 +8,7 @@
  */
 
 import type { App } from '@slack/bolt'
+import { createHash } from 'node:crypto'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import {
   createTimeEntry,
@@ -201,6 +202,13 @@ export async function handleCheckinConfirm(opts: {
         spentDate: entry.spentDate || checkin.check_in_date,
         notes: entry.notes || undefined,
         userId: staff.harvest_user_id,
+        idempotencyKey: `${checkin.id}:${createHash('sha256').update(JSON.stringify({
+          project: entry.harvest_project_id,
+          task: task.id,
+          date: entry.spentDate || checkin.check_in_date,
+          hours: entry.hours,
+          notes: entry.notes || '',
+        })).digest('hex').slice(0, 16)}`,
       })
       logged.push(te)
     } catch (err: any) {

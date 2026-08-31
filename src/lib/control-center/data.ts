@@ -52,13 +52,12 @@ async function safeRows(promise: PromiseLike<any>, label: string): Promise<Row[]
   try {
     const { data, error } = await promise
     if (error) {
-      console.warn(`[control-center] ${label}: ${error.message}`)
-      return []
+      throw new Error(`${label} unavailable: ${error.message}`)
     }
     return Array.isArray(data) ? data : []
   } catch (error: any) {
-    console.warn(`[control-center] ${label}: ${error?.message || error}`)
-    return []
+    console.error(`[control-center] ${label} unavailable`)
+    throw error instanceof Error ? error : new Error(`${label} unavailable`)
   }
 }
 
@@ -173,10 +172,7 @@ export async function loadControlCenterData(args: {
     agentRuns,
     accessibilityJobs,
   ] = await Promise.all([
-    runAllChecks().catch((error: any) => {
-      console.warn(`[control-center] live checks: ${error?.message || error}`)
-      return [] as HealthCheck[]
-    }),
+    runAllChecks(),
     safeRows(admin.from('system_health').select('*'), 'system health'),
     safeRows(admin.from('cron_heartbeats').select('*'), 'cron heartbeats'),
     safeRows(admin.from('daily_hours_checkins').select('*').gte('check_in_date', studioDate(new Date(Date.now() - 14 * DAY_MS))), 'hours'),

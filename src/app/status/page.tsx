@@ -1,187 +1,44 @@
 'use client'
 
-/**
- * /status — live health page. Polls /api/status every 30s and renders a
- * green/amber/red board. Standalone (outside the app's auth group) so it can
- * double as a quick internal uptime glance.
- */
-
-import { useEffect, useState, useCallback, type CSSProperties } from 'react'
-
-interface Check {
-  key: string
-  label: string
-  ok: boolean
-  detail?: string
-}
-interface StatusPayload {
-  ok: boolean
-  checkedAt: string
-  checks: Check[]
-  error?: string
-}
-
-const REFRESH_MS = 30_000
+import Link from 'next/link'
+import { useCallback, useEffect, useState } from 'react'
 
 export default function StatusPage() {
-  const [data, setData] = useState<StatusPayload | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [fetchedAt, setFetchedAt] = useState<Date | null>(null)
-  const [failed, setFailed] = useState(false)
-
+  const [online, setOnline] = useState<boolean | null>(null)
+  const [checkedAt, setCheckedAt] = useState<string>('')
   const load = useCallback(async () => {
     try {
-      const res = await fetch('/api/status', { cache: 'no-store' })
-      const json = (await res.json()) as StatusPayload
-      setData(json)
-      setFailed(false)
+      const response = await fetch('/api/status', { cache: 'no-store' })
+      const payload = await response.json()
+      setOnline(response.ok && payload.ok === true)
+      setCheckedAt(new Date(payload.checkedAt || Date.now()).toLocaleTimeString())
     } catch {
-      setFailed(true)
-    } finally {
-      setLoading(false)
-      setFetchedAt(new Date())
+      setOnline(false)
+      setCheckedAt(new Date().toLocaleTimeString())
     }
   }, [])
 
   useEffect(() => {
-    load()
-    const id = setInterval(load, REFRESH_MS)
-    return () => clearInterval(id)
+    void load()
+    const timer = setInterval(load, 30_000)
+    return () => clearInterval(timer)
   }, [load])
 
-  const integrations = (data?.checks || []).filter((c) => !c.key.startsWith('cron:'))
-  const crons = (data?.checks || []).filter((c) => c.key.startsWith('cron:'))
-  const allOk = data?.ok ?? false
-  const banner = failed
-    ? { color: '#8a929b', text: 'Status endpoint unreachable' }
-    : allOk
-      ? { color: '#2e7d57', text: 'All systems operational' }
-      : { color: '#b4531f', text: 'Degraded — one or more checks failing' }
-
   return (
-    <main style={S.page}>
-      <style>{globalCss}</style>
-      <div style={S.wrap}>
-        <header style={S.head}>
-          <p style={S.eyebrow}>Ranger &amp; Fox · Kit</p>
-          <h1 style={S.title}>System status</h1>
-          <div style={{ ...S.banner, borderColor: banner.color }}>
-            <span style={{ ...S.bannerDot, background: banner.color }} />
-            <span style={{ color: banner.color, fontWeight: 600 }}>{banner.text}</span>
+    <main className="flex min-h-screen items-center justify-center bg-[#08090a] px-6 text-[#f0f2f5]">
+      <section className="w-full max-w-2xl border border-white/15 bg-white/[0.025] p-8">
+        <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#00ff66]">Ranger &amp; Fox / Kit</p>
+        <h1 className="mt-4 text-4xl font-semibold">Service status</h1>
+        <div className="mt-8 flex items-center gap-4 border-y border-white/10 py-5">
+          <span className={`h-3 w-3 rounded-full ${online === null ? 'bg-[#777f90]' : online ? 'bg-[#00ff66]' : 'bg-[#ff5c4d]'}`} />
+          <div>
+            <p className="text-lg">{online === null ? 'Checking Kit…' : online ? 'Kit web service is online' : 'Kit web service is unavailable'}</p>
+            <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[#777f90]">{checkedAt ? `Last checked ${checkedAt}` : 'Public liveness only'}</p>
           </div>
-          <p style={S.meta}>
-            {loading && !data ? 'Checking…' : fetchedAt ? `Updated ${fetchedAt.toLocaleTimeString()}` : ''}
-            {fetchedAt ? ' · refreshes every 30s' : ''}
-          </p>
-        </header>
-
-        {data?.error ? <p style={S.err}>Probe error: {data.error}</p> : null}
-
-        <Section title="Integrations" checks={integrations} />
-        <Section title="Scheduled jobs" checks={crons} />
-
-        <footer style={S.foot}>
-          Live checks of Kit&apos;s connections and background jobs. Red means broken; amber-grey means
-          the status couldn&apos;t be read. Alerts also post to the ops channel the moment anything flips.
-        </footer>
-      </div>
+        </div>
+        <p className="mt-6 leading-7 text-[#9aa3ad]">Provider credentials, internal errors, queues, and scheduled-job details are intentionally not exposed on this public page. Authorized founders can review the full health picture in the Control Center.</p>
+        <Link href="/control-center" className="mt-7 inline-flex border border-white/20 px-4 py-2 font-mono text-xs uppercase tracking-[0.12em] hover:border-[#00ff66]">Open Control Center</Link>
+      </section>
     </main>
   )
-}
-
-function Section({ title, checks }: { title: string; checks: Check[] }) {
-  if (checks.length === 0) return null
-  return (
-    <section style={{ marginTop: '2rem' }}>
-      <h2 style={S.sectionTitle}>{title}</h2>
-      <div style={S.list}>
-        {checks.map((c) => {
-          const color = c.ok ? '#2e7d57' : '#c6402e'
-          return (
-            <div key={c.key} style={S.row}>
-              <span style={{ ...S.dot, background: color }} />
-              <span style={S.label}>{c.label}</span>
-              <span style={S.detail}>{c.detail || (c.ok ? 'ok' : 'failing')}</span>
-              <span style={{ ...S.pill, color, borderColor: color }}>{c.ok ? 'UP' : 'DOWN'}</span>
-            </div>
-          )
-        })}
-      </div>
-    </section>
-  )
-}
-
-const globalCss = `
-  :root { color-scheme: light dark; }
-  body { margin: 0; }
-  * { box-sizing: border-box; }
-`
-
-const S: Record<string, CSSProperties> = {
-  page: {
-    minHeight: '100vh',
-    background: 'var(--bg, #f4f5f6)',
-    color: '#1a2026',
-    fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
-    padding: '3rem 1.25rem',
-  },
-  wrap: { maxWidth: 720, margin: '0 auto' },
-  head: { borderBottom: '1px solid #cfd4d8', paddingBottom: '1.5rem' },
-  eyebrow: {
-    fontFamily: 'ui-monospace, Menlo, monospace',
-    fontSize: '.72rem',
-    letterSpacing: '.22em',
-    textTransform: 'uppercase',
-    color: '#a8481c',
-    margin: '0 0 .6rem',
-  },
-  title: { fontFamily: 'Georgia, serif', fontSize: '2.4rem', margin: '0 0 1rem', letterSpacing: '-.01em' },
-  banner: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: '.6rem',
-    border: '1px solid',
-    borderRadius: 999,
-    padding: '.4rem .9rem',
-    background: '#fff',
-  },
-  bannerDot: { width: '.7rem', height: '.7rem', borderRadius: '50%' },
-  meta: { fontSize: '.82rem', color: '#6b757e', marginTop: '.9rem' },
-  err: { color: '#c6402e', fontSize: '.85rem', marginTop: '1rem' },
-  sectionTitle: {
-    fontFamily: 'Georgia, serif',
-    fontSize: '1.2rem',
-    margin: '0 0 .8rem',
-  },
-  list: { display: 'flex', flexDirection: 'column', gap: '.5rem' },
-  row: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '.75rem',
-    background: '#fff',
-    border: '1px solid #e0e3e6',
-    borderRadius: 10,
-    padding: '.8rem 1rem',
-  },
-  dot: { width: '.7rem', height: '.7rem', borderRadius: '50%', flex: 'none' },
-  label: { fontWeight: 600, minWidth: 150 },
-  detail: {
-    flex: 1,
-    fontSize: '.82rem',
-    color: '#6b757e',
-    fontFamily: 'ui-monospace, Menlo, monospace',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-  },
-  pill: {
-    fontSize: '.66rem',
-    fontWeight: 700,
-    letterSpacing: '.08em',
-    border: '1px solid',
-    borderRadius: 999,
-    padding: '.2rem .5rem',
-    flex: 'none',
-  },
-  foot: { marginTop: '2.5rem', fontSize: '.8rem', color: '#6b757e', lineHeight: 1.5 },
 }

@@ -55,25 +55,8 @@ const ROLE_TO_TIER: Record<string, AccessTier> = {
 }
 
 /**
- * Emails that always resolve to admin tier, even without a team_members row.
- * Why: founder access can't depend on the team_members table being seeded —
- * Steve must be able to talk to Kit before any other user is provisioned.
- */
-const HARDCODED_ADMIN_EMAILS = new Set<string>([
-  'steve@rangerandfox.tv',
-  'jared@rangerandfox.tv',
-])
-
-function isHardcodedAdmin(email: string | undefined | null): boolean {
-  return !!email && HARDCODED_ADMIN_EMAILS.has(email.toLowerCase())
-}
-
-/**
  * Resolve a user's access tier from their Slack user ID.
  * This is the primary entry point — Kit identifies users by Slack ID.
- *
- * If `email` is provided and matches a hardcoded admin (and no team_members
- * row exists for the slack user), returns a synthetic admin context.
  */
 export async function resolveUserContext(
   workspaceId: string,
@@ -106,9 +89,7 @@ export async function resolveUserContext(
       (accessOverrides || []).map((a: any) => a.project_id)
     )
 
-    // Hardcoded admin override even if DB role disagrees
-    const dbTier = ROLE_TO_TIER[member.role] || 'artist'
-    const tier: AccessTier = isHardcodedAdmin(member.email) ? 'admin' : dbTier
+    const tier: AccessTier = ROLE_TO_TIER[member.role] || 'artist'
 
     return {
       teamMemberId: member.id,
@@ -120,18 +101,7 @@ export async function resolveUserContext(
     }
   }
 
-  // No team_members row — fall back to hardcoded admin if email matches
-  if (isHardcodedAdmin(email)) {
-    return {
-      teamMemberId: `hardcoded:${email}`,
-      workspaceId,
-      tier: 'admin',
-      name: email!,
-      slackUserId,
-      projectFinancials: new Set(),
-    }
-  }
-
+  void email
   return null
 }
 
@@ -243,11 +213,18 @@ export function checkGateway(
   const key = `${agentId}:${action}`
   const rule = GATEWAY_RULES[key]
 
+  const capability = getAgent(agentId)?.capabilities.find((candidate) => candidate.action === action)
+  if (!capability) {
+    return {
+      allowed: false,
+      reason: `That capability is not registered with Kit.`,
+    }
+  }
+
   // Registered mutations must never become artist-accessible merely because a
   // new capability was added without a matching policy entry.
   if (!rule) {
-    const capability = getAgent(agentId)?.capabilities.find((candidate) => candidate.action === action)
-    if (capability?.mutates && user.tier === 'artist') {
+    if (capability.mutates && user.tier === 'artist') {
       return {
         allowed: false,
         reason: `Sorry, that action changes studio or client data. You'd need producer-level access for this.`,

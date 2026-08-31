@@ -39,6 +39,9 @@ export function visibilityTiersForRequester(tier: unknown): KnowledgeVisibilityT
 
 export async function searchDocuments(query: string, opts: SearchOptions = {}): Promise<SearchResult[]> {
   if (!query || query.trim().length === 0) return []
+  if (!opts.visibilityTiers?.length) {
+    throw new Error('searchDocuments requires an explicit requester visibility classification')
+  }
   const limit = Math.max(1, Math.min(50, opts.limit ?? 10))
 
   const embedding = await generateEmbedding(query)
@@ -50,7 +53,7 @@ export async function searchDocuments(query: string, opts: SearchOptions = {}): 
     match_count: limit,
     filter_workspace_id: opts.workspaceId ?? undefined,
     filter_project_id: opts.projectId ?? undefined,
-    filter_visibility_tiers: opts.visibilityTiers?.length ? opts.visibilityTiers : ['team'],
+    filter_visibility_tiers: opts.visibilityTiers,
   })
   if (error) {
     throw new Error(`match_documents RPC failed: ${error.message}`)

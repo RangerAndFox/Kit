@@ -1,10 +1,34 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildFrameioShareRequest,
+  classifyFrameioUploadStatus,
   isDeniedDeliveryFile,
+  normalizeFrameioStatusPath,
   resolveFrameioIdForProject,
   selectFrameioProjectByNumber,
 } from '../src/watchers/dropbox'
+
+describe('Frame.io remote-upload readiness', () => {
+  it('does not treat accepted or processing states as ready', () => {
+    for (const status of ['', 'created', 'uploading', 'processing', 'transcoding']) {
+      expect(classifyFrameioUploadStatus(status)).toBe('processing')
+    }
+  })
+
+  it('recognizes terminal success and failure states', () => {
+    expect(classifyFrameioUploadStatus('completed')).toBe('ready')
+    expect(classifyFrameioUploadStatus('ready')).toBe('ready')
+    expect(classifyFrameioUploadStatus('failed')).toBe('failed')
+    expect(classifyFrameioUploadStatus('cancelled')).toBe('failed')
+  })
+
+  it('normalizes the documented absolute status URL without changing API paths', () => {
+    expect(normalizeFrameioStatusPath('https://api.frame.io/v4/accounts/a/files/f/status'))
+      .toBe('/accounts/a/files/f/status')
+    expect(normalizeFrameioStatusPath('/accounts/a/files/f/status'))
+      .toBe('/accounts/a/files/f/status')
+  })
+})
 
 describe('buildFrameioShareRequest', () => {
   it('uses the Frame.io v4 project share contract with the uploaded asset', () => {

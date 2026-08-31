@@ -88,10 +88,11 @@ import {
 import { resolveControlTemplate } from '../../../src/lib/project-control/canvas'
 import { applyProjectShare, dismissProjectShare } from '../../../src/lib/project-control/share-progress'
 import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
-import { peekIntake, takeIntake, updateIntake } from '../../../src/lib/storyboard/stash'
+import { peekIntake, deleteIntake, updateIntake } from '../../../src/lib/storyboard/stash'
 import { extractScriptFromFile } from '../../../src/lib/storyboard/files'
 import { handleCheckinConfirm, handleCheckinRedo, handleCheckinRetryFailed } from '../checkins/confirm'
 import { parseOnboardSubmission } from '../onboarding/modal'
+import { canOnboard } from '../onboarding/permissions'
 import { runOnboarding, buildRequesterSummary } from '../onboarding/orchestrator'
 import { rehydrateProjectExternalLinks } from '../onboarding/rehydrate'
 import { registerDeliveryViewHandlers } from '../delivery/submit-handler'
@@ -555,6 +556,15 @@ export function registerInteractionHandlers(app: App) {
   // open the modal with a fresh trigger_id and route the summary back.
   app.action('kit_open_newproject_modal', async ({ ack, body, client }) => {
     await ack()
+    const actor = (body as any).user?.id || ''
+    if (!actor || !(await canOnboard(actor))) {
+      await client.chat.postEphemeral({
+        channel: (body as any).channel?.id || actor,
+        user: actor,
+        text: ':no_entry: Only producers and admins can create projects.',
+      })
+      return
+    }
     const raw = (body as any).actions?.[0]?.value || ''
     let channelId = ''
     let threadTs: string | undefined
@@ -673,7 +683,7 @@ export function registerInteractionHandlers(app: App) {
   app.action('kit_open_storyboard_modal', async ({ ack, body, client }) => {
     await ack()
     const stashToken = (body as any).actions?.[0]?.value || ''
-    const intake = peekIntake(stashToken)
+    const intake = await peekIntake(stashToken)
     if (!intake) {
       await client.chat.postMessage({
         channel: (body as any).user?.id,
@@ -686,7 +696,7 @@ export function registerInteractionHandlers(app: App) {
     // and also for any future entry points that drop the card without it.
     const containerThreadTs = (body as any).container?.thread_ts as string | undefined
     if (containerThreadTs && !intake.assistantThreadTs) {
-      updateIntake(stashToken, { assistantThreadTs: containerThreadTs })
+      await updateIntake(stashToken, { assistantThreadTs: containerThreadTs })
     }
     try {
       await client.views.open({
@@ -705,7 +715,7 @@ export function registerInteractionHandlers(app: App) {
   app.action('kit_cancel_storyboard', async ({ ack, body, client, respond }) => {
     await ack()
     const stashToken = (body as any).actions?.[0]?.value || ''
-    takeIntake(stashToken) // discard
+    await deleteIntake(stashToken)
     if (typeof respond === 'function') {
       await respond({ replace_original: true, text: '_Storyboard cancelled._' })
     }
@@ -719,7 +729,7 @@ export function registerInteractionHandlers(app: App) {
 
     const meta = JSON.parse(view.private_metadata || '{}')
     const stashToken = meta.stashToken || ''
-    const intake = takeIntake(stashToken)
+    const intake = await peekIntake(stashToken)
     const userId = body.user.id
     const channelId = intake?.channelId || userId
     const threadTs = intake?.assistantThreadTs
@@ -896,6 +906,12 @@ export function registerInteractionHandlers(app: App) {
         text: result.message || `Storyboard created: ${url || data.storyboardName}`,
         blocks,
       }))
+      // The result has already been delivered. Intake cleanup is best-effort;
+      // an expiry sweep can remove it later and a cleanup outage must not tell
+      // the producer that the provider operation failed.
+      await deleteIntake(stashToken).catch((cleanupError) => {
+        console.error('[Bolt] storyboard intake cleanup failed:', cleanupError)
+      })
     } catch (err: any) {
       console.error('[Bolt] storyboard provision error:', err)
       await client.chat.postMessage(postOpts({
@@ -915,10 +931,14 @@ export function registerInteractionHandlers(app: App) {
 
   // ─── Project Provisioning Modal ───────────────────────────
   app.view('kit_provision_project', async ({ ack, view, body, client }) => {
-    // Ack immediately to dismiss the modal
-    await ack()
-
     const userId = body.user.id
+    if (!userId || !(await canOnboard(userId))) {
+      await ack({
+        response_action: 'errors',
+        errors: { project_number: 'Only producers and admins can create projects.' },
+      })
+      return
+    }
     const meta = JSON.parse(view.private_metadata || '{}')
     const channelId = meta.channel_id || ''
     const threadTs = meta.thread_ts || undefined
@@ -929,8 +949,7 @@ export function registerInteractionHandlers(app: App) {
     const values = view.state?.values || {}
 
     // Extract form values. Services are read from the checkbox group;
-    // if for any reason the field is empty (older modal, etc.) we fall back
-    // to provisioning everything available.
+    // Empty selection is never permission to fan out across every provider.
     const rawBudget = values.budget?.val?.value
     const parsedBudget = rawBudget ? parseFloat(String(rawBudget).replace(/[$,\s]/g, '')) : NaN
     const selectedFromForm = (values.services?.val?.selected_options || [])
@@ -950,9 +969,18 @@ export function registerInteractionHandlers(app: App) {
       milestoneCount: Math.max(2, Math.min(20, parseInt(values.milestone_count?.val?.value || '9', 10) || 9)),
       description: values.description?.val?.value || undefined,
       budgetTotal: Number.isFinite(parsedBudget) && parsedBudget > 0 ? parsedBudget : undefined,
-      selectedServices:
-        selectedFromForm.length > 0 ? selectedFromForm : getProvisionableServices(),
+      selectedServices: selectedFromForm,
     }
+
+    if (form.selectedServices.length === 0) {
+      await ack({
+        response_action: 'errors',
+        errors: { services: 'Select at least one service to provision.' },
+      })
+      return
+    }
+
+    await ack()
 
     // Resolve workspace
     const teamId = body.team?.id || ''
@@ -963,6 +991,15 @@ export function registerInteractionHandlers(app: App) {
     // in-memory pending map backs the duplicate prompt, and provisioning is
     // unchanged. When enabled we use the durable creation-request ledger.
     const creationEnabled = projectControlCreationEnabled()
+
+    if (process.env.NODE_ENV === 'production' && !creationEnabled) {
+      await client.chat.postMessage({
+        channel: statusChannel,
+        ...(threadTs ? { thread_ts: threadTs } : {}),
+        text: ':warning: Project creation is unavailable because the durable Project Control ledger is not enabled. No provider work was started.',
+      })
+      return
+    }
 
     if (!creationEnabled) {
       const existing = await findExistingProject(workspaceId, form.projectNumber)

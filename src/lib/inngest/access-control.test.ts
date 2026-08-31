@@ -124,6 +124,13 @@ describe('checkGateway — default policy for newly registered capabilities', ()
     assert.equal(checkGateway(producer(), 'delivery', 'render_project').allowed, true)
     assert.equal(checkGateway(artist(), 'delivery', 'list_profiles').allowed, true)
   })
+
+  it('fails closed for unknown agents and actions at every tier', () => {
+    for (const user of [artist(), producer(), admin()]) {
+      assert.equal(checkGateway(user, 'not-an-agent', 'anything').allowed, false)
+      assert.equal(checkGateway(user, 'delivery', 'not-an-action').allowed, false)
+    }
+  })
 })
 
 describe('filterResultData — artist receives a name-only project record', () => {

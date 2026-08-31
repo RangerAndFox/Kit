@@ -28,6 +28,10 @@ COPY bolt/assets/ ./bolt/assets/
 
 WORKDIR /app/bolt
 
+# The official Node image provides an unprivileged `node` user. All runtime
+# files are read-only application assets; Bolt does not need root privileges.
+USER node
+
 # Probe the app's real /health endpoint (Slack-connectivity watchdog) —
 # the old `process.exit(0)` always passed regardless of app state.
 HEALTHCHECK --interval=60s --timeout=5s --retries=3 \

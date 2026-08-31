@@ -1,4 +1,4 @@
-import { BusinessDashboard } from './business-dashboard'
+import { UnavailableSurface } from '@/components/unavailable-surface'
 
 export const metadata = {
   title: 'Business Health — Kit',
@@ -6,18 +6,5 @@ export const metadata = {
 }
 
 export default function BusinessHealthPage() {
-  return (
-    <div className="flex-1 overflow-auto">
-      <div className="px-8 py-8">
-        <div className="max-w-7xl">
-          <div className="mb-8">
-            <h1 className="text-3xl font-bold text-white mb-2">Business Health</h1>
-            <p className="text-[#9ca3af]">Financial overview and margins</p>
-          </div>
-
-          <BusinessDashboard />
-        </div>
-      </div>
-    </div>
-  )
+  return <UnavailableSurface title="Business Health is not connected" detail="The previous demonstration figures have been removed. This page will return only when it is backed by authoritative, workspace-scoped financial data." />
 }

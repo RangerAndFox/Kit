@@ -22,6 +22,7 @@ import type {
 } from './types'
 import { RPC_ERRORS } from './types'
 import { zodToJsonSchema, parseInput } from './helpers'
+import type { McpPrincipal } from './auth'
 
 // ─── Tool registry ───────────────────────────────────────────
 
@@ -95,9 +96,9 @@ function initialize() {
   }
 }
 
-function listTools() {
+function listTools(principal: McpPrincipal) {
   return {
-    tools: tools.map((t) => ({
+    tools: tools.filter((tool) => principal.tools.includes(tool.name)).map((t) => ({
       name: t.name,
       description: t.description,
       inputSchema: zodToJsonSchema(t.schema),
@@ -111,7 +112,7 @@ const CallParamsSchema = z.object({
   arguments: z.record(z.any()).optional().default({}),
 })
 
-async function callTool(params: unknown): Promise<ToolCallResult> {
+async function callTool(params: unknown, principal: McpPrincipal): Promise<ToolCallResult> {
   const parsed = CallParamsSchema.safeParse(params)
   if (!parsed.success) {
     return {
@@ -128,7 +129,26 @@ async function callTool(params: unknown): Promise<ToolCallResult> {
     }
   }
 
-  const input = parseInput(tool.schema, parsed.data.arguments)
+  if (!principal.tools.includes(tool.name)) {
+    return {
+      content: [{ type: 'text', text: 'This MCP identity is not authorized for that tool.' }],
+      isError: true,
+    }
+  }
+
+  const suppliedWorkspace = parsed.data.arguments.workspace_id
+  if (suppliedWorkspace !== undefined && suppliedWorkspace !== principal.workspaceId) {
+    return {
+      content: [{ type: 'text', text: 'This MCP identity is not authorized for that workspace.' }],
+      isError: true,
+    }
+  }
+  const scopedArguments = {
+    ...parsed.data.arguments,
+    ...(tool.name === 'kit_get_workspace_context' ? { workspace_id: principal.workspaceId } : {}),
+  }
+
+  const input = parseInput(tool.schema, scopedArguments)
   if (!input.ok) {
     return {
       content: [
@@ -144,9 +164,13 @@ async function callTool(params: unknown): Promise<ToolCallResult> {
   try {
     return await tool.handler(input.value)
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    console.error('[MCP] Tool execution failed', {
+      subject: principal.subject,
+      tool: tool.name,
+      errorType: err instanceof Error ? err.name : typeof err,
+    })
     return {
-      content: [{ type: 'text', text: `Tool ${tool.name} threw: ${message}` }],
+      content: [{ type: 'text', text: `Tool ${tool.name} failed.` }],
       isError: true,
     }
   }
@@ -167,7 +191,7 @@ function errorResponse(
   return { jsonrpc: '2.0', id, error: { code, message, data } }
 }
 
-export async function handleRpc(body: unknown): Promise<JsonRpcResponse | null> {
+export async function handleRpc(body: unknown, principal: McpPrincipal): Promise<JsonRpcResponse | null> {
   if (!body || typeof body !== 'object') {
     return errorResponse(null, RPC_ERRORS.INVALID_REQUEST, 'Request must be a JSON object')
   }
@@ -194,10 +218,10 @@ export async function handleRpc(body: unknown): Promise<JsonRpcResponse | null> 
         return success(id, {})
 
       case 'tools/list':
-        return success(id, listTools())
+        return success(id, listTools(principal))
 
       case 'tools/call': {
-        const result = await callTool(req.params)
+        const result = await callTool(req.params, principal)
         return success(id, result)
       }
 
@@ -211,7 +235,11 @@ export async function handleRpc(body: unknown): Promise<JsonRpcResponse | null> 
         return errorResponse(id, RPC_ERRORS.METHOD_NOT_FOUND, `Method not found: ${req.method}`)
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    return errorResponse(id, RPC_ERRORS.INTERNAL_ERROR, message)
+    console.error('[MCP] RPC failed', {
+      subject: principal.subject,
+      method: req.method,
+      errorType: err instanceof Error ? err.name : typeof err,
+    })
+    return errorResponse(id, RPC_ERRORS.INTERNAL_ERROR, 'Internal MCP error')
   }
 }
