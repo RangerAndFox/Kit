@@ -106,7 +106,7 @@ Each external step is reconciled using durable markers. A recoverable failure re
 ## 2. Slack Channel + Canvas Provisioning
 
 ### Summary
-For each new project, Kit creates a Slack channel (`#{number}-{client}-{name}`), invites the PM + team members, sets the topic, posts a welcome message, and clones every canvas tabbed to the **template channel** (`C0B1312H89L`) into the new channel (each cloned as a standalone canvas tabbed to the channel header). Producers maintain templates by editing them in the template channel; no env-var changes needed.
+For each new project, Kit creates a Slack channel (`#{number}-{client}-{name}`), invites the PM + team members, sets the topic, posts a welcome message, and creates four generated project views: `<ID>_Overview`, `<ID>_Schedule`, `<ID>_Reference`, and `<ID>_NotesAndFeedback`. The Google Sheet remains authoritative; canvases are view-only projections. Producers maintain template structure in the template channel and operational content in the Sheet.
 
 ### Trigger
 Part of the [new-project provisioning](#1-new-project-provisioning) fan-out (`slack` service).
@@ -119,6 +119,8 @@ Part of the [new-project provisioning](#1-new-project-provisioning) fan-out (`sl
 
 **Dynamic template resolution**
 `resolveCanvasTemplateFileIds()` calls `files.list(channel=C0B1312H89L, types=canvases)` at provision time and clones every canvas it finds (sorted by `created_at` ascending). To change what gets cloned: edit/add/remove canvases in the template channel — no redeploy required.
+
+The project-control reconciler also creates any missing generated view even when the project's source-row hash has not changed. Notes & Feedback reads Status Log rows only when `Visibility=Team`; blank and `Private` rows are excluded. Slack accepted a backfilled Notes & Feedback canvas with channel access during the August 31 live proof but did not expose a public API to force that existing canvas into a historical channel's visible tab strip. New-project provisioning is the supported four-tab path.
 
 Override at runtime via `SLACK_CANVAS_TEMPLATE_FILE_IDS` env var if you ever need an explicit list. Override the template channel itself with `SLACK_TEMPLATE_CHANNEL_ID`.
 
@@ -589,6 +591,8 @@ Existing `project_documents` (pgvector embedded column, `match_documents` RPC) +
 
 ### Summary
 A producer or admin runs `/kit archive project` (or DMs `archive project`) to open a prefilled, private Slack workflow. Before the editable form appears, Kit drafts the portfolio title, subtitle, services, three website-copy sections, excerpt, social copy, and credits from public-safe project context and verified team records. Kit then copies the approved delivery video into the standardized Dropbox portfolio archive, generates bounded stills and GIFs on Railway, and prepares an unlisted Vimeo video, WordPress draft, Buffer drafts, and a Behance package. The producer can explicitly queue that package to a dedicated studio-Mac browser worker, which builds and saves a private Behance draft. Behance reuses the exact approved website title, subtitle, three body-copy sections, excerpt, and credits. It places them as separate modules around the approved main and process media in the Ranger & Fox portfolio sequence instead of combining the copy into one text block. Nothing is published publicly.
+
+**Live proof (2026-08-31):** project 2699 completed the Dropbox archive, still/GIF generation, unlisted Vimeo, Buffer LinkedIn/Instagram drafts, and a private Behance draft containing approved media and structured website copy. WordPress remains the only provider awaiting an operator-assisted final draft proof through the designer-provided internal entrance.
 
 ### Safeguards
 - The workflow is restricted to producer/admin access and the confirmation card is delivered by DM.
