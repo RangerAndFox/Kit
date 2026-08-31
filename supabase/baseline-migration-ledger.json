@@ -1,0 +1,351 @@
+{
+  "capturedAt": "2026-08-30",
+  "sourceProjectRef": "ozsxrcgrezpffnpwlrnq",
+  "baselineVersion": "00000000000000",
+  "migrations": [
+    {
+      "version": "055",
+      "name": "meeting_briefing_deliveries"
+    },
+    {
+      "version": "20260411192634",
+      "name": "kit_studio_initial_schema"
+    },
+    {
+      "version": "20260412012606",
+      "name": "kit_studio_phases_2_5"
+    },
+    {
+      "version": "20260412134711",
+      "name": "model_catalog_table"
+    },
+    {
+      "version": "20260413184200",
+      "name": "create_managed_agent_registry"
+    },
+    {
+      "version": "20260413191603",
+      "name": "add_slack_team_id_and_seed_workspace"
+    },
+    {
+      "version": "20260420184200",
+      "name": "add_project_slack_channel"
+    },
+    {
+      "version": "20260512135220",
+      "name": "storyboard_jobs"
+    },
+    {
+      "version": "20260512142700",
+      "name": "storyboard_jobs_enable_rls"
+    },
+    {
+      "version": "20260513143104",
+      "name": "add_project_manager_slack_id_to_projects"
+    },
+    {
+      "version": "20260513143108",
+      "name": "add_dropbox_state_table"
+    },
+    {
+      "version": "20260515214836",
+      "name": "add_frameio_token_state_table"
+    },
+    {
+      "version": "20260518124947",
+      "name": "staff_and_daily_hours_checkins"
+    },
+    {
+      "version": "20260518132916",
+      "name": "daily_hours_checkins_adhoc"
+    },
+    {
+      "version": "20260518143043",
+      "name": "staff_employment_type"
+    },
+    {
+      "version": "20260518152448",
+      "name": "staff_role_cd_and_freelancer_onboardings"
+    },
+    {
+      "version": "20260522132759",
+      "name": "015_create_call_transcripts"
+    },
+    {
+      "version": "20260522135055",
+      "name": "016_rls_token_tables"
+    },
+    {
+      "version": "20260522215503",
+      "name": "019_delivery_pipeline"
+    },
+    {
+      "version": "20260522221549",
+      "name": "020_delivery_slack_notify"
+    },
+    {
+      "version": "20260523000824",
+      "name": "017_pre_meeting_briefings"
+    },
+    {
+      "version": "20260523001035",
+      "name": "018_shot_lists"
+    },
+    {
+      "version": "20260524185008",
+      "name": "021_drive_transcript_watcher"
+    },
+    {
+      "version": "20260524191030",
+      "name": "022_revert_drive_transcript_watcher"
+    },
+    {
+      "version": "20260524193750",
+      "name": "023_client_profiles_harvest_id"
+    },
+    {
+      "version": "20260602022523",
+      "name": "026_brain"
+    },
+    {
+      "version": "20260602022552",
+      "name": "026_brain_rls"
+    },
+    {
+      "version": "20260602155600",
+      "name": "024_accessibility_jobs"
+    },
+    {
+      "version": "20260602223733",
+      "name": "027_brain_scavenger"
+    },
+    {
+      "version": "20260603020213",
+      "name": "028_brain_visibility"
+    },
+    {
+      "version": "20260615182907",
+      "name": "freelancer_nda_paperwork"
+    },
+    {
+      "version": "20260624194128",
+      "name": "030_project_settings"
+    },
+    {
+      "version": "20260624194406",
+      "name": "031_enable_rls_freelancer_paperwork"
+    },
+    {
+      "version": "20260630141331",
+      "name": "032_hours_missing_alerts"
+    },
+    {
+      "version": "20260630141349",
+      "name": "034_delivery_spec_intake"
+    },
+    {
+      "version": "20260630141404",
+      "name": "035_delivery_profile_video_filters"
+    },
+    {
+      "version": "20260630141412",
+      "name": "036_meeting_briefings_notified_users"
+    },
+    {
+      "version": "20260701021717",
+      "name": "033_drop_shot_lists"
+    },
+    {
+      "version": "20260701043147",
+      "name": "037_staff_bizdev_role_and_email_aliases"
+    },
+    {
+      "version": "20260701161438",
+      "name": "038_staff_briefing_channel"
+    },
+    {
+      "version": "20260701171551",
+      "name": "039_meeting_briefings_bizdev_type"
+    },
+    {
+      "version": "20260701201722",
+      "name": "040_security_hardening"
+    },
+    {
+      "version": "20260701202738",
+      "name": "041_scavenger_dm_sent"
+    },
+    {
+      "version": "20260701203738",
+      "name": "042_fk_indexes"
+    },
+    {
+      "version": "20260701224721",
+      "name": "043_conversation_state"
+    },
+    {
+      "version": "20260702014246",
+      "name": "044_staff_daily_checkin_flag"
+    },
+    {
+      "version": "20260702232337",
+      "name": "045_drive_transcript_source"
+    },
+    {
+      "version": "20260707151156",
+      "name": "transcript_match_attempted"
+    },
+    {
+      "version": "20260707194757",
+      "name": "staff_timezone"
+    },
+    {
+      "version": "20260708214349",
+      "name": "checkin_logging_status"
+    },
+    {
+      "version": "20260709022454",
+      "name": "checkin_harvest_entry_ids"
+    },
+    {
+      "version": "20260709171810",
+      "name": "ae_render_farm"
+    },
+    {
+      "version": "20260709171819",
+      "name": "ae_render_queue"
+    },
+    {
+      "version": "20260709171829",
+      "name": "deadline_backend"
+    },
+    {
+      "version": "20260710034255",
+      "name": "spec_intake_output_dir"
+    },
+    {
+      "version": "20260710215304",
+      "name": "project_aliases"
+    },
+    {
+      "version": "20260710220421",
+      "name": "drop_project_aliases"
+    },
+    {
+      "version": "20260722003833",
+      "name": "056_project_control"
+    },
+    {
+      "version": "20260722003918",
+      "name": "057_replace_target_identity"
+    },
+    {
+      "version": "20260724030401",
+      "name": "058_pilots"
+    },
+    {
+      "version": "20260725010358",
+      "name": "059_delivery_specs_scan_state"
+    },
+    {
+      "version": "20260725174551",
+      "name": "060_delivery_specs_scan_backlog"
+    },
+    {
+      "version": "20260725174605",
+      "name": "061_specs_backlog_atomic_checkpoint"
+    },
+    {
+      "version": "20260808015109",
+      "name": "frameio_token_state_shared_access_token"
+    },
+    {
+      "version": "20260813033129",
+      "name": "063_project_update"
+    },
+    {
+      "version": "20260813221458",
+      "name": "064_staff_time_off"
+    },
+    {
+      "version": "20260821030914",
+      "name": "065_daily_hours_reminders"
+    },
+    {
+      "version": "20260821030920",
+      "name": "066_enable_rls_uncovered_tables"
+    },
+    {
+      "version": "20260821031711",
+      "name": "index_daily_hours_reminders_check_in_id"
+    },
+    {
+      "version": "20260822021700",
+      "name": "enforce_transcript_visibility"
+    },
+    {
+      "version": "20260822031319",
+      "name": "plaud_token_state"
+    },
+    {
+      "version": "20260826134440",
+      "name": "expire_daily_hours_checkins"
+    },
+    {
+      "version": "20260827230925",
+      "name": "project_control_v2"
+    },
+    {
+      "version": "20260828030621",
+      "name": "plaud_shared_surface_privacy"
+    },
+    {
+      "version": "20260828151126",
+      "name": "allow_manual_checkin_reconciliation"
+    },
+    {
+      "version": "20260829002504",
+      "name": "archive_publisher"
+    },
+    {
+      "version": "20260829002732",
+      "name": "archive_jobs_workspace_index"
+    },
+    {
+      "version": "20260829024021",
+      "name": "behance_draft_worker"
+    },
+    {
+      "version": "20260829024050",
+      "name": "index_behance_worker_current_job"
+    },
+    {
+      "version": "20260830013602",
+      "name": "storyboard_elevenlabs_studio"
+    },
+    {
+      "version": "20260830135456",
+      "name": "elevenlabs_browser_worker"
+    },
+    {
+      "version": "20260830164123",
+      "name": "fence_elevenlabs_completion"
+    },
+    {
+      "version": "20260830164124",
+      "name": "harden_team_member_rls"
+    },
+    {
+      "version": "20260830171125",
+      "name": "restrict_project_documents_rls"
+    },
+    {
+      "version": "20260830174015",
+      "name": "durable_dropbox_event_inbox"
+    },
+    {
+      "version": "20260830175551",
+      "name": "fence_archive_jobs_and_steps"
+    }
+  ]
+}

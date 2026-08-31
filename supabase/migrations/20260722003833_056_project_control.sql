@@ -1,3 +1,3 @@
--- Production migration-history marker (20260822021700 enforce_transcript_visibility).
+-- Production migration-history marker (20260722003833 056_project_control).
 -- Its schema effect is already included in 00000000000000_production_schema_baseline.sql.
 -- Keep this file as a no-op so clean environments and the production ledger remain aligned.

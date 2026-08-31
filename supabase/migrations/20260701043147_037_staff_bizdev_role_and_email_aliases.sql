@@ -1,3 +1,3 @@
--- Production migration-history marker (20260822021700 enforce_transcript_visibility).
+-- Production migration-history marker (20260701043147 037_staff_bizdev_role_and_email_aliases).
 -- Its schema effect is already included in 00000000000000_production_schema_baseline.sql.
 -- Keep this file as a no-op so clean environments and the production ledger remain aligned.
