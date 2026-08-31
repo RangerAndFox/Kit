@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { getControlCenterAccess } from '@/lib/control-center/access'
 import { OnboardingWizard } from './wizard'
 
 export const metadata = {
@@ -20,6 +21,12 @@ export default async function OnboardingPage() {
     // Redirect to auth/login page (you'll need to implement this)
     redirect('/login')
   }
+
+  // Founder/admin records can predate web auth and be resolved by verified
+  // email. Honor the same access bridge as the Control Center before falling
+  // back to the new-workspace onboarding path.
+  const founderAccess = await getControlCenterAccess()
+  if (founderAccess) redirect('/control-center')
 
   // Check if user already has a workspace
   const { data: userWorkspaces } = await supabase
