@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Per-recipient briefing delivery — the atomic, idempotent delivery boundary.
  *
@@ -226,6 +225,9 @@ async function ensureDeliveryRow(opts: {
     .eq('meeting_briefing_id', opts.meetingBriefingId)
     .eq('internal_recipient_id', opts.recipient.staff_id)
     .maybeSingle()
+  if (!data) {
+    throw new Error(`Meeting briefing delivery row was not created for ${opts.recipient.staff_id}`)
+  }
   return data
 }
 

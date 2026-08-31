@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Storyboard job persistence — checkpoint + resume.
  *
@@ -13,6 +12,7 @@
 
 import { createAdminClient } from '../supabase/admin'
 import type { BoordsFrame } from '../boords/client'
+import type { Json } from '@/types/supabase'
 
 export interface StoryboardJob {
   id: string
@@ -85,7 +85,7 @@ export async function createJob(input: CreateJobInput): Promise<string> {
         user_id: input.userId || null,
         channel_id: input.channelId || null,
         project_name: input.projectName,
-        frames: input.frames,
+        frames: input.frames as unknown as Json,
         last_frame_index: 0,
         status: 'pending',
         aspect_ratio: input.aspectRatio || null,

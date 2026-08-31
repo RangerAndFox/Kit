@@ -308,7 +308,7 @@ async function saveTimeEntry(
 
   // Get workspace and team member
   const { data: installation } = await supabase
-    .from('slack_oauth_installations' as any)
+.from('slack_oauth_installations')
     .select('workspace_id')
     .eq('slack_team_id', slackTeamId)
     .single();
@@ -317,7 +317,7 @@ async function saveTimeEntry(
 
   // Get team member by slack_user_id
   const { data: teamMember } = await supabase
-    .from('team_members' as any)
+.from('team_members')
     .select('id')
     .eq('workspace_id', installation.workspace_id)
     .eq('slack_user_id', slackUserId)
@@ -337,7 +337,7 @@ async function saveTimeEntry(
   const timeEntryCategory = category ? categoryMap[category] || 'production' : 'production';
 
   // Save time entry
-  await supabase.from('time_entries' as any).insert({
+await supabase.from('time_entries').insert({
     workspace_id: installation.workspace_id,
     team_member_id: teamMember.id,
     project_id: projectId,

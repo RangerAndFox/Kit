@@ -1,6 +1,6 @@
 # Kit — Operator follow-ups
 
-Current as of 2026-08-27. This list contains only checks that require live provider access, a future event, a studio machine, or an operator decision. Completed engineering work belongs in `SESSION-HANDOFF.md`, not here.
+Current as of 2026-08-31. This list contains only checks that require a future live event, a studio machine, or an operator decision. Completed engineering and database work belongs in `SESSION-HANDOFF.md`, not here.
 
 ## Immediate production verification
 
@@ -59,11 +59,11 @@ Use a bizdev meeting, kickoff, or active-project meeting. Confirm internal R&F a
 
 ## Studio infrastructure
 
-### Delivery workers
+### Delivery workers — intentionally last
 
 The `/Delivery-Queue/` pipeline is distinct from the project outgoing-file mirror. Use `/kit workers` to confirm at least one studio render worker is online before relying on profile-based transcodes. If no worker is registered, follow `kit-render-worker/README.md` on the intended studio machine and run an end-to-end short-file test.
 
-Deferred by the operator on 2026-08-21. This is intentionally tabled and is not an active software blocker; revisit when a specific always-on studio machine has been selected.
+Deferred by the operator again on 2026-08-31 because the render machines are not currently accessible. This is intentionally last and is not an active cloud-software blocker; revisit when the dedicated machine is accessible.
 
 Audit state on 2026-08-21: the production `render_workers` and `render_jobs`
 tables were both empty. Dropbox/Frame.io and the delivery/spec scan heartbeats

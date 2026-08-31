@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Pre-meeting briefings — Inngest functions.
  *
@@ -157,7 +156,7 @@ export const preMeetingScan = inngest.createFunction(
           project_code: p.project_code,
           brief_summary: p.brief_summary,
           // No staff-by-project mapping yet; team_emails left empty for now.
-          team_emails: [],
+          team_emails: [] as string[],
         })),
         bizdevEmails,
         staff: staffRows || [],

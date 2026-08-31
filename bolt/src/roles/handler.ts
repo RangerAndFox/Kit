@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Conversational role management — lets an admin set/check Kit access tiers
  * by talking to Kit ("make @Allyson a producer") instead of the /kit role

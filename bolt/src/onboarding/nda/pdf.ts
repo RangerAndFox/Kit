@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Convert a filled Company-NDA .docx into a PDF using the studio's Google
  * service account — the same GOOGLE_SERVICE_ACCOUNT_JSON used to send the NDA

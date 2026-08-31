@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Storage for delivery spec-intake rows (delivery_spec_intake, migration 034).
  *
@@ -9,6 +8,7 @@
 
 import { createAdminClient } from '../supabase/admin'
 import type { SourceFile } from './types'
+import type { Json } from '@/types/supabase'
 
 export interface SpecIntakeRow {
   id: string
@@ -31,7 +31,7 @@ export async function recordSpecIntake(opts: {
     {
       channel_id: opts.channelId,
       thread_ts: opts.threadTs,
-      sources: opts.sources,
+      sources: opts.sources as unknown as Json,
       status: 'open',
       output_dir: opts.outputDir ?? null,
     },
@@ -53,7 +53,11 @@ export async function getOpenSpecIntake(
     .eq('thread_ts', threadTs)
     .eq('status', 'open')
     .maybeSingle()
-  return (data as SpecIntakeRow) || null
+  if (!data) return null
+  return {
+    ...data,
+    sources: Array.isArray(data.sources) ? data.sources as unknown as SourceFile[] : [],
+  }
 }
 
 // ── Cheap pre-filter for the Bolt hot path ──────────────────

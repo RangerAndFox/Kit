@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * SRT sibling generation — I/O side.
  *

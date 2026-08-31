@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Lightweight Slack channel creation for MCP tool use.
  * Reuses the same Slack API pattern as the provisioner but takes

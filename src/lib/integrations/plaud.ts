@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Plaud personal-recording API client.
  *

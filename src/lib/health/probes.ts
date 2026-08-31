@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Health probes — cheap "is this integration actually reachable & authed?"
  * checks, plus a pure cron-freshness evaluator.

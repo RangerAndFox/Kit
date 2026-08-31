@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Read-only audit: find Kit-created project channels that have no matching
  * `projects` row (the "orphaned project" state — e.g. #2625-azure-gov).
@@ -77,10 +76,12 @@ async function main() {
   const linkedChannelIds = new Set<string>()
   const channelToProject = new Map<string, any>()
   for (const p of projects || []) {
-    const links = p.external_links || {}
+    const links = p.external_links && typeof p.external_links === 'object' && !Array.isArray(p.external_links)
+      ? p.external_links
+      : {}
     for (const key of ['slack_id', 'slack_channel_id']) {
       const id = links[key]
-      if (id) {
+      if (typeof id === 'string' && id) {
         linkedChannelIds.add(id)
         channelToProject.set(id, p)
       }

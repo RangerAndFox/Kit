@@ -1,10 +1,10 @@
-// @ts-nocheck
 import crypto from 'node:crypto'
 import { inngest } from '../inngest/client'
 import { buildArchiveProgressCard } from './blocks'
 import { prepareDropboxArchive, getDropboxSharedLink, listArchiveMedia, validateDropboxVideo } from './dropbox'
 import { configuredBufferChannels, createBufferDraft, createUnlistedVimeo, createWordpressDraft, invokeArchiveMediaWorker, prepareBehanceManifest } from './adapters'
 import { acquireArchiveJobLease, finishArchiveStep, getArchiveJob, listRecoverableArchiveJobs, startArchiveStep, updateClaimedArchiveJob } from './store'
+import type { ArchiveJob } from './types'
 
 async function updateSlack(job: any): Promise<void> {
   if (!job.slack_channel_id || !job.slack_message_ts || !process.env.SLACK_BOT_TOKEN) return

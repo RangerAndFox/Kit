@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Slack notifier for After Effects render-farm jobs.
  *

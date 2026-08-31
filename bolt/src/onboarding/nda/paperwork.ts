@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Email-keyed paperwork tracking (public.freelancer_paperwork).
  *

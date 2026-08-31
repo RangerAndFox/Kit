@@ -31,11 +31,18 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            bolt/package-lock.json
       - run: npm ci
-      - name: Prevent new ESLint and TypeScript debt
+      - run: npm ci
+        working-directory: bolt
+      - name: Prevent new ESLint debt
         run: npm run lint:ratchet
+      - name: TypeScript
+        run: npm run typecheck
       - name: Unit tests
-        run: find src -name '*.test.ts' -print0 | xargs -0 node --import tsx --test
+        run: npm run test:app
       - name: Production build
         run: npx next build --webpack
 

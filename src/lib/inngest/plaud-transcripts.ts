@@ -1,4 +1,3 @@
-// @ts-nocheck
 /** Direct Plaud transcript scan using Plaud's personal-recording OAuth API. */
 
 import { inngest } from './client'

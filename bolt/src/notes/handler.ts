@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Notes handler — saves freeform notes into project_documents (doc_type='note')
  * so they're embedded and surface in studio_knowledge semantic search.

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Render a brain to a Slack channel canvas.
  *
@@ -13,8 +12,25 @@
  * Spec: KIT-BRAIN-SPEC.md §3.1
  */
 
-import type { App } from '@slack/bolt'
 import { type Brain, stripProvenance, serializeBrain } from './format'
+
+interface SlackCanvasApp {
+  // The root package intentionally does not depend on Bolt; Bolt passes its
+  // WebClient-compatible client across this narrow boundary at runtime.
+  client: {
+    conversations: {
+      info(args: { channel: string }): Promise<unknown>
+      canvases: {
+        create(args: {
+          channel_id: string
+          title: string
+          document_content: { type: 'markdown'; markdown: string }
+        }): Promise<unknown>
+      }
+    }
+    apiCall(method: string, args: Record<string, unknown>): Promise<unknown>
+  }
+}
 
 export interface BrainCanvasHandle {
   canvas_id: string
@@ -41,7 +57,7 @@ export function buildCanvasMarkdown(brain: Brain): string {
 }
 
 export async function createOrUpdateBrainCanvas(opts: {
-  app: App
+  app: SlackCanvasApp
   channelId: string
   brain: Brain
   existingCanvasId?: string | null
@@ -82,7 +98,7 @@ export async function createOrUpdateBrainCanvas(opts: {
 }
 
 async function updateCanvas(opts: {
-  app: App
+  app: SlackCanvasApp
   canvasId: string
   markdown: string
   title: string

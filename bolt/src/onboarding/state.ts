@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * In-memory "pending onboarding" state per (channel, user).
  *

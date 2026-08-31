@@ -1,4 +1,3 @@
-// @ts-nocheck
 import Anthropic from '@anthropic-ai/sdk'
 import { createAdminClient } from '../supabase/admin'
 import { readProjectSupplement } from '../project-control/sheets'

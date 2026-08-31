@@ -28,7 +28,7 @@ export const getWorkspaceContext: KitTool = {
 
     if (workspace_id) {
       const { data, error } = await db
-        .from('workspaces' as any)
+.from('workspaces')
         .select('id, name, slug, plan, slack_team_id, settings, onboarding_completed')
         .eq('id', workspace_id)
         .maybeSingle()
@@ -41,7 +41,7 @@ export const getWorkspaceContext: KitTool = {
 
     if (slack_team_id) {
       const { data } = await db
-        .from('workspaces' as any)
+.from('workspaces')
         .select('id, name, slug, plan, slack_team_id, settings, onboarding_completed')
         .eq('slack_team_id', slack_team_id)
         .limit(1)

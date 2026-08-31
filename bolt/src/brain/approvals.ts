@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Brain Scavenger — DM-based approval flow.
  *

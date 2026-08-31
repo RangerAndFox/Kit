@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Recover hours replies that Slack did not deliver as Socket Mode events.
  *

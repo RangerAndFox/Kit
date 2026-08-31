@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Brain Flagger — Phase 4 proactive flagging.
  *
@@ -391,13 +390,20 @@ export interface KitActionInsertOpts {
  */
 export async function recordKitAction(opts: KitActionInsertOpts): Promise<string | null> {
   const sb = createAdminClient()
+  const auditDetails = {
+    confidence: opts.confidence,
+    reasoning: opts.reasoning ?? null,
+    payload: opts.payload ?? null,
+    dedup_key: opts.dedupKey ?? null,
+  }
+  const body = `${opts.description}\n\n${JSON.stringify(auditDetails)}`
   if (opts.dedupKey) {
     const { data: existing } = await sb
       .from('kit_actions')
       .select('id')
       .eq('workspace_id', opts.workspaceId)
-      .eq('type', opts.type)
-      .eq('reasoning', `dedup:${opts.dedupKey}`)
+      .eq('action_type', opts.type)
+      .eq('body', body)
       .in('status', ['suggested', 'in_progress', 'completed'])
       .limit(1)
     if (existing && existing.length > 0) return null
@@ -407,13 +413,10 @@ export async function recordKitAction(opts: KitActionInsertOpts): Promise<string
     .insert({
       workspace_id: opts.workspaceId,
       project_id: opts.projectId ?? null,
-      type: opts.type,
+      action_type: opts.type,
       status: 'suggested',
       title: opts.title,
-      description: opts.description,
-      payload: opts.payload ?? null,
-      confidence_score: opts.confidence,
-      reasoning: opts.dedupKey ? `dedup:${opts.dedupKey}` : (opts.reasoning ?? null),
+      body,
     })
     .select('id')
     .single()

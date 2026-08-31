@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Supabase I/O for the daily health digest: the recent daily_hours_checkins
  * rows the roll-up (`digest.ts`) counts.

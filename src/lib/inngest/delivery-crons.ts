@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Delivery pipeline cron jobs.
  *

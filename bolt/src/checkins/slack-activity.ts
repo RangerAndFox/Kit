@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Slack-activity project inference (Feature #10 extension).
  *

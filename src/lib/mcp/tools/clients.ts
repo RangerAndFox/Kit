@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { z } from 'zod'
 import { createAdminClient, ok, fail } from '../helpers'
 import type { KitTool } from '../types'
@@ -34,7 +33,7 @@ export const upsertClientProfile: KitTool = {
 
     // Try to find existing
     const { data: existing } = await db
-      .from('client_profiles' as any)
+.from('client_profiles')
       .select('id')
       .eq('workspace_id', workspace_id)
       .eq('client_name', client_name)
@@ -42,7 +41,7 @@ export const upsertClientProfile: KitTool = {
 
     if (existing?.id) {
       const { data, error } = await db
-        .from('client_profiles' as any)
+.from('client_profiles')
         .update(rest)
         .eq('id', existing.id)
         .select('*')
@@ -52,7 +51,7 @@ export const upsertClientProfile: KitTool = {
     }
 
     const { data, error } = await db
-      .from('client_profiles' as any)
+.from('client_profiles')
       .insert({ workspace_id, client_name, ...rest })
       .select('*')
       .single()
@@ -75,7 +74,7 @@ export const getClientProfile: KitTool = {
   handler: async ({ workspace_id, client_name }) => {
     const db = createAdminClient()
     const { data, error } = await db
-      .from('client_profiles' as any)
+.from('client_profiles')
       .select('*')
       .eq('workspace_id', workspace_id)
       .eq('client_name', client_name)

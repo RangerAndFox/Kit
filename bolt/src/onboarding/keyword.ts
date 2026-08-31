@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Natural-language onboarding trigger.
  *

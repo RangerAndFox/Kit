@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Onboarding — Harvest service (Bucket-user mode)
  *

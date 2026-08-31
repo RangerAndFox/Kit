@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { z } from 'zod'
 import { createAdminClient, ok, fail } from '../helpers'
 import type { KitTool } from '../types'
@@ -20,7 +19,7 @@ export const listTeam: KitTool = {
   handler: async ({ workspace_id, role, active_only = true }) => {
     const db = createAdminClient()
     let q = db
-      .from('team_members' as any)
+.from('team_members')
       .select(
         'id, name, email, role, permission_tier, hourly_rate, slack_user_id, clockify_user_id, notion_user_id, frameio_user_id, is_active'
       )
@@ -51,7 +50,7 @@ export const assignProjectAccess: KitTool = {
   handler: async (input) => {
     const db = createAdminClient()
     const { data, error } = await db
-      .from('project_access' as any)
+.from('project_access')
       .insert(input)
       .select('*')
       .single()

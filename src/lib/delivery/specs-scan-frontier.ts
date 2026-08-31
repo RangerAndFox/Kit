@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Persisted non-recursive traversal frontier for the specs-scan historical
  * backlog (table: delivery_specs_scan_frontier, migration 060).
@@ -10,19 +9,21 @@
  * primary key), and deleting an already-deleted row is a no-op — so replay after
  * a partial visit or crash cannot duplicate or lose work.
  *
- * @ts-nocheck (matches the delivery subsystem) because the table postdates the
- * generated Supabase types. A test seam injects a fake client.
+ * A test seam injects a compatible client.
  */
 
 import { createAdminClient } from '../supabase/admin'
 
 const TABLE = 'delivery_specs_scan_frontier'
 
-let clientFactory = createAdminClient
+type SpecsFrontierClient = ReturnType<typeof createAdminClient>
+type SpecsFrontierClientFactory = () => SpecsFrontierClient
+
+let clientFactory: SpecsFrontierClientFactory = createAdminClient
 
 /** Test seam: swap the Supabase client factory for a fake. Pass null to restore. */
-export function __setSpecsFrontierClientForTests(f) {
-  clientFactory = f || createAdminClient
+export function __setSpecsFrontierClientForTests(f: (() => unknown) | null) {
+  clientFactory = f ? f as SpecsFrontierClientFactory : createAdminClient
 }
 
 function db() {
@@ -30,7 +31,7 @@ function db() {
 }
 
 /** Enqueue folder paths to visit (idempotent — PK conflict is ignored). */
-export async function enqueueFrontier(paths) {
+export async function enqueueFrontier(paths: string[]): Promise<void> {
   if (!paths || paths.length === 0) return
   const rows = paths.map((path) => ({ path }))
   const { error } = await db().from(TABLE).upsert(rows, { onConflict: 'path', ignoreDuplicates: true })
@@ -42,7 +43,7 @@ export async function enqueueFrontier(paths) {
  * a DB error so a failed read never masquerades as a drained frontier (which
  * would wrongly mark the backlog complete).
  */
-export async function loadFrontierBatch(limit) {
+export async function loadFrontierBatch(limit: number): Promise<string[]> {
   const { data, error } = await db()
     .from(TABLE)
     .select('path')
@@ -60,7 +61,12 @@ export async function loadFrontierBatch(limit) {
  * stale. Returns true iff it committed; false means the lease was lost and the
  * caller must stop (the parent stays for the real owner to re-visit).
  */
-export async function commitBacklogFolder(holder, fence, parent, children) {
+export async function commitBacklogFolder(
+  holder: string,
+  fence: number,
+  parent: string,
+  children: string[],
+): Promise<boolean> {
   const { data, error } = await db().rpc('specs_backlog_commit_folder', {
     p_holder: holder,
     p_fence: fence,
@@ -77,7 +83,7 @@ export async function commitBacklogFolder(holder, fence, parent, children) {
  * `specs_backlog_mark_complete_if_empty`). Returns true iff it was set — never
  * completes while any frontier row remains, and a stale caller changes nothing.
  */
-export async function markBacklogCompleteIfEmpty(holder, fence) {
+export async function markBacklogCompleteIfEmpty(holder: string, fence: number): Promise<boolean> {
   const { data, error } = await db().rpc('specs_backlog_mark_complete_if_empty', {
     p_holder: holder,
     p_fence: fence,

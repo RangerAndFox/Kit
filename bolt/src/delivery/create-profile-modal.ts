@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Profile-creation modal — minimal version.
  *

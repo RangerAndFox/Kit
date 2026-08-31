@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * One-off remediation for two over-logged recovery commits (Allyson, 7/31 &
  * 8/10). The recovery script's wide reply window over-captured her other

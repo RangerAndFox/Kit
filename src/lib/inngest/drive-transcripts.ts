@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Drive transcript scan — Inngest cron.
  *

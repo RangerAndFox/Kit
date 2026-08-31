@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Bolt adapter for the Pilots capability — `/kit pilot …`.
  *

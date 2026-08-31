@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Daily-hours reminder — durable occurrence + effectively-once delivery.
  *
@@ -442,6 +441,7 @@ export function makeDefaultDeps(app: App): ReminderDeps {
         .eq('local_date', localDate)
         .eq('reminder_type', REMINDER_TYPE)
         .maybeSingle()
+      if (!data) throw new Error(`ensureRow: reminder row was not created for ${staff.id} on ${localDate}`)
       return data
     },
 

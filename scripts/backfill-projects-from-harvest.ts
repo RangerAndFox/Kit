@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * One-shot Harvest → projects + RAG backfill.
  *

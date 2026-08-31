@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Slack /kit Slash Command Handler
  *
@@ -151,7 +150,11 @@ async function handleAskCommand(
   // For now, structure the response
   const { workspace, projects, personality } = workspaceData;
 
-  const systemPrompt = buildPrompt(workspace, "You are Kit. Answer the user's question about this workspace using available context.", 'notification');
+  const systemPrompt = buildPrompt(
+    { name: workspace.name, personality },
+    "You are Kit. Answer the user's question about this workspace using available context.",
+    'notification',
+  );
 
   // Response blocks
   const blocks = [

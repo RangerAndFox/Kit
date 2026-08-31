@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Boords v1 API Client
  *

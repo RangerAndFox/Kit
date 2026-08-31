@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * SRT proofreading QC.
  *
@@ -99,11 +98,12 @@ If there are no errors, return { "issues": [] }.`
   }
 
   const valid = new Set(['spelling', 'grammar', 'capitalization', 'punctuation', 'naming'])
-  const issues: QcIssue[] = (Array.isArray(parsed?.issues) ? parsed.issues : [])
-    .filter((i) => i && valid.has(i.category) && i.text)
+  const candidateIssues: unknown[] = Array.isArray(parsed?.issues) ? parsed.issues : []
+  const issues: QcIssue[] = candidateIssues
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && valid.has(String((item as Record<string, unknown>).category)) && Boolean((item as Record<string, unknown>).text))
     .map((i) => ({
       cue: Number(i.cue) || 0,
-      category: i.category,
+      category: i.category as QcIssue['category'],
       text: String(i.text),
       problem: String(i.problem || ''),
       fix: String(i.fix || ''),

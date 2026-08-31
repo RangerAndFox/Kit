@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Recover stuck daily-hours check-ins WITHOUT re-nudging.
  *

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Block Kit modal for the storyboard provisioner.
  *

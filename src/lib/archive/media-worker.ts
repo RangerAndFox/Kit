@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { spawn } from 'node:child_process'
 import { createWriteStream } from 'node:fs'
 import { mkdir, readFile, readdir, rm } from 'node:fs/promises'

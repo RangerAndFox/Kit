@@ -13,7 +13,7 @@ export async function getCurrentTeamMember() {
   if (!user) return null
 
   const { data: member } = await supabase
-    .from('team_members' as any)
+.from('team_members')
     .select('*, workspaces(*)')
     .eq('user_id', user.id)
     .single() as any

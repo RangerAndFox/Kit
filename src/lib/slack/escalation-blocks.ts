@@ -63,7 +63,7 @@ async function grantProjectAccess(payload: SlackInteractionPayload): Promise<voi
 
   // Get workspace
   const { data: installation } = await supabase
-    .from('slack_oauth_installations' as any)
+.from('slack_oauth_installations')
     .select('workspace_id')
     .eq('slack_team_id', team_id)
     .single();
@@ -76,7 +76,7 @@ async function grantProjectAccess(payload: SlackInteractionPayload): Promise<voi
 
   if (requesterId && projectId) {
     // Update permission_requests table
-    await supabase.from('permission_requests' as any).insert({
+await supabase.from('permission_requests').insert({
       workspace_id: installation.workspace_id,
       requester_id: requesterId,
       resource_type: 'project',
@@ -101,7 +101,7 @@ async function grantFullAccess(payload: SlackInteractionPayload): Promise<void> 
 
   // Get workspace
   const { data: installation } = await supabase
-    .from('slack_oauth_installations' as any)
+.from('slack_oauth_installations')
     .select('workspace_id')
     .eq('slack_team_id', team_id)
     .single();
@@ -111,7 +111,7 @@ async function grantFullAccess(payload: SlackInteractionPayload): Promise<void> 
   const requesterId = payload.metadata?.requester_id;
 
   if (requesterId) {
-    await supabase.from('permission_requests' as any).insert({
+await supabase.from('permission_requests').insert({
       workspace_id: installation.workspace_id,
       requester_id: requesterId,
       resource_type: 'all',
@@ -136,7 +136,7 @@ async function denyRequest(payload: SlackInteractionPayload): Promise<void> {
 
   // Get workspace
   const { data: installation } = await supabase
-    .from('slack_oauth_installations' as any)
+.from('slack_oauth_installations')
     .select('workspace_id')
     .eq('slack_team_id', team_id)
     .single();
@@ -146,7 +146,7 @@ async function denyRequest(payload: SlackInteractionPayload): Promise<void> {
   const requesterId = payload.metadata?.requester_id;
 
   if (requesterId) {
-    await supabase.from('permission_requests' as any).insert({
+await supabase.from('permission_requests').insert({
       workspace_id: installation.workspace_id,
       requester_id: requesterId,
       resource_type: 'metadata',

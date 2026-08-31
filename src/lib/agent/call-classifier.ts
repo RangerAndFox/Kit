@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Call and transcript classification system
  * Determines call type, routing, and project association
@@ -54,7 +53,7 @@ export async function determineStream(
 
   // Check transcription_routing rules in DB
   const { data: routingRules } = await admin
-    .from('transcription_routing' as any)
+.from('transcription_routing')
     .select('target_stream')
     .or(`title_pattern.ilike.%${title}%`)
     .limit(1);
@@ -78,7 +77,7 @@ interface MatchableProject {
 async function loadMatchableProjects(workspaceId: string): Promise<MatchableProject[]> {
   const admin = createAdminClient();
   const { data: projects } = await admin
-    .from('projects' as any)
+.from('projects')
     .select('id, name, client, project_code, status')
     .eq('workspace_id', workspaceId)
     .eq('status', 'active');
@@ -423,21 +422,16 @@ export async function processTranscript(
 
   // First, create a call_classifications record
   const { data: classificationRecord, error: classificationError } = await admin
-    .from('call_classifications' as any)
+.from('call_classifications')
     .insert({
       workspace_id: workspaceId,
       project_id: projectId,
-      transcript_excerpt: transcript.substring(0, 500),
       call_type: callType,
-      stream,
-      participants_count: participants.length,
-      confidence_score: confidence,
-      source,
-      title,
-      classification_metadata: {
-        participants,
-        reasoning: classification.reasoning,
-      },
+      confidence,
+      classified_by: 'kit',
+      reasoning: classification.reasoning,
+      key_topics: participants,
+      workflow_triggered: source,
     })
     .select('id')
     .single();
@@ -446,22 +440,24 @@ export async function processTranscript(
     console.error('Failed to save call classification:', classificationError);
   } else if (classificationRecord) {
     // Create action_breakdown record if applicable
-    if (callType !== 'unknown') {
+    if (callType !== 'unknown' && projectId) {
       const breakdownDescription = getActionBreakdownDescription(callType);
 
       await admin
-        .from('action_breakdowns' as any)
+.from('action_breakdowns')
         .insert({
           workspace_id: workspaceId,
           project_id: projectId,
-          source_type: 'call_classification',
-          source_id: (classificationRecord as any).id,
-          description: breakdownDescription,
-          metadata: {
+          assignments: [],
+          call_summary: `${title}: ${breakdownDescription}`,
+          transcript_source: source,
+          scope_concerns: {
             call_type: callType,
             stream,
             transcript_length: transcript.length,
+            classification_id: classificationRecord.id,
           },
+          status: 'draft',
         })
         .select('id');
     }

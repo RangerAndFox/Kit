@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Profile-selection modal — opened when the user runs `/kit deliver` or
  * clicks the "Select Profile" button on a Dropbox-detected file notification.

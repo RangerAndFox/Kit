@@ -1,4 +1,3 @@
-// @ts-nocheck
 'use client'
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -17,7 +16,7 @@ interface Project {
 }
 
 export function ScheduleTab({ project }: { project: Project }) {
-  const statusColors = {
+  const statusColors: Record<string, 'default' | 'success' | 'warning' | 'danger' | 'info'> = {
     completed: 'success',
     in_progress: 'info',
     pending: 'default',
@@ -41,12 +40,9 @@ export function ScheduleTab({ project }: { project: Project }) {
             <div className="absolute left-6 top-0 bottom-0 w-0.5 bg-gradient-to-b from-indigo-500 to-transparent" />
 
             {project.milestones.map((milestone, index) => {
-              const daysUntilDue = Math.ceil(
-                (milestone.due_date.getTime() - Date.now()) / (1000 * 60 * 60 * 24)
-              )
-              const isOverdue = daysUntilDue < 0
+              const isOverdue = milestone.status === 'overdue'
 
-              const color = {
+              const color: Record<string, string> = {
                 completed: 'emerald-500',
                 in_progress: 'indigo-500',
                 pending: 'gray-400',
@@ -77,7 +73,7 @@ export function ScheduleTab({ project }: { project: Project }) {
                           })}
                           {isOverdue && (
                             <span className="text-red-400 font-medium">
-                              ({Math.abs(daysUntilDue)} days overdue)
+                              (overdue)
                             </span>
                           )}
                         </div>

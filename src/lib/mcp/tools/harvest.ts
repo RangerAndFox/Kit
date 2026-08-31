@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { z } from 'zod'
 import { createAdminClient, ok, fail } from '../helpers'
 import { listProjects as listHarvestProjects, searchProjects } from '../../harvest/client'
@@ -18,7 +17,7 @@ export const syncHarvestProjects: KitTool = {
 
     // Get Kit projects without Harvest links
     const { data: kitProjects, error } = await db
-      .from('projects' as any)
+.from('projects')
       .select('id, name, client, project_code, harvest_project_id')
       .eq('workspace_id', workspace_id)
       .in('status', ['active', 'paused'])
@@ -63,7 +62,7 @@ export const syncHarvestProjects: KitTool = {
 
       if (match) {
         await db
-          .from('projects' as any)
+.from('projects')
           .update({ harvest_project_id: match.id })
           .eq('id', kit.id)
 
@@ -98,7 +97,7 @@ export const linkHarvestProject: KitTool = {
   handler: async ({ workspace_id, project_id, harvest_project_id }) => {
     const db = createAdminClient()
     const { data, error } = await db
-      .from('projects' as any)
+.from('projects')
       .update({ harvest_project_id })
       .eq('workspace_id', workspace_id)
       .eq('id', project_id)

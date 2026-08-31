@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Bolt Message Handlers
  *
@@ -22,6 +21,7 @@
  */
 
 import type { App } from '@slack/bolt'
+import type { Block, KnownBlock } from '@slack/types'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { guardSharedSlackReply } from '../../../src/lib/privacy/shared-surface'
 import { resolveUserContext } from '../../../src/lib/inngest/access-control'
@@ -815,7 +815,7 @@ export const DM_SHORTCUT_REGISTRY: readonly DmShortcut[] = [
     id: 'dashboard',
     matches: isDashboardTrigger,
     run: async (app, context) => {
-      const post = async (message: Record<string, unknown>) => {
+      const post = async (message: { text: string; blocks?: (KnownBlock | Block)[] }) => {
         await app.client.chat.postMessage({
           channel: context.channelId,
           ...(context.threadTs ? { thread_ts: context.threadTs } : {}),

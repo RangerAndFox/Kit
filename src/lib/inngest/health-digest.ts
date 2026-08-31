@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Daily health digest — Inngest cron.
  *
@@ -47,7 +46,7 @@ export const healthDailyDigest = inngest.createFunction(
       try {
         return { ok: true, rows: await loadRecentCheckins() }
       } catch (err) {
-        return { ok: false, rows: [], error: String(err?.message || err) }
+        return { ok: false, rows: [] as Awaited<ReturnType<typeof loadRecentCheckins>>, error: err instanceof Error ? err.message : String(err) }
       }
     })
 

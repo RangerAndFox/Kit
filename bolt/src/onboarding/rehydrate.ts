@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Project external_links rehydration.
  *
@@ -52,8 +51,8 @@ async function findSlackChannel(
     const match = (r.channels || []).find((c: any) =>
       (c.name || '').toLowerCase().includes(code),
     )
-    if (match) return match.id
-    cursor = r.response_metadata?.next_cursor
+    if (match?.id) return match.id
+    cursor = r.response_metadata?.next_cursor || undefined
     if (!cursor) break
   }
   return null

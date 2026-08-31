@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Brain Scavenger — Phase 5.
  *

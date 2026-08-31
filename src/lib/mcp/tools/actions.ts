@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { z } from 'zod'
 import { createAdminClient, ok, fail } from '../helpers'
 import type { KitTool } from '../types'
@@ -47,7 +46,7 @@ export const createAction: KitTool = {
   handler: async (input) => {
     const db = createAdminClient()
     const { data, error } = await db
-      .from('kit_actions' as any)
+.from('kit_actions')
       .insert(input)
       .select('*')
       .single()
@@ -71,7 +70,7 @@ export const listPendingActions: KitTool = {
   handler: async ({ workspace_id, project_id, limit = 25 }) => {
     const db = createAdminClient()
     let q = db
-      .from('kit_actions' as any)
+.from('kit_actions')
       .select('id, action_type, title, body, priority, project_id, channel, requires_approval, status, created_at')
       .eq('workspace_id', workspace_id)
       .eq('status', 'pending')
@@ -109,7 +108,7 @@ export const createActionBreakdown: KitTool = {
   handler: async (input) => {
     const db = createAdminClient()
     const { data, error } = await db
-      .from('action_breakdowns' as any)
+.from('action_breakdowns')
       .insert(input)
       .select('*')
       .single()

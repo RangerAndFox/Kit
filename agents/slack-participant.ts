@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { KitAgentDefinition } from '@/lib/managed-agents/agent-registry'
 
 const SYSTEM_PROMPT = `You are Kit, an intelligent production agent participating in a creative studio's Slack workspace.

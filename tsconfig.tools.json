@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": false
+  },
+  "include": ["agents/**/*.ts", "scripts/**/*.ts", "src/types/**/*.d.ts"],
+  "exclude": ["node_modules", "bolt/node_modules", "node_modules_old"]
+}

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { z } from 'zod'
 import { createAdminClient, ok, fail } from '../helpers'
 import type { KitTool } from '../types'
@@ -44,8 +43,17 @@ export const createMilestones: KitTool = {
   }),
   handler: async ({ workspace_id, project_id, milestones }) => {
     const db = createAdminClient()
-    const rows = milestones.map((m) => ({ workspace_id, project_id, ...m }))
-    const { data, error } = await db.from('milestones' as any).insert(rows).select('*')
+    const rows = milestones.map((m: {
+      name: string
+      due_date: string
+      phase_type?: string
+      description?: string
+      owner?: string
+      assigned_to?: string
+      dependencies?: string[]
+      status?: string
+    }) => ({ workspace_id, project_id, ...m }))
+const { data, error } = await db.from('milestones').insert(rows).select('*')
     if (error) return fail(error.message)
     return ok({ created: data?.length || 0, milestones: data }, `Created ${data?.length} milestones`)
   },
@@ -85,7 +93,7 @@ export const updateMilestone: KitTool = {
     const { workspace_id, milestone_id, ...fields } = input
     if (Object.keys(fields).length === 0) return fail('No fields to update')
     const { data, error } = await db
-      .from('milestones' as any)
+.from('milestones')
       .update(fields)
       .eq('workspace_id', workspace_id)
       .eq('id', milestone_id)

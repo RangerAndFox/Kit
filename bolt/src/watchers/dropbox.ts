@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Dropbox → Frame.io watcher.
  *
@@ -28,6 +27,13 @@ import {
   syncProjectShareEvent,
   type RegisteredProjectShare,
 } from '../../../src/lib/project-control/share-progress'
+import type { Json } from '../../../src/types/supabase'
+
+type JsonRecord = { [key: string]: Json | undefined }
+
+function asJsonRecord(value: Json | null | undefined): JsonRecord {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+}
 
 const DROPBOX_API = 'https://api.dropboxapi.com/2'
 const FRAMEIO_API = 'https://api.frame.io/v4'
@@ -301,7 +307,7 @@ async function processDeltasOnce(app: App): Promise<void> {
   const { data: inserted, error } = await sb.rpc('ingest_dropbox_event_batch', {
     p_previous_cursor: cursor,
     p_new_cursor: newCursor,
-    p_events: events,
+    p_events: events as unknown as Json,
   })
   if (error) throw new Error(`Dropbox inbox ingest failed: ${error.message}`)
 
@@ -404,7 +410,8 @@ type DeliveryProject = {
   name: string
   client: string
   project_manager_slack_id?: string | null
-  external_links?: Record<string, any> | null
+  external_links?: JsonRecord | null
+  external_ids?: JsonRecord | null
 }
 
 async function notifyProjectShare(
@@ -618,7 +625,10 @@ async function resolveProjectChannelBySafeName(safeName: string): Promise<string
     .select('external_links')
     .filter('external_ids->>dropbox_safe_name', 'eq', safeName)
     .maybeSingle()
-  return data?.external_links?.slack_id || data?.external_links?.slack_channel_id || null
+  const links = asJsonRecord(data?.external_links)
+  return typeof links.slack_id === 'string'
+    ? links.slack_id
+    : typeof links.slack_channel_id === 'string' ? links.slack_channel_id : null
 }
 
 /**
@@ -660,7 +670,11 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
 
   if (error) throw new Error(`project lookup failed: ${error.message}`)
 
-  let project = existing
+  let project = existing ? {
+    ...existing,
+    external_links: asJsonRecord(existing.external_links),
+    external_ids: asJsonRecord(existing.external_ids),
+  } : null
   if (!project) {
     project = await discoverAndBackfillProject(d.safeName)
     if (!project) {
@@ -714,7 +728,7 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
       if (!fresh) throw new Error(`project ${project.id} disappeared while linking Frame.io`)
 
       const external_links = {
-        ...(fresh.external_links || {}),
+        ...asJsonRecord(fresh.external_links),
         frameio_id: found.id,
         frameio: frameioProjectUrl(found.id),
       }
@@ -765,6 +779,7 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
         `[dropbox-watcher] created Frame.io folder "${folderName}" under ${targetFolderId}`,
       )
     }
+    if (!child) throw new Error(`Frame.io did not return a folder id for ${folderName}`)
     targetFolderId = child
     traversedNames.push(folderName)
   }
@@ -891,10 +906,12 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
       file.view_url ||
       `https://next.frame.io/project/${frameioId}/view/${file.id}`
   }
+  if (!reviewUrl) throw new Error('Frame.io returned no review or view URL')
 
   let progression: RegisteredProjectShare | null = null
   try {
-    const projectNumber = project.external_ids?.project_number || extractProjectNumber(d.safeName) || String(project.project_code || '').split('-')[0]
+    const storedProjectNumber = asJsonRecord(project.external_ids).project_number
+    const projectNumber = (typeof storedProjectNumber === 'string' ? storedProjectNumber : null) || extractProjectNumber(d.safeName) || String(project.project_code || '').split('-')[0] || ''
     progression = await registerProjectShare({
       projectId: project.id,
       projectNumber,
@@ -950,7 +967,7 @@ export async function reconcilePendingProjectShares(
         .maybeSingle()
       if (projectError || !project) throw new Error(projectError?.message || `Project not found: ${event.project_id}`)
       await notifyProjectShare(app, {
-        project,
+        project: { ...project, external_links: asJsonRecord(project.external_links) },
         fileName: event.file_name,
         reviewUrl: event.share_url,
         subfolderLine: '01_Client Progress / recovered share',
@@ -1203,12 +1220,11 @@ export async function reconcileMissingFrameioProjectLinks(): Promise<FrameioLink
     .in('status', ['active', 'partial', 'paused'])
   if (error) throw new Error(`Frame.io reconcile project load failed: ${error.message}`)
 
-  const candidates = (rows || []).filter(
-    (row: any) =>
-      row.external_ids?.dropbox_safe_name &&
-      (row.external_links?.dropbox_id || row.external_links?.dropbox) &&
-      !row.external_links?.frameio_id,
-  )
+  const candidates = (rows || []).filter((row) => {
+    const ids = asJsonRecord(row.external_ids)
+    const links = asJsonRecord(row.external_links)
+    return Boolean(ids.dropbox_safe_name && (links.dropbox_id || links.dropbox) && !links.frameio_id)
+  })
   const tally: FrameioLinkReconcileTally = {
     scanned: candidates.length,
     linked: 0,
@@ -1220,7 +1236,12 @@ export async function reconcileMissingFrameioProjectLinks(): Promise<FrameioLink
 
   const frameioProjects = await listFrameioWorkspaceProjects(acct, ws)
   for (const row of candidates) {
-    const safeName = row.external_ids.dropbox_safe_name as string
+    const safeNameValue = asJsonRecord(row.external_ids).dropbox_safe_name
+    if (typeof safeNameValue !== 'string') {
+      tally.skipped++
+      continue
+    }
+    const safeName = safeNameValue
     const projectNumber = extractProjectNumber(safeName)
     if (!projectNumber) {
       tally.skipped++
@@ -1241,12 +1262,13 @@ export async function reconcileMissingFrameioProjectLinks(): Promise<FrameioLink
       .eq('id', row.id)
       .maybeSingle()
     if (readError) throw new Error(`Frame.io reconcile read failed: ${readError.message}`)
-    if (!fresh || fresh.external_links?.frameio_id) {
+    const freshLinks = asJsonRecord(fresh?.external_links)
+    if (!fresh || freshLinks.frameio_id) {
       tally.skipped++
       continue
     }
     const external_links = {
-      ...(fresh.external_links || {}),
+      ...freshLinks,
       frameio_id: resolved.match.id,
       frameio: frameioProjectUrl(resolved.match.id),
     }

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Bolt Command Handlers
  *
@@ -14,6 +13,7 @@
  */
 
 import type { App } from '@slack/bolt'
+import type { View } from '@slack/types'
 import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
 import { stashIntake } from '../../../src/lib/storyboard/stash'
 import { dispatch } from '../../../src/lib/inngest/agents/registry'
@@ -174,7 +174,7 @@ export function registerCommandHandlers(app: App) {
         }
         try {
           const view = await buildOnboardModal({ channelId: command.channel_id })
-          await client.views.open({ trigger_id: command.trigger_id, view })
+          await client.views.open({ trigger_id: command.trigger_id, view: view as View })
         } catch (err: any) {
           console.error('[Bolt] onboard views.open failed:', err.data?.error || err.message)
           await respond({
@@ -201,8 +201,9 @@ export function registerCommandHandlers(app: App) {
           // Ask Harvest for project info
           const result = await dispatch('harvest', 'find_projects', { query: args })
           if (result.success && result.data) {
-            const projects = Array.isArray(result.data.projects)
-              ? result.data.projects
+            const payload = result.data as Record<string, unknown>
+            const projects = Array.isArray(payload.projects)
+              ? payload.projects
               : [result.data]
             const summaries = projects.slice(0, 3).map((p: any) =>
               `• *${p.name || p.code || 'Unknown'}* — ${p.status || 'active'}`
@@ -266,7 +267,7 @@ export function registerCommandHandlers(app: App) {
             sourcePath: subArg && subArg !== 'status' ? subArg : undefined,
             channelId: command.channel_id,
           })
-          await client.views.open({ trigger_id: command.trigger_id, view })
+          await client.views.open({ trigger_id: command.trigger_id, view: view as View })
         } catch (err: any) {
           console.error('[Bolt] /kit deliver failed:', err.data?.error || err.message)
           await respond({
@@ -285,7 +286,7 @@ export function registerCommandHandlers(app: App) {
           try {
             await client.views.open({
               trigger_id: command.trigger_id,
-              view: buildCreateProfileModal(),
+              view: buildCreateProfileModal() as View,
             })
           } catch (err: any) {
             await respond({
@@ -357,7 +358,7 @@ export function registerCommandHandlers(app: App) {
         try {
           await client.views.open({
             trigger_id: command.trigger_id,
-            view: buildRenderModal({ projectPath: raw || undefined, channelId: command.channel_id }),
+            view: buildRenderModal({ projectPath: raw || undefined, channelId: command.channel_id }) as View,
           })
         } catch (err: any) {
           console.error('[Bolt] /kit render failed:', err.data?.error || err.message)
@@ -506,8 +507,8 @@ export function registerCommandHandlers(app: App) {
           const result = await dispatch('brain', 'why', { claim, channelId: command.channel_id, workspaceId })
           await respond({
             response_type: 'ephemeral',
-            text: result.success && result.data?.message
-              ? result.data.message
+            text: result.success && result.data && typeof result.data === 'object' && 'message' in result.data
+              ? String(result.data.message)
               : result.error || 'No sources found.',
           })
           break

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * One-shot staff directory sync.
  *

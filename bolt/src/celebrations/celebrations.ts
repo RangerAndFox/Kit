@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Celebration memes — birthdays, project deliveries, holidays, ad-hoc, and
  * scheduled occasions, all posted to the full-team channel via the shared

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { z } from 'zod'
 import { createAdminClient, ok, fail } from '../helpers'
 import type { KitTool } from '../types'
@@ -24,7 +23,7 @@ export const listProjects: KitTool = {
   handler: async ({ workspace_id, status, client, limit = 25 }) => {
     const db = createAdminClient()
     let q = db
-      .from('projects' as any)
+.from('projects')
       .select(
         'id, name, client, project_code, project_type, status, start_date, target_delivery, budget_total, budget_spent, revision_rounds_used, revision_rounds_budgeted'
       )
@@ -53,7 +52,7 @@ export const getProject: KitTool = {
   handler: async ({ workspace_id, project_id }) => {
     const db = createAdminClient()
     const { data: project, error } = await db
-      .from('projects' as any)
+.from('projects')
       .select('*')
       .eq('workspace_id', workspace_id)
       .eq('id', project_id)
@@ -63,12 +62,12 @@ export const getProject: KitTool = {
 
     const [{ data: deliverables }, { data: milestones }] = await Promise.all([
       db
-        .from('deliverables' as any)
+.from('deliverables')
         .select('id, name, status, due_date, delivered_at, delivery_url')
         .eq('project_id', project_id)
         .order('due_date', { ascending: true }),
       db
-        .from('milestones' as any)
+.from('milestones')
         .select('id, name, status, phase_type, due_date, owner, assigned_to, completed_at')
         .eq('project_id', project_id)
         .order('due_date', { ascending: true }),
@@ -108,7 +107,7 @@ export const updateProject: KitTool = {
     const { workspace_id, project_id, ...fields } = input
     if (Object.keys(fields).length === 0) return fail('No fields to update')
     const { data, error } = await db
-      .from('projects' as any)
+.from('projects')
       .update(fields)
       .eq('workspace_id', workspace_id)
       .eq('id', project_id)

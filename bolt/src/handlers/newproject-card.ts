@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Shared "Open new project form" card builder.
  *

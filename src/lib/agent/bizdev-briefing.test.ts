@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Bizdev briefing — identity resolution + evidence-contract tests.
  *

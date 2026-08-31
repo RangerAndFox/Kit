@@ -175,6 +175,13 @@ export type Database = {
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "action_breakdowns_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
+          },
         ]
       }
       agent_runs: {
@@ -272,6 +279,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "archive_activity_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
           },
         ]
       }
@@ -425,6 +439,13 @@ export type Database = {
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "archive_jobs_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
+          },
         ]
       }
       artifacts: {
@@ -514,6 +535,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "autonomy_settings_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
           },
         ]
       }
@@ -605,6 +633,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "behance_draft_jobs_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
           },
         ]
       }
@@ -887,6 +922,13 @@ export type Database = {
             referencedRelation: "projects"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "brains_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
+          },
         ]
       }
       call_classifications: {
@@ -950,6 +992,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "call_classifications_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
           },
         ]
       }
@@ -1023,7 +1072,44 @@ export type Database = {
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "call_transcripts_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
+          },
         ]
+      }
+      celebrations: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          fire_date: string
+          id: string
+          kind: string
+          label: string
+          posted_at: string | null
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          fire_date: string
+          id?: string
+          kind: string
+          label: string
+          posted_at?: string | null
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          fire_date?: string
+          id?: string
+          kind?: string
+          label?: string
+          posted_at?: string | null
+        }
+        Relationships: []
       }
       character_sheets: {
         Row: {
@@ -1435,6 +1521,13 @@ export type Database = {
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "deliverables_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
+          },
         ]
       }
       delivery_profiles: {
@@ -1817,6 +1910,9 @@ export type Database = {
           project_name: string
           requested_by_slack_user_id: string | null
           slack_channel_id: string | null
+          slack_notification_claim_token: string | null
+          slack_notification_claimed_at: string | null
+          slack_notified_at: string | null
           slack_thread_ts: string | null
           started_at: string | null
           status: string
@@ -1839,6 +1935,9 @@ export type Database = {
           project_name: string
           requested_by_slack_user_id?: string | null
           slack_channel_id?: string | null
+          slack_notification_claim_token?: string | null
+          slack_notification_claimed_at?: string | null
+          slack_notified_at?: string | null
           slack_thread_ts?: string | null
           started_at?: string | null
           status?: string
@@ -1861,6 +1960,9 @@ export type Database = {
           project_name?: string
           requested_by_slack_user_id?: string | null
           slack_channel_id?: string | null
+          slack_notification_claim_token?: string | null
+          slack_notification_claimed_at?: string | null
+          slack_notified_at?: string | null
           slack_thread_ts?: string | null
           started_at?: string | null
           status?: string
@@ -2071,6 +2173,13 @@ export type Database = {
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "feedback_items_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
+          },
         ]
       }
       financial_entries: {
@@ -2125,6 +2234,13 @@ export type Database = {
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "financial_entries_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
+          },
         ]
       }
       founder_content_access: {
@@ -2176,11 +2292,75 @@ export type Database = {
           },
         ]
       }
+      frameio_delivery_transfers: {
+        Row: {
+          created_at: string
+          dropbox_file_id: string
+          dropbox_rev: string
+          frameio_file_id: string
+          frameio_folder_id: string
+          frameio_project_id: string
+          frameio_share_url: string | null
+          frameio_status_path: string
+          frameio_view_url: string
+          id: string
+          last_error: string | null
+          last_provider_status: string | null
+          project_id: string
+          state: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          dropbox_file_id: string
+          dropbox_rev: string
+          frameio_file_id: string
+          frameio_folder_id: string
+          frameio_project_id: string
+          frameio_share_url?: string | null
+          frameio_status_path: string
+          frameio_view_url: string
+          id?: string
+          last_error?: string | null
+          last_provider_status?: string | null
+          project_id: string
+          state?: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          dropbox_file_id?: string
+          dropbox_rev?: string
+          frameio_file_id?: string
+          frameio_folder_id?: string
+          frameio_project_id?: string
+          frameio_share_url?: string | null
+          frameio_status_path?: string
+          frameio_view_url?: string
+          id?: string
+          last_error?: string | null
+          last_provider_status?: string | null
+          project_id?: string
+          state?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "frameio_delivery_transfers_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       frameio_token_state: {
         Row: {
           access_expires_at: string | null
           access_token: string | null
           id: string
+          refresh_fence: number
+          refresh_holder: string | null
           refresh_token: string | null
           refreshing_until: string | null
           updated_at: string
@@ -2189,6 +2369,8 @@ export type Database = {
           access_expires_at?: string | null
           access_token?: string | null
           id?: string
+          refresh_fence?: number
+          refresh_holder?: string | null
           refresh_token?: string | null
           refreshing_until?: string | null
           updated_at?: string
@@ -2197,6 +2379,8 @@ export type Database = {
           access_expires_at?: string | null
           access_token?: string | null
           id?: string
+          refresh_fence?: number
+          refresh_holder?: string | null
           refresh_token?: string | null
           refreshing_until?: string | null
           updated_at?: string
@@ -2440,6 +2624,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "generated_documents_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
           },
         ]
       }
@@ -2819,6 +3010,13 @@ export type Database = {
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "kit_actions_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
+          },
         ]
       }
       managed_agent_registry: {
@@ -2850,6 +3048,75 @@ export type Database = {
           version?: string | null
         }
         Relationships: []
+      }
+      managed_agent_sessions: {
+        Row: {
+          agent_id: string
+          completed_at: string | null
+          context_key: string | null
+          environment_id: string
+          error: string | null
+          event_count: number
+          id: string
+          metadata: Json
+          project_id: string | null
+          session_id: string
+          source: string
+          started_at: string
+          status: string
+          updated_at: string
+          workspace_id: string
+        }
+        Insert: {
+          agent_id: string
+          completed_at?: string | null
+          context_key?: string | null
+          environment_id: string
+          error?: string | null
+          event_count?: number
+          id?: string
+          metadata?: Json
+          project_id?: string | null
+          session_id: string
+          source: string
+          started_at?: string
+          status?: string
+          updated_at?: string
+          workspace_id: string
+        }
+        Update: {
+          agent_id?: string
+          completed_at?: string | null
+          context_key?: string | null
+          environment_id?: string
+          error?: string | null
+          event_count?: number
+          id?: string
+          metadata?: Json
+          project_id?: string | null
+          session_id?: string
+          source?: string
+          started_at?: string
+          status?: string
+          updated_at?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "managed_agent_sessions_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "managed_agent_sessions_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
+          },
+        ]
       }
       meeting_briefing_deliveries: {
         Row: {
@@ -3055,6 +3322,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "milestones_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
           },
         ]
       }
@@ -3272,6 +3546,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "permission_requests_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
           },
         ]
       }
@@ -3589,6 +3870,13 @@ export type Database = {
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "pilots_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
+          },
         ]
       }
       pitch_log: {
@@ -3732,6 +4020,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "project_access_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
           },
         ]
       }
@@ -3938,6 +4233,13 @@ export type Database = {
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "project_creation_requests_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
+          },
         ]
       }
       project_documents: {
@@ -3997,6 +4299,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "project_documents_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
           },
         ]
       }
@@ -4229,6 +4538,13 @@ export type Database = {
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "project_update_requests_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
+          },
         ]
       }
       project_update_steps: {
@@ -4427,7 +4743,9 @@ export type Database = {
           claimed_by: string | null
           completed_at: string | null
           created_at: string
+          deadline_claim_token: string | null
           deadline_jobs: Json | null
+          deadline_lease_until: string | null
           delivery_profile_id: string | null
           duration_seconds: number | null
           error_message: string | null
@@ -4479,7 +4797,9 @@ export type Database = {
           claimed_by?: string | null
           completed_at?: string | null
           created_at?: string
+          deadline_claim_token?: string | null
           deadline_jobs?: Json | null
+          deadline_lease_until?: string | null
           delivery_profile_id?: string | null
           duration_seconds?: number | null
           error_message?: string | null
@@ -4531,7 +4851,9 @@ export type Database = {
           claimed_by?: string | null
           completed_at?: string | null
           created_at?: string
+          deadline_claim_token?: string | null
           deadline_jobs?: Json | null
+          deadline_lease_until?: string | null
           delivery_profile_id?: string | null
           duration_seconds?: number | null
           error_message?: string | null
@@ -4789,6 +5111,13 @@ export type Database = {
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "scope_events_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
+          },
         ]
       }
       seen_dropbox_files: {
@@ -4875,6 +5204,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sentiment_snapshots_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
           },
         ]
       }
@@ -5014,6 +5350,27 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      storyboard_intakes: {
+        Row: {
+          created_at: string
+          expires_at: string
+          payload: Json
+          token: string
+        }
+        Insert: {
+          created_at?: string
+          expires_at: string
+          payload: Json
+          token: string
+        }
+        Update: {
+          created_at?: string
+          expires_at?: string
+          payload?: Json
+          token?: string
+        }
+        Relationships: []
       }
       storyboard_jobs: {
         Row: {
@@ -5377,6 +5734,13 @@ export type Database = {
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "time_entries_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
+          },
         ]
       }
       transcription_routing: {
@@ -5474,6 +5838,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "workback_schedules_workspace_project_fkey"
+            columns: ["workspace_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["workspace_id", "id"]
           },
         ]
       }
@@ -5622,6 +5993,69 @@ export type Database = {
           isSetofReturn: true
         }
       }
+      claim_deadline_parent: {
+        Args: { p_lease_seconds?: number; p_worker: string }
+        Returns: {
+          ae_comp: string | null
+          ae_is_movie: boolean
+          ae_output_dir: string | null
+          ae_output_module_template: string | null
+          ae_output_pattern: string | null
+          ae_project_path: string | null
+          ae_render_settings_template: string | null
+          ae_rqindex: number | null
+          aerender_command: string | null
+          chunk_count: number | null
+          chunk_index: number | null
+          claimed_at: string | null
+          claimed_by: string | null
+          completed_at: string | null
+          created_at: string
+          deadline_claim_token: string | null
+          deadline_jobs: Json | null
+          deadline_lease_until: string | null
+          delivery_profile_id: string | null
+          duration_seconds: number | null
+          error_message: string | null
+          ffmpeg_command: string | null
+          frame_end: number | null
+          frame_rate: string | null
+          frame_start: number | null
+          id: string
+          job_type: string
+          max_retries: number
+          naming_fields: Json | null
+          output_filename: string | null
+          output_path: string | null
+          output_size_bytes: number | null
+          parent_job_id: string | null
+          processing_started_at: string | null
+          profile_id: string | null
+          profile_snapshot: Json | null
+          progress_message: string | null
+          progress_percent: number | null
+          qc_checklist_status: Json | null
+          render_backend: string
+          render_queue: Json | null
+          requested_by: string
+          retry_count: number
+          slack_channel: string | null
+          slack_message_ts: string | null
+          slack_notified_at: string | null
+          slack_notified_status: string | null
+          slack_thread_ts: string | null
+          source_files: Json
+          status: string
+          total_frames: number | null
+          updated_at: string
+        }[]
+        SetofOptions: {
+          from: "*"
+          to: "render_jobs"
+          isOneToOne: false
+          isSetofReturn: true
+        }
+      }
       claim_dropbox_events: {
         Args: {
           p_lease_seconds?: number
@@ -5653,6 +6087,13 @@ export type Database = {
           isSetofReturn: true
         }
       }
+      claim_frameio_token_refresh: {
+        Args: { p_holder: string; p_lease_seconds?: number }
+        Returns: {
+          claimed: boolean
+          fence: number
+        }[]
+      }
       complete_dropbox_event: {
         Args: { p_claim_token: string; p_event_id: string }
         Returns: boolean
@@ -5676,6 +6117,16 @@ export type Database = {
         }
         Returns: Json
       }
+      create_workspace_service: {
+        Args: {
+          p_auth_user_id: string
+          p_name: string
+          p_slug: string
+          p_user_email: string
+          p_user_name: string
+        }
+        Returns: Json
+      }
       fail_dropbox_event: {
         Args: { p_claim_token: string; p_error: string; p_event_id: string }
         Returns: string
@@ -5688,6 +6139,16 @@ export type Database = {
           p_result?: Json
           p_status: string
           p_step_name: string
+        }
+        Returns: boolean
+      }
+      finish_frameio_token_refresh: {
+        Args: {
+          p_access_expires_at: string
+          p_access_token: string
+          p_fence: number
+          p_holder: string
+          p_refresh_token: string
         }
         Returns: boolean
       }
@@ -5718,6 +6179,10 @@ export type Database = {
           title: string
           workspace_id: string
         }[]
+      }
+      release_frameio_token_refresh: {
+        Args: { p_fence: number; p_holder: string }
+        Returns: boolean
       }
       specs_backlog_commit_folder: {
         Args: {

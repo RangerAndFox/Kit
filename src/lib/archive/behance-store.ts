@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createAdminClient } from '../supabase/admin'
 import { getArchiveJob, updateArchiveJob } from './store'
 import { getDropboxSharedLink } from './dropbox'

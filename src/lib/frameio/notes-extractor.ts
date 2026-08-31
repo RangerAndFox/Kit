@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Frame.io Notes Extractor
  *

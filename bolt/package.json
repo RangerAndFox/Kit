@@ -6,6 +6,7 @@
   "scripts": {
     "start": "tsx src/app.ts",
     "dev": "tsx watch src/app.ts",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },

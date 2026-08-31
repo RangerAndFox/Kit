@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { dropboxRpc } from '../dropbox/client'
 import { archiveFolderName, type ArchiveProjectSnapshot } from './types'
 

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * NDA confirmation card + modal.
  *

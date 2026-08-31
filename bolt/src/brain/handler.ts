@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Brain ingest hook — turns Slack signals into brain patches.
  *

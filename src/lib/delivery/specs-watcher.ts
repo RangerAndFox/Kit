@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Per-project delivery "specs" folder watcher.
  *
@@ -95,6 +94,7 @@ interface DbxEntry {
 }
 
 export interface ParsedSpecsFile extends SpecsFile {
+  dropbox_id: string
   year: string
   safeName: string
 }
@@ -120,16 +120,18 @@ export function parseSpecsPath(f: { path_display?: string; path_lower?: string; 
   const path = f.path_display || f.path_lower || ''
   const m = path.match(SPECS_RE)
   if (!m) return null
+  const [, year, safeName, kind, fileName] = m
+  if (!year || !safeName || !kind || !fileName) return null
   // Ignore scratch/partial files.
   if (/\.tmp$|\.part$|\.crdownload$|~\$/i.test(f.name)) return null
   return {
     path,
-    name: m[4],
-    kind: m[3].toLowerCase() as SpecsKind,
+    name: fileName,
+    kind: kind.toLowerCase() as SpecsKind,
     size_bytes: f.size,
     dropbox_id: f.id,
-    year: m[1],
-    safeName: m[2],
+    year,
+    safeName,
   }
 }
 
@@ -258,7 +260,12 @@ export async function resolveProjectChannel(
     .filter('external_ids->>dropbox_safe_name', 'eq', safeName)
     .maybeSingle()
   if (!data) return null
-  return { projectId: data.id, name: data.name, channelId: data.external_links?.slack_id || null }
+  const links = data.external_links
+  const channelId =
+    links && typeof links === 'object' && !Array.isArray(links) && typeof links.slack_id === 'string'
+      ? links.slack_id
+      : null
+  return { projectId: data.id, name: data.name, channelId }
 }
 
 async function defaultSlackPost(channel: string, text: string, blocks?: any[]): Promise<string | null> {
@@ -674,6 +681,7 @@ export async function runSpecsScanTick(overrides: Partial<SpecsScanDeps> = {}, h
         break
       }
       const key = projectKeys[i]
+      if (!key) continue
       summary.projectsChecked++
       const slash = key.indexOf('/')
       const year = key.slice(0, slash)
