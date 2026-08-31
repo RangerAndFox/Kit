@@ -129,7 +129,7 @@ describe('bindProjectControl', () => {
     assert.equal(counters.created, 0) // no canvas fabricated
   })
 
-  it('recovers the normalized workbook by creating all three generated views without a template', async () => {
+  it('recovers the normalized workbook by creating all four generated views without a template', async () => {
     const config: WorkbookConfig = { ...CONFIG, layout: 'rf-production-v1' }
     const createdTitles: string[] = []
     const savedTypes: string[] = []
@@ -164,8 +164,9 @@ describe('bindProjectControl', () => {
       '2601_Overview',
       '2601_Reference',
       '2601_Schedule',
+      '2601_NotesAndFeedback',
     ])
-    assert.deepEqual(savedTypes, ['overview', 'reference', 'schedule'])
+    assert.deepEqual(savedTypes, ['overview', 'reference', 'schedule', 'notesAndFeedback'])
     assert.equal(store.b.creation_state, 'connected')
     assert.equal(store.b.error, null)
   })

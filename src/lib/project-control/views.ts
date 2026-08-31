@@ -8,11 +8,12 @@ export interface ProjectSupplement {
   links: Array<Record<string, string>>
   deliverables: Array<Record<string, string>>
   assignments: Array<Record<string, string>>
+  statusLog?: Array<Record<string, string>>
 }
 
 // Bump when generated Canvas markup changes so the sync cursor performs one
 // complete regeneration even if the workbook itself has not changed.
-export const PROJECT_VIEW_RENDER_VERSION = '3'
+export const PROJECT_VIEW_RENDER_VERSION = '4'
 
 const val = (row: NormalizedRow, key: string) => row[key]?.display || '—'
 const link = (label: string, url?: string) => url ? `[${label}](${url})` : '—'
@@ -78,4 +79,17 @@ export function renderScheduleView(row: NormalizedRow, extra: ProjectSupplement)
     `**Schedule status:** ${extra.scheduleStatus || 'Draft'}  \n` +
     `**Project window:** ${val(row, 'Start Date')} → ${val(row, 'End Date')}\n\n` +
     table(['Milestone', 'Date Range', 'Owner', 'Status'], rows)
+}
+
+export function renderNotesAndFeedbackView(row: NormalizedRow, extra: ProjectSupplement): string {
+  const rows = [...(extra.statusLog || [])]
+    // Fail closed: this Canvas is visible to the project team, while the
+    // workbook may contain producer-only free text. Only an explicit Team
+    // classification is projected; blank/private rows never leave the Sheet.
+    .filter((entry) => String(entry.Visibility || '').trim().toLowerCase() === 'team')
+    .sort((a, b) => String(b.Date || '').localeCompare(String(a.Date || '')))
+    .map((entry) => [entry.Date, entry.Update, entry['Updated By']])
+  return `${GENERATED_VIEW_NOTICE}\n\n# ${val(row, 'Project Number')} — Notes & Feedback\n\n` +
+    `This is the team-safe project log from the control workbook. Budgets and client contacts are intentionally excluded.\n\n` +
+    table(['Date', 'Update', 'Updated By'], rows.length > 0 ? rows : [['—', 'No notes or feedback yet', '—']])
 }

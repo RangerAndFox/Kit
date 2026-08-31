@@ -22,7 +22,16 @@ import {
   type WorkbookConfig,
 } from '../project-control/types'
 import { getWorkbookVersion, searchRowMetadata, readRowForSync, createCachedProjectSupplementReader } from '../project-control/sheets'
-import { editControlCanvas, controlCanvasTitle, projectCanvasTitle } from '../project-control/canvas'
+import {
+  createControlCanvas,
+  editControlCanvas,
+  reconcileControlCanvas,
+  setControlCanvasReadOnly,
+  controlCanvasTitle,
+  projectCanvasTitle,
+  type CanvasHandle,
+  type CanvasReconcile,
+} from '../project-control/canvas'
 import {
   normalizeRow,
   sourceRowHash,
@@ -42,10 +51,12 @@ import {
   type BindingRow,
   type SyncStateRow,
   listProjectCanvases,
+  upsertProjectCanvas,
   updateProjectCanvas,
+  type ProjectCanvasType,
   type ProjectCanvasRow,
 } from '../project-control/store'
-import { PROJECT_VIEW_RENDER_VERSION, projectViewHash, renderOverviewView, renderReferenceView, renderScheduleView, type ProjectSupplement } from '../project-control/views'
+import { PROJECT_VIEW_RENDER_VERSION, projectViewHash, renderNotesAndFeedbackView, renderOverviewView, renderReferenceView, renderScheduleView, type ProjectSupplement } from '../project-control/views'
 
 export interface SyncSheetsPort {
   getWorkbookVersion(spreadsheetId: string): Promise<string>
@@ -55,6 +66,9 @@ export interface SyncSheetsPort {
 }
 export interface SyncCanvasPort {
   editControlCanvas(o: { canvasId: string; title: string; markdown: string }): Promise<void>
+  createControlCanvas?(o: { channelId: string; title: string; markdown: string }): Promise<CanvasHandle>
+  reconcileControlCanvas?(o: { channelId: string; expectedTitle: string }): Promise<CanvasReconcile>
+  setControlCanvasReadOnly?(canvasId: string, channelId: string): Promise<void>
 }
 export interface SyncStorePort {
   listSyncableBindings(spreadsheetId: string): Promise<BindingRow[]>
@@ -66,7 +80,8 @@ export interface SyncStorePort {
   advanceCursor(spreadsheetId: string, driveVersion: string): Promise<void>
   claimNotification(projectId: string, key: string): Promise<boolean>
   listProjectCanvases?(projectId: string): Promise<ProjectCanvasRow[]>
-  updateProjectCanvas?(projectId: string, canvasType: 'overview' | 'reference' | 'schedule', patch: Partial<ProjectCanvasRow>): Promise<void>
+  upsertProjectCanvas?(input: { projectId: string; canvasType: ProjectCanvasType; canvasId: string; canvasUrl?: string | null }): Promise<void>
+  updateProjectCanvas?(projectId: string, canvasType: ProjectCanvasType, patch: Partial<ProjectCanvasRow>): Promise<void>
 }
 export interface SyncDeps {
   sheets: SyncSheetsPort
@@ -95,11 +110,11 @@ async function postAlert(text: string): Promise<void> {
 export function defaultSyncDeps(): SyncDeps {
   return {
     sheets: { getWorkbookVersion, searchRowMetadata, readRow: readRowForSync, readProjectSupplement: createCachedProjectSupplementReader() },
-    canvas: { editControlCanvas },
+    canvas: { createControlCanvas, editControlCanvas, reconcileControlCanvas, setControlCanvasReadOnly },
     store: {
       listSyncableBindings, updateBinding, getSyncState, claimWorkbookLease,
       renewWorkbookLease, releaseWorkbookLease, advanceCursor, claimNotification,
-      listProjectCanvases, updateProjectCanvas,
+      listProjectCanvases, upsertProjectCanvas, updateProjectCanvas,
     },
     post: postAlert,
     config: workbookConfigFromEnv(),
@@ -111,6 +126,17 @@ export function defaultSyncDeps(): SyncDeps {
     // Three seconds keeps the full pass below Google's 60 reads/user/minute
     // quota while finishing comfortably inside the function runtime.
     perBindingDelayMs: 3_000,
+  }
+}
+
+function slackChannelId(extra: ProjectSupplement): string | null {
+  const slack = extra.links.find((link) => /slack/i.test(link['Link Type'] || ''))?.URL
+  if (!slack) return null
+  try {
+    const parsed = new URL(slack)
+    return parsed.searchParams.get('channel') || parsed.pathname.match(/\/archives\/([^/]+)/)?.[1] || null
+  } catch {
+    return slack.match(/[?&]channel=([^&]+)/)?.[1] || null
   }
 }
 
@@ -206,12 +232,21 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
           hash = projectViewHash(row, extra)
         }
 
-        if (hash === b.last_row_hash && b.sync_status === 'synced') {
+        let canvases: ProjectCanvasRow[] = []
+        let missingGeneratedView = false
+        if (extra && deps.store.listProjectCanvases) {
+          canvases = await deps.store.listProjectCanvases(b.project_id)
+          const present = new Set(canvases.filter((view) => view.canvas_id).map((view) => view.canvas_type))
+          missingGeneratedView = (['overview', 'reference', 'schedule', 'notesAndFeedback'] as ProjectCanvasType[])
+            .some((type) => !present.has(type))
+        }
+
+        if (hash === b.last_row_hash && b.sync_status === 'synced' && !missingGeneratedView) {
           unchanged++
           continue
         }
 
-        // Normalized RF Production projects render their three canvases from
+        // Normalized RF Production projects render their four canvases from
         // the workbook tables and intentionally have no legacy Slack template
         // snapshot. A template is required only for the legacy single-canvas
         // renderer; the persisted overview canvas is required in both modes.
@@ -236,11 +271,11 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
         }
         await deps.canvas.editControlCanvas({ canvasId: b.canvas_id, title, markdown })
 
-        // V2: the other two project tabs are also deterministic projections of
-        // the same workbook, never editable secondary sources.
+        // Every supplemental project tab is a deterministic projection of the
+        // same workbook, never an editable secondary source. Missing tabs are
+        // backfilled idempotently by deterministic title in the bound channel.
         if (extra && deps.store.listProjectCanvases && deps.store.updateProjectCanvas) {
           const viewHash = projectViewHash(row, extra)
-          const canvases = await deps.store.listProjectCanvases(b.project_id)
           const overview = canvases.find((view) => view.canvas_type === 'overview')
           if (overview) {
             await deps.store.updateProjectCanvas(b.project_id, 'overview', {
@@ -248,12 +283,40 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
               last_synced_at: deps.now(), error: null,
             })
           }
-          for (const view of canvases) {
-            if (!view.canvas_id || view.canvas_type === 'overview') continue
-            const viewTitle = projectCanvasTitle(projectNumber, view.canvas_type === 'reference' ? 'reference' : 'schedule')
-            const viewMarkdown = view.canvas_type === 'reference' ? renderReferenceView(row, extra) : renderScheduleView(row, extra)
-            await deps.canvas.editControlCanvas({ canvasId: view.canvas_id, title: viewTitle, markdown: viewMarkdown })
-            await deps.store.updateProjectCanvas(b.project_id, view.canvas_type, { sync_status: 'synced', last_source_hash: viewHash, last_synced_at: deps.now(), error: null })
+          const desired = [
+            { type: 'reference' as const, markdown: renderReferenceView(row, extra) },
+            { type: 'schedule' as const, markdown: renderScheduleView(row, extra) },
+            { type: 'notesAndFeedback' as const, markdown: renderNotesAndFeedbackView(row, extra) },
+          ]
+          for (const target of desired) {
+            const viewTitle = projectCanvasTitle(projectNumber, target.type)
+            let view = canvases.find((candidate) => candidate.canvas_type === target.type && candidate.canvas_id)
+            if (!view?.canvas_id) {
+              const channelId = slackChannelId(extra)
+              if (!channelId || !deps.canvas.createControlCanvas || !deps.canvas.reconcileControlCanvas || !deps.store.upsertProjectCanvas) {
+                throw new Error(`${target.type}_canvas_missing_and_channel_unresolved`)
+              }
+              let handle: CanvasHandle
+              try {
+                handle = await deps.canvas.createControlCanvas({ channelId, title: viewTitle, markdown: target.markdown })
+              } catch (createError) {
+                const reconciled = await deps.canvas.reconcileControlCanvas({ channelId, expectedTitle: viewTitle })
+                if (reconciled.status === 'found') {
+                  await deps.canvas.editControlCanvas({ canvasId: reconciled.canvasId, title: viewTitle, markdown: target.markdown })
+                  await deps.canvas.setControlCanvasReadOnly?.(reconciled.canvasId, channelId)
+                  handle = { canvasId: reconciled.canvasId, canvasUrl: null }
+                } else if (reconciled.status === 'ambiguous') {
+                  throw new Error(`${target.type}_canvas_ambiguous: ${reconciled.canvasIds.join(',')}`)
+                } else {
+                  throw createError
+                }
+              }
+              await deps.store.upsertProjectCanvas({ projectId: b.project_id, canvasType: target.type, canvasId: handle.canvasId, canvasUrl: handle.canvasUrl })
+              view = { canvas_id: handle.canvasId } as ProjectCanvasRow
+            } else {
+              await deps.canvas.editControlCanvas({ canvasId: view.canvas_id, title: viewTitle, markdown: target.markdown })
+            }
+            await deps.store.updateProjectCanvas(b.project_id, target.type, { sync_status: 'synced', last_source_hash: viewHash, last_synced_at: deps.now(), error: null })
           }
         }
 

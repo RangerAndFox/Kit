@@ -2011,7 +2011,7 @@ export function registerInteractionHandlers(app: App) {
               author: 'project-update',
             })
           }
-          return { success: true, message: result.status === 'skipped' ? `skipped: ${result.reason}` : 'three canvases and project brain refreshed' }
+          return { success: true, message: result.status === 'skipped' ? `skipped: ${result.reason}` : 'four canvases and project brain refreshed' }
         },
         ledger: {
           getSteps: (rk) => getUpdateSteps(rk),

@@ -96,7 +96,7 @@ describe('runProjectUpdate — phasing + services', () => {
     assert.equal(out.allRequiredDone, true)
   })
 
-  it('a control-center field refreshes the three managed canvases in the final phase', async () => {
+  it('a control-center field refreshes the four managed canvases in the final phase', async () => {
     const f = form({ clientContact: 'Janet' })
     const plan = computeUpdatePlan(SNAP, f)
     const { deps, calls } = fakeDeps()
