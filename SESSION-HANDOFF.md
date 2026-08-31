@@ -6,9 +6,9 @@ Current as of 2026-08-31. Repository: https://github.com/RangerAndFox/Kit. Produ
 
 Kit is a Slack-native studio operations system with a persistent Bolt service on Railway, Next.js/Inngest work on Vercel, Supabase as the durable source of truth, and optional studio render workers. Project creation, existing-project updates, outgoing-file Frame.io mirroring, storyboards, hours tracking, meeting briefings, knowledge retrieval, and render coordination are implemented.
 
-The founder-only Kit Control Center is live at `/control-center`, via `/kit dashboard`, and via the strict bare `dashboard` DM shortcut. Its second layer now adds live project drill-downs, guarded Canvas reconcile and Behance retry controls with audit records, Vercel/runtime version visibility, measured API cost totals, and explicit instrumentation gaps. The dedicated Behance Mac profile is authenticated; its LaunchAgent is installed from `kit-behance-worker`, runs from Application Support, starts automatically at login, and reports an idle live heartbeat plus Chrome version. The Behance package now uses the exact approved website copy and places title/subtitle, body sections, Process, and credits as separate modules around the appropriate media, matching the reference portfolio structure. A complete approved-project archive/Behance draft remains the final provider-side proof.
+The founder-only Kit Control Center is live at `/control-center`, via `/kit dashboard`, and via the strict bare `dashboard` DM shortcut. Its second layer adds live project drill-downs, guarded Canvas reconcile and Behance retry controls with audit records, Vercel/runtime version visibility, measured API cost totals, and explicit instrumentation gaps. The dedicated Behance Mac profile is authenticated; its LaunchAgent is installed from `kit-behance-worker`, runs from Application Support, starts automatically at login, and reports an idle live heartbeat plus Chrome version. Project 2699 supplied the live archive proof: Dropbox archive/media generation, unlisted Vimeo, Buffer LinkedIn/Instagram drafts, and a private Behance draft with structured website copy and approved media all completed. WordPress remains the only archive provider awaiting an operator-assisted final proof through the designer-provided entrance.
 
-The main implementation risk is no longer a known code failure. The application, persistent Slack service, agent layer, and maintenance scripts now compile under strict TypeScript without file-level suppression. Live Supabase types are checked in, newly discovered runtime tables are migrated, and the release suite is green. The only intentionally deferred operational dependency is installation and proof of a studio render worker on an accessible always-on machine.
+The main implementation risk is no longer a known code failure. The application, persistent Slack service, agent layer, and maintenance scripts compile under strict TypeScript without file-level suppression. Live Supabase types are checked in, runtime tables are migrated, and the release suite is green. A studio render worker is online with a current heartbeat, After Effects capability, and a prior Dropbox → Frame.io output. A fresh expensive render was not queued during the August 31 certification because the existing live artifact plus current worker health already proved the path.
 
 ## August 31 completion pass
 
@@ -18,7 +18,7 @@ The main implementation risk is no longer a known code failure. The application,
 - Added and applied service-only, RLS-enabled migrations for `managed_agent_sessions` and `celebrations`, including the session project lookup index. Supabase's security advisor reported no findings after the schema changes.
 - Fixed typed check-in replies so the acting Slack user is passed into confirmation authorization; corrected project, milestone, call-classification, knowledge-action, Dropbox, Frame.io, and Canvas mappings to the live schema.
 - Replaced the obsolete Plaud signature probe with a current client/parser smoke test.
-- Verified 791 application/agent/script tests and 459 Bolt tests: 1,250 passing in total.
+- Verified 794 application/agent/script tests and 460 Bolt tests: 1,254 passing in total.
 - Verified the production build with Next.js Webpack, both dependency audits at zero vulnerabilities, and all 103 migration files through the migration guard.
 - Reduced the guarded ESLint debt from 1,503 errors / 91 warnings to 1,264 errors / 87 warnings. The remaining lint findings are non-blocking legacy cleanup protected by a ratcheting baseline; new regressions fail CI.
 
@@ -41,8 +41,10 @@ The main implementation risk is no longer a known code failure. The application,
 
 ### Project Control workbook and canvases
 
-- The Google Sheet “RF Production System — Canvas Control Center” is the producer-facing source of truth for Overview, Reference, and Schedule canvases.
+- The Google Sheet “RF Production System — Canvas Control Center” is the producer-facing source of truth for Overview, Reference, Schedule, and Notes & Feedback canvases.
 - New project provisioning writes the project into Projects, Project Specs, Links, Deliverables, Status Log, and Workback as applicable; provider-created Dropbox, Frame.io, and Boords links flow back into the workbook and generated Slack canvases.
+- The Status Log now has a strict `Visibility` field. Only rows explicitly marked `Team` may render in Notes & Feedback; blank or `Private` rows fail closed.
+- Existing projects missing a generated view are repaired even when the source-row hash is unchanged. Slack accepted the backfilled Notes & Feedback canvas with channel access for test project 2697, but did not add it to that historical channel's visible tab strip; Slack exposes no separate public API for forcing that attachment. New-project provisioning is the supported four-tab path.
 - Native Google Sheets tables on Projects, Project Specs, and Workback now expand atomically with Kit's write. The existing test project rows were repaired into those tables; plain filtered-range tabs already cover the full working grids.
 - Workback state and latest-share fields converge from the Dropbox → Frame.io automation, and sheet edits trigger canvas refreshes rather than requiring canvas edits.
 
@@ -110,7 +112,7 @@ The Railway Dropbox webhook and the Vercel `/Delivery-Queue` poller are not dupl
 
 ## What remains
 
-No known repository or database blocker remains. The dedicated studio delivery/render worker is intentionally last: install it on the selected always-on machine, confirm its heartbeat with `/kit workers`, and run one short transcode/Deadline proof. Optional product-policy choices and recurring live-event observations remain listed in `OPERATOR-TODO.md`; they are not software failures.
+No known repository or database blocker remains. The full August 31 product certification passed 1,254 automated tests, production build/type/security checks, live Slack shortcuts, project 2697 create/update/share/workback flows, project 2699 archive drafts, Storyboard + ElevenLabs provider jobs, and current worker health. Remaining provider/operator boundaries are listed in `OPERATOR-TODO.md`; they are not core cloud-software failures.
 
 ## Verification commands
 

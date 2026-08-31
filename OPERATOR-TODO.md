@@ -4,9 +4,9 @@ Current as of 2026-08-31. This list contains only checks that require a future l
 
 ## Immediate production verification
 
-### 0A. Configure and prove the private archive publisher
+### 0A. Complete the WordPress provider proof
 
-Set the remaining archive environment variables listed in `FEATURES.md` on Vercel and Railway. Use fresh provider credentials; do not copy credentials from the legacy Dropbox package or its publicly shared configuration file. The dedicated Behance profile is authenticated and its automatic Mac worker is installed, running, and reporting a live heartbeat; do not repeat that setup unless the Control Center reports `needs login` or `offline`. Run `/kit archive project` on one approved test project and verify: private producer-only card, standardized Dropbox archive, bounded still/GIF generation, unlisted Vimeo video, WordPress draft, Buffer drafts, browser-built Behance draft plus proof screenshot, and successful retry of one deliberately interrupted step. Confirm the worker stops at the Behance review link and requires a human to click Publish. Revoke the legacy `_AutoArchive` public edit link and rotate any token that was stored in that package before using the new workflow.
+Project 2699 proved the private archive card, standardized Dropbox archive, bounded still/GIF generation, unlisted Vimeo, Buffer drafts, and browser-built private Behance draft with structured copy and proof. The dedicated Behance worker is current and idle. The remaining archive check is WordPress: use the designer-provided internal entrance on an approved test project, verify a draft is created without mutating the live site, and keep publication manual.
 
 ### 0. Observe direct Plaud transcript sync
 
@@ -59,15 +59,13 @@ Use a bizdev meeting, kickoff, or active-project meeting. Confirm internal R&F a
 
 ## Studio infrastructure
 
-### Delivery workers — intentionally last
+### Delivery workers
 
-The `/Delivery-Queue/` pipeline is distinct from the project outgoing-file mirror. Use `/kit workers` to confirm at least one studio render worker is online before relying on profile-based transcodes. If no worker is registered, follow `kit-render-worker/README.md` on the intended studio machine and run an end-to-end short-file test.
+The `/Delivery-Queue/` pipeline is distinct from the project outgoing-file mirror. On 2026-08-31 the worker reported a current heartbeat and After Effects capability, and a prior render output was verified through Dropbox → Frame.io. Use `/kit workers` before a consequential transcode. A new short-file render may be run during the next normal delivery event; it is no longer a setup blocker.
 
-Deferred by the operator again on 2026-08-31 because the render machines are not currently accessible. This is intentionally last and is not an active cloud-software blocker; revisit when the dedicated machine is accessible.
+### Historical Notes & Feedback tab attachment
 
-Audit state on 2026-08-21: the production `render_workers` and `render_jobs`
-tables were both empty. Dropbox/Frame.io and the delivery/spec scan heartbeats
-were healthy; the missing studio worker is the blocker, not the cloud pipeline.
+The four-view data model and live content sync are complete. Slack accepted project 2697's backfilled `2697_NotesAndFeedback` canvas with channel access but did not surface it in the historical channel's tab strip, and Slack exposes no public API to force-attach an existing canvas as a tab. Confirm the four tabs on the next newly provisioned project. If Slack still omits the fourth tab there, attach it once in Slack's channel-tab UI and treat the behavior as a Slack provider issue rather than a data-sync failure.
 
 ### After Effects / Deadline
 
