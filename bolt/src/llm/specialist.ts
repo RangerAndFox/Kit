@@ -77,79 +77,92 @@ export async function runSpecialist(
     })
 
     if (response.stop_reason === 'tool_use') {
-      const toolUseBlock = (response.content as any[]).find(
+      const toolUseBlocks = (response.content as any[]).filter(
         (b) => b.type === 'tool_use',
       )
-      if (!toolUseBlock) {
+      if (toolUseBlocks.length === 0) {
         return 'Internal error: tool_use stop_reason without tool_use block.'
       }
 
-      const action = toolUseBlock.name.replace(`${agentId}_`, '')
-      const llmPayload = (toolUseBlock.input?.payload || {}) as Record<string, unknown>
-
-      // Inject identity context the LLM can't see. Agents that care
-      // (e.g., slack:provision auto-invite, studio_knowledge brain-first
-      // retrieval) read these.
-      const payload: Record<string, unknown> = {
-        ...llmPayload,
-        slackUserId: llmPayload.slackUserId ?? user?.slackUserId,
-        teamMemberId: llmPayload.teamMemberId ?? user?.teamMemberId,
-        channelId: llmPayload.channelId ?? context.channelId ?? undefined,
-        // Never trust the model to choose its own knowledge visibility. The
-        // resolved Kit tier is the only source for founder/admin retrieval.
-        requesterTier: user?.tier ?? 'artist',
-      }
-
-      let result: { success: boolean; data?: any; error?: string; message?: string }
-      try {
-        // Failsafe: if we couldn't resolve a UserContext, treat the request
-        // as if it came from an artist. Never bypass enforcement — the
-        // previous behavior of dispatching unwrapped when user=null would
-        // hand every gated action to whoever Slack identified, which is
-        // not the security posture we want.
-        const effectiveUser =
-          user ?? failsafeArtistContext(
-            (payload.workspaceId as string) || process.env.KIT_DEFAULT_WORKSPACE_ID || '',
-            (payload.slackUserId as string) || 'unknown',
-          )
-        // Gate BEFORE dispatch so a restricted *mutation* never runs its side
-        // effect for an under-privileged user. (enforceAccess re-checks the
-        // gateway and additionally field-filters successful results.)
-        const gate = checkGateway(
-          effectiveUser,
-          agentId,
-          action,
-          payload.projectId as string | undefined,
-        )
-        if (!gate.allowed) {
-          result = { success: false, error: gate.reason }
-        } else {
-          const dispatchResult = await dispatch(agentId, action, payload)
-          result = await enforceAccess(effectiveUser, agentId, action, payload, dispatchResult)
-        }
-      } catch (err: any) {
-        result = { success: false, error: err?.message || String(err) }
-      }
-
-      // Surface raw failures in Railway logs so we can debug API errors
-      // without having to puzzle them out of the LLM's paraphrase.
-      if (!result.success) {
-        console.error(
-          `[${agentId}:${action}] failed: ${result.error || '(no message)'}`,
-        )
-      }
-
       messages.push({ role: 'assistant', content: response.content })
+      const toolResults: Array<{
+        type: 'tool_result'
+        tool_use_id: string
+        content: string
+        is_error: boolean
+      }> = []
+
+      // Claude may request more than one specialist action in a single turn.
+      // Anthropic requires an immediately-following tool_result for *every*
+      // tool_use id. Returning only the first left the remaining ids orphaned
+      // and caused the next API call to fail validation.
+      for (const toolUseBlock of toolUseBlocks) {
+        const action = toolUseBlock.name.replace(`${agentId}_`, '')
+        const llmPayload = (toolUseBlock.input?.payload || {}) as Record<string, unknown>
+
+        // Inject identity context the LLM can't see. Agents that care
+        // (e.g., slack:provision auto-invite, studio_knowledge brain-first
+        // retrieval) read these.
+        const payload: Record<string, unknown> = {
+          ...llmPayload,
+          slackUserId: llmPayload.slackUserId ?? user?.slackUserId,
+          teamMemberId: llmPayload.teamMemberId ?? user?.teamMemberId,
+          channelId: llmPayload.channelId ?? context.channelId ?? undefined,
+          // Never trust the model to choose its own knowledge visibility. The
+          // resolved Kit tier is the only source for founder/admin retrieval.
+          requesterTier: user?.tier ?? 'artist',
+        }
+
+        let result: { success: boolean; data?: any; error?: string; message?: string }
+        try {
+          // Failsafe: if we couldn't resolve a UserContext, treat the request
+          // as if it came from an artist. Never bypass enforcement — the
+          // previous behavior of dispatching unwrapped when user=null would
+          // hand every gated action to whoever Slack identified, which is
+          // not the security posture we want.
+          const effectiveUser =
+            user ?? failsafeArtistContext(
+              (payload.workspaceId as string) || process.env.KIT_DEFAULT_WORKSPACE_ID || '',
+              (payload.slackUserId as string) || 'unknown',
+            )
+          // Gate BEFORE dispatch so a restricted *mutation* never runs its side
+          // effect for an under-privileged user. (enforceAccess re-checks the
+          // gateway and additionally field-filters successful results.)
+          const gate = checkGateway(
+            effectiveUser,
+            agentId,
+            action,
+            payload.projectId as string | undefined,
+          )
+          if (!gate.allowed) {
+            result = { success: false, error: gate.reason }
+          } else {
+            const dispatchResult = await dispatch(agentId, action, payload)
+            result = await enforceAccess(effectiveUser, agentId, action, payload, dispatchResult)
+          }
+        } catch (err: any) {
+          result = { success: false, error: err?.message || String(err) }
+        }
+
+        // Surface raw failures in Railway logs so we can debug API errors
+        // without having to puzzle them out of the LLM's paraphrase.
+        if (!result.success) {
+          console.error(
+            `[${agentId}:${action}] failed: ${result.error || '(no message)'}`,
+          )
+        }
+
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: toolUseBlock.id,
+          content: JSON.stringify(result),
+          is_error: !result.success,
+        })
+      }
+
       messages.push({
         role: 'user',
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: toolUseBlock.id,
-            content: JSON.stringify(result),
-            is_error: !result.success,
-          },
-        ],
+        content: toolResults,
       })
       continue
     }
