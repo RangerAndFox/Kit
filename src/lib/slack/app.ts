@@ -55,7 +55,7 @@ class SupabaseInstallationStore {
     } = installation;
 
     const { error } = await this.supabase
-      .from('slack_oauth_installations' as any)
+.from('slack_oauth_installations')
       .upsert(
         {
           slack_team_id: slackTeamId,
@@ -87,7 +87,7 @@ class SupabaseInstallationStore {
     const { teamId, enterpriseId } = args;
 
     const query = this.supabase
-      .from('slack_oauth_installations' as any)
+.from('slack_oauth_installations')
       .select('raw_installation_data');
 
     if (teamId) {
@@ -116,7 +116,7 @@ class SupabaseInstallationStore {
     const { teamId, enterpriseId } = args;
 
     let query = this.supabase
-      .from('slack_oauth_installations' as any)
+.from('slack_oauth_installations')
       .delete();
 
     if (teamId) {
@@ -228,7 +228,7 @@ export async function getWorkspaceSlackConfig(
   const supabase = createClient(supabaseUrl, supabaseKey);
 
   const { data, error } = await supabase
-    .from('slack_oauth_installations' as any)
+.from('slack_oauth_installations')
     .select('*')
     .eq('slack_team_id', slackTeamId)
     .single();
@@ -262,7 +262,7 @@ export async function getKitWorkspaceBySlackTeam(
   const supabase = createClient(supabaseUrl, supabaseKey);
 
   const { data, error } = await supabase
-    .from('slack_oauth_installations' as any)
+.from('slack_oauth_installations')
     .select('workspace_id')
     .eq('slack_team_id', slackTeamId)
     .single();
@@ -273,7 +273,7 @@ export async function getKitWorkspaceBySlackTeam(
 
   // Now fetch the workspace from Kit's workspace table
   const { data: workspace } = await supabase
-    .from('workspaces' as any)
+.from('workspaces')
     .select('*')
     .eq('id', data.workspace_id)
     .single();

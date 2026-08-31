@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * One-shot cleanup: prune the "No X yet" system placeholder bullets from
  * every brain that already has real content in those sections. Phase-1

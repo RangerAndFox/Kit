@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Brain Consolidator — Phase 6.
  *

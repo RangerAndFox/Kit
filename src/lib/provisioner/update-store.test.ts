@@ -118,8 +118,20 @@ async function seedRequest(fake: ReturnType<typeof fakeDb>, key = 'V1') {
     workspaceId: 'WS',
     projectId: 'P1',
     requestedBy: 'U_STEVE',
-    submission: { projectName: 'New Name' },
-    plan: { hasChanges: true },
+    submission: {
+      form: { projectNumber: '2600', clientName: 'Client', projectName: 'New Name' },
+      userId: 'U_STEVE',
+      statusChannel: 'C_STATUS',
+      workspaceId: 'WS',
+      current: {},
+    },
+    plan: {
+      changes: [],
+      derived: {},
+      services: { slack: false, frameio: false, harvest: false, dropbox: false, sheet: false, supabase: true },
+      identityChanged: false,
+      hasChanges: true,
+    },
   })
   return { row, created }
 }

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Daily Hours Check-in — shared helpers.
  *

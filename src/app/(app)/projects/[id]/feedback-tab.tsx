@@ -1,4 +1,3 @@
-// @ts-nocheck
 'use client'
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -41,20 +40,20 @@ export function FeedbackTab({ project }: { project: Project }) {
       item.content.toLowerCase().includes('more')
   )
 
-  const sentimentColors = {
+  const sentimentColors: Record<string, 'default' | 'success' | 'warning' | 'danger' | 'info'> = {
     positive: 'success',
     neutral: 'default',
     negative: 'warning',
   }
 
-  const priorityColors = {
+  const priorityColors: Record<string, 'default' | 'success' | 'warning' | 'danger' | 'info'> = {
     low: 'default',
     medium: 'warning',
     high: 'danger',
     critical: 'danger',
   }
 
-  const statusColors = {
+  const statusColors: Record<string, 'default' | 'success' | 'warning' | 'danger' | 'info'> = {
     new: 'info',
     in_progress: 'info',
     resolved: 'success',

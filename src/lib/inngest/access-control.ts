@@ -18,6 +18,7 @@
 import { createAdminClient } from '@/lib/supabase/admin'
 import type { TablesUpdate } from '@/types/supabase'
 import { getAgent } from './agents/registry'
+import type { AgentResult } from './agents/types'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -493,8 +494,8 @@ export async function enforceAccess(
   agentId: string,
   action: string,
   payload: Record<string, unknown>,
-  result: { success: boolean; data?: unknown; [key: string]: unknown }
-): Promise<typeof result> {
+  result: AgentResult
+): Promise<AgentResult> {
   // Gateway check
   const projectId = payload.projectId as string | undefined
   const gatewayCheck = checkGateway(user, agentId, action, projectId)

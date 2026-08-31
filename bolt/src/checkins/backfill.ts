@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Backfill: log confirmed-but-unlogged daily check-ins to Harvest.
  *

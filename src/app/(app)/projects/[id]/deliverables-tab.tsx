@@ -1,4 +1,3 @@
-// @ts-nocheck
 'use client'
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -31,7 +30,7 @@ export function DeliverablesTab({ project }: { project: Project }) {
     'delivered',
   ]
 
-  const statusColors = {
+  const statusColors: Record<string, 'default' | 'success' | 'warning' | 'danger' | 'info'> = {
     not_started: 'default',
     in_progress: 'info',
     internal_review: 'warning',
@@ -40,7 +39,7 @@ export function DeliverablesTab({ project }: { project: Project }) {
     delivered: 'success',
   }
 
-  const statusLabels = {
+  const statusLabels: Record<string, string> = {
     not_started: 'Not Started',
     in_progress: 'In Progress',
     internal_review: 'Internal Review',

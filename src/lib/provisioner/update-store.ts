@@ -15,6 +15,8 @@
  */
 
 import { createAdminClient } from '@/lib/supabase/admin'
+import type { UpdateForm, UpdatePlan } from './update-diff'
+import type { UpdateCurrentIds } from './update'
 
 const nowIso = () => new Date().toISOString()
 const UPDATE_LEASE_MS = 5 * 60 * 1000
@@ -61,8 +63,8 @@ export interface UpdateRequestRow {
   workspace_id: string | null
   project_id: string
   requested_by_slack_user_id: string | null
-  submission: Record<string, unknown>
-  plan: Record<string, unknown>
+  submission: UpdateRequestSubmission
+  plan: UpdatePlan
   decision: string | null
   status: string
   attempts: number
@@ -75,6 +77,15 @@ export interface UpdateRequestRow {
   updated_at: string
 }
 
+export interface UpdateRequestSubmission {
+  form: UpdateForm
+  userId: string
+  statusChannel: string
+  threadTs?: string
+  workspaceId: string
+  current: UpdateCurrentIds
+}
+
 /**
  * Idempotently get-or-create the request keyed by the update modal's view.id. A
  * redelivered submission returns the SAME row (its ripple is resumed, not
@@ -85,8 +96,8 @@ export async function getOrCreateUpdateRequest(opts: {
   workspaceId: string | null
   projectId: string
   requestedBy: string | null
-  submission: Record<string, unknown>
-  plan: Record<string, unknown>
+  submission: UpdateRequestSubmission
+  plan: UpdatePlan
 }): Promise<{ row: UpdateRequestRow; created: boolean }> {
   const existing = await loadUpdateRequest(opts.requestKey)
   if (existing) return { row: existing, created: false }
@@ -97,8 +108,8 @@ export async function getOrCreateUpdateRequest(opts: {
       workspace_id: opts.workspaceId,
       project_id: opts.projectId,
       requested_by_slack_user_id: opts.requestedBy,
-      submission: opts.submission,
-      plan: opts.plan,
+      submission: opts.submission as unknown as Record<string, unknown>,
+      plan: opts.plan as unknown as Record<string, unknown>,
       status: 'pending',
     })
     .select()

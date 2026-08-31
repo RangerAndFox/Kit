@@ -1,17 +1,9 @@
-// @ts-nocheck
 /**
  * Project Ops integration
  * Bidirectional sync with Project Ops for project creation, updates, and financial data
  */
 
 import { createAdminClient } from '@/lib/supabase/admin'
-import type {
-  Project,
-  ProjectPhase,
-  ProjectStatus,
-  Milestone,
-  Deliverable,
-} from '@/types/database'
 
 /**
  * Webhook payload from Project Ops when a new project is created
@@ -57,22 +49,24 @@ export async function createProjectFromPO(
 
   // Create the project
   const { data: projectData, error: projectError } = await supabase
-    .from('projects' as any)
+.from('projects')
     .insert({
       workspace_id: workspaceId,
       name: poData.projectName,
-      description: poData.description,
-      status: 'planning' as ProjectStatus,
-      phase: 'pre_production' as ProjectPhase,
-      budget: poData.budget,
-      currency: poData.currency,
+      brief_summary: poData.description,
+      status: 'planning',
+      project_type: 'client',
+      budget_total: poData.budget,
       start_date: poData.startDate,
-      end_date: poData.endDate,
-      deadline: poData.deadline,
-      client_name: poData.clientName,
-      client_contact: poData.clientContact,
-      tags: poData.tags,
-      po_project_id: poData.poProjectId, // Track PO ID for sync
+      target_delivery: poData.deadline || poData.endDate,
+      client: poData.clientName,
+      project_ops_id: poData.poProjectId,
+      external_ids: {
+        project_ops_id: poData.poProjectId,
+        currency: poData.currency,
+        client_contact: poData.clientContact ?? null,
+        tags: poData.tags ?? [],
+      },
     })
     .select('id')
     .single()
@@ -85,17 +79,15 @@ export async function createProjectFromPO(
 
   // Create milestone for each deliverable group
   const milestoneName = `Deliverables: ${poData.projectName}`
-  const { data: milestoneData, error: milestoneError } = await supabase
-    .from('milestones' as any)
+  const { error: milestoneError } = await supabase
+.from('milestones')
     .insert({
+      workspace_id: workspaceId,
       project_id: projectId,
       name: milestoneName,
       status: 'not_started',
       due_date: poData.deadline || poData.endDate,
-      progress_percentage: 0,
     })
-    .select('id')
-    .single()
 
   if (milestoneError) {
     throw new Error(`Failed to create milestone: ${milestoneError.message}`)
@@ -103,19 +95,16 @@ export async function createProjectFromPO(
 
   // Create deliverables
   const deliverables = poData.deliverables.map(del => ({
-    milestone_id: milestoneData.id,
+    workspace_id: workspaceId,
     project_id: projectId,
     name: del.name,
     description: del.description,
-    format: (mapDeliverableFormat(del.category) || 'other') as any,
     status: 'not_started' as const,
-    specifications: del.specifications,
     due_date: del.dueDate,
-    version: 1,
   }))
 
   const { error: delivError } = await supabase
-    .from('deliverables' as any)
+.from('deliverables')
     .insert(deliverables)
 
   if (delivError) {
@@ -130,24 +119,6 @@ export async function createProjectFromPO(
   }
 
   return projectId
-}
-
-/**
- * Maps Project Ops category to Kit deliverable format
- */
-function mapDeliverableFormat(
-  poCategory: string
-): string | undefined {
-  const mapping: Record<string, string> = {
-    video: 'video',
-    audio: 'audio',
-    image: 'image',
-    design: 'design',
-    animation: 'animation',
-    document: 'document',
-    code: 'code',
-  }
-  return mapping[poCategory.toLowerCase()]
 }
 
 /**

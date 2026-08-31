@@ -1,4 +1,3 @@
-// @ts-nocheck
 'use client'
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -104,12 +103,9 @@ export function OverviewTab({ project }: { project: Project }) {
             <h2 className="text-xl font-semibold text-white mb-4">Active Milestones</h2>
             <div className="space-y-3">
               {project.milestones.slice(0, 4).map((milestone) => {
-                const daysUntilDue = Math.ceil(
-                  (milestone.due_date.getTime() - Date.now()) / (1000 * 60 * 60 * 24)
-                )
-                const isOverdue = daysUntilDue < 0
+                const isOverdue = milestone.status === 'overdue'
 
-                const statusColors = {
+                const statusColors: Record<string, 'default' | 'success' | 'warning' | 'danger' | 'info'> = {
                   completed: 'success',
                   in_progress: 'info',
                   pending: 'default',
@@ -130,7 +126,7 @@ export function OverviewTab({ project }: { project: Project }) {
                             })}
                             {isOverdue && (
                               <span className="text-red-400 ml-1">
-                                ({Math.abs(daysUntilDue)} days overdue)
+                                (overdue)
                               </span>
                             )}
                           </div>
@@ -227,7 +223,7 @@ export function OverviewTab({ project }: { project: Project }) {
         <h2 className="text-xl font-semibold text-white mb-4">Recent Feedback</h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {project.recent_feedback.map((feedback) => {
-            const sentimentColors = {
+            const sentimentColors: Record<string, 'default' | 'success' | 'warning' | 'danger' | 'info'> = {
               positive: 'success',
               neutral: 'default',
               negative: 'warning',

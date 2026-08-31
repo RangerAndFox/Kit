@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Daily Hours Check-in — Reply Parser + Confirmation
  *
@@ -27,6 +26,7 @@ import {
   formatShortDate,
 } from './date'
 import { handleCheckinConfirm, handleCheckinRedo } from './confirm'
+import type { Json } from '../../../src/types/supabase'
 
 interface OpenCheckin {
   id: string
@@ -180,6 +180,7 @@ export async function handleParsedCheckinText(opts: {
       client: opts.app.client,
       body: {},
       checkinId: parsedRow.id,
+      actorSlackUserId: opts.slackUserId,
     })
   } else {
     await handleCheckinRedo({
@@ -187,6 +188,7 @@ export async function handleParsedCheckinText(opts: {
       client: opts.app.client,
       body: {},
       checkinId: parsedRow.id,
+      actorSlackUserId: opts.slackUserId,
     })
   }
   return true
@@ -551,7 +553,7 @@ export async function handleCheckinReply(opts: {
     .from('daily_hours_checkins')
     .update({
       status: 'parsed',
-      parsed_entries: resolved,
+      parsed_entries: resolved as unknown as Json,
       updated_at: new Date().toISOString(),
     })
     .eq('id', open.id)

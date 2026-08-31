@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Session Manager
  * 
@@ -9,6 +8,7 @@
 
 import { getManagedAgentsClient, type AgentEvent, type SessionResponse } from './client'
 import { createAdminClient } from '@/lib/supabase/admin'
+import type { Json } from '@/types/supabase'
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -140,8 +140,9 @@ export class SessionManager {
 
     // Check for existing active session
     const { data: existing } = await supabase
-      .from('agent_runs' as any)
+      .from('managed_agent_sessions')
       .select('session_id, status')
+      .eq('workspace_id', trigger.workspaceId)
       .eq('context_key', contextKey)
       .eq('status', 'active')
       .order('created_at', { ascending: false })
@@ -152,6 +153,10 @@ export class SessionManager {
       // Verify it's still alive on Anthropic's side
       const active = await this.isActive(existing.session_id)
       if (active) return existing.session_id
+      await supabase
+        .from('managed_agent_sessions')
+        .update({ status: 'closed', completed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq('session_id', existing.session_id)
     }
 
     // Create new session
@@ -166,15 +171,21 @@ export class SessionManager {
       },
     })
 
-    // Track it
-    await supabase.from('agent_runs' as any).insert({
+    // Track it in the provider-session ledger. Aggregate sweeps continue to
+    // use agent_runs; provider session identity belongs here.
+    const { error: insertError } = await supabase.from('managed_agent_sessions').insert({
       workspace_id: trigger.workspaceId,
+      project_id: trigger.projectId ?? null,
       session_id: session.id,
       agent_id: agentId,
+      environment_id: environmentId,
       context_key: contextKey,
+      source: trigger.source,
       status: 'active',
       started_at: new Date().toISOString(),
+      metadata: trigger.payload as unknown as Json,
     })
+    if (insertError) throw new Error(`Failed to persist managed-agent session: ${insertError.message}`)
 
     return session.id
   }
@@ -203,16 +214,18 @@ export class SessionManager {
     trigger: TriggerContext
   ): Promise<void> {
     const supabase = createAdminClient()
-    await supabase.from('agent_runs' as any).insert({
+    const { error } = await supabase.from('managed_agent_sessions').insert({
       workspace_id: trigger.workspaceId,
+      project_id: trigger.projectId ?? null,
       session_id: session.id,
       agent_id: session.agent,
-      trigger_source: trigger.source,
-      project_id: trigger.projectId || null,
+      environment_id: session.environment_id,
+      source: trigger.source,
       status: 'running',
       started_at: new Date().toISOString(),
-      trigger_payload: trigger.payload,
+      metadata: trigger.payload as unknown as Json,
     })
+    if (error) throw new Error(`Failed to log managed-agent session: ${error.message}`)
   }
 
   private async logSessionEnd(
@@ -222,15 +235,17 @@ export class SessionManager {
     error?: string
   ): Promise<void> {
     const supabase = createAdminClient()
-    await supabase
-      .from('agent_runs' as any)
+    const { error: updateError } = await supabase
+      .from('managed_agent_sessions')
       .update({
         status,
         completed_at: new Date().toISOString(),
         event_count: eventCount,
         error: error || null,
+        updated_at: new Date().toISOString(),
       })
       .eq('session_id', sessionId)
+    if (updateError) throw new Error(`Failed to complete managed-agent session: ${updateError.message}`)
   }
 }
 

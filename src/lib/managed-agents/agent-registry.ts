@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Agent Registry
  *
@@ -50,7 +49,7 @@ export class AgentRegistry {
     const supabase = createAdminClient()
 
     const { data: existing } = await supabase
-      .from('managed_agent_registry' as any)
+.from('managed_agent_registry')
       .select('external_id')
       .eq('kind', 'agent')
       .eq('key', definition.key)
@@ -73,7 +72,7 @@ export class AgentRegistry {
     }
 
     const { error: upsertError } = await supabase
-      .from('managed_agent_registry' as any)
+.from('managed_agent_registry')
       .upsert({
         kind: 'agent',
         key: definition.key,
@@ -107,7 +106,7 @@ export class AgentRegistry {
   async ensureEnvironment(name: string = 'kit-production'): Promise<string> {
     const supabase = createAdminClient()
     const { data: existing } = await supabase
-      .from('managed_agent_registry' as any)
+.from('managed_agent_registry')
       .select('external_id')
       .eq('kind', 'environment')
       .eq('key', name)
@@ -121,7 +120,7 @@ export class AgentRegistry {
     })
 
     const { error: insertError } = await supabase
-      .from('managed_agent_registry' as any)
+.from('managed_agent_registry')
       .upsert({
         kind: 'environment',
         key: name,
@@ -136,7 +135,7 @@ export class AgentRegistry {
   async getAgentId(key: string): Promise<string | null> {
     const supabase = createAdminClient()
     const { data } = await supabase
-      .from('managed_agent_registry' as any)
+.from('managed_agent_registry')
       .select('external_id')
       .eq('kind', 'agent')
       .eq('key', key)
@@ -148,7 +147,7 @@ export class AgentRegistry {
   async getEnvironmentId(name: string = 'kit-production'): Promise<string | null> {
     const supabase = createAdminClient()
     const { data } = await supabase
-      .from('managed_agent_registry' as any)
+.from('managed_agent_registry')
       .select('external_id')
       .eq('kind', 'environment')
       .eq('key', name)

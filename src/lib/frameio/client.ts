@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Frame.io v4 API Client
  *
@@ -146,7 +145,10 @@ export async function getAssetComments(
   let safety = 20 // pagination cap — thousands of comments means something is wrong
 
   while (path && safety-- > 0) {
-    const data = await fetchPage(path)
+    const response = await fetchPage(path)
+    const data = response && typeof response === 'object'
+      ? response as Record<string, unknown>
+      : {}
     const items = data.data || data.comments || data.items || data
     if (Array.isArray(items)) all.push(...items)
 
@@ -154,7 +156,10 @@ export async function getAssetComments(
     // more pages; its absence is the normal terminal signal. Canonicalize via
     // the shared helper (strips a leading "/v4" so fetchPage does not re-prepend
     // it → the /v4/v4 404). A malformed / cross-host link is not followed.
-    const next: unknown = data.links?.next ?? data.links?.next_page
+    const links = data.links && typeof data.links === 'object'
+      ? data.links as Record<string, unknown>
+      : null
+    const next: unknown = links?.next ?? links?.next_page
     if (next == null) {
       path = null
     } else {

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Staff ↔ Harvest sync.
  *
@@ -45,8 +44,8 @@ export async function syncStaffHarvestIds(): Promise<StaffSyncResult> {
       continue
     }
     const candidates = [s.email, ...(s.email_aliases || [])]
-      .filter(Boolean)
-      .map((e: string) => e.trim().toLowerCase())
+      .filter((email): email is string => typeof email === 'string' && email.length > 0)
+      .map((email) => email.trim().toLowerCase())
     const match = candidates.map((e) => harvestByEmail.get(e)).find(Boolean)
     if (!match) {
       result.unmatched.push({ name: s.full_name || '(unnamed)', email: s.email || '—' })

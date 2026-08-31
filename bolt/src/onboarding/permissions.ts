@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Onboarding permission check: only producers, creative directors, and
  * admins can onboard freelancers. Returns true if the requester is allowed.
@@ -26,7 +25,7 @@ async function staffAllows(slackUserId: string): Promise<boolean> {
     .eq('slack_user_id', slackUserId)
     .maybeSingle()
   if (!data || !data.is_active) return false
-  return ALLOWED_STAFF_ROLES.includes(data.role)
+  return typeof data.role === 'string' && ALLOWED_STAFF_ROLES.includes(data.role)
 }
 
 async function tierAllows(slackUserId: string, email?: string): Promise<boolean> {

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Diagnose WHY daily-hours check-ins get stuck at status='parsed'.
  *

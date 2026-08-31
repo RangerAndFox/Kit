@@ -1,6 +1,6 @@
 # Kit — Session handoff
 
-Current as of 2026-08-29. Repository: https://github.com/RangerAndFox/Kit. Production Supabase project: `ozsxrcgrezpffnpwlrnq`.
+Current as of 2026-08-31. Repository: https://github.com/RangerAndFox/Kit. Production Supabase project: `ozsxrcgrezpffnpwlrnq`.
 
 ## Current build state
 
@@ -8,7 +8,19 @@ Kit is a Slack-native studio operations system with a persistent Bolt service on
 
 The founder-only Kit Control Center is live at `/control-center`, via `/kit dashboard`, and via the strict bare `dashboard` DM shortcut. Its second layer now adds live project drill-downs, guarded Canvas reconcile and Behance retry controls with audit records, Vercel/runtime version visibility, measured API cost totals, and explicit instrumentation gaps. The dedicated Behance Mac profile is authenticated; its LaunchAgent is installed from `kit-behance-worker`, runs from Application Support, starts automatically at login, and reports an idle live heartbeat plus Chrome version. The Behance package now uses the exact approved website copy and places title/subtitle, body sections, Process, and credits as separate modules around the appropriate media, matching the reference portfolio structure. A complete approved-project archive/Behance draft remains the final provider-side proof.
 
-The main implementation risk is no longer a known code failure; it is deployment/provider verification. Vercel checks passed on the latest merged work. Railway could not be inspected in the final audit because its connector repeatedly restarted authentication.
+The main implementation risk is no longer a known code failure. The application, persistent Slack service, agent layer, and maintenance scripts now compile under strict TypeScript without file-level suppression. Live Supabase types are checked in, newly discovered runtime tables are migrated, and the release suite is green. The only intentionally deferred operational dependency is installation and proof of a studio render worker on an accessible always-on machine.
+
+## August 31 completion pass
+
+- Removed every remaining `// @ts-nocheck` directive from `src/`, `bolt/`, `agents/`, and `scripts/` (154 files across the cleanup); the repository now contains zero file-level TypeScript suppressions.
+- Added a single root `npm run typecheck` command covering the Next.js application, strict Bolt service, agents, and maintenance scripts.
+- Generated `src/types/supabase.ts` from the live production project and repaired stale table/column assumptions uncovered by strict typing.
+- Added and applied service-only, RLS-enabled migrations for `managed_agent_sessions` and `celebrations`, including the session project lookup index. Supabase's security advisor reported no findings after the schema changes.
+- Fixed typed check-in replies so the acting Slack user is passed into confirmation authorization; corrected project, milestone, call-classification, knowledge-action, Dropbox, Frame.io, and Canvas mappings to the live schema.
+- Replaced the obsolete Plaud signature probe with a current client/parser smoke test.
+- Verified 791 application/agent/script tests and 459 Bolt tests: 1,250 passing in total.
+- Verified the production build with Next.js Webpack, both dependency audits at zero vulnerabilities, and all 103 migration files through the migration guard.
+- Reduced the guarded ESLint debt from 1,503 errors / 91 warnings to 1,264 errors / 87 warnings. The remaining lint findings are non-blocking legacy cleanup protected by a ratcheting baseline; new regressions fail CI.
 
 ## Work completed in the August 20–21 sequence
 
@@ -98,22 +110,16 @@ The Railway Dropbox webhook and the Vercel `/Delivery-Queue` poller are not dupl
 
 ## What remains
 
-Everything currently safe to implement in the repository has been merged. Remaining work requires a live event, provider/dashboard access, a studio machine, or a product decision:
-
-1. Verify Railway deployed current `main` and is healthy.
-2. Verify the next outgoing file produces a real public Frame.io share.
-3. Observe the next local-5pm hours occurrence end to end.
-4. Observe the next real simplified meeting briefing.
-5. The studio delivery/render worker is intentionally deferred until an always-on studio machine is selected; production currently has zero registered workers.
-6. Resolve the visibility and briefing-posting decisions in `OPERATOR-TODO.md`.
+No known repository or database blocker remains. The dedicated studio delivery/render worker is intentionally last: install it on the selected always-on machine, confirm its heartbeat with `/kit workers`, and run one short transcode/Deadline proof. Optional product-policy choices and recurring live-event observations remain listed in `OPERATOR-TODO.md`; they are not software failures.
 
 ## Verification commands
 
 ```bash
-npm run build
-cd bolt
-npm ci
+npm run typecheck
+npm run lint:ratchet
+npm run check:migrations
 npm test
-npx tsc --noEmit
 npm audit
+cd bolt && npm test && npm audit
+npx next build --webpack
 ```

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Detects "manage someone's Kit role" intent in a free-text message, so it
  * works conversationally in a DM / Assistant thread with Kit (where Slack

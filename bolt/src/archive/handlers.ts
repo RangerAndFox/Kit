@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { resolveUserContext } from '../../../src/lib/inngest/access-control'

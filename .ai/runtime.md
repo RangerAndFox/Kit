@@ -120,8 +120,10 @@ fact.
 - **Change model:** schema changes ship as new files under
   `supabase/migrations/`. *(Files Verified; the apply/deploy mechanism is
   Needs verification.)*
-- **Ownership question:** *Decision required* — migration prefixes collide
-  (see `.ai/audits/architecture.md`); ordering/authority needs a convention.
+- **Migration validation:** `npm run check:migrations` validates the complete
+  migration set before release. The August 31 pass validated all 103 files and
+  applied the new service-only `managed_agent_sessions` and `celebrations`
+  tables to production. *(Verified.)*
 
 ## External services
 

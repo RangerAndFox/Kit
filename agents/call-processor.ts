@@ -1,4 +1,3 @@
-// @ts-nocheck
 import type { KitAgentDefinition } from '@/lib/managed-agents/agent-registry'
 
 const SYSTEM_PROMPT = `You are Kit's call processor agent. When a meeting transcript arrives, you analyze it and produce structured outputs.

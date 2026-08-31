@@ -4,7 +4,7 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "esModuleInterop": true,
-    "strict": false,
+    "strict": true,
     "skipLibCheck": true,
     "outDir": "dist",
     "baseUrl": ".",
@@ -14,5 +14,5 @@
       "@/*": ["../src/*"]
     }
   },
-  "include": ["src/**/*", "../src/lib/inngest/**/*", "../src/lib/harvest/**/*", "../src/lib/provisioner/**/*", "../src/lib/mcp/slack.ts"]
+  "include": ["src/**/*", "../src/lib/inngest/**/*", "../src/lib/harvest/**/*", "../src/lib/provisioner/**/*", "../src/lib/mcp/slack.ts", "../src/types/**/*.d.ts"]
 }

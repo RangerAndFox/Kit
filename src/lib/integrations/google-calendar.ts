@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Google Calendar integration (service-account auth).
  *

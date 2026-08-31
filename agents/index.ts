@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Kit Agent Definitions Index
  * 

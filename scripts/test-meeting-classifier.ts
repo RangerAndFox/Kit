@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Smoke test for the meeting classifier.
  *

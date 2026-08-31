@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Participation context assembly — everything Kit can ground an unprompted
  * channel reply in:
@@ -96,8 +95,15 @@ export async function resolveChannelProject(
       .limit(1)
       .maybeSingle()
     if (!data) return null
-    const el = data.external_links || {}
-    const frameioUrl = el.frameio_url || el.frameio || null
+    const el = data.external_links && typeof data.external_links === 'object' && !Array.isArray(data.external_links)
+      ? data.external_links
+      : {}
+    const externalIds = data.external_ids && typeof data.external_ids === 'object' && !Array.isArray(data.external_ids)
+      ? data.external_ids
+      : {}
+    const frameioUrl = typeof el.frameio_url === 'string'
+      ? el.frameio_url
+      : typeof el.frameio === 'string' ? el.frameio : null
     return {
       id: data.id,
       name: data.name,
@@ -105,8 +111,10 @@ export async function resolveChannelProject(
       targetDelivery: data.target_delivery || null,
       briefSummary: data.brief_summary || null,
       frameioUrl,
-      dropboxUrl: el.dropbox_url || el.dropbox || null,
-      frameioProjectId: data.external_ids?.frameio || parseFrameioProjectId(frameioUrl),
+      dropboxUrl: typeof el.dropbox_url === 'string'
+        ? el.dropbox_url
+        : typeof el.dropbox === 'string' ? el.dropbox : null,
+      frameioProjectId: typeof externalIds.frameio === 'string' ? externalIds.frameio : parseFrameioProjectId(frameioUrl),
     }
   } catch {
     return null
@@ -128,7 +136,7 @@ async function loadDashboard(workspaceId: string, project: ChannelProject | null
     const [{ data: milestones }, { data: actions }] = await Promise.all([
       sb
         .from('milestones')
-        .select('title, due_date, status')
+        .select('name, due_date, status')
         .eq('project_id', project.id)
         .neq('status', 'completed')
         .order('due_date', { ascending: true })
@@ -141,7 +149,7 @@ async function loadDashboard(workspaceId: string, project: ChannelProject | null
         .limit(5),
     ])
     for (const m of milestones || []) {
-      lines.push(`Milestone: ${m.title} — ${m.status}${m.due_date ? `, due ${m.due_date}` : ''}`)
+      lines.push(`Milestone: ${m.name} — ${m.status}${m.due_date ? `, due ${m.due_date}` : ''}`)
     }
     for (const a of actions || []) {
       lines.push(`Open action: ${a.title}`)

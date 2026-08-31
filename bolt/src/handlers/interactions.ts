@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Bolt Interaction Handlers
  *
@@ -19,6 +18,7 @@ import {
   getAvailableAgents,
 } from '../../../src/lib/inngest/agents/registry'
 import type { ServiceKey } from '../../../src/lib/provisioner/types'
+import type { TablesUpdate, Json } from '../../../src/types/supabase'
 import { projectNumberFromCode, projectNumberKey } from '../../../src/lib/studio-knowledge/project-sync'
 import { buildNewProjectModal, buildUpdateProjectModal } from '../../../src/lib/provisioner/modal'
 import { deriveProjectCode, deriveDropboxSafeName } from '../../../src/lib/provisioner/identifiers'
@@ -750,7 +750,7 @@ export function registerInteractionHandlers(app: App) {
       })
       return
     }
-    const postOpts = (extra: Record<string, unknown> = {}) => ({
+    const postOpts = (extra: { text: string; blocks?: any[] }) => ({
       channel: channelId,
       ...(threadTs ? { thread_ts: threadTs } : {}),
       ...extra,
@@ -1087,7 +1087,7 @@ export function registerInteractionHandlers(app: App) {
       await respond({ replace_original: true, text: authRefusalText(auth.reason) })
       return
     }
-    const { form, userId, statusChannel, threadTs, workspaceId } = req!.submission
+    const { form, userId, statusChannel, threadTs, workspaceId } = req!.submission as unknown as PendingProvision
     // Atomic CAS: only the FIRST competing click transitions the request out of
     // awaiting_decision. A racing replace/cancel (or a double duplicate) loses.
     const won = await commitCreationDecision({
@@ -1126,7 +1126,7 @@ export function registerInteractionHandlers(app: App) {
       await respond({ replace_original: true, text: authRefusalText(auth.reason) })
       return
     }
-    const { form, userId, statusChannel, threadTs, workspaceId } = req!.submission
+    const { form, userId, statusChannel, threadTs, workspaceId } = req!.submission as unknown as PendingProvision
     // Atomic CAS: only the FIRST competing click wins. The conflict target was
     // persisted (replace_target_project_id) when the prompt was created, so it
     // cannot change between prompt and click. The archive itself is a durable
@@ -1322,7 +1322,7 @@ export function registerInteractionHandlers(app: App) {
       }
 
       // ── Fan-out to agents in parallel ─────────────────────
-      const services = form.selectedServices
+      const services: ServiceKey[] = Array.isArray(form.selectedServices) ? form.selectedServices : []
       const provisionPayload = {
         projectId: project.id,
         projectName: form.projectName,
@@ -1375,7 +1375,7 @@ export function registerInteractionHandlers(app: App) {
       // links passed through to the canvas fill. If Slack isn't selected,
       // phase 1 covers everything.
       const slackSelected = services.includes('slack' as ServiceKey)
-      const phase1Services = services.filter((s) => s !== 'slack')
+      const phase1Services = services.filter((s: ServiceKey) => s !== 'slack')
       const slackPayload = (acc: Record<string, any>) => ({
         ...provisionPayload,
         // Freshly-created (or resumed) Dropbox + Frame.io URLs so the canvas's
@@ -1407,7 +1407,7 @@ export function registerInteractionHandlers(app: App) {
           : []
         const phases = [
           ...replaceCleanupPhase,
-          () => phase1Services.map((service) => ({
+          () => phase1Services.map((service: ServiceKey) => ({
             service: service as string,
             run: () => runService(service as string, provisionPayload),
           })),
@@ -1444,7 +1444,7 @@ export function registerInteractionHandlers(app: App) {
         // Pre-mission in-memory fan-out (creation disabled): unchanged behavior,
         // touches no migration-056/057 table.
         const phase1 = await Promise.allSettled(
-          phase1Services.map((service) => runService(service as string, provisionPayload)),
+          phase1Services.map((service: ServiceKey) => runService(service as string, provisionPayload)),
         )
         for (const settled of phase1) {
           const result = settled.status === 'fulfilled'
@@ -1946,9 +1946,9 @@ export function registerInteractionHandlers(app: App) {
           // stale form snapshot — a non-overlapping pair (A edits deadline, B edits
           // name) both survive regardless of commit order.
           const changed = new Set((plan.changes as any[]).map((c) => c.field))
-          const patch: Record<string, unknown> = {}
+          const patch: TablesUpdate<'projects'> = {}
           if (changed.has('project_name')) patch.name = f.projectName
-          if (changed.has('client')) patch.client = f.clientName || null
+          if (changed.has('client')) patch.client = f.clientName || undefined
           if (changed.has('project_number') || changed.has('client')) patch.project_code = derived.projectCode
           if (changed.has('project_type')) patch.project_type = f.projectType || null
           if (changed.has('start_date')) patch.start_date = f.startDate || null
@@ -1964,7 +1964,10 @@ export function registerInteractionHandlers(app: App) {
             // (dropbox_safe_name / the other provenance ids) on the write below.
             const { data, error: readErr } = await supabase.from('projects').select('external_ids').eq('id', pid).maybeSingle()
             if (readErr) throw new Error(`updateProjectRow external_ids read: ${readErr.message}`)
-            const external_ids: Record<string, unknown> = { ...((data as any)?.external_ids || {}) }
+            const priorIds = data?.external_ids && typeof data.external_ids === 'object' && !Array.isArray(data.external_ids)
+              ? data.external_ids
+              : {}
+            const external_ids: { [key: string]: Json | undefined } = { ...priorIds }
             if (changed.has('project_number')) {
               if (f.projectNumber) external_ids.project_number = f.projectNumber
               else delete external_ids.project_number
@@ -2225,8 +2228,11 @@ async function rebindIncompleteBinding(
   const supabase = createAdminClient()
   const { data: project } = await supabase.from('projects').select('*').eq('id', projectId).maybeSingle()
   if (!project) return
-  const links: Record<string, string> = project.external_links || {}
-  const channelId = links.slack_id || (links as any).slack_channel_id
+  const links = project.external_links && typeof project.external_links === 'object' && !Array.isArray(project.external_links)
+    ? project.external_links
+    : {}
+  const linkString = (key: string) => typeof links[key] === 'string' ? links[key] as string : undefined
+  const channelId = linkString('slack_id') || linkString('slack_channel_id')
   if (!channelId) throw new Error(`rebind: no Slack channel for project ${projectId}`)
 
   // Reconstruct the original modal form from the creation request (best-effort).
@@ -2253,10 +2259,10 @@ async function rebindIncompleteBinding(
       deadline: form.deadline || project.target_delivery || undefined,
       producerName: await resolveUserDisplayName(client, form.projectManager),
       creativeDirectorName: await resolveUserDisplayName(client, form.creativeDirector),
-      frameioUrl: links.frameio,
-      dropboxUrl: links.dropbox,
-      harvestUrl: links.harvest,
-      boordsUrl: links.boords,
+      frameioUrl: linkString('frameio'),
+      dropboxUrl: linkString('dropbox'),
+      harvestUrl: linkString('harvest'),
+      boordsUrl: linkString('boords'),
     },
     slackResult: { id: channelId, data: { channelId, controlTemplate, controlTemplateError } },
   })
@@ -2394,7 +2400,7 @@ function projectOptionLabel(row: { project_code?: string | null; client?: string
 async function loadUpdateSnapshot(
   projectId: string,
   workspaceId: string,
-): Promise<{ status: string; snapshot: any; current: { slackChannelId?: string; dropboxPath?: string }; provisioned: { slack: boolean; frameio: boolean; harvest: boolean; dropbox: boolean } } | null> {
+  ): Promise<{ status: string; snapshot: any; current: { slackChannelId?: string; dropboxPath?: string; harvestProjectId?: string | number }; provisioned: { slack: boolean; frameio: boolean; harvest: boolean; dropbox: boolean } } | null> {
   if (!projectId) return null
   const sb = createAdminClient()
   const { data, error } = await sb
@@ -2725,12 +2731,23 @@ async function findExistingProject(
       .limit(1)
       .maybeSingle()
     if (!data) return null
+    const row = data as unknown as {
+      id: string
+      name: string
+      project_code: string | null
+      external_links: Json | null
+      status: string | null
+      creation_request_id?: string | null
+    }
+    const rowLinks = row.external_links && typeof row.external_links === 'object' && !Array.isArray(row.external_links)
+      ? row.external_links
+      : {}
     return {
-      id: data.id,
-      name: data.name,
-      code: data.project_code || undefined,
-      slackId: (data as any).external_links?.slack_id || undefined,
-      creationRequestId: includeRequestId ? ((data as any).creation_request_id ?? null) : undefined,
+      id: row.id,
+      name: row.name,
+      code: row.project_code || undefined,
+      slackId: typeof rowLinks.slack_id === 'string' ? rowLinks.slack_id : undefined,
+      creationRequestId: includeRequestId ? (row.creation_request_id ?? null) : undefined,
     }
   } catch (err: any) {
     console.warn('[provision-dup] findExistingProject failed:', err?.message)
@@ -2874,10 +2891,14 @@ async function runReplaceCleanup(
   // deletion (migration 057), so the step stayed required until it reached here.
   const decision = resolveReplaceCleanup({ targetId, newProjectId, targetExists: !!target })
   if (decision.action === 'noop') return { service: 'replace_cleanup', success: true }
+  if (!target) throw new Error(`replace target ${targetId} disappeared during cleanup`)
+  const targetLinks = target.external_links && typeof target.external_links === 'object' && !Array.isArray(target.external_links)
+    ? target.external_links
+    : {}
   await archiveOldProject(client, {
     id: target.id,
     name: target.name,
-    slackId: (target.external_links || {}).slack_id,
+    slackId: typeof targetLinks.slack_id === 'string' ? targetLinks.slack_id : undefined,
   })
   return { service: 'replace_cleanup', success: true }
 }

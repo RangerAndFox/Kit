@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Harvest ↔ Slack Time Entry Handler
  *
@@ -66,7 +65,7 @@ export async function handleTimeEntry(opts: {
 
     if (project.ambiguous) {
       // Multiple matches — ask the user to pick
-      await askToPickProject(channelId, threadTs, parsed, project.matches, userId)
+      await askToPickProject(channelId, threadTs, parsed, project.matches ?? [], userId)
       return
     }
 
@@ -120,7 +119,7 @@ async function resolveProject(
 
   // Step 1: Check Kit projects with linked Harvest IDs
   const { data: kitProjects } = await db
-    .from('projects' as any)
+.from('projects')
     .select('id, name, client, project_code, harvest_project_id')
     .eq('workspace_id', workspaceId)
     .not('harvest_project_id', 'is', null)
@@ -135,9 +134,11 @@ async function resolveProject(
     )
 
     if (kitMatches.length === 1) {
+      const match = kitMatches[0]
+      if (!match || match.harvest_project_id == null) return null
       return {
-        harvestProjectId: kitMatches[0].harvest_project_id,
-        harvestProjectName: kitMatches[0].name,
+        harvestProjectId: match.harvest_project_id,
+        harvestProjectName: match.name,
       }
     }
 
@@ -277,7 +278,7 @@ async function resolveHarvestUser(
   try {
     const db = createAdminClient()
     const { data } = await db
-      .from('harvest_user_map' as any)
+.from('harvest_user_map')
       .select('harvest_user_id')
       .eq('workspace_id', workspaceId)
       .eq('slack_user_id', slackUserId)

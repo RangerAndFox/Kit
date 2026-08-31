@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Harvest v2 API Client
  *

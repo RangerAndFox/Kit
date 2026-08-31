@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * File ingestion for the storyboard provisioner.
  *

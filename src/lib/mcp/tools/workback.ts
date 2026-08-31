@@ -32,14 +32,14 @@ export const saveWorkbackSchedule: KitTool = {
     if (is_active) {
       // Deactivate previous schedules
       await db
-        .from('workback_schedules' as any)
+.from('workback_schedules')
         .update({ is_active: false })
         .eq('workspace_id', workspace_id)
         .eq('project_id', project_id)
     }
 
     const { data, error } = await db
-      .from('workback_schedules' as any)
+.from('workback_schedules')
       .insert(input)
       .select('*')
       .single()

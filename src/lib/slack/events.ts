@@ -174,7 +174,7 @@ async function getWorkspaceContext(slackTeamId: string): Promise<any> {
 
   // Fetch workspace by slack_team_id
   const { data: installation } = await supabase
-    .from('slack_oauth_installations' as any)
+.from('slack_oauth_installations')
     .select('workspace_id')
     .eq('slack_team_id', slackTeamId)
     .single();
@@ -185,21 +185,21 @@ async function getWorkspaceContext(slackTeamId: string): Promise<any> {
 
   // Fetch workspace data
   const { data: workspace } = await supabase
-    .from('workspaces' as any)
+.from('workspaces')
     .select('*')
     .eq('id', installation.workspace_id)
     .single();
 
   // Fetch active projects
   const { data: projects } = await supabase
-    .from('projects' as any)
+.from('projects')
     .select('*')
     .eq('workspace_id', installation.workspace_id)
     .in('status', ['in_progress', 'in_review', 'planning']);
 
   // Fetch team members
   const { data: team } = await supabase
-    .from('team_members' as any)
+.from('team_members')
     .select('*')
     .eq('workspace_id', installation.workspace_id)
     .eq('is_active', true);
@@ -298,7 +298,7 @@ async function saveConversationHistory(
 
   // Get workspace_id
   const { data: installation } = await supabase
-    .from('slack_oauth_installations' as any)
+.from('slack_oauth_installations')
     .select('workspace_id')
     .eq('slack_team_id', slackTeamId)
     .single();
@@ -306,7 +306,7 @@ async function saveConversationHistory(
   if (!installation) return;
 
   // Save to conversation history table
-  await supabase.from('slack_conversations' as any).insert({
+await supabase.from('slack_conversations').insert({
     workspace_id: installation.workspace_id,
     channel_id: conversation.channel_id,
     thread_ts: conversation.thread_ts,

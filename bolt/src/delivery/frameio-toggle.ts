@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Per-project Frame.io upload toggle, driven conversationally.
  *

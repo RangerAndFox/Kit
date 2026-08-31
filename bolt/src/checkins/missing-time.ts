@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Missing-time monitor (Feature #10 extension).
  *

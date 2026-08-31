@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { z } from 'zod'
 import { createAdminClient, ok, fail } from '../helpers'
 import type { KitTool } from '../types'
@@ -28,7 +27,7 @@ export const logFeedback: KitTool = {
   handler: async (input) => {
     const db = createAdminClient()
     const { data, error } = await db
-      .from('feedback_items' as any)
+.from('feedback_items')
       .insert({ ...input, status: 'new' })
       .select('*')
       .single()
@@ -58,7 +57,7 @@ export const logTimeEntry: KitTool = {
   handler: async (input) => {
     const db = createAdminClient()
     const { data, error } = await db
-      .from('time_entries' as any)
+.from('time_entries')
       .insert(input)
       .select('*')
       .single()

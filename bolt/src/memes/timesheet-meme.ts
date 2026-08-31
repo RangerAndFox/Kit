@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Weekly timesheet meme.
  *

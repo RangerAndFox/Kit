@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Meeting briefing composer.
  *
@@ -219,9 +218,13 @@ export async function composeBriefing(ctx: BriefingContext): Promise<BriefingArt
       .eq('is_active', true),
   ])
 
+  const externalLinks = project?.external_links
+  const linkRecord = externalLinks && typeof externalLinks === 'object' && !Array.isArray(externalLinks)
+    ? externalLinks
+    : null
   const projectChannelId =
-    project?.external_links?.slack_id ||
-    project?.external_links?.slack_channel_id ||
+    (typeof linkRecord?.slack_id === 'string' && linkRecord.slack_id) ||
+    (typeof linkRecord?.slack_channel_id === 'string' && linkRecord.slack_channel_id) ||
     null
   const recipients = matchAttendeesToStaff(event.attendees || [], staffRows || [])
 

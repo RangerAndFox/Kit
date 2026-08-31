@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Meeting → Project classifier.
  *

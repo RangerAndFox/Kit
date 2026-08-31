@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Onboarding — Frame.io service (v4)
  *

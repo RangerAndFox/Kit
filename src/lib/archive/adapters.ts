@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { getDropboxTemporaryLink, type DropboxArchiveFile } from './dropbox'
 import type { ArchiveJob } from './types'
 import { archiveFolderName } from './types'
@@ -164,7 +163,9 @@ export async function createWordpressDraft(job: ArchiveJob, vimeo: any | null, m
   const gifs = mainCandidates.filter((item) => /\.gif$/i.test(item.name)).slice(0, 8)
   const processCandidates = job.settings.includeProcess ? media.filter((item) => /\/Process\//i.test(item.path)).slice(0, 8) : []
   const uploadedMain = []
-  for (const item of [hero, ...gifs].filter(Boolean)) uploadedMain.push(await uploadWordpressMedia(job, item))
+  for (const item of [hero, ...gifs].filter((candidate): candidate is DropboxArchiveFile => Boolean(candidate))) {
+    uploadedMain.push(await uploadWordpressMedia(job, item))
+  }
   const uploadedProcess = []
   for (const item of processCandidates) uploadedProcess.push(await uploadWordpressMedia(job, item))
 

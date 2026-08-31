@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Brain-first retrieval — when a question is asked in a channel that has
  * a brain, prefer brain sections for that channel over generic project

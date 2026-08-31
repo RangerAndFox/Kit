@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Per-person briefing channel resolver.
  *

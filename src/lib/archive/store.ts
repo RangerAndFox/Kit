@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createAdminClient } from '../supabase/admin'
 import type { ArchiveJob, ArchiveJobStatus } from './types'
 

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Kit Conversation Memory
  *
@@ -11,6 +10,7 @@
  */
 
 import { createAdminClient } from '../../../src/lib/supabase/admin'
+import type { Json } from '../../../src/types/supabase'
 
 export interface ConversationMessage {
   role: 'user' | 'assistant'
@@ -59,7 +59,7 @@ function persistState(k: string, state: ConversationState): void {
     createAdminClient()
       .from('conversation_state')
       .upsert(
-        { key: k, state, updated_at: new Date().toISOString() },
+        { key: k, state: state as unknown as Json, updated_at: new Date().toISOString() },
         { onConflict: 'key' },
       )
       .then(({ error }) => {
@@ -85,8 +85,9 @@ export async function restoreConversationMemory(): Promise<number> {
     if (error) throw new Error(error.message)
     let restored = 0
     for (const row of data || []) {
-      if (!conversations.has(row.key) && row.state?.messages) {
-        conversations.set(row.key, row.state as ConversationState)
+      const state = row.state as unknown as ConversationState
+      if (!conversations.has(row.key) && Array.isArray(state?.messages)) {
+        conversations.set(row.key, state)
         restored++
       }
     }

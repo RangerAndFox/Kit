@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Permission scoping system for Kit
  * Determines what projects and data a user can access based on role
@@ -29,7 +28,7 @@ export async function scopeQuery(
   const admin = createAdminClient();
 
   const { data: projectAccess, error } = await admin
-    .from('project_access' as any)
+.from('project_access')
     .select('project_id')
     .eq('team_member_id', userId)
     .eq('workspace_id', workspaceId);
@@ -56,9 +55,9 @@ export async function canAccessProject(
 
   // First, get the user's role
   const { data: teamMember, error: memberError } = await admin
-    .from('team_members' as any)
+.from('team_members')
     .select('role')
-    .eq('user_id', userId)
+        .eq('auth_user_id', userId)
     .eq('workspace_id', workspaceId)
     .single();
 
@@ -73,7 +72,7 @@ export async function canAccessProject(
 
   // Check project_access table for other roles
   const { data: access, error: accessError } = await admin
-    .from('project_access' as any)
+.from('project_access')
     .select('id')
     .eq('team_member_id', userId)
     .eq('project_id', projectId)
@@ -121,9 +120,9 @@ export async function checkPermission(
 
   // Get team member info
   const { data: teamMember, error: memberError } = await admin
-    .from('team_members' as any)
+.from('team_members')
     .select('role')
-    .eq('user_id', userId)
+        .eq('auth_user_id', userId)
     .eq('workspace_id', workspaceId)
     .single();
 
@@ -174,9 +173,9 @@ export async function getUserRole(
   const admin = createAdminClient();
 
   const { data: teamMember, error } = await admin
-    .from('team_members' as any)
+.from('team_members')
     .select('role')
-    .eq('user_id', userId)
+        .eq('auth_user_id', userId)
     .eq('workspace_id', workspaceId)
     .single();
 

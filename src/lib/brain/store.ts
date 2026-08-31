@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Brain store — load/save a brain (markdown body + brains row + audit trail).
  *
@@ -19,6 +18,7 @@ import {
   applyPatch,
 } from './format'
 import { upsertDocument } from '@/lib/rag/ingest'
+import type { Json } from '@/types/supabase'
 
 export interface BrainRow {
   id: string
@@ -191,7 +191,7 @@ export async function applyPatches(opts: {
           section: p.section,
           operation: p.operation,
           diff: diffs[i] || null,
-          provenance: p.provenance ?? null,
+          provenance: (p.provenance ?? null) as Json,
           author: opts.author ?? 'system',
         })),
       )

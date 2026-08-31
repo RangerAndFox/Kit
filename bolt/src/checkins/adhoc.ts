@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Ad-hoc Hours Entry
  *
@@ -19,6 +18,7 @@ import {
   type ParsedEntry,
 } from './reply'
 import { checkinToday, resolveSpentDate, resolveDayPhrase } from './date'
+import type { Json } from '../../../src/types/supabase'
 
 /**
  * Cheap pre-filter: does the message even mention hours? Avoids burning
@@ -148,7 +148,7 @@ export async function handleAdhocHoursEntry(opts: {
       status: 'parsed',
       origin: 'adhoc',
       candidate_projects: [],
-      parsed_entries: resolved,
+      parsed_entries: resolved as unknown as Json,
       dm_channel_id: channelId,
       dm_ts: messageTs,
       reply_ts: messageTs,

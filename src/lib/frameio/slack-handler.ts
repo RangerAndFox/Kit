@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Frame.io → Slack Integration
  *
@@ -64,7 +63,7 @@ export async function handleFrameIoLink(opts: {
     // Save extraction data to Supabase for Figma generation
     try {
       const db = createAdminClient()
-      await db.from('review_extractions' as any).insert({
+await db.from('review_extractions').insert({
         workspace_id: workspaceId || null,
         asset_id: result.assetId,
         asset_name: result.assetName,
@@ -198,7 +197,7 @@ async function uploadFile(opts: {
 
   // Step 2: Upload file content
   const formData = new FormData()
-  formData.append('file', new Blob([fileBuffer]), filename)
+  formData.append('file', new Blob([new Uint8Array(fileBuffer)]), filename)
 
   const uploadRes = await fetch(upload_url, {
     method: 'POST',

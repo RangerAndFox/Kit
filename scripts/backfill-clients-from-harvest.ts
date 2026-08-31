@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * One-shot Harvest → client_profiles + contacts backfill.
  *

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Channel participation — Kit as an active team member.
  *
@@ -85,7 +84,7 @@ function recordReply(channelId: string, threadTs: string): void {
   // Bound the thread set — old entries stop mattering once threads go idle.
   if (answeredThreads.size > 2000) {
     const first = answeredThreads.values().next().value
-    answeredThreads.delete(first)
+    if (first) answeredThreads.delete(first)
   }
 }
 
@@ -227,12 +226,12 @@ Decide. Output JSON only.`
       return
     }
 
-    const action = decision.action
+    const action = decision.action as 'answer' | 'asset' | 'ping' | 'quiet'
     const confidence = Number(decision.confidence) || 0
     let reply = String(decision.reply || '').trim()
     if (action === 'quiet' || !reply) return
     if (!['answer', 'asset', 'ping'].includes(action)) return
-    if (confidence < (MIN_CONF[action] ?? 1)) return
+    if (confidence < MIN_CONF[action]) return
 
     // Output guards: no financials in-channel; pings must reference a real
     // roster member and actually carry the mention.

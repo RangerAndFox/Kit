@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Build an initial brain for one project channel from existing project data
  * and recent notes.

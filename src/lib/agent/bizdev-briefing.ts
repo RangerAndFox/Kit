@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * External-attendee research and positioning used by every meeting briefing.
  * The bizdev composer below handles calendar events that do not match an active
@@ -23,6 +22,7 @@ import {
 export interface BizdevBriefingArtifact {
   channelText: string
   recipients: BriefingRecipient[]
+  projectChannelId: null
 }
 
 // ─── Normalized evidence contract ─────────────────────────────
@@ -759,7 +759,10 @@ export async function researchAttendee(
     const res = await client.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 700,
-      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 4 }],
+      // Native server-side search was added after the SDK version currently
+      // pinned by Kit. Keep the wire payload typed locally until that SDK is
+      // upgraded; Anthropic validates this beta tool at the API boundary.
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 4 }] as unknown as Anthropic.MessageCreateParams['tools'],
       system:
         'You research a business-development meeting attendee for Ranger & Fox, a creative video ' +
         'production studio. You are given candidate identity signals (name from the meeting title, ' +
@@ -830,5 +833,5 @@ export async function composeBizdevBriefing(ctx: { event: CalendarEvent }): Prom
 
   const channelText = buildBizdevBriefingText({ event, externals, evidence, positioning })
 
-  return { channelText, recipients }
+  return { channelText, recipients, projectChannelId: null }
 }

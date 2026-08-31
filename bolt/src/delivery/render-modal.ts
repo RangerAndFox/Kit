@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * After Effects render modal — opened by `/kit render`.
  *

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Specialist sub-agent run loop.
  *

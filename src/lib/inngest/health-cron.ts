@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Health watchdog — Inngest cron.
  *

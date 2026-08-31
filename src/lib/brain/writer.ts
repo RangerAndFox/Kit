@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Brain Writer — decides whether a signal (channel message, transcript
  * snippet, note) changes the team's understanding of a project, and if so

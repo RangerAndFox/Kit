@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Slack view_submission handlers for the two delivery modals.
  */
@@ -110,7 +109,7 @@ export function registerDeliveryViewHandlers(app: App) {
       if (!blockId.startsWith('name_')) continue
       const key = blockId.slice('name_'.length)
       if (!allowedTokens.has(key)) continue
-      const value = Object.values(fields as any)[0]?.value
+      const value = Object.values(fields as Record<string, { value?: unknown }>)[0]?.value
       if (value) namingFields[key] = String(value).trim()
     }
 
@@ -244,9 +243,9 @@ export function registerDeliveryViewHandlers(app: App) {
         .filter((j) => j.final_output)
         .map((j) => {
           const dropbox = uncToDropboxPath(j.final_output)
-          return dropbox ? { path: dropbox, type: 'video', size_bytes: 0 } : null
+          return dropbox ? { path: dropbox, type: 'video' as const, size_bytes: 0 } : null
         })
-        .filter(Boolean)
+        .filter((source): source is { path: string; type: 'video'; size_bytes: number } => source !== null)
 
       if (sources.length === 0) {
         await client.chat.postMessage({
@@ -259,7 +258,7 @@ export function registerDeliveryViewHandlers(app: App) {
 
       // Deliver next to the rendered source (render/<comp>/), not a /delivery
       // subfolder.
-      const outputDir = (sources[0] as any).path.replace(/\/[^/]+$/, '')
+      const outputDir = sources[0].path.replace(/\/[^/]+$/, '')
       await recordSpecIntake({ channelId, threadTs: messageTs, sources, outputDir })
       await client.chat.postMessage({
         channel: channelId,

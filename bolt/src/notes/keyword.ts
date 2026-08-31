@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Detect note-capture intent in @Kit messages.
  *
