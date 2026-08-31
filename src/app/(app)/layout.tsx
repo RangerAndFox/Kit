@@ -31,15 +31,11 @@ export default async function AppLayout({
   const appAccess = await getControlCenterAccess()
   if (!appAccess) redirect('/access-denied')
 
-  // Check if user has completed onboarding
-  const { data: workspaces } = await supabase
-    .from('workspaces')
-    .select('id')
-    .limit(1)
-
-  if (!workspaces || workspaces.length === 0) {
-    redirect('/onboarding')
-  }
+  // `getControlCenterAccess()` already resolves the caller's authoritative
+  // workspace through the founder/admin membership record. Do not repeat that
+  // check through the user-scoped `workspaces` relation: legacy founder rows
+  // may be linked by verified email rather than `auth_user_id`, so the RLS
+  // query can return zero rows even though `appAccess.workspaceId` is valid.
 
   return (
     <div className="flex min-h-screen bg-[#08090a]">
