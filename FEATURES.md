@@ -13,6 +13,7 @@ Cross-cutting infrastructure (Supabase schema, Bolt server, deployment) is at th
 
 1. [New Project Provisioning](#1-new-project-provisioning)
 1A. [Existing Project Updates](#1a-existing-project-updates)
+1B. [Admin Project Deletion](#1b-admin-project-deletion)
 2. [Slack Channel + Canvas Provisioning](#2-slack-channel--canvas-provisioning)
 3. [Frame.io Project Provisioning](#3-frameio-project-provisioning)
 4. [Dropbox Folder Provisioning](#4-dropbox-folder-provisioning)
@@ -100,6 +101,34 @@ A producer types `update project` in a Kit DM or runs `/kit update`. Kit posts t
 The picker is not a raw history of every Kit database row. It combines editable rows (`active`, `partial`, `paused`) with non-archived Slack channels that match Kit's project-channel convention. A live Slack project missing from Supabase can be adopted/relinked before the form opens; deleted or archived test channels are excluded. Submit rechecks editability so an archived project cannot be updated from a stale card.
 
 Each external step is reconciled using durable markers. A recoverable failure remains partial and is retried; an unrecoverable failure is surfaced as needing attention rather than falsely reporting success.
+
+---
+
+## 1B. Admin Project Deletion
+
+### Summary
+A founder/admin can DM `delete project` or run `/kit delete project` to remove a test, cancelled, or otherwise unwanted project from Kit-owned outputs. Kit first shows an exact inventory, requires the user to type `DELETE <project ID>`, removes external systems in durable idempotent steps, and deletes the authoritative Kit project row last. A provider failure pauses safely with a private retry button and retains the project identity needed to finish cleanup.
+
+### Outputs removed
+- Exact Dropbox `/production/...` project folder
+- Exact Frame.io project
+- Exact Harvest project, including Harvest time entries and expenses after the explicit warning/confirmation
+- Exact Boords placeholder storyboard created during project provision
+- Generated standalone Slack canvases
+- Authoritative Google Sheet row plus Links, Project Specs, Workback, Assignments, Deliverables, and Status Log rows
+- Slack project channel is renamed and archived because Slack does not expose channel hard deletion
+- Supabase project and cascade-owned operational rows; the deletion tombstone/audit survives
+
+Figma and portfolio/archive resources are retained when Kit cannot prove it owns them. That exception is displayed before confirmation, so the workflow never silently deletes a manually linked or published asset.
+
+### Technical breakdown
+- Slack entry/card/modal: `bolt/src/project-deletion/handlers.ts`
+- Durable workflow: `src/lib/project-deletion/workflow.ts`
+- Request and per-provider ledgers: `project_deletion_requests`, `project_deletion_steps`
+- Provider deletion adapters live beside their create/update clients
+- Google Sheet cleanup clears values without shifting table ranges, filters, formulas, or neighboring projects
+
+---
 
 ---
 

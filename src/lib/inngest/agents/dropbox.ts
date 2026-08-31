@@ -38,6 +38,20 @@ async function dropboxPost(endpoint: string, body: Record<string, unknown>): Pro
   )
 }
 
+/** Permanently remove one exact Kit-owned project path. Idempotent on replay. */
+export async function deleteDropboxProjectPath(projectPath: string): Promise<void> {
+  if (!projectPath?.startsWith('/production/')) {
+    throw new Error('Refusing to delete a Dropbox path outside /production')
+  }
+  try {
+    await dropboxPost('/files/delete_v2', { path: projectPath })
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/not_found|path_lookup/i.test(message)) return
+    throw error
+  }
+}
+
 /**
  * Ensure the delivery watch folders exist under a project:
  *   <projectPath>/specs/video  and  <projectPath>/specs/audio

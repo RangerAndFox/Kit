@@ -21,6 +21,7 @@ import {
   seedNormalizedProjectTables,
   adoptLegacyProjectRow,
   activateWorkbackDraft,
+  clearProjectControlProject,
   __setSheetsTransportForTests,
 } from './sheets'
 import { kitOwnedCreationCells, parseDateToSerial, MASTER_HEADERS } from './render'
@@ -35,6 +36,51 @@ const CONFIG: WorkbookConfig = {
 }
 
 afterEach(() => __setSheetsTransportForTests(null))
+
+describe('clearProjectControlProject', () => {
+  it('clears only matching project rows across every normalized table and removes the durable metadata', async () => {
+    const config: WorkbookConfig = {
+      ...CONFIG,
+      layout: 'rf-production-v1',
+      linksSheetId: 1,
+      specsSheetId: 2,
+      workbackSheetId: 3,
+      assignmentsSheetId: 4,
+      deliverablesSheetId: 5,
+      statusLogSheetId: 6,
+    }
+    let requests: Array<{ updateCells?: { start: { sheetId: number } }; deleteDeveloperMetadata?: unknown }> = []
+    __setSheetsTransportForTests(async <T>(_method: string, url: string, body?: unknown): Promise<T> => {
+      if (url.includes('developerMetadata:search')) {
+        return { matchedDeveloperMetadata: [{ developerMetadata: {
+          metadataId: 99,
+          location: { dimensionRange: { startIndex: 7, sheetId: 0 } },
+        } }] } as T
+      }
+      if (url.includes(':getByDataFilter')) {
+        const sheetId = (body as { dataFilters: Array<{ gridRange: { sheetId: number } }> }).dataFilters[0].gridRange.sheetId
+        return { sheets: [{ properties: { sheetId }, data: [{ rowData: [
+          { values: [{ formattedValue: '9998' }] },
+          { values: [{ formattedValue: '2637' }] },
+        ] }] }] } as T
+      }
+      if (url.includes(':batchUpdate')) {
+        requests = (body as { requests: typeof requests }).requests
+        return { replies: [] } as T
+      }
+      throw new Error(`unexpected URL ${url}`)
+    })
+
+    const result = await clearProjectControlProject(config, 'project-1', '9998')
+    assert.equal(result.clearedRows, 7)
+    assert.equal(requests.filter((request) => request.updateCells).length, 7)
+    assert.equal(requests.filter((request) => request.deleteDeveloperMetadata).length, 1)
+    assert.deepEqual(
+      requests.filter((request) => request.updateCells).map((request) => request.updateCells?.start.sheetId),
+      [0, 1, 2, 3, 4, 5, 6],
+    )
+  })
+})
 
 interface UpdateCellsReq {
   updateCells: {
