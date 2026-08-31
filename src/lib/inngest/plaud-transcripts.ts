@@ -13,6 +13,7 @@ import {
 import { matchTranscriptToProject } from '@/lib/agent/call-classifier'
 import { embedTranscript } from '@/lib/studio-knowledge/transcript'
 import { recordCronSuccess } from '@/lib/health/state'
+import { isTranscriptApprovedForIngest } from '@/lib/privacy/transcript-approval'
 
 const MAX_PER_RUN = 10
 
@@ -40,7 +41,10 @@ export const plaudTranscriptScan = inngest.createFunction(
         accountFiles.push(...batch)
         if (batch.length < 100) break
       }
-      const files = filterPlaudRecordingsSince(accountFiles)
+      // Listing metadata is allowed, but Kit must not download, store, classify,
+      // or embed a personal recording unless its owner gave a recording-level
+      // purpose signal by prefixing the title (default: "[KIT]").
+      const files = filterPlaudRecordingsSince(accountFiles).filter((file) => isTranscriptApprovedForIngest(file.name))
       if (files.length === 0) return []
       const ids = files.map((file) => `plaud:${file.id}`)
       const { data: existing, error } = await createAdminClient()

@@ -29,10 +29,10 @@ describe('checkCronFreshness', () => {
     assert.match(String(t.detail), /no success in 30m/)
   })
 
-  it('does not alarm on a never-run cron (fresh deploy)', () => {
+  it('fails closed when no successful heartbeat has ever been recorded', () => {
     const out = checkCronFreshness({}, NOW)
-    assert.ok(out.every((c) => c.ok))
-    assert.strictEqual(out[0].detail, 'awaiting first run')
+    assert.ok(out.every((c) => !c.ok))
+    assert.strictEqual(out[0].detail, 'no successful heartbeat recorded')
   })
 
   it('does not report a disabled transcript source as stale after cutover', () => {

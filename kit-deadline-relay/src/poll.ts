@@ -11,6 +11,9 @@ import { updateParent } from './storage'
 import { assembleComp } from './assemble'
 
 export async function pollParent(parent: any): Promise<void> {
+  // Heartbeat/fence before provider reads. Even an unchanged Deadline status
+  // renews ownership so a long render cannot be reclaimed and resubmitted.
+  await updateParent(parent.id, parent.deadline_claim_token, {})
   const jobs = Array.isArray(parent.deadline_jobs) ? parent.deadline_jobs : []
   if (jobs.length === 0) return
 
@@ -54,7 +57,7 @@ export async function pollParent(parent: any): Promise<void> {
   if (terminal === total) {
     if (failed > 0) {
       const reasons = jobs.filter((j) => j.error).map((j) => `${j.comp}: ${j.error}`).join('; ')
-      await updateParent(parent.id, {
+      await updateParent(parent.id, parent.deadline_claim_token, {
         status: 'failed',
         deadline_jobs: jobs,
         error_message: reasons || `${failed}/${total} Deadline job(s) failed`,
@@ -64,7 +67,7 @@ export async function pollParent(parent: any): Promise<void> {
       console.log(`[poll] parent ${parent.id} FAILED (${failed}/${total})`)
     } else {
       const outputs = jobs.map((j) => j.final_output).filter(Boolean)
-      await updateParent(parent.id, {
+      await updateParent(parent.id, parent.deadline_claim_token, {
         status: 'complete',
         completed_at: new Date().toISOString(),
         deadline_jobs: jobs,
@@ -78,7 +81,7 @@ export async function pollParent(parent: any): Promise<void> {
   }
 
   if (changed) {
-    await updateParent(parent.id, {
+    await updateParent(parent.id, parent.deadline_claim_token, {
       deadline_jobs: jobs,
       progress_percent: percent,
       progress_message: `Rendering on Deadline — ${completed}/${total} comp(s) done`,

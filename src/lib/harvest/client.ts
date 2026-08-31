@@ -493,7 +493,10 @@ export async function createTimeEntry(opts: {
   spentDate?: string // YYYY-MM-DD, defaults to today in the studio timezone
   notes?: string
   userId?: number // if attributing to a specific user
+  /** Stable caller intent. Added to notes and reconciled after ambiguous POSTs. */
+  idempotencyKey?: string
 }): Promise<HarvestTimeEntry> {
+  const marker = opts.idempotencyKey ? `[Kit:${opts.idempotencyKey}]` : ''
   const body: Record<string, unknown> = {
     project_id: opts.projectId,
     task_id: opts.taskId,
@@ -501,7 +504,7 @@ export async function createTimeEntry(opts: {
     // Studio-tz default: UTC "today" is already tomorrow by 5pm Pacific.
     spent_date: opts.spentDate || studioToday(),
   }
-  if (opts.notes) body.notes = opts.notes
+  if (opts.notes || marker) body.notes = [opts.notes, marker].filter(Boolean).join(' ')
   if (opts.userId) body.user_id = opts.userId
 
   const mapEntry = (data: any): HarvestTimeEntry => ({
@@ -514,9 +517,28 @@ export async function createTimeEntry(opts: {
     notes: data.notes || '',
   })
 
+  const reconcile = async (): Promise<HarvestTimeEntry | null> => {
+    if (!marker || !opts.userId) return null
+    const spentDate = String(body.spent_date)
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const data = await harvestGet('/time_entries', {
+        user_id: String(opts.userId), from: spentDate, to: spentDate, per_page: '100',
+      })
+      const match = (data.time_entries || []).find((entry: any) => String(entry.notes || '').includes(marker))
+      if (match) return mapEntry(match)
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)))
+    }
+    return null
+  }
+
   try {
     return mapEntry(await harvestPost('/time_entries', body))
   } catch (err: any) {
+    // The POST may have committed even when the response timed out. Reconcile
+    // the stable intent marker before any retry so billable time is never
+    // duplicated by an unknown provider outcome.
+    const committed = await reconcile().catch(() => null)
+    if (committed) return committed
     // Harvest rejects entries for users not assigned to the project.
     // Self-heal: assign and retry once, so time logging never has
     // assignment friction (studio policy: everyone on every project).
@@ -524,7 +546,13 @@ export async function createTimeEntry(opts: {
     const userId = opts.userId ?? (await harvestGet('/users/me'))?.id
     if (!userId) throw err
     await assignUserToProject({ projectId: opts.projectId, userId })
-    return mapEntry(await harvestPost('/time_entries', body))
+    try {
+      return mapEntry(await harvestPost('/time_entries', body))
+    } catch (retryError) {
+      const retriedCommit = await reconcile().catch(() => null)
+      if (retriedCommit) return retriedCommit
+      throw retryError
+    }
   }
 }
 

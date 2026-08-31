@@ -25,6 +25,12 @@ export default async function AppLayout({
     redirect('/login')
   }
 
+  // The current web dashboard intentionally serves founders/admins only.
+  // Do not render privileged navigation and then fail later in individual
+  // pages for otherwise valid staff sessions.
+  const appAccess = await getControlCenterAccess()
+  if (!appAccess) redirect('/access-denied')
+
   // Check if user has completed onboarding
   const { data: workspaces } = await supabase
     .from('workspaces')
@@ -32,8 +38,7 @@ export default async function AppLayout({
     .limit(1)
 
   if (!workspaces || workspaces.length === 0) {
-    const founderAccess = await getControlCenterAccess()
-    if (!founderAccess) redirect('/onboarding')
+    redirect('/onboarding')
   }
 
   return (

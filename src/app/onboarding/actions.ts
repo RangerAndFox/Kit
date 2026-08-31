@@ -1,6 +1,7 @@
 'use server'
 
 import { createActionClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/admin'
 
 export async function createWorkspace(name: string, slug: string) {
   try {
@@ -25,7 +26,11 @@ export async function createWorkspace(name: string, slug: string) {
       user.user_metadata?.name ??
       email.split('@')[0]
 
-    const { data, error } = await supabase.rpc('create_workspace' as any, {
+    // The authenticated client verifies identity; the service client invokes a
+    // non-public transaction with that verified immutable user id.
+    const admin = createAdminClient()
+    const { data, error } = await (admin as any).rpc('create_workspace_service', {
+      p_auth_user_id: user.id,
       p_name: name,
       p_slug: slug,
       p_user_name: displayName,

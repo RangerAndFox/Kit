@@ -37,6 +37,7 @@ import {
   createControlCanvas,
   editControlCanvas,
   reconcileControlCanvas,
+  setControlCanvasReadOnly,
   type CanvasHandle,
   type CanvasReconcile,
 } from './canvas'
@@ -80,6 +81,7 @@ export interface CreationCanvasPort {
   createControlCanvas(o: { channelId: string; title: string; markdown: string }): Promise<CanvasHandle>
   editControlCanvas(o: { canvasId: string; title: string; markdown: string }): Promise<void>
   reconcileControlCanvas(o: { channelId: string; expectedTitle: string }): Promise<CanvasReconcile>
+  setControlCanvasReadOnly?(canvasId: string, channelId: string): Promise<void>
 }
 
 export interface CreationStorePort {
@@ -121,7 +123,7 @@ export function defaultCreationDeps(): CreationDeps {
       seedNormalizedProjectTables: realSeedNormalizedProjectTables,
       readProjectSupplement: realReadProjectSupplement,
     },
-    canvas: { createControlCanvas, editControlCanvas, reconcileControlCanvas },
+    canvas: { createControlCanvas, editControlCanvas, reconcileControlCanvas, setControlCanvasReadOnly },
     store: {
       ensureBinding, getBindingByProject, updateBinding,
       claimWorkbookLease, renewWorkbookLease, releaseWorkbookLease,
@@ -293,9 +295,11 @@ export async function bindProjectControl(
         let handle: CanvasHandle
         if (clone) {
           await deps.canvas.editControlCanvas({ canvasId: clone.canvasId, title, markdown: view.markdown })
+          await deps.canvas.setControlCanvasReadOnly?.(clone.canvasId, channelId)
           handle = { canvasId: clone.canvasId, canvasUrl: null }
         } else if (stored?.canvas_id) {
           await deps.canvas.editControlCanvas({ canvasId: stored.canvas_id, title, markdown: view.markdown })
+          await deps.canvas.setControlCanvasReadOnly?.(stored.canvas_id, channelId)
           handle = { canvasId: stored.canvas_id, canvasUrl: stored.canvas_url }
         } else {
           try {
@@ -304,6 +308,7 @@ export async function bindProjectControl(
             const rec = await deps.canvas.reconcileControlCanvas({ channelId, expectedTitle: title })
             if (rec.status === 'found') {
               await deps.canvas.editControlCanvas({ canvasId: rec.canvasId, title, markdown: view.markdown })
+              await deps.canvas.setControlCanvasReadOnly?.(rec.canvasId, channelId)
               handle = { canvasId: rec.canvasId, canvasUrl: null }
             } else if (rec.status === 'ambiguous') {
               throw new Error(`${view.canvasType}_canvas_ambiguous: ${rec.canvasIds.join(',')}`)
@@ -326,6 +331,7 @@ export async function bindProjectControl(
     const b2 = await deps.store.getBindingByProject(opts.projectId)
     if (b2 && b2.canvas_id) {
       await deps.canvas.editControlCanvas({ canvasId: b2.canvas_id, title, markdown })
+      await deps.canvas.setControlCanvasReadOnly?.(b2.canvas_id, channelId)
       await saveCanvasBindings({ canvasId: b2.canvas_id, canvasUrl: b2.canvas_url })
       await ensureSupplementalViews()
       await deps.store.updateBinding(opts.projectId, {
@@ -346,6 +352,7 @@ export async function bindProjectControl(
       const rec = await deps.canvas.reconcileControlCanvas({ channelId, expectedTitle: title })
       if (rec.status === 'found') {
         await deps.canvas.editControlCanvas({ canvasId: rec.canvasId, title, markdown })
+        await deps.canvas.setControlCanvasReadOnly?.(rec.canvasId, channelId)
         canvasHandle = { canvasId: rec.canvasId, canvasUrl: null }
       } else if (rec.status === 'ambiguous') {
         await deps.store.updateBinding(opts.projectId, {

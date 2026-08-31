@@ -1,4 +1,4 @@
-import { PitchTracker } from './pitch-tracker'
+import { UnavailableSurface } from '@/components/unavailable-surface'
 
 export const metadata = {
   title: 'Win/Loss — Kit',
@@ -6,18 +6,5 @@ export const metadata = {
 }
 
 export default function WinLossPage() {
-  return (
-    <div className="flex-1 overflow-auto">
-      <div className="px-8 py-8">
-        <div className="max-w-7xl">
-          <div className="mb-8">
-            <h1 className="text-3xl font-bold text-white mb-2">Win/Loss</h1>
-            <p className="text-[#9ca3af]">Track your pitch success rate</p>
-          </div>
-
-          <PitchTracker />
-        </div>
-      </div>
-    </div>
-  )
+  return <UnavailableSurface title="Win/Loss is not connected" detail="The previous demonstration pitches have been removed. This page will return only when it is backed by authoritative pipeline data." />
 }

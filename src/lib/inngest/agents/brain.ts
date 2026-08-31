@@ -71,6 +71,7 @@ async function handle(action: string, payload: Record<string, unknown>): Promise
           channelId,
           workspaceId,
           limit: 5,
+          visibilityTiers: ['team'],
         })
         if (first.provenances.length === 0) {
           return {

@@ -79,6 +79,11 @@ interface TokenRow {
   refreshing_until: string | null
 }
 
+interface RefreshLease {
+  holder: string
+  fence: number
+}
+
 async function readState(): Promise<TokenRow | null> {
   const sb = createAdminClient()
   const { data, error } = await sb
@@ -105,18 +110,18 @@ function usableAccess(row: TokenRow | null): string | null {
  * only ONE concurrent caller wins (the losers' WHERE re-evaluates to false under the
  * row lock and updates zero rows). Returns true iff this caller holds the lock.
  */
-async function claimRefreshLock(): Promise<boolean> {
+async function claimRefreshLock(): Promise<RefreshLease | null> {
   const sb = createAdminClient()
-  const nowIso = new Date().toISOString()
-  const untilIso = new Date(Date.now() + LOCK_TTL_MS).toISOString()
-  const { data, error } = await sb
-    .from('frameio_token_state')
-    .update({ refreshing_until: untilIso })
-    .eq('id', 'singleton')
-    .or(`refreshing_until.is.null,refreshing_until.lt.${nowIso}`)
-    .select('id')
+  const holder = crypto.randomUUID()
+  const { data, error } = await sb.rpc('claim_frameio_token_refresh', {
+    p_holder: holder,
+    p_lease_seconds: Math.ceil(LOCK_TTL_MS / 1000),
+  })
   if (error) throw new Error(`frameio refresh-lock claim failed: ${error.message}`)
-  return Array.isArray(data) && data.length === 1
+  const row = Array.isArray(data) ? data[0] : data
+  return row?.claimed && Number.isFinite(Number(row.fence))
+    ? { holder, fence: Number(row.fence) }
+    : null
 }
 
 /**
@@ -126,7 +131,7 @@ async function claimRefreshLock(): Promise<boolean> {
  * to store it, every runtime is now stranded on an invalidated token, so we throw
  * loudly rather than swallow it (the old code's silent-warn was a latent outage).
  */
-async function exchangeAndPersist(): Promise<AccessSnapshot> {
+async function exchangeAndPersist(lease: RefreshLease): Promise<AccessSnapshot> {
   const clientId = process.env.FRAMEIO_ADOBE_CLIENT_ID
   const clientSecret = process.env.FRAMEIO_ADOBE_CLIENT_SECRET
 
@@ -173,22 +178,18 @@ async function exchangeAndPersist(): Promise<AccessSnapshot> {
   const accessExpiresAtIso = new Date(Date.now() + data.expires_in * 1000).toISOString()
 
   const sb = createAdminClient()
-  const { error } = await sb.from('frameio_token_state').upsert(
-    {
-      id: 'singleton',
-      refresh_token: data.refresh_token,
-      access_token: data.access_token,
-      access_expires_at: accessExpiresAtIso,
-      refreshing_until: null, // release the lock in the same write
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: 'id' },
-  )
-  if (error) {
+  const { data: finished, error } = await sb.rpc('finish_frameio_token_refresh', {
+    p_holder: lease.holder,
+    p_fence: lease.fence,
+    p_refresh_token: data.refresh_token,
+    p_access_token: data.access_token,
+    p_access_expires_at: accessExpiresAtIso,
+  })
+  if (error || finished !== true) {
     // We rotated at Adobe but could not store the result. Do not swallow: the next
     // runtime would exchange an already-invalidated token. Surface it so it is fixed.
     throw new Error(
-      `Frame.io token rotated at Adobe but Supabase persist FAILED (${error.message}). ` +
+      `Frame.io token rotated at Adobe but the fenced Supabase persist FAILED (${error?.message || 'lease lost'}). ` +
         `The refresh token is now out of sync; reseed FRAMEIO_ADOBE_REFRESH_TOKEN through the approved secret-management path.`,
     )
   }
@@ -200,10 +201,13 @@ async function exchangeAndPersist(): Promise<AccessSnapshot> {
 }
 
 /** Best-effort lock release, for the failure path (a successful exchange clears it inline). */
-async function releaseLockQuietly(): Promise<void> {
+async function releaseLockQuietly(lease: RefreshLease): Promise<void> {
   try {
     const sb = createAdminClient()
-    await sb.from('frameio_token_state').update({ refreshing_until: null }).eq('id', 'singleton')
+    await sb.rpc('release_frameio_token_refresh', {
+      p_holder: lease.holder,
+      p_fence: lease.fence,
+    })
   } catch {
     /* the TTL will free it anyway */
   }
@@ -238,15 +242,15 @@ export async function getFrameIoAccessToken(): Promise<string> {
     }
 
     // 2. It needs refreshing. Try to become the one runtime that does it.
-    let claimed = false
+    let lease: RefreshLease | null = null
     try {
-      claimed = await claimRefreshLock()
+      lease = await claimRefreshLock()
     } catch (err: any) {
       // If even claiming fails (transient DB error), fall through to a short wait.
       console.warn(`[FrameIO] lock claim error: ${err.message}`)
     }
 
-    if (claimed) {
+    if (lease) {
       try {
         // Re-check: another runtime may have refreshed between our read and our claim.
         const fresh = await readState()
@@ -256,12 +260,12 @@ export async function getFrameIoAccessToken(): Promise<string> {
           cachedAccess = { accessToken: freshShared, expiresAt: expMs - SAFETY_BUFFER_MS }
           return freshShared
         }
-        const snap = await exchangeAndPersist() // clears the lock inline on success
+        const snap = await exchangeAndPersist(lease) // clears this exact lease inline on success
         cachedAccess = snap
         console.log('[FrameIO] Access token refreshed via Adobe IMS (coordinated)')
         return snap.accessToken
       } catch (err) {
-        await releaseLockQuietly() // don't hold the lock through the TTL on failure
+        await releaseLockQuietly(lease) // only this exact holder/fence may release
         throw err
       }
     }

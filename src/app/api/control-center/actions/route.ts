@@ -8,6 +8,7 @@ import { inngest } from '@/lib/inngest/client'
 import { queueBehanceDraft } from '@/lib/archive/behance-store'
 
 export const runtime = 'nodejs'
+const MAX_ACTION_BYTES = 16 * 1024
 
 const Input = z.discriminatedUnion('action', [
   z.object({ action: z.literal('reconcile_project'), projectId: z.string().uuid() }),
@@ -15,10 +16,15 @@ const Input = z.discriminatedUnion('action', [
 ])
 
 export async function POST(request: NextRequest) {
-  if (request.headers.get('sec-fetch-site') === 'cross-site') return NextResponse.json({ error: 'Request denied.' }, { status: 403 })
+  const origin = request.headers.get('origin')
+  if (!origin || origin !== new URL(request.url).origin) return NextResponse.json({ error: 'Request denied.' }, { status: 403 })
   const access = await getControlCenterAccess()
   if (!access) return NextResponse.json({ error: 'Founder access required.' }, { status: 403 })
-  const parsed = Input.safeParse(await request.json().catch(() => null))
+  const declaredLength = Number(request.headers.get('content-length') || '0')
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_ACTION_BYTES) return NextResponse.json({ error: 'Request too large.' }, { status: 413 })
+  const rawBody = await request.text()
+  if (Buffer.byteLength(rawBody, 'utf8') > MAX_ACTION_BYTES) return NextResponse.json({ error: 'Request too large.' }, { status: 413 })
+  const parsed = Input.safeParse((() => { try { return JSON.parse(rawBody) } catch { return null } })())
   if (!parsed.success) return NextResponse.json({ error: 'Invalid action.' }, { status: 400 })
   const db = createAdminClient() as any
   const { data: project } = await db.from('projects').select('id,project_code').eq('workspace_id', access.workspaceId).eq('id', parsed.data.projectId).maybeSingle()
@@ -43,12 +49,12 @@ export async function POST(request: NextRequest) {
     await db.from('kit_actions').insert({
       workspace_id: access.workspaceId, project_id: project.id, action_type: `control_center:${parsed.data.action}`,
       title: `${project.project_code || 'Project'} ${parsed.data.action === 'reconcile_project' ? 'Canvas reconcile requested' : 'Behance retry requested'}`,
-      description: 'Founder-initiated action from the Kit Control Center.', priority: 'medium', status: 'auto_completed', resolved_at: new Date().toISOString(),
+      description: 'Founder-initiated action accepted by the Kit Control Center and awaiting terminal reconciliation.', priority: 'medium', status: 'pending',
       metadata: { request_id: requestId, initiated_by: access.userId },
     })
-    return NextResponse.json({ ok: true, requestId })
+    return NextResponse.json({ ok: true, requestId, status: 'queued' }, { status: 202 })
   } catch (error) {
     console.error('[control-center action]', error)
-    return NextResponse.json({ error: error instanceof Error ? error.message : 'Action failed.' }, { status: 409 })
+    return NextResponse.json({ error: 'Action could not be queued.' }, { status: 409 })
   }
 }

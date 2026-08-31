@@ -144,10 +144,10 @@ export function checkCronFreshness(
       const label = CRON_LABELS[cronId] || cronId
       const key = `cron:${cronId}`
       const last = heartbeats[cronId]
-      if (!last) return { key, label, ok: true, detail: 'awaiting first run' }
+      if (!last) return { key, label, ok: false, detail: 'no successful heartbeat recorded' }
       const ageMin = (now.getTime() - Date.parse(last)) / 60_000
       const maxAge = CRON_MAX_AGE_MIN[cronId]
-      if (Number.isNaN(ageMin)) return { key, label, ok: true, detail: 'unparsable heartbeat' }
+      if (Number.isNaN(ageMin)) return { key, label, ok: false, detail: 'invalid heartbeat timestamp' }
       if (ageMin > maxAge) {
         return { key, label, ok: false, detail: `no success in ${Math.round(ageMin)}m (limit ${maxAge}m)` }
       }

@@ -107,6 +107,7 @@ export async function findCandidatesForBrain(opts: FindCandidatesOpts): Promise<
         workspaceId: brainRow.workspace_id,
         projectId: null,         // intentionally workspace-wide
         limit: CANDIDATE_POOL,
+        visibilityTiers: ['team'],
       })
     } catch (err: any) {
       console.error('[brain.scavenger] searchDocuments failed:', err.message || err)
@@ -335,4 +336,3 @@ export async function markCandidatesDmSent(ids: number[]): Promise<void> {
     .update({ dm_sent_at: new Date().toISOString() })
     .in('id', ids)
 }
-

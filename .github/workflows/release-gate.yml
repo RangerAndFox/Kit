@@ -87,3 +87,34 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+
+  deadline-relay:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: kit-deadline-relay
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: kit-deadline-relay/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        directory: ['.', bolt, kit-render-worker, kit-behance-worker, kit-deadline-relay]
+    defaults:
+      run:
+        working-directory: ${{ matrix.directory }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: npm audit --omit=dev --audit-level=high

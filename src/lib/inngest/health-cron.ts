@@ -8,8 +8,8 @@
  * every tick. This is the piece that would have paged us the day Dropbox's
  * token went missing instead of three months later.
  *
- * Silent no-op if KIT_HEALTH_CHANNEL_ID / SLACK_BOT_TOKEN aren't set — the
- * checks still run and persist, so /status stays accurate without alerts.
+ * Alert delivery is part of the state transition. If delivery fails, the
+ * previous state remains unchanged so the next run retries the transition.
  */
 
 import { inngest } from './client'
@@ -34,7 +34,7 @@ export const healthWatchdog = inngest.createFunction(
     if (diff.downed.length || diff.recovered.length) {
       await step.run('alert', async () => {
         const channel = process.env.KIT_HEALTH_CHANNEL_ID
-        if (!channel) return
+        if (!channel) throw new Error('KIT_HEALTH_CHANNEL_ID is not configured')
         const lines: string[] = []
         if (diff.downed.length) {
           lines.push(':rotating_light: *Kit health — something went down*')
@@ -43,7 +43,8 @@ export const healthWatchdog = inngest.createFunction(
         if (diff.recovered.length) {
           for (const r of diff.recovered) lines.push(`:large_green_circle: *${r.label}* recovered`)
         }
-        await postSlackAsKit(channel, lines.join('\n'))
+        const delivered = await postSlackAsKit(channel, lines.join('\n'))
+        if (!delivered) throw new Error('Kit health alert delivery failed')
       })
     }
 

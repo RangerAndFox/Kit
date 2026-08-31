@@ -305,38 +305,24 @@ async function removeMigrationDuplicates(
     if (!project.slack_channel_id) continue
     groups.set(key, [...(groups.get(key) || []), project])
   }
-  const sb = createAdminClient()
   for (const duplicates of groups.values()) {
     if (duplicates.length < 2) continue
     duplicates.sort((a, b) => clean(a.created_at).localeCompare(clean(b.created_at)))
-    if (!legacyDuplicateDeletionAuthorized()) {
-      console.error(
-        `[project-control migration] duplicate cleanup blocked: ${duplicates.length} rows for ` +
-        `${duplicates[0]?.project_code || '(unknown)'} require PITR confirmation and the explicit destructive token`,
-      )
-      continue
-    }
-    for (const duplicate of duplicates.slice(1)) {
-      const canvases = await listProjectCanvases(duplicate.id)
-      for (const canvas of canvases) {
-        if (canvas.canvas_id) await slackCall('canvases.delete', { canvas_id: canvas.canvas_id })
-      }
-      await deleteProjectRowMetadata(config, duplicate.id)
-      const { error } = await sb.from('projects').delete().eq('id', duplicate.id)
-      if (error) throw new Error(`duplicate cleanup ${duplicate.project_code}: ${error.message}`)
-      const index = projects.findIndex((candidate) => candidate.id === duplicate.id)
-      if (index >= 0) projects.splice(index, 1)
-      console.log(`[project-control migration] removed duplicate ${duplicate.project_code} (${duplicate.id})`)
-    }
+    // Inventory only. Duplicate resolution is a separate, reviewed operation;
+    // this migration path never deletes projects, dependent records, Sheet
+    // metadata, or Slack canvases under any environment-variable combination.
+    console.error(
+      `[project-control migration] duplicate inventory: ${duplicates.length} rows for ` +
+      `${duplicates[0]?.project_code || '(unknown)'} (${duplicates.map((p) => p.id).join(',')}); no changes made`,
+    )
   }
 }
 
 /** A single feature flag must never authorize cascading project deletion. */
 export function legacyDuplicateDeletionAuthorized(
-  env: Record<string, string | undefined> = process.env,
+  _env: Record<string, string | undefined> = process.env,
 ): boolean {
-  return env.PROJECT_CONTROL_LEGACY_PITR_CONFIRMED === 'true'
-    && env.PROJECT_CONTROL_LEGACY_DESTRUCTIVE_CONFIRMATION === 'DELETE_CONFIRMED_LEGACY_DUPLICATES'
+  return false
 }
 
 export async function runLegacyProjectControlMigration(): Promise<LegacyMigrationResult> {

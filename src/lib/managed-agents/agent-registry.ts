@@ -5,49 +5,23 @@
  * Registers Kit's agent definitions with the Managed Agents API.
  */
 
-import { getManagedAgentsClient, type AgentConfig, type AgentResponse, type McpServerConfig } from './client'
+import { getManagedAgentsClient, type AgentConfig, type AgentResponse } from './client'
 import { createAdminClient } from '@/lib/supabase/admin'
 
-function getKitMcpServerConfig(): McpServerConfig | null {
-  let baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL
-  const token = process.env.KIT_MCP_SECRET
-  if (!baseUrl || !token) return null
-  // Ensure scheme
-  if (!/^https?:\/\//i.test(baseUrl)) {
-    baseUrl = `https://${baseUrl}`
-  }
-  const url = `${baseUrl.replace(/\/$/, '')}/api/mcp/${encodeURIComponent(token)}`
-  return {
-    type: 'url',
-    url,
-    name: 'kit',
-  }
-}
-
 function enrichAgentConfig(config: AgentConfig): AgentConfig {
-  const kitMcp = getKitMcpServerConfig()
-  if (!kitMcp) return config
-  const existing = config.mcp_servers || []
-  const others = existing.filter((s) => s.name !== 'kit')
+  // Never export Kit's privileged database tool surface to an external
+  // managed-agent runtime. The legacy configuration embedded one shared
+  // secret in the URL. A future reintroduction must use a dedicated identity
+  // provider plus per-agent workspace/tool claims and revocation.
+  const others = (config.mcp_servers || []).filter((s) => s.name !== 'kit')
   const existingTools = config.tools || []
-  // Remove any existing kit mcp_toolset to avoid duplicates
   const otherTools = existingTools.filter(
     (t) => !(t.type === 'mcp_toolset' && (t as any).mcp_server_name === 'kit')
   )
   return {
     ...config,
-    mcp_servers: [...others, kitMcp],
-    tools: [
-      ...otherTools,
-      {
-        type: 'mcp_toolset',
-        mcp_server_name: 'kit',
-        default_config: {
-          enabled: true,
-          permission_policy: { type: 'always_allow' },
-        },
-      },
-    ],
+    mcp_servers: others,
+    tools: otherTools,
   }
 }
 

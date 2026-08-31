@@ -36,8 +36,8 @@ export const listAgents: KitTool = {
   description:
     'List all available Kit agents and their capabilities. Call this at the start of a conversation to know which experts are online and what they can do. Each agent is a domain expert in a specific external service. Optionally pass slack_user_id and workspace_id to get a tier-filtered view showing only what this user can access.',
   schema: z.object({
-    workspace_id: z.string().uuid().optional().describe('Workspace ID to check access tiers'),
-    slack_user_id: z.string().optional().describe('Slack user ID to resolve access tier'),
+    workspace_id: z.string().uuid().describe('Workspace ID to check access tiers'),
+    slack_user_id: z.string().min(1).describe('Slack user ID to resolve access tier'),
   }),
   annotations: { readOnlyHint: true },
   handler: async ({ workspace_id, slack_user_id }) => {
@@ -47,9 +47,8 @@ export const listAgents: KitTool = {
 
     // If we have user context, annotate which actions they can access
     let user: UserContext | null = null
-    if (workspace_id && slack_user_id) {
-      user = await resolveUserContext(workspace_id, slack_user_id)
-    }
+    user = await resolveUserContext(workspace_id, slack_user_id)
+    if (!user) return fail('The requesting Slack user is not authorized in this workspace.')
 
     return ok({
       user_tier: user?.tier || 'unknown',
@@ -59,9 +58,7 @@ export const listAgents: KitTool = {
         domain: a.domain,
         expertise: a.expertise,
         actions: a.capabilities.map((c) => {
-          const access = user
-            ? checkGateway(user, a.agentId, c.action)
-            : { allowed: true }
+          const access = checkGateway(user, a.agentId, c.action)
           return {
             action: c.action,
             description: c.description,
@@ -91,24 +88,21 @@ export const askAgent: KitTool = {
     agent_id: z.string().describe('The agent to call (e.g., "harvest", "dropbox", "frameio", "slack")'),
     action: z.string().describe('The action to perform (e.g., "log_time", "search", "get_comments", "send_message")'),
     payload: z.record(z.any()).optional().default({}).describe('Action-specific parameters. Check the agent\'s capability descriptions for what each action expects.'),
-    workspace_id: z.string().uuid().optional().describe('Workspace ID for access control'),
-    slack_user_id: z.string().optional().describe('Slack user ID of the person making the request'),
+    workspace_id: z.string().uuid().describe('Workspace ID for access control'),
+    slack_user_id: z.string().min(1).describe('Slack user ID of the person making the request'),
   }),
   annotations: { readOnlyHint: false },
   handler: async ({ agent_id, action, payload, workspace_id, slack_user_id }) => {
     // ── Resolve user context for access control ─────────────
     let user: UserContext | null = null
-    if (workspace_id && slack_user_id) {
-      user = await resolveUserContext(workspace_id, slack_user_id)
-    }
+    user = await resolveUserContext(workspace_id, slack_user_id)
+    if (!user) return fail('The requesting Slack user is not authorized in this workspace.')
 
     // ── Gateway check (Kit level) ───────────────────────────
-    if (user) {
-      const projectId = payload.projectId as string | undefined
-      const gatewayCheck = checkGateway(user, agent_id, action, projectId)
-      if (!gatewayCheck.allowed) {
-        return fail(gatewayCheck.reason || "Sorry, that's restricted information.")
-      }
+    const projectId = payload.projectId as string | undefined
+    const gatewayCheck = checkGateway(user, agent_id, action, projectId)
+    if (!gatewayCheck.allowed) {
+      return fail(gatewayCheck.reason || "Sorry, that's restricted information.")
     }
 
     // ── Dispatch to agent ───────────────────────────────────
@@ -116,7 +110,7 @@ export const askAgent: KitTool = {
     // fail closed to the lowest tier; resolved admins may retrieve founder docs.
     const dispatchPayload = {
       ...payload,
-      requesterTier: user?.tier ?? 'artist',
+      requesterTier: user.tier,
     }
     const result = await dispatch(agent_id, action, dispatchPayload)
 
@@ -125,8 +119,7 @@ export const askAgent: KitTool = {
     }
 
     // ── Field-level filtering (Agent level) ─────────────────
-    if (user && result.data) {
-      const projectId = payload.projectId as string | undefined
+    if (result.data) {
       result.data = filterResultData(result.data, user, projectId)
     }
 

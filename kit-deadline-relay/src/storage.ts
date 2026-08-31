@@ -10,25 +10,12 @@ import { config } from './config'
 
 /** Claim the oldest unclaimed Deadline-backed render. Returns it, or null. */
 export async function claimParent(): Promise<any | null> {
-  const { data: candidates } = await supabase
-    .from('render_jobs')
-    .select('id')
-    .eq('job_type', 'ae_render')
-    .eq('render_backend', 'deadline')
-    .eq('status', 'processing')
-    .is('claimed_by', null)
-    .order('created_at', { ascending: true })
-    .limit(1)
-  if (!candidates || candidates.length === 0) return null
-
-  const { data: claimed } = await supabase
-    .from('render_jobs')
-    .update({ claimed_by: config.hostname, claimed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-    .eq('id', candidates[0].id)
-    .is('claimed_by', null)
-    .select('*')
-    .maybeSingle()
-  return claimed || null // null → another relay beat us to it
+  const { data, error } = await supabase.rpc('claim_deadline_parent', {
+    p_worker: config.hostname,
+    p_lease_seconds: 1800,
+  })
+  if (error) throw new Error(`Deadline parent claim failed: ${error.message}`)
+  return data?.[0] || null
 }
 
 /** Renders this relay has submitted that are still in flight. */
@@ -40,13 +27,25 @@ export async function listActiveSubmitted(): Promise<any[]> {
     .eq('render_backend', 'deadline')
     .eq('status', 'processing')
     .eq('claimed_by', config.hostname)
+    .gt('deadline_lease_until', new Date().toISOString())
     .not('deadline_jobs', 'is', null)
   return data || []
 }
 
-export async function updateParent(id: string, patch: Record<string, any>): Promise<void> {
-  await supabase
+export async function updateParent(id: string, claimToken: string, patch: Record<string, any>): Promise<void> {
+  const { data, error } = await supabase
     .from('render_jobs')
-    .update({ ...patch, updated_at: new Date().toISOString() })
+    .update({ ...patch, deadline_lease_until: new Date(Date.now() + 1_800_000).toISOString(), updated_at: new Date().toISOString() })
     .eq('id', id)
+    .eq('deadline_claim_token', claimToken)
+    .select('id')
+  if (error) throw new Error(`Deadline parent checkpoint failed: ${error.message}`)
+  if (!data?.length) throw new Error('Deadline parent lease lost')
+}
+
+export async function checkpointSubmittedJob(parent: any, job: any): Promise<void> {
+  const current = Array.isArray(parent.deadline_jobs) ? parent.deadline_jobs : []
+  const next = [...current.filter((entry: any) => entry.comp !== job.comp), job]
+  await updateParent(parent.id, parent.deadline_claim_token, { deadline_jobs: next })
+  parent.deadline_jobs = next
 }

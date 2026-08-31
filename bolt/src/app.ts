@@ -35,6 +35,7 @@ import { scanMissingTime } from './checkins/missing-time'
 import { dispatchAllPendingApprovals } from './brain/approvals'
 import { reconcileBehanceDraftSlack, registerArchiveHandlers } from './archive/handlers'
 import { enqueueArchiveMedia } from '../../src/lib/archive/media-worker'
+import { reconcileElevenLabsDraftSlack } from './storyboard/elevenlabs-notify'
 
 // ─── Boot ──────────────────────────────────────────────────
 
@@ -127,6 +128,7 @@ registerArchiveHandlers(app)
 // producer DM. The worker never needs a Slack token.
 cron.schedule('* * * * *', () => {
   void reconcileBehanceDraftSlack(app.client).catch((error) => console.error('[behance-sync]', error.message))
+  void reconcileElevenLabsDraftSlack(app.client).catch((error) => console.error('[elevenlabs-sync]', error.message))
 })
 
 // Imported/synced projects can have Dropbox + Slack links before their
@@ -180,21 +182,44 @@ cron.schedule('* * * * *', runDropboxInboxSweep, { timezone: 'UTC' })
 
 // ─── Resilience + Diagnostics ──────────────────────────────
 
+let socketStarted = false
+let shuttingDown = false
+let activeHttpRequests = 0
+let httpServer: http.Server | null = null
+let recoverySweepRunning = false
+
+async function gracefulShutdown(signal: string, exitCode: number): Promise<void> {
+  if (shuttingDown) return
+  shuttingDown = true
+  socketStarted = false
+  console.log(`[Bolt] ${signal} at uptime ${Math.floor(process.uptime())}s — draining`)
+  httpServer?.close()
+  const deadline = Date.now() + 25_000
+  while (
+    Date.now() < deadline &&
+    (activeHttpRequests > 0 || dropboxInboxSweepRunning || projectShareRecoveryRunning || recoverySweepRunning)
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  try { await app.stop() } catch (error) { console.error('[Bolt] Slack stop failed:', error) }
+  process.exit(exitCode)
+}
+
 process.on('unhandledRejection', (reason) => {
   console.error('[Bolt] Unhandled rejection:', reason)
+  void gracefulShutdown('unhandledRejection', 1)
 })
 process.on('uncaughtException', (err) => {
   console.error('[Bolt] Uncaught exception:', err)
+  void gracefulShutdown('uncaughtException', 1)
 })
 
 // Log who's killing us and when
 process.on('SIGTERM', () => {
-  console.log(`[Bolt] received SIGTERM at uptime ${Math.floor(process.uptime())}s — exiting`)
-  process.exit(0)
+  void gracefulShutdown('SIGTERM', 0)
 })
 process.on('SIGINT', () => {
-  console.log(`[Bolt] received SIGINT at uptime ${Math.floor(process.uptime())}s — exiting`)
-  process.exit(0)
+  void gracefulShutdown('SIGINT', 0)
 })
 
 // ─── HTTP Server: Health + Dropbox Webhook ─────────────────
@@ -233,17 +258,20 @@ setInterval(async () => {
   }
 }, 5 * 60 * 1000).unref()
 
-http
-  .createServer((req, res) => {
+httpServer = http.createServer((req, res) => {
+    activeHttpRequests++
+    res.once('finish', () => { activeHttpRequests = Math.max(0, activeHttpRequests - 1) })
     const url = req.url || '/'
 
     // Health probe: 200 only while the Slack connection is verifiably alive.
     if (url.startsWith('/health')) {
-      const healthy = consecutiveAuthFailures < 3
+      const healthy = socketStarted && !shuttingDown && consecutiveAuthFailures < 3
       res.writeHead(healthy ? 200 : 503, { 'Content-Type': 'application/json' })
       res.end(
         JSON.stringify({
           ok: healthy,
+          socket_started: socketStarted,
+          draining: shuttingDown,
           last_auth_ok: new Date(lastAuthOkAt).toISOString(),
           consecutive_failures: consecutiveAuthFailures,
           uptime_s: Math.floor(process.uptime()),
@@ -339,7 +367,7 @@ http
     res.writeHead(200, { 'Content-Type': 'text/plain' })
     res.end('Kit OK')
   })
-  .listen(PORT, () => {
+httpServer.listen(PORT, () => {
     console.log(`   Health + webhook server: listening on :${PORT}`)
   })
 
@@ -480,7 +508,6 @@ cron.schedule(
 // are safe. Inert unless PROJECT_CONTROL_CREATION_ENABLED (checked inside the
 // sweep) and a workbook are configured. A simple in-process guard prevents an
 // overlong sweep from overlapping itself.
-let recoverySweepRunning = false
 cron.schedule(
   '*/5 * * * *',
   () => {
@@ -527,6 +554,7 @@ cron.schedule(
   await restoreConversationMemory()
 
   await app.start()
+  socketStarted = true
   console.log('⚡ Kit is online (Socket Mode)')
   console.log(`   Bot token: ...${process.env.SLACK_BOT_TOKEN?.slice(-6)}`)
   console.log(`   App token: ...${process.env.SLACK_APP_TOKEN?.slice(-6)}`)

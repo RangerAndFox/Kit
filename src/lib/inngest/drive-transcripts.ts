@@ -28,6 +28,7 @@ import {
 import { matchTranscriptToProject } from '@/lib/agent/call-classifier'
 import { embedTranscript } from '@/lib/studio-knowledge/transcript'
 import { recordCronSuccess } from '@/lib/health/state'
+import { isTranscriptApprovedForIngest } from '@/lib/privacy/transcript-approval'
 
 const MAX_PER_RUN = 10
 
@@ -56,7 +57,9 @@ export const driveTranscriptScan = inngest.createFunction(
 
     // One memoized step: list the folder and drop files already ingested.
     const newFiles = await step.run('find-new-files', async () => {
-      const files = await listTranscriptFiles(25)
+      // Filename prefix is the recording-level approval/purpose signal. Files
+      // without it are never downloaded or sent to any model provider.
+      const files = (await listTranscriptFiles(25)).filter((file) => isTranscriptApprovedForIngest(file.name))
       if (files.length === 0) return []
       const sb = createAdminClient()
       const ids = files.map((f) => `drive:${f.id}`)

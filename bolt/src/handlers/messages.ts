@@ -953,7 +953,7 @@ async function handleStoryboardFileDrop(opts: {
   assistantThreadTs?: string
 }) {
   const { app, file, channelId, userId, assistantThreadTs } = opts
-  const stashToken = stashIntake({
+  const stashToken = await stashIntake({
     channelId,
     userId,
     assistantThreadTs,
@@ -1015,7 +1015,7 @@ async function handleStoryboardKeyword(opts: {
   assistantThreadTs?: string
 }) {
   const { app, channelId, userId, assistantThreadTs } = opts
-  const stashToken = stashIntake({ channelId, userId, assistantThreadTs })
+  const stashToken = await stashIntake({ channelId, userId, assistantThreadTs })
 
   await app.client.chat.postMessage({
     channel: channelId,

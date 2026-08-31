@@ -45,7 +45,10 @@ function sanitize(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'comp'
 }
 
-export async function submitParent(parent: any): Promise<{ jobs: SubmittedJob[]; itemCount: number }> {
+export async function submitParent(
+  parent: any,
+  checkpoint: (job: SubmittedJob) => Promise<void>,
+): Promise<{ jobs: SubmittedJob[]; itemCount: number }> {
   const inputPath = parent.ae_project_path
   if (!inputPath) throw new Error('parent has no ae_project_path')
   const farmProject = toFarmPath(inputPath)
@@ -60,7 +63,17 @@ export async function submitParent(parent: any): Promise<{ jobs: SubmittedJob[];
   const projectName = farmBasename(farmProject).replace(/\.aep$/i, '')
 
   const jobs: SubmittedJob[] = []
+  const checkpointed = new Map(
+    (Array.isArray(parent.deadline_jobs) ? parent.deadline_jobs : [])
+      .filter((job: any) => job?.comp && job?.deadline_job_id)
+      .map((job: any) => [job.comp, job]),
+  )
   for (const item of prep.items) {
+    const recovered = checkpointed.get(item.comp) as SubmittedJob | undefined
+    if (recovered) {
+      jobs.push(recovered)
+      continue
+    }
     const safeComp = sanitize(item.comp)
     const outputDirFarm = `${projectDir}\\render\\${safeComp}`
 
@@ -91,6 +104,27 @@ export async function submitParent(parent: any): Promise<{ jobs: SubmittedJob[];
     const jobId = await submitJob(jobInfoPath, pluginInfoPath)
     console.log(`[submit] ${item.comp} → Deadline job ${jobId} (${item.frameStart}-${item.frameEnd}${isMovie ? ', whole movie' : ''})`)
 
+    // Persist the provider job id before doing any local follow-up work. A
+    // relay crash during the audio pass must resume the accepted Deadline job
+    // rather than submit a duplicate render.
+    const submitted: SubmittedJob = {
+      comp: item.comp,
+      deadline_job_id: jobId,
+      frames: `${item.frameStart}-${item.frameEnd}`,
+      frame_start: item.frameStart,
+      fps: item.fps,
+      is_movie: isMovie,
+      output_dir: outputDirFarm,
+      frames_dir: framesDir,
+      frame_pattern: `${safeComp}_%05d.png`,
+      audio_wav: null,
+      original_output_name: item.originalOutputName || `${safeComp}.mov`,
+      output_settings_raw: item.outputSettingsRaw || '',
+      farm_project: prep.farmProjectPath,
+      status: 'active',
+    }
+    await checkpoint(submitted)
+
     // 3. Audio pass — local, serialized (aerender is fast for audio-only).
     let audioWav: string | null = null
     if (!isMovie && item.audioRqindex != null) {
@@ -104,22 +138,9 @@ export async function submitParent(parent: any): Promise<{ jobs: SubmittedJob[];
       }
     }
 
-    jobs.push({
-      comp: item.comp,
-      deadline_job_id: jobId,
-      frames: `${item.frameStart}-${item.frameEnd}`,
-      frame_start: item.frameStart,
-      fps: item.fps,
-      is_movie: isMovie,
-      output_dir: outputDirFarm,
-      frames_dir: framesDir,
-      frame_pattern: `${safeComp}_%05d.png`,
-      audio_wav: audioWav,
-      original_output_name: item.originalOutputName || `${safeComp}.mov`,
-      output_settings_raw: item.outputSettingsRaw || '',
-      farm_project: prep.farmProjectPath,
-      status: 'active',
-    })
+    submitted.audio_wav = audioWav
+    await checkpoint(submitted)
+    jobs.push(submitted)
   }
 
   return { jobs, itemCount: prep.items.length }

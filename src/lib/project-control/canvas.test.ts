@@ -57,7 +57,7 @@ describe('createControlCanvas read-only enforcement', () => {
     assert.notEqual(access!.payload.access_level, 'write')
   })
 
-  it('still returns the canvas when the read-only grant fails (non-fatal)', async () => {
+  it('fails provisioning when the read-only grant fails', async () => {
     let created = false
     __setCanvasTransportForTests(async (_kind, method) => {
       if (method === 'canvases.create') {
@@ -67,9 +67,11 @@ describe('createControlCanvas read-only enforcement', () => {
       if (method === 'canvases.access.set') throw new Error('slack down')
       return { ok: true }
     })
-    const handle = await createControlCanvas({ channelId: 'CH1', title: 'T', markdown: '# body' })
+    await assert.rejects(
+      createControlCanvas({ channelId: 'CH1', title: 'T', markdown: '# body' }),
+      /slack down/,
+    )
     assert.ok(created)
-    assert.equal(handle.canvasId, 'C_NEW')
   })
 })
 

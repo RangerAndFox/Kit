@@ -11,7 +11,7 @@
  */
 
 import { config } from './config'
-import { claimParent, listActiveSubmitted, updateParent } from './storage'
+import { claimParent, listActiveSubmitted, updateParent, checkpointSubmittedJob } from './storage'
 import { submitParent } from './submit'
 import { pollParent } from './poll'
 
@@ -33,15 +33,15 @@ async function tick(): Promise<void> {
   if (parent) {
     console.log(`[relay] claimed render ${parent.id} (${parent.ae_project_path})`)
     try {
-      const { jobs, itemCount } = await submitParent(parent)
-      await updateParent(parent.id, {
+      const { jobs, itemCount } = await submitParent(parent, (job) => checkpointSubmittedJob(parent, job))
+      await updateParent(parent.id, parent.deadline_claim_token, {
         deadline_jobs: jobs,
         progress_percent: 0,
         progress_message: `Submitted ${jobs.length} comp(s) from ${itemCount} queued item(s) to Deadline`,
       })
     } catch (err: any) {
       console.error(`[relay] submit failed for ${parent.id}:`, err.message)
-      await updateParent(parent.id, { status: 'failed', error_message: `Deadline submit failed: ${err.message}` })
+      await updateParent(parent.id, parent.deadline_claim_token, { status: 'failed', error_message: `Deadline submit failed: ${err.message}` })
     }
   }
 

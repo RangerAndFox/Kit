@@ -299,8 +299,9 @@ describe('bindProjectControl', () => {
     assert.equal(cCell?.header, 'Client Contact')
     assert.equal(cCell?.value, CONTACT)
 
-    // 2) Initial Canvas: the Contacts value comes from the authoritative Sheet row.
-    assert.match(createdMarkdown, /\|\s*### \*\*Contacts\*\*\s*\|\s*Jane Doe — jane@nike\.com\s*\|/)
+    // 2) Channel Canvas: the producer Sheet retains the contact, while the
+    // artist-visible projection intentionally omits the sensitive value.
+    assert.doesNotMatch(createdMarkdown, /Jane Doe|jane@nike\.com/)
   })
 
   it('resume fails closed (no Canvas) when the row metadata is on another sheet', async () => {

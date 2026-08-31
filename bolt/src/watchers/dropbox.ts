@@ -774,59 +774,76 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
   const sourceUrl: string = tempLinkResp.link
   if (!sourceUrl) throw new Error('Dropbox did not return a temporary link')
 
-  // ── Idempotency: reuse if this file was already mirrored ─
-  // Dropbox can replay the same delta (duplicate webhooks, a reprocessed
-  // batch). Do not upload a second copy, but DO reconcile the durable share
-  // event + Sheet state. The old early return made a transient Sheet failure
-  // permanent once Frame.io already had the asset.
-  try {
-    const existingFile = await findChildFile(acct, targetFolderId, fileName)
-    if (existingFile) {
-      const existingReviewUrl = existingFile.view_url ||
-        `https://next.frame.io/project/${frameioId}/view/${existingFile.id}`
-      const projectNumber = project.external_ids?.project_number || extractProjectNumber(d.safeName) || String(project.project_code || '').split('-')[0]
-      const progression = await registerProjectShare({
-        projectId: project.id,
-        projectNumber,
-        dropboxFileId: d.dropboxId,
-        dropboxRev: d.rev,
-        fileName,
-        shareUrl: existingReviewUrl,
-      })
-      const subfolderLine = traversedNames.length > 0
-        ? `${d.subfolder} / ${traversedNames.join(' / ')}`
-        : d.subfolder
-      await notifyProjectShare(app, {
-        project,
-        fileName,
-        reviewUrl: existingReviewUrl,
-        subfolderLine,
-        progression,
-        recovered: true,
-      })
-      console.log(
-        `[dropbox-watcher] ${fileName} already in ${project.name} / ${d.subfolder} (file ${existingFile.id}); reconciled without re-upload`,
-      )
-      return
-    }
-  } catch (err: any) {
-    console.warn(
-      `[dropbox-watcher] existing-file check failed for ${fileName} (continuing): ${err.message}`,
+  // A filename is presentation, never identity. The durable transfer ledger
+  // binds this exact Dropbox file revision to the one Frame.io file created for
+  // it. A same-name correction therefore cannot silently reuse stale media.
+  const { data: priorTransfer, error: priorTransferError } = await sb
+    .from('frameio_delivery_transfers')
+    .select('*')
+    .eq('project_id', project.id)
+    .eq('dropbox_file_id', d.dropboxId)
+    .eq('dropbox_rev', d.rev)
+    .maybeSingle()
+  if (priorTransferError) throw new Error(`Frame.io transfer lookup failed: ${priorTransferError.message}`)
+
+  let transfer = priorTransfer as any
+  let file: any
+  if (!transfer) {
+    const createResp = await frameioPost(
+      `/accounts/${acct}/folders/${targetFolderId}/files/remote_upload`,
+      { data: { name: fileName, source_url: sourceUrl } },
     )
+    file = createResp.data || createResp
+    const statusPath = createResp.links?.status ||
+      `/accounts/${acct}/files/${file.id}/status`
+    const viewUrl = file.view_url ||
+      `https://next.frame.io/project/${frameioId}/view/${file.id}`
+    const { data: insertedTransfer, error: transferError } = await sb
+      .from('frameio_delivery_transfers')
+      .insert({
+        project_id: project.id,
+        dropbox_file_id: d.dropboxId,
+        dropbox_rev: d.rev,
+        frameio_project_id: frameioId,
+        frameio_folder_id: targetFolderId,
+        frameio_file_id: file.id,
+        frameio_status_path: statusPath,
+        frameio_view_url: viewUrl,
+        state: 'processing',
+        last_provider_status: String(file.status || 'created'),
+      })
+      .select('*')
+      .single()
+    if (transferError) {
+      throw new Error(`Frame.io accepted upload ${file.id}, but transfer checkpoint failed: ${transferError.message}`)
+    }
+    transfer = insertedTransfer
+  } else {
+    file = {
+      id: transfer.frameio_file_id,
+      view_url: transfer.frameio_view_url,
+    }
   }
 
-  // ── Hand it to Frame.io remote_upload ───────────────────
-  // Frame.io v4 remote_upload accepts a source_url and pulls async.
-  const createResp = await frameioPost(
-    `/accounts/${acct}/folders/${targetFolderId}/files/remote_upload`,
-    {
-      data: {
-        name: fileName,
-        source_url: sourceUrl,
-      },
-    },
-  )
-  const file = createResp.data || createResp
+  // Remote upload is asynchronous. Never announce or create a review share
+  // until Frame.io's documented status endpoint reports a terminal ready state.
+  if (transfer.state !== 'ready') {
+    const statusResp = await frameioGet(normalizeFrameioStatusPath(transfer.frameio_status_path))
+    const providerStatus = String(
+      statusResp?.data?.status || statusResp?.status || statusResp?.data?.state || statusResp?.state || '',
+    ).toLowerCase()
+    const readiness = classifyFrameioUploadStatus(providerStatus)
+    const { error: stateError } = await sb.from('frameio_delivery_transfers').update({
+      state: readiness,
+      last_provider_status: providerStatus || null,
+      last_error: readiness === 'failed' ? `Frame.io upload ended in ${providerStatus || 'unknown failure'}` : null,
+      updated_at: new Date().toISOString(),
+    }).eq('id', transfer.id)
+    if (stateError) throw new Error(`Frame.io transfer state checkpoint failed: ${stateError.message}`)
+    if (readiness === 'failed') throw new Error(`Frame.io upload failed: ${providerStatus || 'unknown provider status'}`)
+    if (readiness !== 'ready') throw new Error(`Frame.io upload is still processing (${providerStatus || 'pending'}); inbox will retry`)
+    transfer.state = 'ready'
+  }
   const breadcrumb =
     traversedNames.length > 0
       ? `03_Outgoing / ${d.subfolder} / ${traversedNames.join(' / ')}`
@@ -844,8 +861,9 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
     traversedNames.length > 0
       ? `${d.subfolder} / ${traversedNames.join(' / ')} – ${fileName}`
       : `${d.subfolder} – ${fileName}`
-  let reviewUrl: string | undefined
+  let reviewUrl: string | undefined = transfer.frameio_share_url || undefined
   try {
+    if (reviewUrl) throw new Error('__share_already_checkpointed__')
     const shareRequest = buildFrameioShareRequest(
       acct,
       frameioId,
@@ -856,11 +874,16 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
     const link = linkResp.data || linkResp
     reviewUrl =
       link.short_url || link.url || link.share_url || link.view_url
-    console.log(`[dropbox-watcher] share link created: ${reviewUrl}`)
+    if (!reviewUrl) throw new Error('Frame.io share response did not contain a URL')
+    const { error: shareCheckpointError } = await sb.from('frameio_delivery_transfers')
+      .update({ frameio_share_url: reviewUrl, updated_at: new Date().toISOString() })
+      .eq('id', transfer.id).is('frameio_share_url', null)
+    if (shareCheckpointError) throw new Error(`share checkpoint failed: ${shareCheckpointError.message}`)
+    console.log(`[dropbox-watcher] share link created and checkpointed: ${reviewUrl}`)
   } catch (err: any) {
-    console.warn(
-      `[dropbox-watcher] share create failed (${err.message}); falling back to file view_url`,
-    )
+    if (err?.message !== '__share_already_checkpointed__') {
+      console.warn(`[dropbox-watcher] share create failed (${err.message}); falling back to file view_url`)
+    }
   }
 
   if (!reviewUrl) {
@@ -1295,4 +1318,15 @@ async function findChildFile(
     if (t === 'file' && c.name === name) return c
   }
   return null
+}
+
+export function normalizeFrameioStatusPath(path: string): string {
+  return String(path || '').replace(/^https:\/\/api\.frame\.io\/v4/i, '')
+}
+
+export function classifyFrameioUploadStatus(status: string): 'processing' | 'ready' | 'failed' {
+  const value = String(status || '').trim().toLowerCase()
+  if (['failed', 'error', 'cancelled', 'canceled'].includes(value)) return 'failed'
+  if (['ready', 'complete', 'completed', 'uploaded', 'processed', 'transcoded'].includes(value)) return 'ready'
+  return 'processing'
 }

@@ -167,6 +167,14 @@ export interface CanvasHandle {
   canvasUrl: string | null
 }
 
+export async function setControlCanvasReadOnly(canvasId: string, channelId: string): Promise<void> {
+  await slackPost('canvases.access.set', {
+    canvas_id: canvasId,
+    access_level: CONTROL_CANVAS_ACCESS_LEVEL,
+    channel_ids: [channelId],
+  })
+}
+
 /** Create the managed canvas once and set the channel to read-only access. */
 export async function createControlCanvas(opts: {
   channelId: string
@@ -180,18 +188,7 @@ export async function createControlCanvas(opts: {
   })
   const canvasId = created.canvas_id as string | undefined
   if (!canvasId) throw new Error('canvases.create returned no canvas_id')
-  try {
-    await slackPost('canvases.access.set', {
-      canvas_id: canvasId,
-      access_level: CONTROL_CANVAS_ACCESS_LEVEL,
-      channel_ids: [opts.channelId],
-    })
-  } catch (err) {
-    // Non-fatal: the canvas exists and is tabbed; the read-only grant can be
-    // retried. The generated-view notice + deterministic full re-render keep the
-    // one-way contract even if this grant is momentarily unset.
-    console.warn('[project-control canvas] access.set failed:', (err as Error).message)
-  }
+  await setControlCanvasReadOnly(canvasId, opts.channelId)
   return { canvasId, canvasUrl: (created.canvas_url as string | undefined) || null }
 }
 

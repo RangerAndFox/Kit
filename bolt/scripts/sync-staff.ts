@@ -87,19 +87,21 @@ async function main() {
     if (h) matched++
     else unmatched++
 
-    // Upsert by slack_user_id. Preserve existing role; sync everything else.
+    // Upsert by immutable Slack id. A missing Harvest email match must never
+    // clear a previously verified provider mapping; omit the field instead.
+    const row = {
+      slack_user_id: u.id,
+      email: u.email,
+      full_name: u.fullName,
+      ...(h ? { harvest_user_id: h.id } : {}),
+      updated_at: new Date().toISOString(),
+    }
     const { error } = await sb.from('staff').upsert(
-      {
-        slack_user_id: u.id,
-        email: u.email,
-        full_name: u.fullName,
-        harvest_user_id: h ? h.id : null,
-        updated_at: new Date().toISOString(),
-      },
+      row,
       { onConflict: 'slack_user_id' },
     )
     if (error) {
-      console.warn(`[sync-staff] upsert failed for ${u.id} (${u.email}): ${error.message}`)
+      console.warn(`[sync-staff] identity conflict for ${u.id} (${u.email}); mapping left unchanged`)
       continue
     }
     upserted++

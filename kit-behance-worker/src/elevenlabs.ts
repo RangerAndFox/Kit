@@ -68,13 +68,13 @@ export async function isElevenLabsSignedIn(context: BrowserContext): Promise<boo
   }
 }
 
-async function findExisting(page: Page, name: string): Promise<string | null> {
+async function findExisting(page: Page, marker: string): Promise<string | null> {
   const links = page.locator('a[href^="/app/studio/"]')
   const count = await links.count().catch(() => 0)
   for (let index = 0; index < count; index += 1) {
     const link = links.nth(index)
     const text = (await link.innerText().catch(() => '')).trim()
-    if (text.split('\n')[0].trim().toLowerCase() === name.toLowerCase()) return link.getAttribute('href')
+    if (text.includes(marker)) return link.getAttribute('href')
   }
   return null
 }
@@ -101,7 +101,10 @@ export async function buildElevenLabsDraft(
     }
 
     if (!resumableUrl) {
-      const existing = await findExisting(page, job.project_name)
+      // Display names are not identity. The deterministic job marker survives
+      // a crash after provider creation but before the URL checkpoint.
+      const marker = `[KIT ${job.id}]`
+      const existing = await findExisting(page, marker)
       if (existing) {
         await page.goto(new URL(existing, 'https://elevenlabs.io').toString(), { waitUntil: 'domcontentloaded' })
         return parseStudioProject(page.url())
@@ -121,6 +124,13 @@ export async function buildElevenLabsDraft(
       await audioProject.click()
       await page.waitForURL(/\/app\/studio\/[^/?#]+/i, { timeout: 60_000 })
       const checkpoint = parseStudioProject(page.url())
+      const markerName = await waitVisible([
+        page.getByPlaceholder(/untitled/i),
+        page.locator('input').last(),
+      ])
+      if (!markerName) throw new Error('ElevenLabs Studio project marker field was not found.')
+      await markerName.fill(`${job.project_name} ${marker}`)
+      await markerName.press('Enter')
       await updateElevenLabsJob(job, 'opening_studio', {
         studio_project_id: checkpoint.projectId,
         studio_url: checkpoint.url,

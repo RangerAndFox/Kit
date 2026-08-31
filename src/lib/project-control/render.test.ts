@@ -227,14 +227,14 @@ describe('renderProjectControlCanvas', () => {
     assert.match(out, /\|\s*### \*\*Client\*\*\s*\|\s*Nike\s*\|/)
   })
 
-  it('fills the Contacts row from the authoritative Client Contact column', () => {
+  it('omits Client Contact from the channel-visible Canvas', () => {
     const rowWithContact = normalizeRow(MASTER_HEADERS, MASTER_HEADERS.map((h) =>
       h === 'Client Contact'
         ? { formattedValue: 'Jane Doe — jane@nike.com', effectiveValue: { stringValue: 'Jane Doe — jane@nike.com' } }
         : {},
     ))
     const rendered = renderProjectControlCanvas(TEMPLATE, rowWithContact)
-    assert.match(rendered, /\|\s*### \*\*Contacts\*\*\s*\|\s*Jane Doe — jane@nike\.com\s*\|/)
+    assert.doesNotMatch(rendered, /Jane Doe|jane@nike\.com/)
   })
 
   it('renders a hyperlink cell as [display](target)', () => {

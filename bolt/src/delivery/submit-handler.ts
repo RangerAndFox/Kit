@@ -4,7 +4,7 @@
  */
 
 import type { App } from '@slack/bolt'
-import { submitJob, createProfile } from '../../../src/lib/delivery/storage'
+import { submitJob, createProfile, getProfile } from '../../../src/lib/delivery/storage'
 import { submitAeRenderFromProject } from '../../../src/lib/delivery/ae-storage'
 import { SELECT_PROFILE_CALLBACK_ID, buildSelectProfileModal } from './select-profile-modal'
 import { CREATE_PROFILE_CALLBACK_ID } from './create-profile-modal'
@@ -15,6 +15,31 @@ import { runSpecExtraction } from './spec-intake'
 const SPEC_TEXT_CALLBACK_ID = 'kit_delivery_spec_text'
 
 export function registerDeliveryViewHandlers(app: App) {
+  // Rebuild the modal when the profile changes. Slack otherwise keeps input
+  // blocks from the initially rendered profile, allowing hidden/stale naming
+  // fields to be submitted with a different selected profile.
+  app.action('profile_id', async ({ ack, body, action, client }) => {
+    await ack()
+    const view = (body as any).view
+    if (view?.callback_id !== SELECT_PROFILE_CALLBACK_ID) return
+    const profileId = (action as any).selected_option?.value
+    if (!profileId) return
+    let metadata: any = {}
+    try { metadata = JSON.parse(view.private_metadata || '{}') } catch {}
+    const rebuilt = await buildSelectProfileModal({
+      sources: metadata.sources || undefined,
+      sourcePath: metadata.sourcePath || undefined,
+      sourceSizeBytes: metadata.sourceSizeBytes || undefined,
+      channelId: metadata.channelId || undefined,
+      defaultProfileId: profileId,
+    })
+    await client.views.update({
+      view_id: view.id,
+      hash: view.hash,
+      view: rebuilt as any,
+    })
+  })
+
   // AE render modal → read the project's render queue and dispatch chunks
   app.view(AE_RENDER_CALLBACK_ID, async ({ ack, body, view, client }) => {
     const projectPath = view.state.values['aep_block']?.['aep_path']?.value?.trim()
@@ -55,16 +80,21 @@ export function registerDeliveryViewHandlers(app: App) {
 
   // Select-profile modal → submit a render job
   app.view(SELECT_PROFILE_CALLBACK_ID, async ({ ack, body, view, client }) => {
-    await ack()
     const state = view.state.values
     const userId = body.user.id
 
     const profileId = state['profile_block']?.['profile_id']?.selected_option?.value
     if (!profileId) {
-      await client.chat.postMessage({
-        channel: userId,
-        text: ':warning: Couldn\'t read the selected profile — please try again.',
+      await ack({
+        response_action: 'errors',
+        errors: { profile_block: 'Choose a delivery profile.' },
       })
+      return
+    }
+
+    const profile = await getProfile(profileId)
+    if (!profile) {
+      await ack({ response_action: 'errors', errors: { profile_block: 'That profile no longer exists.' } })
       return
     }
 
@@ -73,12 +103,18 @@ export function registerDeliveryViewHandlers(app: App) {
     })()
 
     const namingFields: Record<string, string> = {}
+    const allowedTokens = new Set(
+      Array.from(String(profile.naming_template || '').matchAll(/\{(\w+)\}/g)).map((m: any) => m[1]),
+    )
     for (const [blockId, fields] of Object.entries(state)) {
       if (!blockId.startsWith('name_')) continue
       const key = blockId.slice('name_'.length)
+      if (!allowedTokens.has(key)) continue
       const value = Object.values(fields as any)[0]?.value
       if (value) namingFields[key] = String(value).trim()
     }
+
+    await ack()
 
     // Prefer the paired video+audio sources from the specs prompt; fall back
     // to the legacy single sourcePath (manual `/kit deliver <path>`).
