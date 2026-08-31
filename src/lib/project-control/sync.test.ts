@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import { runProjectControlSync, projectControlSync, projectControlSyncOnEdit, type SyncDeps } from '../inngest/project-control-sync'
 import { MASTER_HEADERS, normalizeRow, sourceRowHash, type SheetCell } from './render'
 import type { WorkbookConfig } from './types'
-import type { BindingRow, SyncStateRow } from './store'
+import type { BindingRow, ProjectCanvasRow, SyncStateRow } from './store'
 import { PROJECT_VIEW_RENDER_VERSION } from './views'
 
 const CONFIG: WorkbookConfig = { spreadsheetId: 'sid', sheetId: 0, headerRow: 3, templateChannelId: 'C0' }
@@ -17,6 +17,7 @@ const TEMPLATE = '# 🎬 2xxx Client Project\n\n| ### **Client** |  |\n'
 
 function cells(): SheetCell[] {
   return MASTER_HEADERS.map((h) => {
+    if (h === 'Project Number') return { formattedValue: '2601', effectiveValue: { stringValue: '2601' } }
     if (h === 'Client') return { formattedValue: 'Nike', effectiveValue: { stringValue: 'Nike' } }
     if (h === 'Project Name') return { formattedValue: 'S', effectiveValue: { stringValue: 'S' } }
     return {}
@@ -163,6 +164,39 @@ describe('runProjectControlSync', () => {
     assert.equal(result.updated, 1)
     assert.equal(store.bindings[0].sync_status, 'synced')
     assert.equal(store.bindings[0].error, null)
+  })
+
+  it('backfills the missing NotesAndFeedback canvas by exact project channel and persists it', async () => {
+    const { deps, edits } = makeDeps({
+      bindings: [binding({ template_markdown: null, source_template_file_id: null, source_template_hash: null, last_row_hash: 'old' })],
+    })
+    deps.config = { ...CONFIG, layout: 'rf-production-v1' }
+    deps.sheets.readProjectSupplement = async () => ({
+      scheduleStatus: 'Draft', specs: {}, workback: [], deliverables: [], assignments: [], statusLog: [],
+      links: [{ 'Link Type': 'Slack Channel', URL: 'https://slack.com/app_redirect?channel=CTEST' }],
+    })
+    const canvases: ProjectCanvasRow[] = [
+      { id: 'o', project_id: 'p1', canvas_type: 'overview', canvas_id: 'C1', canvas_url: null, source_template_file_id: null, source_template_hash: null, template_markdown: null, last_source_hash: null, last_synced_at: null, sync_status: 'synced', error: null },
+      { id: 'r', project_id: 'p1', canvas_type: 'reference', canvas_id: 'CR', canvas_url: null, source_template_file_id: null, source_template_hash: null, template_markdown: null, last_source_hash: null, last_synced_at: null, sync_status: 'synced', error: null },
+      { id: 's', project_id: 'p1', canvas_type: 'schedule', canvas_id: 'CS', canvas_url: null, source_template_file_id: null, source_template_hash: null, template_markdown: null, last_source_hash: null, last_synced_at: null, sync_status: 'synced', error: null },
+    ]
+    const created: Array<{ channelId: string; title: string }> = []
+    const saved: string[] = []
+    deps.store.listProjectCanvases = async () => canvases
+    deps.store.upsertProjectCanvas = async (input) => { saved.push(input.canvasType) }
+    deps.store.updateProjectCanvas = async () => {}
+    deps.canvas.createControlCanvas = async ({ channelId, title }) => {
+      created.push({ channelId, title })
+      return { canvasId: 'CN', canvasUrl: 'https://slack.com/canvas/CN' }
+    }
+    deps.canvas.reconcileControlCanvas = async () => ({ status: 'absent' })
+
+    const result = await runProjectControlSync(deps)
+
+    assert.equal(result.updated, 1)
+    assert.deepEqual(created, [{ channelId: 'CTEST', title: '2601_NotesAndFeedback' }])
+    assert.deepEqual(saved, ['notesAndFeedback'])
+    assert.deepEqual(edits, ['C1', 'CR', 'CS'])
   })
 
   it('does not advance the cursor when a binding fails', async () => {

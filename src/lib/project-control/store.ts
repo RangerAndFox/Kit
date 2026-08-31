@@ -343,7 +343,7 @@ export async function listSyncableBindings(spreadsheetId: string): Promise<Bindi
   return (data as BindingRow[]) || []
 }
 
-export type ProjectCanvasType = 'overview' | 'reference' | 'schedule'
+export type ProjectCanvasType = 'overview' | 'reference' | 'schedule' | 'notesAndFeedback'
 export interface ProjectCanvasRow {
   id: string
   project_id: string

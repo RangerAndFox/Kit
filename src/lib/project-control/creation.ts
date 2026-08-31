@@ -1,6 +1,6 @@
 /**
  * Railway-owned creation orchestration: bind a freshly provisioned project to
- * exactly one Projects row, its normalized child records, and three Project
+ * exactly one Projects row, its normalized child records, and four Project
  * Control canvases.
  *
  * Creation lifecycle (persisted on the binding, resumable at every step):
@@ -50,7 +50,7 @@ import {
   readProjectSupplement as realReadProjectSupplement,
   type ProjectLinksInput,
 } from './sheets'
-import { projectViewHash, renderOverviewView, renderReferenceView, renderScheduleView, type ProjectSupplement } from './views'
+import { projectViewHash, renderNotesAndFeedbackView, renderOverviewView, renderReferenceView, renderScheduleView, type ProjectSupplement } from './views'
 import {
   ensureBinding,
   getBindingByProject,
@@ -91,7 +91,7 @@ export interface CreationStorePort {
   claimWorkbookLease(spreadsheetId: string, kind: 'creation' | 'sync', holder: string): Promise<boolean>
   renewWorkbookLease(spreadsheetId: string, kind: 'creation' | 'sync', holder: string): Promise<boolean>
   releaseWorkbookLease(spreadsheetId: string, kind: 'creation' | 'sync', holder: string): Promise<void>
-  upsertProjectCanvas?(input: { projectId: string; canvasType: 'overview' | 'reference' | 'schedule'; canvasId: string; canvasUrl?: string | null; sourceTemplateFileId?: string | null; templateMarkdown?: string | null; sourceTemplateHash?: string | null }): Promise<void>
+  upsertProjectCanvas?(input: { projectId: string; canvasType: 'overview' | 'reference' | 'schedule' | 'notesAndFeedback'; canvasId: string; canvasUrl?: string | null; sourceTemplateFileId?: string | null; templateMarkdown?: string | null; sourceTemplateHash?: string | null }): Promise<void>
   listProjectCanvases?(projectId: string): Promise<ProjectCanvasRow[]>
 }
 
@@ -286,11 +286,12 @@ export async function bindProjectControl(
       const desired = [
         { canvasType: 'reference' as const, label: 'Reference', markdown: renderReferenceView(row, extra) },
         { canvasType: 'schedule' as const, label: 'Schedule', markdown: renderScheduleView(row, extra) },
+        { canvasType: 'notesAndFeedback' as const, label: 'NotesAndFeedback', markdown: renderNotesAndFeedbackView(row, extra) },
       ]
       for (const view of desired) {
         const title = projectCanvasTitle(projectNumber, view.canvasType)
         const clone = (opts.slackResult.data?.canvasClones || []).find((candidate) =>
-          candidate.title.toLowerCase().includes(view.canvasType))
+          candidate.title.toLowerCase().includes(view.canvasType.toLowerCase()))
         const stored = persisted.find((candidate) => candidate.canvas_type === view.canvasType && candidate.canvas_id)
         let handle: CanvasHandle
         if (clone) {

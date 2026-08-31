@@ -918,17 +918,18 @@ async function readTableForProject(config: WorkbookConfig, sheetId: number | und
 }
 
 export async function readProjectSupplement(config: WorkbookConfig, projectNumber: string): Promise<ProjectSupplement> {
-  const [projectRows, specRows, workback, links, deliverables, assignments] = await Promise.all([
+  const [projectRows, specRows, workback, links, deliverables, assignments, statusLog] = await Promise.all([
     readTableForProject(config, config.sheetId, RF_PRODUCTION_PROJECT_HEADERS, projectNumber),
     readTableForProject(config, config.specsSheetId, ['Project ID','Dimensions','Frame Rate','Duration','Audio Requirements','Primary File Type','Notes','Specs Status'], projectNumber),
     readTableForProject(config, config.workbackSheetId, ['Project ID','Task','Phase','Start Date','Due Date','Owner','Status','% Complete','Notes','Milestone URL','Sort Order','Show on Canvas'], projectNumber),
     readTableForProject(config, config.linksSheetId, ['Project ID','Link Type','Label','URL','Active','Sort Order'], projectNumber),
     readTableForProject(config, config.deliverablesSheetId, ['Project ID','Deliverable','Specs','Delivery Link','Status','Sort Order'], projectNumber),
     readTableForProject(config, config.assignmentsSheetId, ['Project ID','Date','Person','Role','Phase','Daily Assignment'], projectNumber),
+    readTableForProject(config, config.statusLogSheetId, ['Project ID','Date','Update','Updated By','Visibility'], projectNumber),
   ])
   return {
     scheduleStatus: projectRows[0]?.['Schedule Status'] || 'Draft',
-    specs: specRows[0] || {}, workback, links, deliverables, assignments,
+    specs: specRows[0] || {}, workback, links, deliverables, assignments, statusLog,
   }
 }
 
@@ -949,6 +950,7 @@ export function createCachedProjectSupplementReader(): typeof readProjectSupplem
     links: Array<Record<string, string>>
     deliverables: Array<Record<string, string>>
     assignments: Array<Record<string, string>>
+    statusLog: Array<Record<string, string>>
   }> | null = null
 
   return async (config: WorkbookConfig, projectNumber: string): Promise<ProjectSupplement> => {
@@ -956,6 +958,7 @@ export function createCachedProjectSupplementReader(): typeof readProjectSupplem
       config.spreadsheetId, config.sheetId, config.specsSheetId,
       config.workbackSheetId, config.linksSheetId,
       config.deliverablesSheetId, config.assignmentsSheetId,
+      config.statusLogSheetId,
       config.headerRow,
     ].join(':')
     if (!snapshot || cacheKey !== key) {
@@ -967,8 +970,9 @@ export function createCachedProjectSupplementReader(): typeof readProjectSupplem
         readTableRows(config, config.linksSheetId, ['Project ID','Link Type','Label','URL','Active','Sort Order']),
         readTableRows(config, config.deliverablesSheetId, ['Project ID','Deliverable','Specs','Delivery Link','Status','Sort Order']),
         readTableRows(config, config.assignmentsSheetId, ['Project ID','Date','Person','Role','Phase','Daily Assignment']),
-      ]).then(([projects, specs, workback, links, deliverables, assignments]) => ({
-        projects, specs, workback, links, deliverables, assignments,
+        readTableRows(config, config.statusLogSheetId, ['Project ID','Date','Update','Updated By','Visibility']),
+      ]).then(([projects, specs, workback, links, deliverables, assignments, statusLog]) => ({
+        projects, specs, workback, links, deliverables, assignments, statusLog,
       }))
     }
 
@@ -983,6 +987,7 @@ export function createCachedProjectSupplementReader(): typeof readProjectSupplem
       links: forProject(tables.links),
       deliverables: forProject(tables.deliverables),
       assignments: forProject(tables.assignments),
+      statusLog: forProject(tables.statusLog),
     }
   }
 }
@@ -1022,7 +1027,7 @@ export async function seedNormalizedProjectTables(config: WorkbookConfig, submis
     ])
   }
   if (config.statusLogSheetId != null && !(await sheetHasProject(config, config.statusLogSheetId, id))) {
-    await appendRows(config, config.statusLogSheetId, 4, [[id, parseDateToSerial(new Date().toISOString().slice(0, 10)), 'Project created by Kit', 'Kit']])
+    await appendRows(config, config.statusLogSheetId, 5, [[id, parseDateToSerial(new Date().toISOString().slice(0, 10)), 'Project created by Kit', 'Kit', 'Team']])
   }
 }
 
@@ -1135,7 +1140,7 @@ export async function activateWorkbackDraft(
   } })
   await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests })
   if (config.statusLogSheetId != null) {
-    await appendRows(config, config.statusLogSheetId, 4, [[projectNumber, parseDateToSerial(new Date().toISOString().slice(0, 10)), 'Workback approved and activated', actor]])
+    await appendRows(config, config.statusLogSheetId, 5, [[projectNumber, parseDateToSerial(new Date().toISOString().slice(0, 10)), 'Workback approved and activated', actor, 'Team']])
   }
   return { firstMilestone: firstName }
 }
@@ -1170,7 +1175,7 @@ export async function advanceWorkbackForShare(config: WorkbookConfig, kitProject
   }
   await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests })
   if (config.statusLogSheetId != null) {
-    await appendRows(config, config.statusLogSheetId, 4, [[projectNumber, parseDateToSerial(new Date().toISOString().slice(0, 10)), `${milestone} shared; workback advanced`, actor]])
+    await appendRows(config, config.statusLogSheetId, 5, [[projectNumber, parseDateToSerial(new Date().toISOString().slice(0, 10)), `${milestone} shared; workback advanced`, actor, 'Team']])
   }
   return { nextMilestone: next ? normalizeCell(next.values[1]).display : null }
 }
