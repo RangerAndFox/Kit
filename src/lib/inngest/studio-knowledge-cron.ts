@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Nightly cron — regenerate every project's summary document from the
  * latest notes + transcripts + actions and re-embed.

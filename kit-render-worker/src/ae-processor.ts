@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * After Effects job processors.
  *
@@ -28,6 +27,7 @@ import { buildAerenderArgs, aerenderArgsToShellCommand } from './aerender/comman
 import { runAerender } from './aerender/runner'
 import { buildStitchArgs } from './aerender/stitch-builder'
 import { inspectRenderQueue } from './aerender/inspect-runner'
+import { dropboxDirname, sanitizeName } from './aerender/path-utils'
 import { runFFmpeg } from './ffmpeg/runner'
 
 const activeClaims = new Map<string, string>()

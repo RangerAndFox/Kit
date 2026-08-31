@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { serve } from 'inngest/next'
 import { inngest } from '@/lib/inngest/client'
 import { registeredFunctions } from '@/lib/inngest/functions'

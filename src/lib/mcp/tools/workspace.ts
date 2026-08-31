@@ -1,7 +1,16 @@
-// @ts-nocheck
 import { z } from 'zod'
 import { createAdminClient, ok, fail } from '../helpers'
 import type { KitTool } from '../types'
+
+interface WorkspaceContext {
+  id: string
+  name: string
+  slug: string
+  plan: string
+  slack_team_id: string | null
+  settings: unknown
+  onboarding_completed: boolean
+}
 
 // ─── kit_get_workspace_context ───────────────────────────────
 
@@ -24,9 +33,10 @@ export const getWorkspaceContext: KitTool = {
         .eq('id', workspace_id)
         .maybeSingle()
       if (error) return fail('Unable to load the authorized workspace.')
-      if (!data) return fail('The authorized workspace does not exist.')
-      if (slack_team_id && data.slack_team_id !== slack_team_id) return fail('Slack team does not match the authorized workspace.')
-      return ok(data, 'Authorized workspace:')
+      const workspace = data as WorkspaceContext | null
+      if (!workspace) return fail('The authorized workspace does not exist.')
+      if (slack_team_id && workspace.slack_team_id !== slack_team_id) return fail('Slack team does not match the authorized workspace.')
+      return ok(workspace, 'Authorized workspace:')
     }
 
     if (slack_team_id) {
@@ -36,7 +46,8 @@ export const getWorkspaceContext: KitTool = {
         .eq('slack_team_id', slack_team_id)
         .limit(1)
         .maybeSingle()
-      if (data) return ok(data, `Workspace for Slack team ${slack_team_id}:`)
+      const workspace = data as WorkspaceContext | null
+      if (workspace) return ok(workspace, `Workspace for Slack team ${slack_team_id}:`)
     }
 
     return fail('A workspace-scoped MCP identity is required.')

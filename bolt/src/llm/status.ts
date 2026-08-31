@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Slack typing-indicator wrapper.
  *

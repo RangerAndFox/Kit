@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Local copy of delivery pipeline types needed by the render worker.
  * Duplicated intentionally — this package is standalone and must not import

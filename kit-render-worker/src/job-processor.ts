@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Process one claimed job end-to-end:
  *   1. Mark processing
@@ -23,6 +22,7 @@ import { buildFFmpegArgs, argsToShellCommand } from './ffmpeg/command-builder'
 import { buildOutputFilename } from './ffmpeg/naming'
 import { runQualityControl } from './ffmpeg/qc'
 import { processAeInspect, processAeChunk, processAeStitch } from './ae-processor'
+import type { SourceFile } from './types'
 
 export async function processJob(job: ClaimedJob): Promise<void> {
   // Route AE jobs to their dedicated processors; transcode falls through.
@@ -102,10 +102,10 @@ async function processTranscodeJob(job: ClaimedJob): Promise<void> {
     // ── Pass 2: full transcode ───────────────────────────────
     // Video first (input 0), then the audio mix (input 1) so the builder's
     // -map indices line up.
-    const builderSources = [
+    const builderSources: SourceFile[] = [
       { path: resolvedVideo.localPath, type: 'video', size_bytes: resolvedVideo.sizeBytes },
       ...(resolvedAudio
-        ? [{ path: resolvedAudio.localPath, type: 'audio', size_bytes: resolvedAudio.sizeBytes }]
+        ? [{ path: resolvedAudio.localPath, type: 'audio' as const, size_bytes: resolvedAudio.sizeBytes }]
         : []),
     ]
     const args = buildFFmpegArgs({ profile, sourceFiles: builderSources, outputPath: attemptPath, loudness })

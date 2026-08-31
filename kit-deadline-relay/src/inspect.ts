@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Prepare a project for the farm by scripting AfterFX.exe headless.
  *

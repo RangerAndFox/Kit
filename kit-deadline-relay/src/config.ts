@@ -1,4 +1,3 @@
-// @ts-nocheck
 import * as os from 'os'
 import * as path from 'path'
 import * as dotenv from 'dotenv'

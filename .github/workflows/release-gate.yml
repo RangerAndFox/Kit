@@ -32,6 +32,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Prevent new ESLint and TypeScript debt
+        run: npm run lint:ratchet
       - name: Unit tests
         run: find src -name '*.test.ts' -print0 | xargs -0 node --import tsx --test
       - name: Production build

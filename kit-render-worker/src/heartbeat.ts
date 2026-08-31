@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Heartbeat — upserts a render_workers row every HEARTBEAT_INTERVAL_MS.
  *

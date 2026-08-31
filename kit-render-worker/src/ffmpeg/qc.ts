@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Delivery QC — ffprobe the rendered output and confirm it matches the profile.
  *

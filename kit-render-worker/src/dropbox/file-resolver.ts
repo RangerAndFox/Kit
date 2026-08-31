@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Resolve a Dropbox-path (e.g. "/Delivery-Queue/Ignite/intro.mov") to a local
  * filesystem path under the worker's DROPBOX_SYNC_PATH.

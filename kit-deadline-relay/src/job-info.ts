@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Build the Deadline job-info + plugin-info files for one queued After Effects
  * comp. Written to temp files and handed to `deadlinecommand -SubmitJob`.
