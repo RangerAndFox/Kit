@@ -92,6 +92,25 @@ async function harvestPatch(path: string, body: Record<string, unknown>): Promis
   return res.json()
 }
 
+/**
+ * Delete an exact Harvest project. Harvest also deletes its time entries and
+ * expenses, which is why this is only called by Kit's typed-confirmation admin
+ * workflow. A 404 is an idempotent success.
+ */
+export async function deleteHarvestProject(projectId: number): Promise<void> {
+  if (!Number.isSafeInteger(projectId) || projectId <= 0) {
+    throw new Error('Invalid Harvest project id')
+  }
+  const res = await fetch(`${BASE_URL}/projects/${projectId}`, {
+    method: 'DELETE',
+    headers: headers(),
+    signal: AbortSignal.timeout(8_000),
+  })
+  if (res.ok || res.status === 404) return
+  const text = await res.text().catch(() => '')
+  throw new Error(`Harvest DELETE /projects/${projectId}: ${res.status} ${text}`)
+}
+
 // ─── Types ──────────────────────────────────────────────────
 
 export interface HarvestProject {

@@ -657,6 +657,82 @@ export async function deleteProjectRowMetadata(
 }
 
 /**
+ * Remove a project from every normalized Project Control source table while
+ * preserving table formatting and neighboring rows. Values are cleared rather
+ * than deleting grid rows so formulas, native-table ranges, filters and row
+ * references do not shift. The authoritative row metadata is removed in the
+ * same batch. Safe to replay after a partial deletion.
+ */
+export async function clearProjectControlProject(
+  config: WorkbookConfig,
+  kitProjectId: string,
+  projectNumber: string,
+): Promise<{ clearedRows: number }> {
+  const requests: unknown[] = []
+  let clearedRows = 0
+  const clearRow = (sheetId: number, rowIndex: number, width: number) => {
+    requests.push({
+      updateCells: {
+        start: { sheetId, rowIndex, columnIndex: 0 },
+        rows: [{ values: Array.from({ length: width }, () => ({})) }],
+        fields: 'userEnteredValue',
+      },
+    })
+    clearedRows++
+  }
+
+  const bound = await searchRowMetadata(config.spreadsheetId, kitProjectId, config.sheetId)
+  if (bound) {
+    clearRow(
+      config.sheetId,
+      bound.rowIndex,
+      config.layout === 'rf-production-v1' ? RF_PRODUCTION_PROJECT_HEADERS.length : MASTER_HEADERS.length,
+    )
+    requests.push({
+      deleteDeveloperMetadata: {
+        dataFilter: {
+          developerMetadataLookup: {
+            metadataKey: KIT_PROJECT_ID_METADATA_KEY,
+            metadataValue: kitProjectId,
+            visibility: 'DOCUMENT',
+          },
+        },
+      },
+    })
+  }
+
+  if (config.layout === 'rf-production-v1' && projectNumber.trim()) {
+    const tables = [
+      { sheetId: config.linksSheetId, first: config.linksHeaderRow ?? config.headerRow, width: 6 },
+      { sheetId: config.specsSheetId, first: config.headerRow, width: 8 },
+      { sheetId: config.workbackSheetId, first: config.headerRow, width: 12 },
+      { sheetId: config.assignmentsSheetId, first: config.headerRow, width: 6 },
+      { sheetId: config.deliverablesSheetId, first: config.headerRow, width: 6 },
+      { sheetId: config.statusLogSheetId, first: config.headerRow, width: 5 },
+    ]
+    for (const table of tables) {
+      if (table.sheetId == null) continue
+      const rows = await getGridData(
+        config,
+        { startRowIndex: table.first, startColumnIndex: 0, endColumnIndex: 1 },
+        'formattedValue,effectiveValue',
+        table.sheetId,
+      )
+      rows.forEach((row, offset) => {
+        if (normalizeCell(row.values?.[0]).display.trim() === projectNumber.trim()) {
+          clearRow(table.sheetId!, table.first + offset, table.width)
+        }
+      })
+    }
+  }
+
+  if (requests.length > 0) {
+    await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests })
+  }
+  return { clearedRows }
+}
+
+/**
  * Build the per-cell `updateCells` batchUpdate requests for a set of owned cells
  * at a row. Shared by createBoundRow and updateBoundRow so the date-vs-string
  * handling and `fields` masks live in ONE place.

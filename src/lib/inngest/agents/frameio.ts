@@ -96,6 +96,25 @@ async function framePatch(path: string, body: Record<string, unknown>): Promise<
   })
 }
 
+/** Delete an exact Frame.io v4 project id. A missing project is already clean. */
+export async function deleteFrameioProject(projectId: string): Promise<void> {
+  if (!projectId) return
+  const acct = getAccountId()
+  const ws = getWorkspaceId()
+  await withRetry(async () => {
+    const response = await fetch(
+      `${FRAMEIO_API}/accounts/${acct}/workspaces/${ws}/projects/${encodeURIComponent(projectId)}`,
+      {
+        method: 'DELETE',
+        headers: await frameioHeaders(),
+        signal: AbortSignal.timeout(15_000),
+      },
+    )
+    if (response.ok || response.status === 404) return
+    throw new Error(`${response.status}: ${await response.text()}`)
+  })
+}
+
 /**
  * Stable Kit-identity marker embedded in the Frame.io project label. Business
  * fields (number/client/name) are NOT an identity — intentional Kit duplicates

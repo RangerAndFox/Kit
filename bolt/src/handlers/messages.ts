@@ -49,6 +49,8 @@ import { buildUpdateProjectCardForContext } from './interactions'
 import { buildArchiveCardForContext } from '../archive/handlers'
 import { dashboardBaseUrl } from './dashboard-card'
 import { isArchiveTrigger } from '../../../src/lib/archive/types'
+import { isDeleteProjectTrigger } from '../../../src/lib/project-deletion/types'
+import { buildProjectDeletionCardForContext } from '../project-deletion/handlers'
 import {
   findOpenCheckin,
   handleCheckinReply,
@@ -800,7 +802,7 @@ export function normalizeDmShortcutText(text: string): string {
 }
 
 type DmShortcut = {
-  id: 'dashboard' | 'storyboard' | 'new-project' | 'update-project' | 'archive-project'
+  id: 'dashboard' | 'storyboard' | 'new-project' | 'update-project' | 'archive-project' | 'delete-project'
   matches: (text: string) => boolean
   run: (app: App, context: DmShortcutContext) => Promise<void>
 }
@@ -909,6 +911,30 @@ export const DM_SHORTCUT_REGISTRY: readonly DmShortcut[] = [
         ...(context.threadTs ? { thread_ts: context.threadTs } : {}),
         ...card,
       })
+    },
+  },
+  {
+    id: 'delete-project',
+    matches: isDeleteProjectTrigger,
+    run: async (app, context) => {
+      try {
+        const card = await buildProjectDeletionCardForContext({
+          teamId: context.teamId,
+          userId: context.userId,
+          client: app.client,
+        })
+        await app.client.chat.postMessage({
+          channel: context.channelId,
+          ...(context.threadTs ? { thread_ts: context.threadTs } : {}),
+          ...card,
+        })
+      } catch (error: unknown) {
+        await app.client.chat.postMessage({
+          channel: context.channelId,
+          ...(context.threadTs ? { thread_ts: context.threadTs } : {}),
+          text: `:lock: ${error instanceof Error ? error.message : String(error)}`,
+        })
+      }
     },
   },
 ]

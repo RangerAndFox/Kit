@@ -381,3 +381,14 @@ export async function listStoryboards(
     url: s?.attributes?.public_url || s?.attributes?.edit_url,
   }))
 }
+
+/** Delete the exact blank storyboard Kit created during project provision. */
+export async function deleteStoryboard(storyboardId: string): Promise<void> {
+  if (!storyboardId) return
+  try {
+    await boordsFetch('DELETE', `/storyboards/${encodeURIComponent(storyboardId)}`)
+  } catch (error: unknown) {
+    if (/\b404\b|not found/i.test(error instanceof Error ? error.message : String(error))) return
+    throw error
+  }
+}

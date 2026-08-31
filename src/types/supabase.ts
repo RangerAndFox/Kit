@@ -4242,6 +4242,106 @@ export type Database = {
           },
         ]
       }
+      project_deletion_requests: {
+        Row: {
+          completed_at: string | null
+          created_at: string
+          error: string | null
+          id: string
+          idempotency_key: string
+          project_id: string
+          project_snapshot: Json
+          requested_by_slack_user_id: string
+          started_at: string | null
+          status: string
+          updated_at: string
+          workspace_id: string
+        }
+        Insert: {
+          completed_at?: string | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          idempotency_key: string
+          project_id: string
+          project_snapshot?: Json
+          requested_by_slack_user_id: string
+          started_at?: string | null
+          status?: string
+          updated_at?: string
+          workspace_id: string
+        }
+        Update: {
+          completed_at?: string | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          idempotency_key?: string
+          project_id?: string
+          project_snapshot?: Json
+          requested_by_slack_user_id?: string
+          started_at?: string | null
+          status?: string
+          updated_at?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "project_deletion_requests_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      project_deletion_steps: {
+        Row: {
+          completed_at: string | null
+          created_at: string
+          error: string | null
+          id: string
+          request_id: string
+          result: Json
+          started_at: string | null
+          status: string
+          step_name: string
+          updated_at: string
+        }
+        Insert: {
+          completed_at?: string | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          request_id: string
+          result?: Json
+          started_at?: string | null
+          status?: string
+          step_name: string
+          updated_at?: string
+        }
+        Update: {
+          completed_at?: string | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          request_id?: string
+          result?: Json
+          started_at?: string | null
+          status?: string
+          step_name?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "project_deletion_steps_request_id_fkey"
+            columns: ["request_id"]
+            isOneToOne: false
+            referencedRelation: "project_deletion_requests"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       project_documents: {
         Row: {
           content: string

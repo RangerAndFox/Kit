@@ -35,6 +35,7 @@ import { dispatchAllPendingApprovals } from './brain/approvals'
 import { reconcileBehanceDraftSlack, registerArchiveHandlers } from './archive/handlers'
 import { enqueueArchiveMedia } from '../../src/lib/archive/media-worker'
 import { reconcileElevenLabsDraftSlack } from './storyboard/elevenlabs-notify'
+import { registerProjectDeletionHandlers } from './project-deletion/handlers'
 
 // ─── Boot ──────────────────────────────────────────────────
 
@@ -122,6 +123,7 @@ registerCommandHandlers(app)
 const { runProjectControlRecoverySweep } = registerInteractionHandlers(app)
 registerBrainApprovalHandlers(app)
 registerArchiveHandlers(app)
+registerProjectDeletionHandlers(app)
 
 // Reconcile studio-machine Behance draft results back into the private
 // producer DM. The worker never needs a Slack token.

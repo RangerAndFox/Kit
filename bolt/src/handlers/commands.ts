@@ -31,6 +31,7 @@ import { buildRenderModal } from '../delivery/render-modal'
 import { handlePilotCommand } from './pilots'
 import { buildArchiveCardForContext } from '../archive/handlers'
 import { dashboardBaseUrl } from './dashboard-card'
+import { buildProjectDeletionCardForContext } from '../project-deletion/handlers'
 
 /**
  * Resolve the Slack user's Kit access context for a slash command.
@@ -155,6 +156,26 @@ export function registerCommandHandlers(app: App) {
           await respond({ response_type: 'ephemeral', ...card })
         } catch (err: any) {
           await respond({ response_type: 'ephemeral', text: `Couldn't open archive publishing: ${err.message}` })
+        }
+        break
+      }
+
+      // ── Founder/admin delete everywhere ────────────────────
+      case 'delete': {
+        await ack()
+        if (!/^project(?:\s+.*)?$/i.test(args || '')) {
+          await respond({ response_type: 'ephemeral', text: 'Usage: `/kit delete project`' })
+          break
+        }
+        try {
+          const card = await buildProjectDeletionCardForContext({
+            teamId: command.team_id,
+            userId: command.user_id,
+            client,
+          })
+          await respond({ response_type: 'ephemeral', ...card })
+        } catch (error: unknown) {
+          await respond({ response_type: 'ephemeral', text: `:lock: ${error instanceof Error ? error.message : String(error)}` })
         }
         break
       }
@@ -934,6 +955,7 @@ export function registerCommandHandlers(app: App) {
             '`/kit newproject` — Post the new-project card (pick services, fill in details)\n' +
             '`/kit update` — Edit an established project and ripple the change across every outlet\n' +
             '`/kit archive project` — Prepare an approved project for Dropbox, Vimeo, website, social, and Behance drafts\n' +
+            '`/kit delete project` — Founder/admin only: delete a project across Kit-owned systems after typed confirmation\n' +
             '`/kit onboard` — Onboard a freelancer to a project (Slack/Dropbox/Frame.io/Harvest)\n' +
             '`/kit status <name>` — Quick project lookup\n' +
             '`/kit note [project | body]` — Save a freeform note to a project (or current channel\'s project)\n' +
@@ -952,7 +974,7 @@ export function registerCommandHandlers(app: App) {
             '`/kit meme` — Admin only: post this week’s timesheet meme to the team channel now\n' +
             '`/kit backfill-time` — Admin only: preview confirmable back-dated check-ins; `run` to log them to Harvest\n' +
             '`/kit help` — Show this message\n\n' +
-            'You can also DM me and type *new project*, *update project*, *archive project*, or *new storyboard* to get the same cards. Or @mention me to ask about projects, budgets, files, reviews, or to log time.',
+            'You can also DM me and type *new project*, *update project*, *archive project*, *delete project*, or *new storyboard* to get the same cards. Or @mention me to ask about projects, budgets, files, reviews, or to log time.',
         })
         break
       }

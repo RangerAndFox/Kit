@@ -8,6 +8,7 @@ Production repository: https://github.com/RangerAndFox/Kit
 
 - Creates projects across Slack, Dropbox, Harvest, and Frame.io from one Slack form.
 - Updates an existing project's details and ripples approved changes across connected systems.
+- Gives founders/admins a guarded delete-everywhere workflow for removing test or cancelled projects from Kit-owned systems.
 - Reconciles the update picker against live Slack project channels, adopting channels that exist in Slack but are missing from Kit and excluding deleted test channels.
 - Mirrors files from a project's Dropbox `09_Outgoing/01_Client Progress` and `09_Outgoing/02_Delivery` folders into the corresponding Frame.io project and creates a public review share.
 - Creates Boords storyboards from `.docx` or text scripts and matching ElevenLabs Studio projects populated with VO.
@@ -20,9 +21,10 @@ See [FEATURES.md](FEATURES.md) for the detailed feature and integration referenc
 
 ## Slack entry points
 
-- DM Kit and type `new project`, `update project`, or `storyboard`.
+- DM Kit and type `new project`, `update project`, `delete project`, or `storyboard`.
 - `/kit newproject` opens the project provisioner.
 - `/kit update` opens the existing-project picker and prefilled update form.
+- `/kit delete project` opens the founder/admin-only inventory and typed-confirmation deletion flow.
 - `/storyboard` opens storyboard settings; `/storyboard resume <job-id>` resumes a timed-out job.
 - `/kit deliver`, `/kit profiles`, `/kit workers`, `/kit sync-staff`, `/kit sync-projects`, and `/kit backfill-time` provide operator workflows.
 - Mention `@Kit` in a channel for conversational help.
