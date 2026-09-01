@@ -1,5 +1,7 @@
 import { createAdminClient } from '../supabase/admin'
 
+// Generated database types lag this migration until the next schema snapshot.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = () => createAdminClient() as any
 const now = () => new Date().toISOString()
 

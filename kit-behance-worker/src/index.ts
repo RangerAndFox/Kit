@@ -21,6 +21,7 @@ import {
 } from './store.js'
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error)
 
 console.log('Kit Studio Browser Worker')
 console.log(`Worker: ${config.displayName} (${config.workerId})`)
@@ -37,8 +38,8 @@ let elevenLabsClaim: { id: string; claimed_at: string | null } | null = null
 let frameioClaim: { id: string; claimed_at: string | null } | null = null
 let behanceAvailable = await isBehanceSignedIn(context)
 let elevenLabsAvailable = await isElevenLabsSignedIn(context)
-let frameioAvailable = await isFrameioSignedIn(context).catch((error: any) => {
-  console.error('[frameio-login-check]', error?.message || String(error))
+let frameioAvailable = await isFrameioSignedIn(context).catch((error: unknown) => {
+  console.error('[frameio-login-check]', errorMessage(error))
   return false
 })
 
@@ -80,8 +81,8 @@ async function processBehance(): Promise<boolean> {
       proof_url: result.proofUrl,
       error: null,
     })
-  } catch (error: any) {
-    const message = error?.message || String(error)
+  } catch (error: unknown) {
+    const message = errorMessage(error)
     console.error('[behance]', message)
     if (error instanceof BehanceLoginRequiredError) behanceAvailable = false
     await updateJob(job, error instanceof BehanceLoginRequiredError ? 'retryable' : 'failed', { error: message }).catch(() => {})
