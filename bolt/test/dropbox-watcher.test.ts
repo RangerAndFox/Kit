@@ -22,11 +22,18 @@ describe('Frame.io remote-upload readiness', () => {
     expect(classifyFrameioUploadStatus('cancelled')).toBe('failed')
   })
 
-  it('normalizes the documented absolute status URL without changing API paths', () => {
+  it('normalizes every documented status URL shape without changing API paths', () => {
     expect(normalizeFrameioStatusPath('https://api.frame.io/v4/accounts/a/files/f/status'))
+      .toBe('/accounts/a/files/f/status')
+    expect(normalizeFrameioStatusPath('/v4/accounts/a/files/f/status'))
       .toBe('/accounts/a/files/f/status')
     expect(normalizeFrameioStatusPath('/accounts/a/files/f/status'))
       .toBe('/accounts/a/files/f/status')
+  })
+
+  it('fails closed on a status URL from another host', () => {
+    expect(() => normalizeFrameioStatusPath('https://evil.example/v4/accounts/a/files/f/status'))
+      .toThrow(/different host/)
   })
 })
 

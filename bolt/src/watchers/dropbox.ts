@@ -19,7 +19,7 @@ import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { dropboxHeaders } from '../../../src/lib/dropbox/client'
 import { frameioHeaders } from '../../../src/lib/frameio/auth'
-import { frameioProjectUrl } from '../../../src/lib/frameio/url'
+import { frameioProjectUrl, normalizeFrameioNextLink } from '../../../src/lib/frameio/url'
 import { isFrameioUploadEnabled } from '../../../src/lib/projects/settings'
 import { processSrtFile } from '../../../src/lib/delivery/subtitle-watcher'
 import {
@@ -784,14 +784,13 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
     traversedNames.push(folderName)
   }
 
-  // ── Get a temporary Dropbox download URL ────────────────
-  const tempLinkResp = await dbxPost('/files/get_temporary_link', { path: d.path })
-  const sourceUrl: string = tempLinkResp.link
-  if (!sourceUrl) throw new Error('Dropbox did not return a temporary link')
-
+  // ── Resume an existing transfer or begin a new one ──────
   // A filename is presentation, never identity. The durable transfer ledger
   // binds this exact Dropbox file revision to the one Frame.io file created for
   // it. A same-name correction therefore cannot silently reuse stale media.
+  // Check the ledger before reading Dropbox: after Frame.io accepts an upload,
+  // producers may move/rename the source while Kit is waiting for processing.
+  // Resuming that checkpoint must not depend on the old Dropbox path.
   const { data: priorTransfer, error: priorTransferError } = await sb
     .from('frameio_delivery_transfers')
     .select('*')
@@ -804,6 +803,12 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
   let transfer = priorTransfer as any
   let file: any
   if (!transfer) {
+    // A new remote upload needs a short-lived Dropbox source URL. A resumed
+    // transfer does not: Frame.io already owns its copy at that point.
+    const tempLinkResp = await dbxPost('/files/get_temporary_link', { path: d.path })
+    const sourceUrl: string = tempLinkResp.link
+    if (!sourceUrl) throw new Error('Dropbox did not return a temporary link')
+
     const createResp = await frameioPost(
       `/accounts/${acct}/folders/${targetFolderId}/files/remote_upload`,
       { data: { name: fileName, source_url: sourceUrl } },
@@ -1343,7 +1348,10 @@ async function findChildFile(
 }
 
 export function normalizeFrameioStatusPath(path: string): string {
-  return String(path || '').replace(/^https:\/\/api\.frame\.io\/v4/i, '')
+  // Frame.io returns this link as an absolute URL, `/v4/...`, or an already
+  // base-relative `/accounts/...` path. The shared fail-closed normalizer
+  // ensures FRAMEIO_API contributes exactly one `/v4` segment.
+  return normalizeFrameioNextLink(path)
 }
 
 export function classifyFrameioUploadStatus(status: string): 'processing' | 'ready' | 'failed' {
