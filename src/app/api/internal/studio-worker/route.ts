@@ -8,6 +8,7 @@ const now = () => new Date().toISOString()
 const browserStatuses = new Set(['idle', 'working', 'needs_login', 'error'])
 const behanceJobStatuses = new Set(['opening_editor', 'uploading_media', 'filling_details', 'saving_draft', 'awaiting_review', 'retryable', 'failed', 'cancelled'])
 const elevenJobStatuses = new Set(['opening_studio', 'filling_project', 'saving_draft', 'complete', 'retryable', 'failed', 'cancelled'])
+const frameioJobStatuses = new Set(['opening_project', 'deleting', 'verifying', 'complete', 'retryable', 'failed', 'cancelled'])
 const renderPatchKeys = new Set([
   'status', 'progress_percent', 'progress_message', 'error_message', 'ffmpeg_command',
   'aerender_command', 'output_path', 'output_filename', 'output_size_bytes',
@@ -36,9 +37,11 @@ export async function POST(request: Request) {
   const displayName = String(body.displayName || workerId).slice(0, 200)
 
   try {
-    if (body.action === 'behance.heartbeat' || body.action === 'elevenlabs.heartbeat') {
+    if (body.action === 'behance.heartbeat' || body.action === 'elevenlabs.heartbeat' || body.action === 'frameio.heartbeat') {
       if (!browserStatuses.has(body.status)) throw new Error('invalid worker status')
-      const table = body.action.startsWith('behance') ? 'behance_workers' : 'elevenlabs_workers'
+      const table = body.action.startsWith('behance')
+        ? 'behance_workers'
+        : body.action.startsWith('frameio') ? 'frameio_workers' : 'elevenlabs_workers'
       const { error } = await sb.from(table).upsert({
         worker_id: workerId,
         display_name: displayName,
@@ -53,12 +56,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true })
     }
 
-    if (body.action === 'behance.claim' || body.action === 'elevenlabs.claim') {
+    if (body.action === 'behance.claim' || body.action === 'elevenlabs.claim' || body.action === 'frameio.claim') {
       const isBehance = body.action.startsWith('behance')
-      const table = isBehance ? 'behance_draft_jobs' : 'elevenlabs_studio_jobs'
+      const isFrameio = body.action.startsWith('frameio')
+      const table = isBehance ? 'behance_draft_jobs' : isFrameio ? 'frameio_project_deletion_jobs' : 'elevenlabs_studio_jobs'
       const active = isBehance
         ? ['claimed', 'opening_editor', 'uploading_media', 'filling_details', 'saving_draft']
-        : ['claimed', 'opening_studio', 'filling_project', 'saving_draft']
+        : isFrameio ? ['claimed', 'opening_project', 'deleting', 'verifying'] : ['claimed', 'opening_studio', 'filling_project', 'saving_draft']
       const staleBefore = new Date(Date.now() - 5 * 60_000).toISOString()
       await sb.from(table).update({
         status: 'retryable', claimed_by: null, claimed_at: null,
@@ -78,11 +82,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true, job: data || null })
     }
 
-    if (body.action === 'behance.update' || body.action === 'elevenlabs.update' || body.action === 'behance.pulse' || body.action === 'elevenlabs.pulse') {
+    if (body.action === 'behance.update' || body.action === 'elevenlabs.update' || body.action === 'frameio.update'
+      || body.action === 'behance.pulse' || body.action === 'elevenlabs.pulse' || body.action === 'frameio.pulse') {
       const isBehance = body.action.startsWith('behance')
-      const table = isBehance ? 'behance_draft_jobs' : 'elevenlabs_studio_jobs'
+      const isFrameio = body.action.startsWith('frameio')
+      const table = isBehance ? 'behance_draft_jobs' : isFrameio ? 'frameio_project_deletion_jobs' : 'elevenlabs_studio_jobs'
       const isPulse = body.action.endsWith('pulse')
-      const statusSet = isBehance ? behanceJobStatuses : elevenJobStatuses
+      const statusSet = isBehance ? behanceJobStatuses : isFrameio ? frameioJobStatuses : elevenJobStatuses
       if (!isPulse && !statusSet.has(body.status)) throw new Error('invalid job status')
       const terminal = !isPulse && (isBehance
         ? ['awaiting_review', 'failed', 'cancelled'].includes(body.status)

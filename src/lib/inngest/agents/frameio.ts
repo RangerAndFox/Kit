@@ -96,22 +96,82 @@ async function framePatch(path: string, body: Record<string, unknown>): Promise<
   })
 }
 
-/** Delete an exact Frame.io v4 project id. A missing project is already clean. */
-export async function deleteFrameioProject(projectId: string): Promise<void> {
+type FrameioDeleteOptions = {
+  fetchImpl?: typeof fetch
+  maxAttempts?: number
+  baseDelayMs?: number
+}
+
+export interface FrameioProjectInfo {
+  id: string
+  name: string
+  status: string
+  viewUrl: string
+}
+
+export async function getFrameioProjectInfo(projectId: string, fetchImpl: typeof fetch = fetch): Promise<FrameioProjectInfo | null> {
+  const acct = getAccountId()
+  const response = await fetchImpl(`${FRAMEIO_API}/accounts/${acct}/projects/${encodeURIComponent(projectId)}`, {
+    headers: await frameioHeaders(),
+    signal: AbortSignal.timeout(15_000),
+  })
+  if (response.status === 404 || response.status === 410) return null
+  if (!response.ok) throw new Error(`Frame.io GET project ${projectId}: ${response.status}: ${await response.text()}`)
+  const payload = await response.json().catch(() => null)
+  const project = payload?.data || payload
+  if (!project?.id) throw new Error(`Frame.io GET project ${projectId} returned no project data`)
+  return {
+    id: String(project.id),
+    name: String(project.name || projectId),
+    status: String(project.status || 'present'),
+    viewUrl: String(project.view_url || frameioProjectUrl(projectId)),
+  }
+}
+
+export async function verifyFrameioProjectDeleted(projectId: string, fetchImpl: typeof fetch = fetch): Promise<void> {
+  const project = await getFrameioProjectInfo(projectId, fetchImpl)
+  if (!project || ['deleted', 'trashed'].includes(project.status.toLowerCase())) return
+  throw new Error(`Frame.io project ${projectId} still exists with status ${project.status}`)
+}
+
+/**
+ * Delete an exact Frame.io v4 project id and prove that it is gone.
+ *
+ * Frame.io currently returns two materially different 404s for this flow:
+ *   - the project GET returns 404 because the project is absent (success);
+ *   - the documented DELETE route itself returns a router-level 404 while the
+ *     project remains active (failure).
+ *
+ * Treating every DELETE 404 as "already clean" caused false-success deletion
+ * audits. The authoritative success signal is now a follow-up project GET.
+ */
+export async function deleteFrameioProject(projectId: string, options: FrameioDeleteOptions = {}): Promise<void> {
   if (!projectId) return
   const acct = getAccountId()
   const ws = getWorkspaceId()
+  const fetchImpl = options.fetchImpl || fetch
   await withRetry(async () => {
-    const response = await fetch(
+    const headers = await frameioHeaders()
+    const response = await fetchImpl(
       `${FRAMEIO_API}/accounts/${acct}/workspaces/${ws}/projects/${encodeURIComponent(projectId)}`,
       {
         method: 'DELETE',
-        headers: await frameioHeaders(),
+        headers,
         signal: AbortSignal.timeout(15_000),
       },
     )
-    if (response.ok || response.status === 404) return
-    throw new Error(`${response.status}: ${await response.text()}`)
+    if (!response.ok && response.status !== 404) {
+      throw new Error(`Frame.io DELETE project ${projectId}: ${response.status}: ${await response.text()}`)
+    }
+
+    const project = await getFrameioProjectInfo(projectId, fetchImpl)
+    if (!project || ['deleted', 'trashed'].includes(project.status.toLowerCase())) return
+    const deleteDetail = response.status === 404 ? ` DELETE route returned 404: ${await response.text()}` : ''
+    throw new Error(`Frame.io project ${projectId} still exists with status ${project.status} after deletion.${deleteDetail}`)
+  }, {
+    maxAttempts: options.maxAttempts ?? 2,
+    baseDelayMs: options.baseDelayMs ?? 750,
+    maxDelayMs: 2_000,
   })
 }
 

@@ -44,6 +44,22 @@ function jsonString(record: Record<string, Json | undefined>, key: string): stri
   return typeof value === 'string' && value.trim() ? value : undefined
 }
 
+export function frameioProjectIdFromMetadata(
+  links: Record<string, Json | undefined>,
+  externalIds: Record<string, Json | undefined>,
+): string | undefined {
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+  const direct = [
+    jsonString(links, 'frameio_id'),
+    jsonString(links, 'frameio_project_id'),
+    jsonString(externalIds, 'frameio_id'),
+    jsonString(externalIds, 'frameio_project_id'),
+  ].find((value) => value && uuid.test(value))
+  if (direct) return direct
+  const url = jsonString(links, 'frameio') || jsonString(links, 'frameio_url')
+  return url?.match(/\/project\/([0-9a-f-]{36})(?:[/?#]|$)/i)?.[1]
+}
+
 async function resolveWorkspaceId(teamId: string): Promise<string> {
   if (teamId) {
     const { data } = await db().from('workspaces').select('id').eq('slack_team_id', teamId).limit(1).maybeSingle()
@@ -154,7 +170,7 @@ async function loadSnapshot(projectId: string, workspaceId: string): Promise<Pro
     slackChannelId: project.slack_channel_id || jsonString(links, 'slack_id') || jsonString(links, 'slack_channel_id'),
     canvasIds,
     dropboxPath: jsonString(links, 'dropbox_id') || jsonString(links, 'dropbox_path'),
-    frameioProjectId: jsonString(links, 'frameio_id') || jsonString(links, 'frameio_project_id'),
+    frameioProjectId: frameioProjectIdFromMetadata(links, externalIds),
     harvestProjectId: Number(jsonString(links, 'harvest_id') || jsonString(links, 'harvest_project_id') || project.harvest_project_id) || undefined,
     boordsStoryboardId: jsonString(links, 'boords_id') || jsonString(links, 'boords_storyboard_id'),
     hasSheetBinding: Boolean(binding),
