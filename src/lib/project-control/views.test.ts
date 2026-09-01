@@ -35,6 +35,15 @@ describe('generated Canvas tables', () => {
     assert.match(markdown, /\| — \| No assignments for today \|/)
   })
 
+  it('does not expose the producer-only Harvest link in the project overview', () => {
+    const markdown = renderOverviewView(row, {
+      ...supplement,
+      links: [{ 'Link Type': 'Harvest', URL: 'https://example.test/harvest/project/2637' }],
+    })
+    assert.doesNotMatch(markdown, /Harvest/)
+    assert.doesNotMatch(markdown, /example\.test\/harvest/)
+  })
+
   it('escapes milestone pipes so schedule columns remain aligned', () => {
     const markdown = renderScheduleView(row, supplement)
     assert.match(markdown, /Revise boards \\| timing edit/)

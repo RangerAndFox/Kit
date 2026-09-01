@@ -13,7 +13,7 @@ export interface ProjectSupplement {
 
 // Bump when generated Canvas markup changes so the sync cursor performs one
 // complete regeneration even if the workbook itself has not changed.
-export const PROJECT_VIEW_RENDER_VERSION = '4'
+export const PROJECT_VIEW_RENDER_VERSION = '5'
 
 const val = (row: NormalizedRow, key: string) => row[key]?.display || '—'
 const link = (label: string, url?: string) => url ? `[${label}](${url})` : '—'
@@ -42,7 +42,7 @@ export function renderOverviewView(row: NormalizedRow, extra: ProjectSupplement)
       ['Client', val(row, 'Client')], ['Status', val(row, 'Quick Status')], ['Next Milestone', val(row, 'Next Share')],
     ])}\n\n## Today’s assignments\n${table(['Artist', 'Assignment'], assignmentRows)}\n\n` +
     `## Latest share\n${table(['Field', 'Value'], [['Last Share', row['Last Share']?.hyperlink ? link(row['Last Share'].display, row['Last Share'].hyperlink) : val(row, 'Last Share')], ['Status', val(row, 'Quick Status')], ['Next Milestone', val(row, 'Next Share')]])}\n\n` +
-    `## Asset folders\n${table(['Asset', 'Link'], ['Dropbox','Frame.io','Figma','Script','Boords','Client Visual Reference','Music Reference','ElevenLabs','Harvest'].map((k) => [k, link(k, links[k])]))}`
+    `## Asset folders\n${table(['Asset', 'Link'], ['Dropbox','Frame.io','Figma','Script','Boords','Client Visual Reference','Music Reference','ElevenLabs'].map((k) => [k, link(k, links[k])]))}`
 }
 
 export function renderReferenceView(row: NormalizedRow, extra: ProjectSupplement): string {
