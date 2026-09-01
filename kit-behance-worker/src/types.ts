@@ -62,3 +62,22 @@ export interface ElevenLabsStudioJob {
   attempt: number
   error: string | null
 }
+
+export type FrameioDeletionJobStatus =
+  | 'queued' | 'claimed' | 'opening_project' | 'deleting' | 'verifying'
+  | 'complete' | 'retryable' | 'failed' | 'cancelled'
+
+export interface FrameioProjectDeletionJob {
+  id: string
+  project_id: string
+  workspace_id: string
+  frameio_project_id: string
+  frameio_project_name: string
+  frameio_project_url: string
+  status: FrameioDeletionJobStatus
+  claimed_by: string | null
+  claimed_at: string | null
+  heartbeat_at: string | null
+  attempt: number
+  error: string | null
+}

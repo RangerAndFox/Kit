@@ -10,6 +10,7 @@
     "test": "node --import tsx --test src/*.test.ts",
     "login": "tsx src/login.ts",
     "login:elevenlabs": "tsx src/login-elevenlabs.ts",
+    "login:frameio": "tsx src/login-frameio.ts",
     "check-login": "tsx src/check-login.ts",
     "start": "tsx src/index.ts",
     "start:prod": "node dist/index.js"

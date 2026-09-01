@@ -1,6 +1,6 @@
 import { createAdminClient } from '../supabase/admin'
 import { deleteDropboxProjectPath } from '../inngest/agents/dropbox'
-import { deleteFrameioProject } from '../inngest/agents/frameio'
+import { deleteFrameioProject, getFrameioProjectInfo, verifyFrameioProjectDeleted } from '../inngest/agents/frameio'
 import { deleteHarvestProject } from '../harvest/client'
 import { deleteStoryboard } from '../boords/client'
 import { clearProjectControlProject } from '../project-control/sheets'
@@ -13,6 +13,7 @@ import {
   startDeletionStep,
 } from './store'
 import { PROJECT_DELETION_STEPS, type ProjectDeletionSnapshot, type ProjectDeletionStep } from './types'
+import { queueFrameioBrowserDeletion, waitForFrameioBrowserDeletion } from './frameio-browser'
 
 const db = () => createAdminClient()
 
@@ -62,8 +63,28 @@ export function createProjectDeletionAdapters(slackClient: SlackDeletionClient):
           return { path: snapshot.dropboxPath }
         case 'frameio':
           if (!snapshot.frameioProjectId) return null
-          await deleteFrameioProject(snapshot.frameioProjectId)
-          return { projectId: snapshot.frameioProjectId }
+          try {
+            await deleteFrameioProject(snapshot.frameioProjectId)
+            return { projectId: snapshot.frameioProjectId, method: 'api', verified: true }
+          } catch (apiError) {
+            const project = await getFrameioProjectInfo(snapshot.frameioProjectId)
+            if (!project) return { projectId: snapshot.frameioProjectId, method: 'api', verified: true }
+            const job = await queueFrameioBrowserDeletion({
+              projectId: snapshot.projectId,
+              workspaceId: snapshot.workspaceId,
+              frameioProjectId: snapshot.frameioProjectId,
+              frameioProjectName: project.name,
+              frameioProjectUrl: project.viewUrl,
+            })
+            await waitForFrameioBrowserDeletion(job.id)
+            await verifyFrameioProjectDeleted(snapshot.frameioProjectId)
+            return {
+              projectId: snapshot.frameioProjectId,
+              method: 'studio_browser',
+              verified: true,
+              apiError: errorText(apiError),
+            }
+          }
         case 'harvest':
           if (!snapshot.harvestProjectId) return null
           await deleteHarvestProject(snapshot.harvestProjectId)

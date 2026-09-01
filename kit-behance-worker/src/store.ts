@@ -1,5 +1,5 @@
 import { workerRequest } from './api.js'
-import type { BehanceDraftJob, BehanceJobStatus, ElevenLabsJobStatus, ElevenLabsStudioJob } from './types.js'
+import type { BehanceDraftJob, BehanceJobStatus, ElevenLabsJobStatus, ElevenLabsStudioJob, FrameioDeletionJobStatus, FrameioProjectDeletionJob } from './types.js'
 
 export async function heartbeat(status: 'idle' | 'working' | 'needs_login' | 'error', jobId?: string | null, error?: string | null, browserVersion?: string | null): Promise<void> {
   await workerRequest('behance.heartbeat', { status, jobId, error, browserVersion })
@@ -47,4 +47,20 @@ export async function failStoryboardElevenLabs(
     claimedAt: job.claimed_at,
     error: errorMessage,
   })
+}
+
+export async function frameioHeartbeat(status: 'idle' | 'working' | 'needs_login' | 'error', jobId?: string | null, error?: string | null, browserVersion?: string | null): Promise<void> {
+  await workerRequest('frameio.heartbeat', { status, jobId, error, browserVersion })
+}
+
+export async function claimNextFrameioDeletion(): Promise<FrameioProjectDeletionJob | null> {
+  return (await workerRequest<{ ok: true; job: FrameioProjectDeletionJob | null }>('frameio.claim')).job
+}
+
+export async function updateFrameioDeletion(job: Pick<FrameioProjectDeletionJob, 'id' | 'claimed_at'>, status: FrameioDeletionJobStatus, patch: Record<string, unknown> = {}): Promise<void> {
+  await workerRequest('frameio.update', { jobId: job.id, claimedAt: job.claimed_at, status, patch })
+}
+
+export async function pulseFrameioDeletion(job: Pick<FrameioProjectDeletionJob, 'id' | 'claimed_at'>): Promise<void> {
+  await workerRequest('frameio.pulse', { jobId: job.id, claimedAt: job.claimed_at })
 }

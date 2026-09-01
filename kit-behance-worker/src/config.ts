@@ -43,5 +43,6 @@ export const config = {
   heartbeatIntervalMs: num('HEARTBEAT_INTERVAL_MS', 10000),
   jobTimeoutMs: num('JOB_TIMEOUT_MS', 1_200_000),
   elevenLabsStartUrl: process.env.ELEVENLABS_START_URL || 'https://elevenlabs.io/app/studio',
+  frameioStartUrl: process.env.FRAMEIO_START_URL || 'https://next.frame.io/',
   slackBotToken: process.env.SLACK_BOT_TOKEN?.trim() || null,
 }
