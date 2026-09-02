@@ -29,16 +29,16 @@ Human edits or structurally changes Master Project List
 |---|---|---|
 | Vercel **Production only** | `PROJECT_CONTROL_WEBHOOK_SECRET` | Shared HMAC secret. Absent ⇒ endpoint fails closed (401). **Never** set in Preview. |
 | Vercel (existing) | `PROJECT_CONTROL_SYNC_ENABLED=true` | Gates both cron and event sync. |
-| Vercel + Railway | `MASTER_PROJECT_LIST_SPREADSHEET_ID=1K-P4yCUzP49-YFJke8jwTII-APfaMJQ9WzpSm9BQfeE` | RF Production System workbook. Both runtimes must use the same value. |
-| Vercel + Railway | `MASTER_PROJECT_LIST_SHEET_ID=1869744848`, `MASTER_PROJECT_LIST_HEADER_ROW=4` | `Projects` tab and its header row. The endpoint rejects requests for any other workbook/tab. |
-| Vercel + Railway | `MASTER_PROJECT_LIST_LAYOUT=rf-production-v1` | Enables the Projects A:O schema adapter while preserving legacy compatibility until the environment switch. |
+| Vercel + Railway | `MASTER_PROJECT_LIST_SPREADSHEET_ID=1qF690PLEK-NrzNUywwkEY-SAzt3pgRc8dG8UzAXeGyo` | **Only supported production control-center workbook.** Both runtimes must use the same value. The retired `RF Production System - Native Google Sheets` workbook must never be configured here. |
+| Vercel + Railway | `MASTER_PROJECT_LIST_SHEET_ID=904721650`, `MASTER_PROJECT_LIST_HEADER_ROW=4` | `Projects` tab and its header row. The endpoint rejects requests for any other workbook/tab. |
+| Vercel + Railway | `MASTER_PROJECT_LIST_LAYOUT=rf-production-v1` | Enables the normalized Production Control Center schema adapter. |
 | Vercel + Railway | `MASTER_PROJECT_LIST_LINKS_SHEET_ID=1721636671`, `MASTER_PROJECT_LIST_LINKS_HEADER_ROW=4` | Normalized `Links` tab. Kit upserts Frame.io/Dropbox URLs here and carries them through Project Control Canvas sync. |
 | Vercel (existing) | `GOOGLE_SERVICE_ACCOUNT_JSON` | Also used by the repair utility. |
 | Apps Script → Script Properties | `WEBHOOK_URL` | `https://<kit-prod-domain>/api/webhooks/project-control/sheet-edited` |
 | Apps Script → Script Properties | `WEBHOOK_SECRET` | Exact same value as `PROJECT_CONTROL_WEBHOOK_SECRET`. |
-| Apps Script → Script Properties | `SPREADSHEET_ID`, `SHEET_ID`, `HEADER_ROW` | Use the RF Production values above (`HEADER_ROW=4`). |
+| Apps Script → Script Properties | `SPREADSHEET_ID`, `SHEET_IDS`, `HEADER_ROW` | Use the Production Control Center values from `project-control-v2.md` (`HEADER_ROW=4`). |
 
-## RF Production workbook contract
+## Production Control Center workbook contract
 
 Kit treats `Projects` as the authoritative project row and translates its new
 physical columns into the stable Project Control model. In particular:
@@ -50,9 +50,10 @@ physical columns into the stable Project Control model. In particular:
 - Frame.io and Dropbox URLs live in `Links` (one row per project/link type).
   Creation is retry-safe, existing human link labels are preserved, and changing
   a Project ID moves every matching link row to the new ID.
-- The original A:Y workbook remains supported behind the default `legacy`
-  layout, which makes the production cutover reversible by changing environment
-  variables rather than reverting code.
+- The old `RF Production System - Native Google Sheets` workbook is retired and
+  must not have Kit triggers or runtime configuration attached. Historical data
+  may remain in that workbook, but it is not an input to provisioning, sync, or
+  Slack Canvas generation.
 
 Endpoint (POST only): `/api/webhooks/project-control/sheet-edited`
 Inngest event: `project-control/sheet.edited`. Replay dedupe is enforced by
@@ -65,7 +66,10 @@ Inngest event: `project-control/sheet.edited`. Replay dedupe is enforced by
 1. Open the Master Project List → **Extensions → Apps Script**.
 2. Create a script file and paste `scripts/apps-script/project-control-sheet-edit.gs`.
 3. **Project Settings → Script Properties** → add `WEBHOOK_URL`, `WEBHOOK_SECRET`,
-   `SPREADSHEET_ID`, `SHEET_ID`, `HEADER_ROW`.
+   `SPREADSHEET_ID`, `SHEET_IDS`, `HEADER_ROW`. The production values are:
+   - `SPREADSHEET_ID=1qF690PLEK-NrzNUywwkEY-SAzt3pgRc8dG8UzAXeGyo`
+   - `SHEET_IDS=904721650,1377810846,1186252714,958596238,1721636671,454974547,328162234`
+   - `HEADER_ROW=4`
 4. **Triggers** (clock icon) → **Add Trigger**:
    - Function: `onMasterProjectListEdit`
    - Event source: **From spreadsheet**
@@ -79,7 +83,7 @@ Inngest event: `project-control/sheet.edited`. Replay dedupe is enforced by
    - Event type: **On change**
    This covers structural changes (insert/delete/move/sort rows) that Google's
    edit event does not report.
-5. Authorize the script when prompted (it needs external-request + this-workbook
+6. Authorize the script when prompted (it needs external-request + this-workbook
    scopes only; it never reads credentials or cell contents).
 
 ## Rollout (controlled — do NOT execute without authorization)
