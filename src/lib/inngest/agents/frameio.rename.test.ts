@@ -90,33 +90,33 @@ describe("frameio 'rename'", () => {
   })
 
   it('uses an exact persisted Frame.io id and keeps the new name clean', async () => {
-    const calls: Array<{ method: string; url: string; body: any }> = []
-    globalThis.fetch = (async (url: any, init: any) => {
+    const calls: Array<{ method: string; url: string; body: unknown }> = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const method = init?.method || 'GET'
-      const body = init?.body ? JSON.parse(init.body) : undefined
+      const body = init?.body ? JSON.parse(String(init.body)) as { data: { name: string } } : undefined
       calls.push({ method, url: String(url), body })
       if (method === 'GET') return { ok: true, status: 200, json: async () => ({ data: { id: 'p1', name: '2601_Nike_Old' } }) }
-      return { ok: true, status: 200, json: async () => ({ data: { id: 'p1', name: body.data.name } }) }
-    }) as any
-    const res: any = await frameioAgent.handler('rename', {
+      return { ok: true, status: 200, json: async () => ({ data: { id: 'p1', name: body?.data.name } }) }
+    }) as typeof fetch
+    const res = await frameioAgent.handler('rename', {
       projectId: KIT, frameioProjectId: 'p1', projectNumber: '2601', client: 'Adidas', projectName: 'Summer Campaign',
     })
     assert.equal(res.success, true)
     assert.equal(calls.filter((c) => c.method === 'GET').length, 1)
-    assert.equal(calls.find((c) => c.method === 'PATCH')?.body.data.name, '2601_Adidas_Summer Campaign')
+    assert.equal((calls.find((c) => c.method === 'PATCH')?.body as { data: { name: string } }).data.name, '2601_Adidas_Summer Campaign')
   })
 
   it('finalizes a transient create marker by exact id and is idempotent', async () => {
     let currentName = `2601_Nike_Summer Campaign ${MARKER}`
     let patchCount = 0
-    globalThis.fetch = (async (_url: any, init: any) => {
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
       if ((init?.method || 'GET') === 'PATCH') {
         patchCount++
-        currentName = JSON.parse(init.body).data.name
+        currentName = (JSON.parse(String(init?.body)) as { data: { name: string } }).data.name
         return { ok: true, status: 200, json: async () => ({ data: { id: 'p1', name: currentName } }) }
       }
       return { ok: true, status: 200, json: async () => ({ data: { id: 'p1', name: currentName } }) }
-    }) as any
+    }) as typeof fetch
     const payload = { projectId: KIT, frameioProjectId: 'p1', projectNumber: '2601', client: 'Nike', projectName: 'Summer Campaign' }
     assert.equal((await frameioAgent.handler('finalize_name', payload)).success, true)
     assert.equal((await frameioAgent.handler('finalize_name', payload)).success, true)
@@ -126,11 +126,11 @@ describe("frameio 'rename'", () => {
 
   it('refuses to finalize a project carrying another Kit project marker', async () => {
     const calls = frameMock({ list: [] })
-    globalThis.fetch = (async (url: any, init: any) => {
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       calls.push({ method: init?.method || 'GET', url: String(url), body: init?.body })
       return { ok: true, status: 200, json: async () => ({ data: { id: 'p1', name: '2601_Nike_X [kit:someone-else]' } }) }
-    }) as any
-    const res: any = await frameioAgent.handler('finalize_name', {
+    }) as typeof fetch
+    const res = await frameioAgent.handler('finalize_name', {
       projectId: KIT, frameioProjectId: 'p1', projectNumber: '2601', client: 'Nike', projectName: 'X',
     })
     assert.equal(res.success, false)

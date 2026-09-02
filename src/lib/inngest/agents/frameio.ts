@@ -542,8 +542,8 @@ async function finalizeName(payload: Record<string, unknown>): Promise<AgentResu
       message: `Finalized Frame.io project name as "${businessLabel}"`,
       data: { name: businessLabel },
     }
-  } catch (err: any) {
-    return { agent: 'frameio', action: 'finalize_name', success: false, error: err.message }
+  } catch (err: unknown) {
+    return { agent: 'frameio', action: 'finalize_name', success: false, error: err instanceof Error ? err.message : String(err) }
   }
 }
 
