@@ -2,6 +2,9 @@ import type { BrowserContext, Locator, Page } from 'playwright-core'
 import { config } from './config.js'
 import { pulseElevenLabsJob, updateElevenLabsJob } from './store.js'
 import type { ElevenLabsStudioJob } from './types.js'
+import { parseStudioProject, studioVoiceoverParagraphs } from './elevenlabs-utils.js'
+
+export { parseStudioProject, studioVoiceoverParagraphs } from './elevenlabs-utils.js'
 
 export class ElevenLabsLoginRequiredError extends Error {}
 
@@ -24,14 +27,6 @@ async function waitVisible(locators: Locator[], timeoutMs = 30_000): Promise<Loc
     await new Promise((resolve) => setTimeout(resolve, 250))
   } while (Date.now() < deadline)
   return null
-}
-
-export function parseStudioProject(urlValue: string): { projectId: string; url: string } {
-  const url = new URL(urlValue)
-  if (!/(^|\.)elevenlabs\.io$/i.test(url.hostname)) throw new Error('ElevenLabs returned an unsafe project URL.')
-  const match = url.pathname.match(/^\/app\/studio\/([^/?#]+)/i)
-  if (!match) throw new Error('ElevenLabs opened Studio but returned no project id.')
-  return { projectId: decodeURIComponent(match[1]), url: url.toString() }
 }
 
 async function installDraftLockout(page: Page): Promise<void> {
@@ -155,15 +150,21 @@ export async function buildElevenLabsDraft(
     await nameInput.fill(job.project_name)
     await nameInput.press('Enter')
 
+    const paragraphs = studioVoiceoverParagraphs(job)
+    if (!paragraphs.length) {
+      // A new Kit project gets an intentionally empty Studio shell. The name
+      // is the only content to save until a script supplies real narration.
+      await updateElevenLabsJob(job, 'saving_draft')
+      await page.waitForTimeout(2_500)
+      await pulseElevenLabsJob(job)
+      return parseStudioProject(page.url())
+    }
+
     const editor = await waitVisible([
       page.locator('[contenteditable="true"]').first(),
       page.locator('textarea').first(),
     ], 45_000)
     if (!editor) throw new Error('ElevenLabs Studio changed: voiceover editor was not found.')
-    const paragraphs = Array.isArray(job.voiceover_paragraphs)
-      ? job.voiceover_paragraphs.map(String).map((value) => value.trim()).filter(Boolean)
-      : []
-    if (!paragraphs.length) throw new Error('The ElevenLabs job contains no voiceover.')
     // ElevenLabs only turns explicit Enter keystrokes into separate speech
     // clips. Filling a newline-delimited string silently keeps the first clip
     // and discards the rest, so create each paragraph through the editor's

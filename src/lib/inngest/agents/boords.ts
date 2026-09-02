@@ -29,7 +29,6 @@ import {
   setJobBoordsId,
   setJobElevenLabsPending,
   setJobElevenLabsProject,
-  skipJobElevenLabs,
   failJobElevenLabs,
   advanceJobIndex,
 } from '@/lib/storyboard/jobs'
@@ -48,6 +47,27 @@ async function createOrQueueStudio(input: {
   project: Awaited<ReturnType<typeof createStudioProject>> | null
   queued: boolean
 }> {
+  const paragraphs = voiceoverParagraphs(input.frames)
+
+  // ElevenLabs' document API cannot create an empty Studio project. New Kit
+  // projects deliberately start as blank production shells, so send those to
+  // the dedicated browser worker, which can safely create a blank Audio
+  // project without generating, exporting, publishing, or sharing anything.
+  if (paragraphs.length === 0) {
+    if (!input.jobId) {
+      throw new Error('A durable storyboard job is required to create a blank ElevenLabs Studio project')
+    }
+    await queueElevenLabsStudioJob({
+      storyboardJobId: input.jobId,
+      workspaceId: input.workspaceId,
+      requestedBySlackUserId: input.slackUserId,
+      slackChannelId: input.channelId,
+      projectName: input.projectName,
+      voiceoverParagraphs: [],
+    })
+    return { project: null, queued: true }
+  }
+
   try {
     return {
       project: await createStudioProject({
@@ -65,7 +85,7 @@ async function createOrQueueStudio(input: {
       requestedBySlackUserId: input.slackUserId,
       slackChannelId: input.channelId,
       projectName: input.projectName,
-      voiceoverParagraphs: voiceoverParagraphs(input.frames),
+      voiceoverParagraphs: paragraphs,
     })
     return { project: null, queued: true }
   }
@@ -163,25 +183,20 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
 
     let elevenLabsProject: Awaited<ReturnType<typeof createStudioProject>> | null = null
     let elevenLabsQueued = false
-    const hasVoiceover = !blank && voiceoverParagraphs(frames).length > 0
-    if (hasVoiceover) {
-      stage = 'elevenlabs'
-      if (jobId) await setJobElevenLabsPending(jobId)
-      const studio = await createOrQueueStudio({
-        jobId,
-        workspaceId,
-        slackUserId,
-        channelId,
-        projectName,
-        frames,
-      })
-      elevenLabsProject = studio.project
-      elevenLabsQueued = studio.queued
-      if (jobId && elevenLabsProject) {
-        await setJobElevenLabsProject(jobId, elevenLabsProject.id, elevenLabsProject.url)
-      }
-    } else if (jobId) {
-      await skipJobElevenLabs(jobId)
+    stage = 'elevenlabs'
+    if (jobId) await setJobElevenLabsPending(jobId)
+    const studio = await createOrQueueStudio({
+      jobId,
+      workspaceId,
+      slackUserId,
+      channelId,
+      projectName,
+      frames,
+    })
+    elevenLabsProject = studio.project
+    elevenLabsQueued = studio.queued
+    if (jobId && elevenLabsProject) {
+      await setJobElevenLabsProject(jobId, elevenLabsProject.id, elevenLabsProject.url)
     }
 
     if (jobId) await markJobComplete(jobId, frames.length)
@@ -199,7 +214,7 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       id: storyboard.id,
       message:
         blank
-          ? `Created blank storyboard "${storyboard.name}" (1 placeholder frame)`
+          ? `Created blank storyboard "${storyboard.name}" (1 placeholder frame); ElevenLabs Studio is queued on the studio Mac`
           : `Created "${storyboard.name}" in Boords${elevenLabsQueued ? '; ElevenLabs Studio is queued on the studio Mac' : ' and ElevenLabs Studio'} with ${frames.length} frame${frames.length === 1 ? '' : 's'} (${runtime}, via ${modeUsed}${detectedTable ? ' — A/V table detected' : ''})`,
       data: {
         jobId,
@@ -319,7 +334,7 @@ async function resume(payload: Record<string, unknown>): Promise<AgentResult> {
     let elevenLabsProjectId = job.elevenLabsProjectId
     let elevenLabsUrl = job.elevenLabsUrl
     let elevenLabsQueued = false
-    if (!elevenLabsProjectId && voiceoverParagraphs(job.frames).length > 0) {
+    if (!elevenLabsProjectId) {
       await setJobElevenLabsPending(jobId)
       const studio = await createOrQueueStudio({
         jobId,
@@ -335,8 +350,6 @@ async function resume(payload: Record<string, unknown>): Promise<AgentResult> {
         elevenLabsProjectId = studio.project.id
         elevenLabsUrl = studio.project.url
       }
-    } else if (!elevenLabsProjectId) {
-      await skipJobElevenLabs(jobId)
     }
 
     await markJobComplete(jobId, job.frames.length)
@@ -427,7 +440,7 @@ export const boordsAgent: AgentDefinition = {
     {
       action: 'provision',
       description:
-        'Create a Boords storyboard from a script and a matching ElevenLabs Studio project populated only with the extracted voiceover. Each line/sentence/scene becomes a Boords frame with voiceover in the sound field and visuals in the action field. Supports blank mode for an empty Boords placeholder; ElevenLabs is skipped when there is no VO.',
+        'Create a Boords storyboard from a script and a matching ElevenLabs Studio project populated only with the extracted voiceover. Each line/sentence/scene becomes a Boords frame with voiceover in the sound field and visuals in the action field. Blank mode creates both an empty Boords placeholder and an empty ElevenLabs Studio Audio project.',
       inputDescription:
         'projectName (required, the storyboard title — also used as the Boords project name), script (the script text — required unless blank=true), blank (true for a placeholder storyboard with one empty frame), mode ("auto" | "sentence" | "table" | "ai"; defaults to auto which tries A/V table first then falls back to sentence split), aspectRatio ("16:9" | "9:16" | "1:1" | "4:5" | "21:9"; default 16:9), secondsPerFrame (number; default 5), videoStyle (free text e.g. "Realistic" / "Animated"), boordsProjectId (optional — drop this storyboard into an existing Boords project; omit to auto-create a fresh project)',
       mutates: true,
