@@ -121,7 +121,7 @@ export async function buildElevenLabsDraft(
       const checkpoint = parseStudioProject(page.url())
       const markerName = await waitVisible([
         page.getByPlaceholder(/untitled/i),
-        page.locator('input').last(),
+        page.getByRole('textbox', { name: /untitled/i }),
       ])
       if (!markerName) throw new Error('ElevenLabs Studio project marker field was not found.')
       await markerName.fill(`${job.project_name} ${marker}`)
@@ -144,7 +144,7 @@ export async function buildElevenLabsDraft(
     await editName.click()
     const nameInput = await waitVisible([
       page.getByPlaceholder(/untitled/i),
-      page.locator('input').last(),
+      page.getByRole('textbox', { name: /untitled/i }),
     ])
     if (!nameInput) throw new Error('ElevenLabs Studio changed: project name input was not found.')
     await nameInput.fill(job.project_name)
