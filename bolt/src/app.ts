@@ -24,6 +24,7 @@ import {
   processDropboxNotification,
   drainDropboxInbox,
   reconcileMissingFrameioProjectLinks,
+  reconcileMissingFrameioLatestShares,
   reconcilePendingProjectShares,
 } from './watchers/dropbox'
 import cron from 'node-cron'
@@ -145,6 +146,20 @@ cron.schedule('23 * * * *', () => {
     console.error('[cron] Frame.io project-link reconcile failed:', err),
   )
 })
+
+// Existing projects may already contain Frame.io shares from before the
+// durable Dropbox share ledger was deployed. Fill only blank Last Share cells
+// at boot and daily; current uploads remain immediate and event-driven.
+setTimeout(() => {
+  reconcileMissingFrameioLatestShares().catch((err) =>
+    console.error('[startup] Frame.io Last Share backfill failed:', err),
+  )
+}, 30_000)
+cron.schedule('17 4 * * *', () => {
+  reconcileMissingFrameioLatestShares().catch((err) =>
+    console.error('[cron] Frame.io Last Share backfill failed:', err),
+  )
+}, { timezone: 'UTC' })
 
 // Frame.io upload is intentionally not rolled back when Google Sheets or Slack
 // has a transient outage. Durable share events are retried at boot and every

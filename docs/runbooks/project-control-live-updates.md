@@ -50,6 +50,12 @@ physical columns into the stable Project Control model. In particular:
 - Frame.io and Dropbox URLs live in `Links` (one row per project/link type).
   Creation is retry-safe, existing human link labels are preserved, and changing
   a Project ID moves every matching link row to the new ID.
+- `Last Share Label`, `Last Share URL`, and `Last Share Date` live on the
+  authoritative `Projects` row. New Dropbox→Frame.io uploads write them
+  immediately through the durable share ledger. Railway also fills blank Last
+  Share cells from the newest existing Frame.io project share at boot and daily,
+  covering projects that predate the ledger. Historical backfill never advances
+  the Workback and never sends an old-delivery producer prompt.
 - The old `RF Production System - Native Google Sheets` workbook is retired and
   must not have Kit triggers or runtime configuration attached. Historical data
   may remain in that workbook, but it is not an input to provisioning, sync, or

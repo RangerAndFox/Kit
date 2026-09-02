@@ -20,6 +20,7 @@ import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { dropboxHeaders } from '../../../src/lib/dropbox/client'
 import { frameioHeaders } from '../../../src/lib/frameio/auth'
 import { frameioProjectUrl, normalizeFrameioNextLink } from '../../../src/lib/frameio/url'
+import { listFrameioProjectShares, newestFrameioProjectShare } from '../../../src/lib/frameio/shares'
 import { isFrameioUploadEnabled } from '../../../src/lib/projects/settings'
 import { processSrtFile } from '../../../src/lib/delivery/subtitle-watcher'
 import {
@@ -27,6 +28,9 @@ import {
   syncProjectShareEvent,
   type RegisteredProjectShare,
 } from '../../../src/lib/project-control/share-progress'
+import { readLatestShare, recordLatestShare } from '../../../src/lib/project-control/sheets'
+import { requestProjectControlSync } from '../../../src/lib/project-control/sync-request'
+import { workbookConfigFromEnv } from '../../../src/lib/project-control/types'
 import type { Json } from '../../../src/types/supabase'
 
 type JsonRecord = { [key: string]: Json | undefined }
@@ -1027,6 +1031,76 @@ export async function reconcilePendingProjectShares(
       tally.failed++
       console.error(`[dropbox-watcher] project share recovery failed for ${event.id}: ${err.message}`)
     }
+  }
+  return tally
+}
+
+export interface FrameioShareBackfillTally {
+  scanned: number
+  backfilled: number
+  noShares: number
+  skipped: number
+  failed: number
+}
+
+/**
+ * Fill blank Last Share cells for projects that existed before Kit's durable
+ * Dropbox→Frame.io share ledger. This is intentionally a backfill, not a
+ * producer prompt: it never advances milestones and never re-announces old
+ * deliveries in Slack. New uploads still use registerProjectShare immediately.
+ */
+export async function reconcileMissingFrameioLatestShares(limit = 100): Promise<FrameioShareBackfillTally> {
+  const accountId = process.env.FRAMEIO_ACCOUNT_ID
+  const config = workbookConfigFromEnv()
+  if (!accountId || !config || config.layout !== 'rf-production-v1') {
+    throw new Error('Frame.io account and Project Control workbook are required')
+  }
+  const sb = createAdminClient()
+  const { data: projects, error } = await sb.from('projects')
+    .select('id,project_code,external_ids,external_links')
+    .in('status', ['active', 'partial', 'paused', 'on_hold'])
+    .order('created_at', { ascending: false })
+  if (error) throw new Error(`Frame.io share backfill project load failed: ${error.message}`)
+
+  const tally: FrameioShareBackfillTally = { scanned: 0, backfilled: 0, noShares: 0, skipped: 0, failed: 0 }
+  for (const project of projects || []) {
+    if (tally.scanned >= limit) break
+    const links = asJsonRecord(project.external_links)
+    const ids = asJsonRecord(project.external_ids)
+    const frameioProjectId = typeof links.frameio_id === 'string' ? links.frameio_id : ''
+    const projectNumber = typeof ids.project_number === 'string'
+      ? ids.project_number
+      : extractProjectNumber(String(project.project_code || ''))
+    if (!frameioProjectId || !projectNumber) {
+      tally.skipped++
+      continue
+    }
+    try {
+      const current = await readLatestShare(config, project.id)
+      if (!current || current.url) {
+        tally.skipped++
+        continue
+      }
+      tally.scanned++
+      const latest = newestFrameioProjectShare(await listFrameioProjectShares(accountId, frameioProjectId))
+      if (!latest) {
+        tally.noShares++
+        continue
+      }
+      const parsed = Date.parse(latest.createdAt)
+      const date = Number.isFinite(parsed)
+        ? new Date(parsed).toISOString().slice(0, 10)
+        : new Date().toISOString().slice(0, 10)
+      await recordLatestShare(config, project.id, { label: latest.name, url: latest.url, date })
+      tally.backfilled++
+    } catch (err: unknown) {
+      tally.failed++
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`[dropbox-watcher] Frame.io Last Share backfill failed for ${project.project_code || project.id}: ${message}`)
+    }
+  }
+  if (tally.backfilled && !(await requestProjectControlSync(config, config.sheetId))) {
+    console.warn('[dropbox-watcher] Last Share backfill refresh unavailable; cron will reconcile')
   }
   return tally
 }

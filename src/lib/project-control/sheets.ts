@@ -1121,6 +1121,27 @@ export async function recordLatestShare(config: WorkbookConfig, kitProjectId: st
   await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests })
 }
 
+/** Read only the project-level Last Share cells used by legacy backfill. */
+export async function readLatestShare(
+  config: WorkbookConfig,
+  kitProjectId: string,
+): Promise<{ label: string; url: string; date: string } | null> {
+  if (config.layout !== 'rf-production-v1') return null
+  const bound = await searchRowMetadata(config.spreadsheetId, kitProjectId, config.sheetId)
+  if (!bound) return null
+  const data = await getGridData(
+    config,
+    { startRowIndex: bound.rowIndex, endRowIndex: bound.rowIndex + 1, startColumnIndex: 16, endColumnIndex: 19 },
+    'formattedValue,effectiveValue,hyperlink',
+  )
+  const values = data[0]?.values || []
+  return {
+    label: normalizeCell(values[0]).display.trim(),
+    url: normalizeCell(values[1]).hyperlink || normalizeCell(values[1]).display.trim(),
+    date: normalizeCell(values[2]).display.trim(),
+  }
+}
+
 /** Replace a producer's unapproved workback with a newly generated draft.
  * The Project row remains authoritative and the Schedule Canvas continues to
  * show `Draft` until `activateWorkbackDraft` is called by the producer. */
