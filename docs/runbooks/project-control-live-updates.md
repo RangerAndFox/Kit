@@ -95,10 +95,12 @@ to every source tab except `Projects`.
 
 ### Filter a tab to one project
 
-1. In the frozen control row, type or select a Project ID in **B3**.
+1. In the frozen control row, type or select a Project ID in **C3** on
+   `Projects`, or **B3** on the other source tabs. The Projects control is
+   shifted right so Google's native table controls do not cover it.
 2. Kit immediately hides rows belonging to other projects on that tab.
-3. Clear **B3**, or choose **Kit → Clear project filter**, to show every row
-   again.
+3. Clear that filter cell, or choose **Kit → Clear project filter**, to show
+   every row again.
 
 The filter changes only the Sheet view. It is not project data and does not
 request a Slack Canvas refresh.

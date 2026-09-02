@@ -26,7 +26,7 @@
  *                        put the Projects tab first because it is the signed workbook identity>
  *      SHEET_ID       = <optional explicit Projects-tab gid; defaults to first SHEET_IDS value>
  *      HEADER_ROW     = 4   (optional; edits on/above this row are ignored,
- *                            except the local project filter in B3)
+ *                            except the configured local project filter)
  * 3. Triggers (clock icon) → Add Trigger:
  *      function: onMasterProjectListEdit
  *      event source: From spreadsheet
@@ -82,7 +82,8 @@ function onMasterProjectListEdit(e) {
 
 var KIT_SOURCE_SHEET_CONFIG_ = {
   'Projects': {
-    addRow: false
+    addRow: false,
+    filterColumn: 3
   },
   'Project Specs': {
     required: ['Project ID'],
@@ -133,7 +134,7 @@ function showKitAddRowSidebar() {
     return;
   }
   if (config.addRow === false) {
-    SpreadsheetApp.getUi().alert('Project rows are created only through Kit’s project provisioner in Slack. Use the filter in B3 to find an existing project.');
+    SpreadsheetApp.getUi().alert('Project rows are created only through Kit’s project provisioner in Slack. Use the filter in C3 to find an existing project.');
     return;
   }
 
@@ -221,7 +222,7 @@ function kitAddRowFromSidebar(payload) {
   targetRange.setValues([values]);
 
   // Keep the producer focused on the project they just added.
-  sheet.getRange(KIT_FILTER_ROW_, KIT_FILTER_COLUMN_).setValue(projectId);
+  sheet.getRange(KIT_FILTER_ROW_, getKitFilterColumn_(sheet)).setValue(projectId);
   applyKitProjectFilter_(sheet, projectId);
   SpreadsheetApp.flush();
 
@@ -237,16 +238,21 @@ function kitClearProjectFilter() {
     SpreadsheetApp.getUi().alert('This tab does not have a project filter.');
     return;
   }
-  sheet.getRange(KIT_FILTER_ROW_, KIT_FILTER_COLUMN_).clearContent();
+  sheet.getRange(KIT_FILTER_ROW_, getKitFilterColumn_(sheet)).clearContent();
   applyKitProjectFilter_(sheet, '');
   spreadsheetToast_('Showing all rows in ' + sheet.getName());
 }
 
 function handleKitProjectFilterEdit_(e, sheet) {
   if (!KIT_SOURCE_SHEET_CONFIG_[sheet.getName()]) return false;
-  if (e.range.getRow() !== KIT_FILTER_ROW_ || e.range.getColumn() !== KIT_FILTER_COLUMN_) return false;
+  if (e.range.getRow() !== KIT_FILTER_ROW_ || e.range.getColumn() !== getKitFilterColumn_(sheet)) return false;
   applyKitProjectFilter_(sheet, e.range.getDisplayValue());
   return true;
+}
+
+function getKitFilterColumn_(sheet) {
+  var config = KIT_SOURCE_SHEET_CONFIG_[sheet.getName()] || {};
+  return config.filterColumn || KIT_FILTER_COLUMN_;
 }
 
 function applyKitProjectFilter_(sheet, rawProjectId) {
