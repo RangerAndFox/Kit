@@ -1352,9 +1352,9 @@ export function registerInteractionHandlers(app: App) {
 
       // Run one service's provision + post its progress line. Returns a
       // { service, ...result } shape (never throws).
-      const runService = async (service: string, payload: Record<string, unknown>) => {
+      const runService = async (service: string, payload: Record<string, unknown>, action = 'provision') => {
         try {
-          const result = await dispatch(service, 'provision', payload)
+          const result = await dispatch(service, action, payload)
           const status = result.success ? '✅' : '⚠️'
           await client.chat.postMessage(postOpts({
             text: `${status} *${service}*: ${result.message || (result.success ? 'Done' : result.error || 'Failed')}`,
@@ -1362,20 +1362,31 @@ export function registerInteractionHandlers(app: App) {
           return { service, ...result }
         } catch (err: any) {
           await client.chat.postMessage(postOpts({ text: `❌ *${service}*: ${err.message}` }))
-          return { service, agent: service, action: 'provision', success: false, error: err.message }
+          return { service, agent: service, action, success: false, error: err.message }
         }
       }
 
       let serviceResults: Record<string, any> = {}
       let durableOutcome: Awaited<ReturnType<typeof runDurableProvisioning>> | null = null
 
-      // Two-phase so the Slack canvas can be seeded with the Dropbox +
-      // Frame.io links Kit just created. Phase 1: everything that produces
-      // a link, in parallel. Phase 2: Slack (channel + canvas), with those
-      // links passed through to the canvas fill. If Slack isn't selected,
-      // phase 1 covers everything.
+      // Phased so the Slack canvas can be seeded with the Dropbox + Frame.io
+      // links Kit just created. Phase 1 creates link-producing services; the
+      // durable Frame.io cleanup phase removes its transient identity marker by
+      // exact provider id; the final phase creates Slack with the collected links.
       const slackSelected = services.includes('slack' as ServiceKey)
+      const frameioSelected = services.includes('frameio' as ServiceKey)
       const phase1Services = services.filter((s: ServiceKey) => s !== 'slack')
+      const frameioNameCleanupPhase = frameioSelected
+        ? [(acc: Record<string, any>) => acc.frameio?.id
+          ? [{
+              service: 'frameio_name_cleanup',
+              run: () => dispatch('frameio', 'finalize_name', {
+                ...provisionPayload,
+                frameioProjectId: acc.frameio.id,
+              }).then((result) => ({ ...result, service: 'frameio_name_cleanup' })),
+            }]
+          : []]
+        : []
       const slackPayload = (acc: Record<string, any>) => ({
         ...provisionPayload,
         // Freshly-created (or resumed) Dropbox + Frame.io URLs so the canvas's
@@ -1411,6 +1422,7 @@ export function registerInteractionHandlers(app: App) {
             service: service as string,
             run: () => runService(service as string, provisionPayload),
           })),
+          ...frameioNameCleanupPhase,
           ...(slackSelected
             ? [(acc: Record<string, any>) => [{ service: 'slack', run: () => runService('slack', slackPayload(acc)) }]]
             : []),
@@ -1418,6 +1430,7 @@ export function registerInteractionHandlers(app: App) {
         const requiredServices = [
           ...(replaceTargetId ? ['replace_cleanup'] : []),
           ...(services as string[]),
+          ...(frameioSelected ? ['frameio_name_cleanup'] : []),
         ]
         durableOutcome = await runDurableProvisioning(
           { projectId: project.id, phases, requiredServices },
@@ -1451,6 +1464,13 @@ export function registerInteractionHandlers(app: App) {
             ? settled.value
             : { service: 'unknown', success: false, error: settled.reason?.message }
           serviceResults[result.service] = result
+        }
+        if (frameioSelected && serviceResults.frameio?.id) {
+          const cleanup = await dispatch('frameio', 'finalize_name', {
+            ...provisionPayload,
+            frameioProjectId: serviceResults.frameio.id,
+          })
+          serviceResults.frameio_name_cleanup = { service: 'frameio_name_cleanup', ...cleanup }
         }
         if (slackSelected) {
           const slackResult = await runService('slack', slackPayload(serviceResults))
@@ -1608,8 +1628,11 @@ export function registerInteractionHandlers(app: App) {
       }
 
       // ── Final summary ─────────────────────────────────────
-      const succeeded = Object.values(serviceResults).filter((r: any) => r.success).length
-      const failed = services.length - succeeded
+      // Internal durability steps (such as Frame.io name cleanup) must affect
+      // success/failure, but must not inflate the user-facing service count.
+      const succeeded = services.filter((service) => serviceResults[service]?.success).length
+      const cleanupFailed = frameioSelected && serviceResults.frameio_name_cleanup?.success === false
+      const failed = services.length - succeeded + (cleanupFailed ? 1 : 0)
       await client.chat.postMessage(postOpts({
         text: failed === 0
           ? `✅ *${form.projectName}* is fully provisioned! (${succeeded}/${services.length} services)`
@@ -2400,7 +2423,7 @@ function projectOptionLabel(row: { project_code?: string | null; client?: string
 async function loadUpdateSnapshot(
   projectId: string,
   workspaceId: string,
-  ): Promise<{ status: string; snapshot: any; current: { slackChannelId?: string; dropboxPath?: string; harvestProjectId?: string | number }; provisioned: { slack: boolean; frameio: boolean; harvest: boolean; dropbox: boolean } } | null> {
+  ): Promise<{ status: string; snapshot: any; current: { slackChannelId?: string; dropboxPath?: string; harvestProjectId?: string | number; frameioProjectId?: string }; provisioned: { slack: boolean; frameio: boolean; harvest: boolean; dropbox: boolean } } | null> {
   if (!projectId) return null
   const sb = createAdminClient()
   const { data, error } = await sb
@@ -2448,6 +2471,7 @@ async function loadUpdateSnapshot(
         dropboxPath: links.dropbox_id || undefined,
         // Numeric Harvest id — the rename fallback for a sync-linked (marker-less) project.
         harvestProjectId: links.harvest_id || (data as any).harvest_project_id || undefined,
+        frameioProjectId: links.frameio_id || undefined,
       },
       // Which external services the project actually has — so an identity edit
       // never dispatches a rename to a service it was created without (that would

@@ -185,6 +185,19 @@ export function frameioKitMarker(kitProjectId: string): string {
 }
 
 /**
+ * Visible Frame.io names must contain business information only.  Kit may use a
+ * marker briefly while a create is still uncommitted, but a separate durable
+ * step removes it by exact provider id before provisioning is complete.
+ */
+export function stripFrameioKitMarker(name: string): string {
+  return String(name || '').replace(/\s+\[kit:[^\]]+\]\s*$/, '').trim()
+}
+
+function markerInFrameioName(name: string): string | null {
+  return String(name || '').match(/\[kit:([^\]]+)\]\s*$/)?.[1] || null
+}
+
+/**
  * The terminal result for a Kit-marker collision (2+ Frame.io projects carry the
  * same marker). Reconciling by guessing would mutate an arbitrary project, so
  * both provision and rename refuse permanently. One builder so the error code and
@@ -481,11 +494,56 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
       success: true,
       url: frameioProjectUrl(project.id),
       id: project.id,
-      message: `Created Frame.io project "${projectLabel}" with ${foldersCreated}/${foldersTotal} folders (${mode})`,
-      data: { rootFolderId: parentId, foldersCreated, foldersTotal, mode },
+      message: `Created Frame.io project "${businessLabel}" with ${foldersCreated}/${foldersTotal} folders (${mode})`,
+      data: { rootFolderId: parentId, foldersCreated, foldersTotal, mode, businessLabel },
     }
   } catch (err: any) {
     return { agent: 'frameio', action: 'provision', success: false, error: err.message }
+  }
+}
+
+/**
+ * Remove the transient reconciliation marker after the durable provisioning
+ * ledger has stored the exact Frame.io project id.  The ownership check fails
+ * closed if that provider object carries a marker for a different Kit project.
+ */
+async function finalizeName(payload: Record<string, unknown>): Promise<AgentResult> {
+  try {
+    const frameioProjectId = String(payload.frameioProjectId || '')
+    const kitProjectId = String(payload.projectId || '')
+    const businessLabel = deriveFrameioBusinessLabel(
+      String(payload.projectNumber || ''),
+      String(payload.client || payload.clientName || ''),
+      String(payload.projectName || ''),
+    )
+    if (!frameioProjectId || !kitProjectId || !businessLabel) {
+      return {
+        agent: 'frameio', action: 'finalize_name', success: false,
+        error: 'Frame.io name finalization needs frameioProjectId, projectId, and a business label',
+      }
+    }
+
+    const current = await getFrameioProjectInfo(frameioProjectId)
+    if (!current) {
+      return { agent: 'frameio', action: 'finalize_name', success: false, terminal: true, error: `Frame.io project ${frameioProjectId} no longer exists` }
+    }
+    const owner = markerInFrameioName(current.name)
+    if (owner && owner !== kitProjectId) {
+      return {
+        agent: 'frameio', action: 'finalize_name', success: false, terminal: true,
+        error: `Frame.io project ${frameioProjectId} belongs to a different Kit project; name was not changed`,
+      }
+    }
+    if (current.name !== businessLabel) {
+      await framePatch(`/accounts/${getAccountId()}/projects/${frameioProjectId}`, { data: { name: businessLabel } })
+    }
+    return {
+      agent: 'frameio', action: 'finalize_name', success: true,
+      message: `Finalized Frame.io project name as "${businessLabel}"`,
+      data: { name: businessLabel },
+    }
+  } catch (err: any) {
+    return { agent: 'frameio', action: 'finalize_name', success: false, error: err.message }
   }
 }
 
@@ -504,18 +562,28 @@ async function rename(payload: Record<string, unknown>): Promise<AgentResult> {
     }
     const acct = getAccountId()
     const ws = getWorkspaceId()
-    // Reconcile by the Kit UUID marker; treat 0 / ≥2 as PERMANENT (terminal) —
-    // never rename by business name, never guess among duplicates.
-    const matches = await findFrameioProjectsByKitId(acct, ws, kitProjectId)
-    if (matches.length === 0) {
-      return { agent: 'frameio', action: 'rename', success: false, terminal: true, error: `No Frame.io project carries the Kit marker for ${kitProjectId}; nothing to rename` }
+    // Normal path: use the exact provider id Kit persisted at creation/sync.
+    // Legacy fallback: older projects can still be found by their visible marker
+    // once, then the clean rename permanently removes it.
+    let projectId = String(payload.frameioProjectId || '')
+    if (projectId) {
+      const current = await getFrameioProjectInfo(projectId)
+      if (!current) {
+        return { agent: 'frameio', action: 'rename', success: false, terminal: true, error: `Frame.io project ${projectId} no longer exists` }
+      }
+      const owner = markerInFrameioName(current.name)
+      if (owner && owner !== kitProjectId) {
+        return { agent: 'frameio', action: 'rename', success: false, terminal: true, error: `Frame.io project ${projectId} belongs to a different Kit project; name was not changed` }
+      }
+    } else {
+      const matches = await findFrameioProjectsByKitId(acct, ws, kitProjectId)
+      if (matches.length === 0) {
+        return { agent: 'frameio', action: 'rename', success: false, terminal: true, error: `No stored Frame.io id or legacy Kit marker was found for ${kitProjectId}; nothing to rename` }
+      }
+      if (matches.length > 1) return frameioAmbiguousMarkerError('rename', matches)
+      projectId = matches[0].id
     }
-    if (matches.length > 1) {
-      return frameioAmbiguousMarkerError('rename', matches)
-    }
-    const projectId = matches[0].id
-    // Preserve the marker (reconciliation identity) in the new label.
-    const newLabel = `${businessLabel} ${frameioKitMarker(kitProjectId)}`
+    const newLabel = businessLabel
     const resp = await framePatch(`/accounts/${acct}/projects/${projectId}`, { data: { name: newLabel } })
     const project = resp.data || resp
     return {
@@ -692,8 +760,14 @@ export const frameioAgent: AgentDefinition = {
     },
     {
       action: 'rename',
-      description: 'Rename an existing Frame.io project when a project is updated. Reconciles by the Kit marker (preserved in the new name).',
-      inputDescription: 'projectId (required, Kit id), projectName (new), client (new), projectNumber',
+      description: 'Rename an existing Frame.io project by its stored provider id, with a one-time legacy marker fallback. The visible name stays clean.',
+      inputDescription: 'projectId (required, Kit id), frameioProjectId (preferred exact provider id), projectName (new), client (new), projectNumber',
+      mutates: true,
+    },
+    {
+      action: 'finalize_name',
+      description: 'Remove Kit\'s transient create marker from a Frame.io project after its exact provider id is stored',
+      inputDescription: 'frameioProjectId, projectId (Kit id), projectName, client, projectNumber',
       mutates: true,
     },
     {
@@ -727,6 +801,8 @@ export const frameioAgent: AgentDefinition = {
         return provision(payload)
       case 'rename':
         return rename(payload)
+      case 'finalize_name':
+        return finalizeName(payload)
       case 'get_comments':
         return getComments(payload)
       case 'get_project':

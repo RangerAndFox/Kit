@@ -96,6 +96,24 @@ describe('runProjectUpdate — phasing + services', () => {
     assert.equal(out.allRequiredDone, true)
   })
 
+  it('passes the stored Frame.io provider id to the rename agent', async () => {
+    const f = form({ projectName: 'Winter Campaign' })
+    const plan = computeUpdatePlan(SNAP, f)
+    let seenFrameioProjectId: unknown
+    const { deps } = fakeDeps({
+      dispatch: async (service, _action, payload) => {
+        if (service === 'frameio') seenFrameioProjectId = payload.frameioProjectId
+        if (service === 'dropbox') return { success: true, id: '/p/new', data: { newSafeName: 'ns', path: '/p/new' } }
+        return { success: true }
+      },
+    })
+    await runProjectUpdate({
+      updateRequestId: 'R', projectId: SNAP.projectId, submission: f, plan,
+      current: { slackChannelId: 'C1', dropboxPath: '/p/x', frameioProjectId: 'frame-project-1' },
+    }, deps)
+    assert.equal(seenFrameioProjectId, 'frame-project-1')
+  })
+
   it('a control-center field refreshes the four managed canvases in the final phase', async () => {
     const f = form({ clientContact: 'Janet' })
     const plan = computeUpdatePlan(SNAP, f)

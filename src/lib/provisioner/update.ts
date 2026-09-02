@@ -51,6 +51,9 @@ export interface UpdateCurrentIds {
   /** The numeric Harvest project id — the rename fallback for a sync-linked project
    *  whose Harvest notes never received the Kit marker (reconcile-by-marker finds 0). */
   harvestProjectId?: string | number | null
+  /** Exact Frame.io provider id. Normal rename identity; legacy markers are only
+   *  a fallback for rows created before this id was persisted. */
+  frameioProjectId?: string | null
   /** Current identity spine (fresh DB values) — used for fields NOT in the diff. */
   projectNumber?: string | null
   clientName?: string | null
@@ -144,6 +147,7 @@ export async function runProjectUpdate(
     projectCode: ids.projectCode,
     // Harvest rename fallback for a sync-linked (marker-less) project.
     harvestProjectId: current.harvestProjectId ?? undefined,
+    frameioProjectId: current.frameioProjectId ?? undefined,
     // DIFF-SCOPE the Harvest CODE write, mirroring updateProjectRow's Supabase
     // project_code: only rewrite Harvest's code when number/client actually changed.
     // Kit derives projectCode as `{number}-{client}` unconditionally, but a synced
@@ -181,7 +185,8 @@ export async function runProjectUpdate(
       }
       return r
     }
-    // harvest / frameio reconcile by the embedded Kit marker — base fields suffice.
+    // Harvest reconciles by its notes marker (or numeric fallback); Frame.io uses
+    // the exact persisted provider id with a legacy visible-marker fallback.
     return deps.dispatch(service, 'rename', basePayload)
   }
 
