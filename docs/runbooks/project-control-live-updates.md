@@ -86,6 +86,41 @@ Inngest event: `project-control/sheet.edited`. Replay dedupe is enforced by
 6. Authorize the script when prompted (it needs external-request + this-workbook
    scopes only; it never reads credentials or cell contents).
 
+## Producer row controls
+
+The Apps Script also adds two lightweight controls to every authoritative
+source tab: `Projects`, `Project Specs`, `Daily Assignments`, `Links`,
+`Workback`, `Deliverables`, and `Status Log`.
+
+### Filter a tab to one project
+
+1. In the frozen control row, type or select a Project ID in **B3**.
+2. Kit immediately hides rows belonging to other projects on that tab.
+3. Clear **B3**, or choose **Kit → Clear project filter**, to show every row
+   again.
+
+The filter changes only the Sheet view. It is not project data and does not
+request a Slack Canvas refresh.
+
+### Add a row without scrolling
+
+1. Open the source tab that should receive the new row.
+2. Choose **Kit → Add row to this tab**.
+3. Complete the tab-specific form. Required fields are marked with `*`, Project
+   IDs are selected from `Projects`, and existing Sheet validation choices are
+   reused wherever possible.
+4. Choose **Add row**.
+
+Kit validates the entry, writes it into the first open prepared row, preserves
+that row's formatting and data validation, focuses the tab on the affected
+project, and explicitly requests the normal Sheet→Canvas refresh. It never
+appends a record below the prepared table. `Projects` and `Project Specs` allow
+only one row per Project ID; activity tabs allow multiple rows.
+
+For a brand-new project that also needs Slack, Dropbox, Frame.io, Harvest, and
+Canvas provisioning, use Kit's Slack project provisioner. The `Projects` Add
+Row form deliberately creates only the authoritative Sheet record.
+
 ## Rollout (controlled — do NOT execute without authorization)
 
 1. **Deploy the app** with the event path inert: `PROJECT_CONTROL_WEBHOOK_SECRET`
