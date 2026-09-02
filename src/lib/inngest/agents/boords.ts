@@ -38,6 +38,7 @@ import type { AgentDefinition, AgentResult } from './types'
 
 async function createOrQueueStudio(input: {
   jobId: string | null
+  kitProjectId?: string | null
   workspaceId: string | null
   slackUserId: string | null
   channelId: string | null
@@ -59,6 +60,7 @@ async function createOrQueueStudio(input: {
     }
     await queueElevenLabsStudioJob({
       storyboardJobId: input.jobId,
+      kitProjectId: input.kitProjectId,
       workspaceId: input.workspaceId,
       requestedBySlackUserId: input.slackUserId,
       slackChannelId: input.channelId,
@@ -81,6 +83,7 @@ async function createOrQueueStudio(input: {
     if (!requiresStudioBrowserFallback(error) || !input.jobId) throw error
     await queueElevenLabsStudioJob({
       storyboardJobId: input.jobId,
+      kitProjectId: input.kitProjectId,
       workspaceId: input.workspaceId,
       requestedBySlackUserId: input.slackUserId,
       slackChannelId: input.channelId,
@@ -102,6 +105,7 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
   const secondsPerFrame = Number(payload.secondsPerFrame) || 5
   const videoStyle = (payload.videoStyle as string) || undefined
   const boordsProjectId = (payload.boordsProjectId as string) || undefined
+  const kitProjectId = (payload.projectId as string) || null
   const workspaceId = (payload.workspaceId as string) || null
   const slackUserId = (payload.slackUserId as string) || null
   const channelId = (payload.channelId as string) || null
@@ -187,6 +191,7 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
     if (jobId) await setJobElevenLabsPending(jobId)
     const studio = await createOrQueueStudio({
       jobId,
+      kitProjectId,
       workspaceId,
       slackUserId,
       channelId,
@@ -218,6 +223,7 @@ async function provision(payload: Record<string, unknown>): Promise<AgentResult>
           : `Created "${storyboard.name}" in Boords${elevenLabsQueued ? '; ElevenLabs Studio is queued on the studio Mac' : ' and ElevenLabs Studio'} with ${frames.length} frame${frames.length === 1 ? '' : 's'} (${runtime}, via ${modeUsed}${detectedTable ? ' — A/V table detected' : ''})`,
       data: {
         jobId,
+        kitProjectId,
         storyboardId: storyboard.id,
         storyboardName: storyboard.name,
         frameCount: frames.length,

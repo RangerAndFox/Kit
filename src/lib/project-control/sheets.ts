@@ -380,7 +380,7 @@ function projectNumberFromCell(cell: SheetCell | undefined): string {
   return normalizeCell(cell).display.trim()
 }
 
-type ManagedLinkType = 'Frame.io' | 'Dropbox' | 'Harvest' | 'Boords' | 'Slack Channel'
+type ManagedLinkType = 'Frame.io' | 'Dropbox' | 'Harvest' | 'Boords' | 'ElevenLabs' | 'Slack Channel'
 
 function normalizeLinkType(value: string): ManagedLinkType | null {
   const v = value.trim().toLowerCase()
@@ -388,6 +388,7 @@ function normalizeLinkType(value: string): ManagedLinkType | null {
   if (v === 'dropbox' || v.startsWith('dropbox ')) return 'Dropbox'
   if (v === 'harvest') return 'Harvest'
   if (v === 'boords') return 'Boords'
+  if (v === 'elevenlabs' || v === 'eleven labs') return 'ElevenLabs'
   if (v === 'slack' || v === 'slack channel') return 'Slack Channel'
   return null
 }
@@ -857,6 +858,7 @@ export interface ProjectLinksInput {
   dropboxUrl?: string
   harvestUrl?: string
   boordsUrl?: string
+  elevenlabsUrl?: string
   slackUrl?: string
 }
 
@@ -874,6 +876,7 @@ export async function upsertProjectLinks(
     { type: 'Dropbox' as const, url: links.dropboxUrl?.trim() },
     { type: 'Harvest' as const, url: links.harvestUrl?.trim() },
     { type: 'Boords' as const, url: links.boordsUrl?.trim() },
+    { type: 'ElevenLabs' as const, url: links.elevenlabsUrl?.trim() },
     { type: 'Slack Channel' as const, url: links.slackUrl?.trim() },
   ].filter((x): x is { type: ManagedLinkType; url: string } => Boolean(x.url))
   if (desired.length === 0) return
@@ -908,7 +911,7 @@ export async function upsertProjectLinks(
           { userEnteredValue: { stringValue: link.type } },
           { userEnteredValue: { stringValue: link.url } },
           { userEnteredValue: { boolValue: true } },
-          { userEnteredValue: { numberValue: link.type === 'Dropbox' ? 10 : link.type === 'Frame.io' ? 20 : link.type === 'Boords' ? 50 : link.type === 'Harvest' ? 90 : 100 } },
+          { userEnteredValue: { numberValue: link.type === 'Dropbox' ? 10 : link.type === 'Frame.io' ? 20 : link.type === 'Boords' ? 50 : link.type === 'ElevenLabs' ? 80 : link.type === 'Harvest' ? 90 : 100 } },
         ] }],
         fields: 'userEnteredValue',
         start: { sheetId: config.linksSheetId, rowIndex, columnIndex: 0 },

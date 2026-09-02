@@ -2,6 +2,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 
 export async function queueElevenLabsStudioJob(input: {
   storyboardJobId: string
+  kitProjectId?: string | null
   workspaceId?: string | null
   requestedBySlackUserId?: string | null
   slackChannelId?: string | null
@@ -14,6 +15,7 @@ export async function queueElevenLabsStudioJob(input: {
   const supabase = createAdminClient() as any
   const row = {
     storyboard_job_id: input.storyboardJobId,
+    ...(input.kitProjectId !== undefined ? { kit_project_id: input.kitProjectId || null } : {}),
     workspace_id: input.workspaceId || process.env.KIT_DEFAULT_WORKSPACE_ID || null,
     requested_by_slack_user_id: input.requestedBySlackUserId || null,
     slack_channel_id: input.slackChannelId || null,

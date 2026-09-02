@@ -1,6 +1,9 @@
 import crypto from 'node:crypto'
 import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
+import { upsertProjectLinks } from '../../../src/lib/project-control/sheets'
+import { requestProjectControlSync } from '../../../src/lib/project-control/sync-request'
+import { workbookConfigFromEnv } from '../../../src/lib/project-control/types'
 
 const EVENT_TYPE = 'kit_elevenlabs_result'
 
@@ -41,6 +44,17 @@ export async function reconcileElevenLabsDraftSlack(client: App['client']): Prom
       continue
     }
     try {
+      if (job.status === 'complete' && job.studio_url && job.kit_project_id) {
+        const { data: project, error: projectError } = await sb.from('projects')
+          .select('external_ids').eq('id', job.kit_project_id).maybeSingle()
+        if (projectError) throw projectError
+        const projectNumber = String(project?.external_ids?.project_number || '').trim()
+        const config = workbookConfigFromEnv()
+        if (config && projectNumber) {
+          await upsertProjectLinks(config, projectNumber, { elevenlabsUrl: job.studio_url })
+          await requestProjectControlSync(config, config.linksSheetId || config.sheetId)
+        }
+      }
       const messages: any = job.slack_thread_ts
         ? await client.conversations.replies({
           channel,

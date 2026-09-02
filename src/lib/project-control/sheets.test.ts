@@ -630,12 +630,14 @@ describe('RF Production workbook adapter', () => {
     await upsertProjectLinks(config, '2637', {
       frameioUrl: 'new-frame',
       dropboxUrl: 'new-dropbox',
+      elevenlabsUrl: 'https://elevenlabs.io/app/studio/test-2637',
       slackUrl: 'https://slack.com/app_redirect?channel=C2637',
     })
     assert.deepEqual(batches[0].map((r) => r.updateCells.start), [
       { sheetId: config.linksSheetId, rowIndex: 4, columnIndex: 3 },
       { sheetId: config.linksSheetId, rowIndex: 5, columnIndex: 3 },
       { sheetId: config.linksSheetId, rowIndex: 6, columnIndex: 0 },
+      { sheetId: config.linksSheetId, rowIndex: 7, columnIndex: 0 },
     ])
     await renameProjectLinks(config, '2637', '2637A')
     assert.deepEqual(batches[1].map((r) => r.updateCells.start.columnIndex), [0, 0])
