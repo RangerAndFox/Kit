@@ -2,10 +2,12 @@ import { describe, it, expect } from 'vitest'
 import {
   buildFrameioShareRequest,
   classifyFrameioUploadStatus,
+  classifyFrameioUploadStatusResponse,
   isDeniedDeliveryFile,
   normalizeFrameioStatusPath,
   resolveFrameioIdForProject,
   selectFrameioProjectByNumber,
+  shouldTimeoutFrameioProcessing,
 } from '../src/watchers/dropbox'
 
 describe('Frame.io remote-upload readiness', () => {
@@ -22,6 +24,15 @@ describe('Frame.io remote-upload readiness', () => {
     expect(classifyFrameioUploadStatus('cancelled')).toBe('failed')
   })
 
+  it('reads the boolean contract returned by the upload-status endpoint', () => {
+    expect(classifyFrameioUploadStatusResponse({ data: { upload_complete: false, upload_failed: false } }))
+      .toEqual({ readiness: 'processing', providerStatus: 'pending' })
+    expect(classifyFrameioUploadStatusResponse({ data: { upload_complete: true, upload_failed: false } }))
+      .toEqual({ readiness: 'ready', providerStatus: 'completed' })
+    expect(classifyFrameioUploadStatusResponse({ data: { upload_complete: false, upload_failed: true } }))
+      .toEqual({ readiness: 'failed', providerStatus: 'failed' })
+  })
+
   it('normalizes every documented status URL shape without changing API paths', () => {
     expect(normalizeFrameioStatusPath('https://api.frame.io/v4/accounts/a/files/f/status'))
       .toBe('/accounts/a/files/f/status')
@@ -34,6 +45,12 @@ describe('Frame.io remote-upload readiness', () => {
   it('fails closed on a status URL from another host', () => {
     expect(() => normalizeFrameioStatusPath('https://evil.example/v4/accounts/a/files/f/status'))
       .toThrow(/different host/)
+  })
+
+  it('keeps normal provider processing outside the finite failure budget', () => {
+    const now = Date.parse('2026-09-02T12:00:00.000Z')
+    expect(shouldTimeoutFrameioProcessing('2026-09-02T03:00:00.000Z', now)).toBe(false)
+    expect(shouldTimeoutFrameioProcessing('2026-09-01T11:59:59.000Z', now)).toBe(true)
   })
 })
 

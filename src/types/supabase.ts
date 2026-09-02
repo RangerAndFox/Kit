@@ -6227,6 +6227,15 @@ export type Database = {
         }
         Returns: Json
       }
+      defer_dropbox_event: {
+        Args: {
+          p_claim_token: string
+          p_delay_seconds?: number
+          p_event_id: string
+          p_reason: string
+        }
+        Returns: boolean
+      }
       fail_dropbox_event: {
         Args: { p_claim_token: string; p_error: string; p_event_id: string }
         Returns: string
