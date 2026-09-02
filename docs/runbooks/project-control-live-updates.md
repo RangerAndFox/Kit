@@ -96,8 +96,9 @@ to every source tab except `Projects`.
 ### Filter a tab to one project
 
 1. In the frozen control row, type or select a Project ID in **C3** on
-   `Projects`, or **B3** on the other source tabs. The Projects control is
-   shifted right so Google's native table controls do not cover it.
+   `Projects`, `Project Specs`, or `Workback`, or **B3** on the other source
+   tabs. Controls above native tables are shifted right so Google's table
+   toolbar does not cover them.
 2. Kit immediately hides rows belonging to other projects on that tab.
 3. Clear that filter cell, or choose **Kit → Clear project filter**, to show
    every row again.

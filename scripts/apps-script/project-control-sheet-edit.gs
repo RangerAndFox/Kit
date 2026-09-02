@@ -88,6 +88,7 @@ var KIT_SOURCE_SHEET_CONFIG_ = {
   'Project Specs': {
     required: ['Project ID'],
     uniqueProject: true,
+    filterColumn: 3,
     defaults: { 'Specs Status': 'Needs Review' }
   },
   'Daily Assignments': {
@@ -100,6 +101,7 @@ var KIT_SOURCE_SHEET_CONFIG_ = {
   },
   'Workback': {
     required: ['Project ID', 'Task'],
+    filterColumn: 3,
     defaults: { 'Status': 'Not Started', '% Complete': 0, 'Show on Canvas': true }
   },
   'Deliverables': {
