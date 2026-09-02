@@ -28,7 +28,28 @@ export async function isFrameioSignedIn(context: BrowserContext): Promise<boolea
   return await page.getByRole('button', { name: /^new project$/i }).first().isVisible().catch(() => false)
 }
 
-async function exactProjectRow(page: Page, name: string): Promise<Locator | null> {
+type FrameioProjectControl = {
+  container: Locator
+  menuButton: Locator
+}
+
+async function exactProjectControl(
+  page: Page,
+  projectId: string,
+  name: string,
+): Promise<FrameioProjectControl | null> {
+  // Frame.io persists each user's preferred home layout. The dedicated worker
+  // may therefore see either the table (`project-row`) or card
+  // (`project-card`) variant. Cards expose the provider id in their href, which
+  // is the strongest possible identity signal and must take precedence over a
+  // mutable/duplicate display name.
+  const projectPath = `/project/${projectId}`
+  const cards = page.locator(`[data-testid="project-card"][href="${projectPath}"]`)
+  if (await cards.count()) {
+    const card = cards.first()
+    return { container: card, menuButton: card.getByTestId('project-card--menu-button') }
+  }
+
   const candidates = page.getByTestId('project-row').filter({ hasText: name })
   const count = await candidates.count()
   const exact: Locator[] = []
@@ -38,7 +59,8 @@ async function exactProjectRow(page: Page, name: string): Promise<Locator | null
     if (text.startsWith(name)) exact.push(row)
   }
   if (exact.length > 1) throw new Error(`Frame.io deletion is ambiguous: ${exact.length} rows match the exact project name.`)
-  return exact[0] || null
+  const row = exact[0]
+  return row ? { container: row, menuButton: row.getByTestId('project-row--menu-button') } : null
 }
 
 export async function deleteFrameioProjectInBrowser(
@@ -58,23 +80,23 @@ export async function deleteFrameioProjectInBrowser(
     if (await signedOut(page)) throw new FrameioLoginRequiredError('The dedicated studio browser is signed out of Frame.io. Run npm run login:frameio.')
     await pulseFrameioDeletion(job)
 
-    const row = await exactProjectRow(page, job.frameio_project_name)
-    if (!row) {
+    const project = await exactProjectControl(page, job.frameio_project_id, job.frameio_project_name)
+    if (!project) {
       // The server performs the authoritative API absence check before the Kit
       // project record can be deleted. A missing UI row is only a worker signal.
       await updateFrameioDeletion(job, 'complete', { error: null })
       return
     }
 
-    await row.getByTestId('project-row--menu-button').click({ force: true })
+    await project.menuButton.click({ force: true })
     await page.getByRole('menuitem', { name: /^delete$/i }).click()
     const dialog = page.getByRole('alertdialog', { name: /delete project/i })
     await dialog.getByRole('textbox', { name: /type "delete" to confirm/i }).fill('delete')
     await updateFrameioDeletion(job, 'deleting')
     await dialog.getByRole('button', { name: /^delete project$/i }).click()
     await updateFrameioDeletion(job, 'verifying')
-    await row.waitFor({ state: 'detached', timeout: 60_000 }).catch(async () => {
-      if (await row.isVisible().catch(() => false)) throw new Error('Frame.io still shows the project after the deletion confirmation.')
+    await project.container.waitFor({ state: 'detached', timeout: 60_000 }).catch(async () => {
+      if (await project.container.isVisible().catch(() => false)) throw new Error('Frame.io still shows the project after the deletion confirmation.')
     })
     await updateFrameioDeletion(job, 'complete', { error: null })
   } finally {
