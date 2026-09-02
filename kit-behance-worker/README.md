@@ -15,7 +15,7 @@ It never publishes:
 1. Install Node.js 22 or newer and Google Chrome.
 2. Copy `.env.example` to the dedicated worker environment file (the installer defaults to `~/Library/Application Support/Kit/BehanceWorker/.env`). Configure the narrow Kit worker URL and `DROPBOX_SYNC_PATH`. The worker secret lives in macOS Keychain under `com.rangerandfox.kit-studio-worker`; never copy a Supabase service-role key into this machine's worker configuration.
 3. Run `npm install` and `npm run build`.
-4. Run `npm run login`. Chrome opens with the dedicated profile. Sign into the Ranger & Fox Adobe/Behance account, return to Terminal, and press Enter.
+4. Keep `BEHANCE_EXPECTED_PROFILE_SLUG=rangerandfox`, then run `npm run login`. Chrome opens with the dedicated profile. Sign into the Ranger & Fox Adobe/Behance account, return to Terminal, and press Enter. The worker refuses to create drafts under any other Behance profile.
 5. Run `npm run login:elevenlabs`, sign into ElevenLabs in the same dedicated profile, return to Terminal, and press Enter.
 6. Run `npm run login:frameio`, sign into Frame.io in the same dedicated profile, return to Terminal, and press Enter.
 7. Run `npm run check-login` to verify Behance (a normal Chrome profile does not count).
@@ -34,7 +34,8 @@ The studio worker has no direct database credential. Its Keychain-backed secret 
 
 ## Recovery
 
-- A signed-out profile changes the worker heartbeat to `needs_login`; rerun `npm run login`.
+- A signed-out or wrong Behance profile changes the worker heartbeat to `needs_login`; rerun `npm run login`. Kit verifies the exact `@rangerandfox` profile before every draft.
+- If Behance briefly shows “Only owners can modify projects” for an owned draft, Kit performs one clean authorization reload before pausing for re-authentication.
 - A UI change produces a failed job with a precise missing-control error. Kit exposes **Retry Behance draft** after the selector is corrected.
 - Worker jobs with no heartbeat for five minutes automatically become retryable.
 - An existing draft URL is reused on retry, preventing duplicate projects.

@@ -8,8 +8,44 @@ import { installPublishLockout } from './safety.js'
 import { behanceContentModules } from './layout.js'
 import { pulseJob, updateJob } from './store.js'
 import type { BehanceDraftJob, BehanceTextRole } from './types.js'
+import { behanceIdentityError, behanceProfileSlugFromHref, behanceUsernameFromState, type BehanceIdentity } from './behance-identity.js'
+
+export { behanceIdentityError } from './behance-identity.js'
 
 export class BehanceLoginRequiredError extends Error {}
+
+async function profileSlug(page: Page): Promise<string | null> {
+  const links = await page.locator('a[href]').all()
+  for (const link of links) {
+    const label = `${await link.innerText().catch(() => '')} ${await link.getAttribute('aria-label').catch(() => '')}`
+    if (!/profile|user options/i.test(label)) continue
+    const slug = behanceProfileSlugFromHref(await link.getAttribute('href').catch(() => null))
+    if (slug) return slug
+  }
+  const state = (await page.locator('script').allTextContents().catch(() => [])).join('\n')
+  return behanceUsernameFromState(state)
+}
+
+export async function inspectBehanceIdentity(context: BrowserContext): Promise<BehanceIdentity> {
+  const page = context.pages()[0] || await context.newPage()
+  await page.goto('https://www.behance.net/settings', { waitUntil: 'domcontentloaded', timeout: 60_000 })
+  await page.waitForTimeout(1_500)
+  const url = page.url()
+  const signedOut = /adobe\.com.*signin|behance\.net\/.*(?:login|signin)/i.test(url) || Boolean(await visible([
+    page.getByRole('button', { name: /^sign in$/i }),
+    page.getByRole('link', { name: /^sign in$/i }),
+  ]))
+  return {
+    signedIn: !signedOut,
+    profileSlug: signedOut ? null : await profileSlug(page),
+    expectedProfileSlug: config.expectedProfileSlug,
+  }
+}
+
+export async function assertExpectedBehanceIdentity(context: BrowserContext): Promise<void> {
+  const error = behanceIdentityError(await inspectBehanceIdentity(context))
+  if (error) throw new BehanceLoginRequiredError(error)
+}
 
 async function visible(locators: Locator[]): Promise<Locator | null> {
   for (const locator of locators) {
@@ -99,6 +135,16 @@ async function openEditor(page: Page, existingUrl?: string | null): Promise<void
   }
   await page.waitForTimeout(1500)
   if (/adobe\.com.*signin|behance\.net\/.*(?:login|signin)/i.test(page.url())) throw new BehanceLoginRequiredError('The dedicated Behance browser profile is signed out. Run `npm run login` on the studio Mac.')
+  const ownershipWarning = page.getByText(/only owners can modify projects/i)
+  if (await ownershipWarning.isVisible().catch(() => false)) {
+    // Behance occasionally opens an editor with a stale authorization result.
+    // One clean reload refreshes the IMS check without changing the draft.
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await page.waitForTimeout(3_000)
+    if (await ownershipWarning.isVisible().catch(() => false)) {
+      throw new BehanceLoginRequiredError('Behance rejected this editor session even though Kit is signed in. Re-authenticate the dedicated @rangerandfox profile before retrying the draft.')
+    }
+  }
 }
 
 async function uploadProjectMedia(page: Page, paths: string[]): Promise<void> {
@@ -226,21 +272,7 @@ export async function launchBehanceContext(): Promise<BrowserContext> {
 }
 
 export async function isBehanceSignedIn(context: BrowserContext): Promise<boolean> {
-  const page = context.pages()[0] || await context.newPage()
-  await page.goto('https://www.behance.net/settings', { waitUntil: 'domcontentloaded', timeout: 60_000 })
-  await page.waitForTimeout(1_500)
-  const url = page.url()
-  if (/adobe\.com.*signin|behance\.net\/.*(?:login|signin)/i.test(url)) return false
-  const signedOutControl = await visible([
-    page.getByRole('button', { name: /^sign in$/i }),
-    page.getByRole('link', { name: /^sign in$/i }),
-  ])
-  if (signedOutControl) return false
-  const accountControl = await visible([
-    page.getByRole('button', { name: /open user options/i }),
-    page.getByRole('link', { name: /profile/i }),
-  ])
-  return /^https:\/\/(?:www\.)?behance\.net\/settings(?:[/?#]|$)/i.test(url) && Boolean(accountControl)
+  return behanceIdentityError(await inspectBehanceIdentity(context)) === null
 }
 
 export async function behanceBrowserVersion(context: BrowserContext): Promise<string | null> {
@@ -259,6 +291,7 @@ export async function buildBehanceDraft(context: BrowserContext, job: BehanceDra
   if (signal?.aborted) abort()
   await installPublishLockout(page)
   try {
+    await assertExpectedBehanceIdentity(context)
     await updateJob(job, 'opening_editor')
     await openEditor(page, job.draft_url)
     // Persist the editor location before any upload. If the process stops,

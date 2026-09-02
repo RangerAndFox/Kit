@@ -1,4 +1,4 @@
-import { behanceBrowserVersion, buildBehanceDraft, BehanceLoginRequiredError, isBehanceSignedIn, launchBehanceContext } from './behance.js'
+import { behanceBrowserVersion, behanceIdentityError, buildBehanceDraft, BehanceLoginRequiredError, inspectBehanceIdentity, launchBehanceContext } from './behance.js'
 import { buildElevenLabsDraft, ElevenLabsLoginRequiredError, isElevenLabsSignedIn } from './elevenlabs.js'
 import { deleteFrameioProjectInBrowser, FrameioLoginRequiredError, isFrameioSignedIn } from './frameio.js'
 import { config } from './config.js'
@@ -36,14 +36,16 @@ let frameioJobId: string | null = null
 let behanceClaim: { id: string; claimed_at: string | null } | null = null
 let elevenLabsClaim: { id: string; claimed_at: string | null } | null = null
 let frameioClaim: { id: string; claimed_at: string | null } | null = null
-let behanceAvailable = await isBehanceSignedIn(context)
+const behanceIdentity = await inspectBehanceIdentity(context)
+const behanceLoginError = behanceIdentityError(behanceIdentity)
+let behanceAvailable = behanceLoginError === null
 let elevenLabsAvailable = await isElevenLabsSignedIn(context)
 let frameioAvailable = await isFrameioSignedIn(context).catch((error: unknown) => {
   console.error('[frameio-login-check]', errorMessage(error))
   return false
 })
 
-await heartbeat(behanceAvailable ? 'idle' : 'needs_login', null, behanceAvailable ? null : 'The dedicated browser is signed out of Behance.', browserVersion)
+await heartbeat(behanceAvailable ? 'idle' : 'needs_login', null, behanceLoginError, browserVersion)
 await elevenLabsHeartbeat(elevenLabsAvailable ? 'idle' : 'needs_login', null, elevenLabsAvailable ? null : 'The dedicated browser is signed out of ElevenLabs.', browserVersion)
 await frameioHeartbeat(frameioAvailable ? 'idle' : 'needs_login', null, frameioAvailable ? null : 'The dedicated browser is signed out of Frame.io.', browserVersion)
 

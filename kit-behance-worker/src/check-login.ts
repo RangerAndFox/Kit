@@ -1,17 +1,19 @@
-import { behanceBrowserVersion, isBehanceSignedIn, launchBehanceContext } from './behance.js'
+import { behanceBrowserVersion, behanceIdentityError, inspectBehanceIdentity, launchBehanceContext } from './behance.js'
 import { heartbeat } from './store.js'
 
 const context = await launchBehanceContext()
 try {
-  const signedIn = await isBehanceSignedIn(context)
+  const identity = await inspectBehanceIdentity(context)
+  const identityError = behanceIdentityError(identity)
+  const signedIn = identityError === null
   const browserVersion = await behanceBrowserVersion(context)
   await heartbeat(
     signedIn ? 'idle' : 'needs_login',
     null,
-    signedIn ? null : 'The dedicated Behance browser profile is signed out. Run npm run login.',
+    identityError,
     browserVersion,
   )
-  console.log(signedIn ? 'Behance dedicated profile is signed in.' : 'Behance dedicated profile needs login.')
+  console.log(signedIn ? `Behance dedicated profile is signed in as @${identity.profileSlug}.` : identityError)
   process.exitCode = signedIn ? 0 : 2
 } finally {
   await context.close()

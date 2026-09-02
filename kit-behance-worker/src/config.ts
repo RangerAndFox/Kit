@@ -35,6 +35,7 @@ export const config = {
   profileDir: path.resolve(process.env.BEHANCE_PROFILE_DIR || './.behance-profile'),
   headless: process.env.BEHANCE_HEADLESS === 'true',
   startUrl: process.env.BEHANCE_START_URL || 'https://www.behance.net/',
+  expectedProfileSlug: (process.env.BEHANCE_EXPECTED_PROFILE_SLUG || 'rangerandfox').trim().replace(/^@/, '').toLowerCase(),
   creativeField: process.env.BEHANCE_CREATIVE_FIELD || 'Motion Graphics',
   dropboxSyncPath: path.resolve(need('DROPBOX_SYNC_PATH')),
   workerId: process.env.WORKER_ID || `behance-${os.hostname()}`,
