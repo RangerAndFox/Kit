@@ -38,7 +38,7 @@ if ! security find-generic-password -s com.rangerandfox.kit-studio-worker >/dev/
   echo "Missing macOS Keychain item: com.rangerandfox.kit-studio-worker" >&2
   exit 1
 fi
-npm run build
+(cd "$source_dir" && npm run build)
 ditto "$source_dir/dist" "$install_dir/dist"
 ditto "$source_dir/node_modules" "$install_dir/node_modules"
 
