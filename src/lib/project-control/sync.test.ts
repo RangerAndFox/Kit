@@ -180,13 +180,13 @@ describe('runProjectControlSync', () => {
       { id: 'r', project_id: 'p1', canvas_type: 'reference', canvas_id: 'CR', canvas_url: null, source_template_file_id: null, source_template_hash: null, template_markdown: null, last_source_hash: null, last_synced_at: null, sync_status: 'synced', error: null },
       { id: 's', project_id: 'p1', canvas_type: 'schedule', canvas_id: 'CS', canvas_url: null, source_template_file_id: null, source_template_hash: null, template_markdown: null, last_source_hash: null, last_synced_at: null, sync_status: 'synced', error: null },
     ]
-    const created: Array<{ channelId: string; title: string }> = []
+    const created: Array<{ channelId: string; title: string; accessLevel?: string }> = []
     const saved: string[] = []
     deps.store.listProjectCanvases = async () => canvases
     deps.store.upsertProjectCanvas = async (input) => { saved.push(input.canvasType) }
     deps.store.updateProjectCanvas = async () => {}
-    deps.canvas.createControlCanvas = async ({ channelId, title }) => {
-      created.push({ channelId, title })
+    deps.canvas.createControlCanvas = async ({ channelId, title, accessLevel }) => {
+      created.push({ channelId, title, accessLevel })
       return { canvasId: 'CN', canvasUrl: 'https://slack.com/canvas/CN' }
     }
     deps.canvas.reconcileControlCanvas = async () => ({ status: 'absent' })
@@ -194,9 +194,34 @@ describe('runProjectControlSync', () => {
     const result = await runProjectControlSync(deps)
 
     assert.equal(result.updated, 1)
-    assert.deepEqual(created, [{ channelId: 'CTEST', title: '2601_NotesAndFeedback' }])
+    assert.deepEqual(created, [{ channelId: 'CTEST', title: '2601_NotesAndFeedback', accessLevel: 'write' }])
     assert.deepEqual(saved, ['notesAndFeedback'])
     assert.deepEqual(edits, ['C1', 'CR', 'CS'])
+  })
+
+  it('makes an existing NotesAndFeedback canvas editable without replacing its contents', async () => {
+    const { deps, edits } = makeDeps({
+      bindings: [binding({ template_markdown: null, source_template_file_id: null, source_template_hash: null, last_row_hash: 'old' })],
+    })
+    deps.config = { ...CONFIG, layout: 'rf-production-v1' }
+    deps.sheets.readProjectSupplement = async () => ({
+      scheduleStatus: 'Draft', specs: {}, workback: [], deliverables: [], assignments: [], statusLog: [],
+      links: [{ 'Link Type': 'Slack Channel', URL: 'https://slack.com/app_redirect?channel=CTEST' }],
+    })
+    deps.store.listProjectCanvases = async () => [
+      { id: 'o', project_id: 'p1', canvas_type: 'overview', canvas_id: 'C1', canvas_url: null, source_template_file_id: null, source_template_hash: null, template_markdown: null, last_source_hash: null, last_synced_at: null, sync_status: 'synced', error: null },
+      { id: 'r', project_id: 'p1', canvas_type: 'reference', canvas_id: 'CR', canvas_url: null, source_template_file_id: null, source_template_hash: null, template_markdown: null, last_source_hash: null, last_synced_at: null, sync_status: 'synced', error: null },
+      { id: 's', project_id: 'p1', canvas_type: 'schedule', canvas_id: 'CS', canvas_url: null, source_template_file_id: null, source_template_hash: null, template_markdown: null, last_source_hash: null, last_synced_at: null, sync_status: 'synced', error: null },
+      { id: 'n', project_id: 'p1', canvas_type: 'notesAndFeedback', canvas_id: 'CN', canvas_url: null, source_template_file_id: null, source_template_hash: null, template_markdown: null, last_source_hash: null, last_synced_at: null, sync_status: 'synced', error: null },
+    ]
+    deps.store.updateProjectCanvas = async () => {}
+    const access: Array<{ canvasId: string; channelId: string }> = []
+    deps.canvas.setControlCanvasEditable = async (canvasId, channelId) => { access.push({ canvasId, channelId }) }
+
+    await runProjectControlSync(deps)
+
+    assert.deepEqual(edits, ['C1', 'CR', 'CS'], 'Notes body is never replaced')
+    assert.deepEqual(access, [{ canvasId: 'CN', channelId: 'CTEST' }])
   })
 
   it('does not advance the cursor when a binding fails', async () => {

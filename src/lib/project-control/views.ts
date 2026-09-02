@@ -13,7 +13,7 @@ export interface ProjectSupplement {
 
 // Bump when generated Canvas markup changes so the sync cursor performs one
 // complete regeneration even if the workbook itself has not changed.
-export const PROJECT_VIEW_RENDER_VERSION = '5'
+export const PROJECT_VIEW_RENDER_VERSION = '6'
 
 const val = (row: NormalizedRow, key: string) => row[key]?.display || '—'
 const link = (label: string, url?: string) => url ? `[${label}](${url})` : '—'
@@ -89,7 +89,9 @@ export function renderNotesAndFeedbackView(row: NormalizedRow, extra: ProjectSup
     .filter((entry) => String(entry.Visibility || '').trim().toLowerCase() === 'team')
     .sort((a, b) => String(b.Date || '').localeCompare(String(a.Date || '')))
     .map((entry) => [entry.Date, entry.Update, entry['Updated By']])
-  return `${GENERATED_VIEW_NOTICE}\n\n# ${val(row, 'Project Number')} — Notes & Feedback\n\n` +
-    `This is the team-safe project log from the control workbook. Budgets and client contacts are intentionally excluded.\n\n` +
+  return `> ✏️ **Team workspace — edit this canvas directly.**\n` +
+    `> Kit will not overwrite content added here. Keep budgets, client contacts, and other sensitive information in producer-only systems.\n\n` +
+    `# ${val(row, 'Project Number')} — Notes & Feedback\n\n` +
+    `Kit seeded the team-safe project log below. Add ongoing notes and feedback anywhere in this canvas.\n\n` +
     table(['Date', 'Update', 'Updated By'], rows.length > 0 ? rows : [['—', 'No notes or feedback yet', '—']])
 }

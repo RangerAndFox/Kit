@@ -1,10 +1,9 @@
 /**
  * Slack Project Control Canvas — dedicated create / edit / reconcile.
  *
- * The Project Control Canvas is fully Kit-managed: rendered deterministically
- * from the stored template snapshot + the authoritative Sheet row. This module
- * only ever touches ONE canvas per project (the persisted canvas_id); the other
- * cloned template canvases are never read or written here.
+ * Most Project Control canvases are fully Kit-managed projections. The
+ * NotesAndFeedback canvas is the deliberate exception: Kit seeds it once and
+ * channel members own its contents thereafter.
  *
  * Raw bot-token calls (no Bolt App dependency) so the Vercel/Inngest sync can
  * reuse the exact same edit path as Railway creation.
@@ -52,6 +51,10 @@ const SLACK_CALL_TIMEOUT_MS = 45_000
  * interaction is confirmed at staging per the rollout runbook.)
  */
 export const CONTROL_CANVAS_ACCESS_LEVEL = 'read' as const
+export const COLLABORATIVE_CANVAS_ACCESS_LEVEL = 'write' as const
+export type ControlCanvasAccessLevel =
+  | typeof CONTROL_CANVAS_ACCESS_LEVEL
+  | typeof COLLABORATIVE_CANVAS_ACCESS_LEVEL
 
 type SlackTransport = (
   kind: 'post' | 'get',
@@ -167,19 +170,32 @@ export interface CanvasHandle {
   canvasUrl: string | null
 }
 
-export async function setControlCanvasReadOnly(canvasId: string, channelId: string): Promise<void> {
+export async function setControlCanvasAccess(
+  canvasId: string,
+  channelId: string,
+  accessLevel: ControlCanvasAccessLevel,
+): Promise<void> {
   await slackPost('canvases.access.set', {
     canvas_id: canvasId,
-    access_level: CONTROL_CANVAS_ACCESS_LEVEL,
+    access_level: accessLevel,
     channel_ids: [channelId],
   })
 }
 
-/** Create the managed canvas once and set the channel to read-only access. */
+export async function setControlCanvasReadOnly(canvasId: string, channelId: string): Promise<void> {
+  await setControlCanvasAccess(canvasId, channelId, CONTROL_CANVAS_ACCESS_LEVEL)
+}
+
+export async function setControlCanvasEditable(canvasId: string, channelId: string): Promise<void> {
+  await setControlCanvasAccess(canvasId, channelId, COLLABORATIVE_CANVAS_ACCESS_LEVEL)
+}
+
+/** Create a canvas and grant the requested channel access (read-only by default). */
 export async function createControlCanvas(opts: {
   channelId: string
   title: string
   markdown: string
+  accessLevel?: ControlCanvasAccessLevel
 }): Promise<CanvasHandle> {
   const created = await slackPost('canvases.create', {
     title: opts.title,
@@ -188,7 +204,7 @@ export async function createControlCanvas(opts: {
   })
   const canvasId = created.canvas_id as string | undefined
   if (!canvasId) throw new Error('canvases.create returned no canvas_id')
-  await setControlCanvasReadOnly(canvasId, opts.channelId)
+  await setControlCanvasAccess(canvasId, opts.channelId, opts.accessLevel || CONTROL_CANVAS_ACCESS_LEVEL)
   return { canvasId, canvasUrl: (created.canvas_url as string | undefined) || null }
 }
 

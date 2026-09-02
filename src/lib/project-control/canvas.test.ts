@@ -15,6 +15,7 @@ import {
   assertValidCanvasChanges,
   formatSlackResponseMessages,
   CONTROL_CANVAS_ACCESS_LEVEL,
+  COLLABORATIVE_CANVAS_ACCESS_LEVEL,
   __setCanvasTransportForTests,
 } from './canvas'
 
@@ -55,6 +56,19 @@ describe('createControlCanvas read-only enforcement', () => {
     assert.equal(access!.payload.canvas_id, 'C_NEW')
     // Guard against a regression back to write access on the managed canvas.
     assert.notEqual(access!.payload.access_level, 'write')
+  })
+
+  it('grants write access when creating a collaborative canvas', async () => {
+    const r = recorder({ 'canvases.create': { canvas_id: 'C_NOTES' } })
+    __setCanvasTransportForTests(r.transport)
+
+    await createControlCanvas({
+      channelId: 'CH1', title: '2601_NotesAndFeedback', markdown: '# Notes', accessLevel: 'write',
+    })
+
+    const access = r.calls.find((c) => c.method === 'canvases.access.set')
+    assert.equal(access?.payload.access_level, 'write')
+    assert.equal(COLLABORATIVE_CANVAS_ACCESS_LEVEL, 'write')
   })
 
   it('fails provisioning when the read-only grant fails', async () => {

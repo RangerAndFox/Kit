@@ -38,6 +38,8 @@ import {
   editControlCanvas,
   reconcileControlCanvas,
   setControlCanvasReadOnly,
+  setControlCanvasEditable,
+  type ControlCanvasAccessLevel,
   type CanvasHandle,
   type CanvasReconcile,
 } from './canvas'
@@ -78,10 +80,11 @@ export interface CreationSheetsPort {
 }
 
 export interface CreationCanvasPort {
-  createControlCanvas(o: { channelId: string; title: string; markdown: string }): Promise<CanvasHandle>
+  createControlCanvas(o: { channelId: string; title: string; markdown: string; accessLevel?: ControlCanvasAccessLevel }): Promise<CanvasHandle>
   editControlCanvas(o: { canvasId: string; title: string; markdown: string }): Promise<void>
   reconcileControlCanvas(o: { channelId: string; expectedTitle: string }): Promise<CanvasReconcile>
   setControlCanvasReadOnly?(canvasId: string, channelId: string): Promise<void>
+  setControlCanvasEditable?(canvasId: string, channelId: string): Promise<void>
 }
 
 export interface CreationStorePort {
@@ -123,7 +126,7 @@ export function defaultCreationDeps(): CreationDeps {
       seedNormalizedProjectTables: realSeedNormalizedProjectTables,
       readProjectSupplement: realReadProjectSupplement,
     },
-    canvas: { createControlCanvas, editControlCanvas, reconcileControlCanvas, setControlCanvasReadOnly },
+    canvas: { createControlCanvas, editControlCanvas, reconcileControlCanvas, setControlCanvasReadOnly, setControlCanvasEditable },
     store: {
       ensureBinding, getBindingByProject, updateBinding,
       claimWorkbookLease, renewWorkbookLease, releaseWorkbookLease,
@@ -284,9 +287,9 @@ export async function bindProjectControl(
         ? await deps.store.listProjectCanvases(opts.projectId)
         : []
       const desired = [
-        { canvasType: 'reference' as const, label: 'Reference', markdown: renderReferenceView(row, extra) },
-        { canvasType: 'schedule' as const, label: 'Schedule', markdown: renderScheduleView(row, extra) },
-        { canvasType: 'notesAndFeedback' as const, label: 'NotesAndFeedback', markdown: renderNotesAndFeedbackView(row, extra) },
+        { canvasType: 'reference' as const, label: 'Reference', markdown: renderReferenceView(row, extra), editable: false },
+        { canvasType: 'schedule' as const, label: 'Schedule', markdown: renderScheduleView(row, extra), editable: false },
+        { canvasType: 'notesAndFeedback' as const, label: 'NotesAndFeedback', markdown: renderNotesAndFeedbackView(row, extra), editable: true },
       ]
       for (const view of desired) {
         const title = projectCanvasTitle(projectNumber, view.canvasType)
@@ -296,20 +299,25 @@ export async function bindProjectControl(
         let handle: CanvasHandle
         if (clone) {
           await deps.canvas.editControlCanvas({ canvasId: clone.canvasId, title, markdown: view.markdown })
-          await deps.canvas.setControlCanvasReadOnly?.(clone.canvasId, channelId)
+          if (view.editable) await deps.canvas.setControlCanvasEditable?.(clone.canvasId, channelId)
+          else await deps.canvas.setControlCanvasReadOnly?.(clone.canvasId, channelId)
           handle = { canvasId: clone.canvasId, canvasUrl: null }
         } else if (stored?.canvas_id) {
-          await deps.canvas.editControlCanvas({ canvasId: stored.canvas_id, title, markdown: view.markdown })
-          await deps.canvas.setControlCanvasReadOnly?.(stored.canvas_id, channelId)
+          // NotesAndFeedback is Slack-owned once created. Never replace its
+          // document body on a retry/resume or human edits would be lost.
+          if (!view.editable) await deps.canvas.editControlCanvas({ canvasId: stored.canvas_id, title, markdown: view.markdown })
+          if (view.editable) await deps.canvas.setControlCanvasEditable?.(stored.canvas_id, channelId)
+          else await deps.canvas.setControlCanvasReadOnly?.(stored.canvas_id, channelId)
           handle = { canvasId: stored.canvas_id, canvasUrl: stored.canvas_url }
         } else {
           try {
-            handle = await deps.canvas.createControlCanvas({ channelId, title, markdown: view.markdown })
+            handle = await deps.canvas.createControlCanvas({ channelId, title, markdown: view.markdown, accessLevel: view.editable ? 'write' : 'read' })
           } catch (err) {
             const rec = await deps.canvas.reconcileControlCanvas({ channelId, expectedTitle: title })
             if (rec.status === 'found') {
-              await deps.canvas.editControlCanvas({ canvasId: rec.canvasId, title, markdown: view.markdown })
-              await deps.canvas.setControlCanvasReadOnly?.(rec.canvasId, channelId)
+              if (!view.editable) await deps.canvas.editControlCanvas({ canvasId: rec.canvasId, title, markdown: view.markdown })
+              if (view.editable) await deps.canvas.setControlCanvasEditable?.(rec.canvasId, channelId)
+              else await deps.canvas.setControlCanvasReadOnly?.(rec.canvasId, channelId)
               handle = { canvasId: rec.canvasId, canvasUrl: null }
             } else if (rec.status === 'ambiguous') {
               throw new Error(`${view.canvasType}_canvas_ambiguous: ${rec.canvasIds.join(',')}`)

@@ -4,9 +4,10 @@ Covers the event-driven Sheet→Canvas refresh (Workstream B) and the legacy
 Frame.io URL repair. Read `.ai/runtime.md` and `.ai/invariants.md` (esp.
 invariant 14) first.
 
-**Ownership (unchanged):** the Master Project List Google Sheet is
-authoritative; **Vercel/Inngest** owns Sheet→Canvas sync via the canonical
-`runProjectControlSync`. The Apps Script trigger and the Vercel endpoint only
+**Ownership:** the Master Project List Google Sheet is authoritative for
+structured project data; Notes & Feedback is the sole Slack-owned collaborative
+canvas. **Vercel/Inngest** owns Sheet→Canvas sync via the canonical
+`runProjectControlSync`, which never replaces Notes & Feedback after creation. The Apps Script trigger and the Vercel endpoint only
 *request a refresh* — they never render a canvas or call Slack. The 10-minute
 cron stays enabled as the convergence/recovery path (and is the ONLY path that
 catches API/script-originated Sheet changes, which edit triggers cannot see).

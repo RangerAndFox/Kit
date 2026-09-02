@@ -56,7 +56,9 @@ describe('generated Canvas tables', () => {
     })
     assert.match(markdown, /2637 — Notes & Feedback/)
     assert.match(markdown, /Client approved boards/)
-    assert.match(markdown, /Budgets and client contacts are intentionally excluded/)
+    assert.match(markdown, /edit this canvas directly/)
+    assert.match(markdown, /Keep budgets, client contacts, and other sensitive information in producer-only systems/)
+    assert.doesNotMatch(markdown, /Generated view — do not edit here/)
     assert.doesNotMatch(markdown, /Michelle|\$[0-9]/)
   })
 

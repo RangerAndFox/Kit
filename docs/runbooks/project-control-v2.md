@@ -1,6 +1,6 @@
 # Project Control v2 — rollout
 
-The Google Sheet is the only editable source. Slack’s Overview, Reference, and Schedule canvases are generated, read-only projections.
+The Google Sheet is the editable source for structured project data. Slack’s Overview, Reference, and Schedule canvases are generated, read-only projections. Notes & Feedback is an editable team workspace in Slack; Kit seeds it once and never overwrites its contents.
 
 ## Production workbook
 
@@ -31,7 +31,7 @@ Both tables have RLS enabled with no client policies; Kit’s service-role proce
 
 `F0BT5QT3C4E,F0BSSC7NZKR,F0BT3LH43U5`
 
-Kit excludes the Overview template from generic cloning and creates it through the managed Project Control path. It clones Reference and Schedule, records their IDs, sets all three canvases to read-only, then replaces their content from the normalized workbook on every sync.
+Kit excludes the Overview template from generic cloning and creates it through the managed Project Control path. It records durable IDs for all four canvases. Overview, Reference, and Schedule are read-only and regenerated from the workbook; Notes & Feedback grants channel members write access and is never regenerated after creation.
 
 ## Apps Script
 
@@ -56,7 +56,7 @@ The new-project modal asks for start date, deadline, workback style, and milesto
 1. Creates the Supabase project and selected external services, including a blank Boords shell when available.
 2. Writes the bound Projects row and normalized Specs, Workback, Links, Deliverables, and Status Log rows.
 3. Generates milestone dates over business days inside the project window. The schedule begins as Draft.
-4. Creates exactly three read-only channel canvases and stores their durable identities.
+4. Creates Overview, Reference, and Schedule as read-only channel canvases, plus an editable Notes & Feedback canvas, and stores their durable identities.
 
 ## Share progression
 
@@ -74,7 +74,8 @@ An uncertain filename never advances the schedule automatically. Final Delivery 
 Create a disposable project with a two-week date range and five milestones. Confirm:
 
 - one row appears in each expected source table;
-- Overview, Reference, and Schedule are the only project canvas tabs and are read-only;
+- Overview, Reference, and Schedule are read-only; Notes & Feedback is editable by channel members;
+- a manual Notes & Feedback edit survives a Sheet-triggered synchronization;
 - editing a spec and a due date refreshes the appropriate canvas;
 - uploading a uniquely named milestone file updates Latest Share once;
 - accepting the DM advances the correct three schedule states once;
