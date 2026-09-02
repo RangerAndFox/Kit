@@ -88,9 +88,10 @@ Inngest event: `project-control/sheet.edited`. Replay dedupe is enforced by
 
 ## Producer row controls
 
-The Apps Script also adds two lightweight controls to every authoritative
-source tab: `Projects`, `Project Specs`, `Daily Assignments`, `Links`,
-`Workback`, `Deliverables`, and `Status Log`.
+The Apps Script adds a project filter to every authoritative source tab:
+`Projects`, `Project Specs`, `Daily Assignments`, `Links`, `Workback`,
+`Deliverables`, and `Status Log`. It also adds the validated Add Row workflow
+to every source tab except `Projects`.
 
 ### Filter a tab to one project
 
@@ -104,7 +105,8 @@ request a Slack Canvas refresh.
 
 ### Add a row without scrolling
 
-1. Open the source tab that should receive the new row.
+1. Open `Project Specs`, `Daily Assignments`, `Links`, `Workback`,
+   `Deliverables`, or `Status Log`.
 2. Choose **Kit → Add row to this tab**.
 3. Complete the tab-specific form. Required fields are marked with `*`, Project
    IDs are selected from `Projects`, and existing Sheet validation choices are
@@ -114,12 +116,13 @@ request a Slack Canvas refresh.
 Kit validates the entry, writes it into the first open prepared row, preserves
 that row's formatting and data validation, focuses the tab on the affected
 project, and explicitly requests the normal Sheet→Canvas refresh. It never
-appends a record below the prepared table. `Projects` and `Project Specs` allow
-only one row per Project ID; activity tabs allow multiple rows.
+appends a record below the prepared table. `Project Specs` allows only one row
+per Project ID; activity tabs allow multiple rows.
 
-For a brand-new project that also needs Slack, Dropbox, Frame.io, Harvest, and
-Canvas provisioning, use Kit's Slack project provisioner. The `Projects` Add
-Row form deliberately creates only the authoritative Sheet record.
+All new project rows must be created through Kit's Slack project provisioner so
+the Sheet record and its Slack, Dropbox, Frame.io, Harvest, and Canvas outputs
+are provisioned as one operation. The Add Row command refuses to create a row
+while `Projects` is the active tab.
 
 ## Rollout (controlled — do NOT execute without authorization)
 

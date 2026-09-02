@@ -82,10 +82,7 @@ function onMasterProjectListEdit(e) {
 
 var KIT_SOURCE_SHEET_CONFIG_ = {
   'Projects': {
-    required: ['Project ID', 'Client', 'Project Name'],
-    uniqueProject: true,
-    defaults: { 'Project Type': 'Client', 'Lifecycle': 'Active', 'Schedule Status': 'Draft' },
-    note: 'For full Slack, Dropbox, Frame.io, Harvest, and canvas provisioning, create the project through Kit in Slack. This form adds the source row only.'
+    addRow: false
   },
   'Project Specs': {
     required: ['Project ID'],
@@ -135,6 +132,10 @@ function showKitAddRowSidebar() {
     SpreadsheetApp.getUi().alert('Open Projects, Project Specs, Daily Assignments, Links, Workback, Deliverables, or Status Log, then try again.');
     return;
   }
+  if (config.addRow === false) {
+    SpreadsheetApp.getUi().alert('Project rows are created only through Kit’s project provisioner in Slack. Use the filter in B3 to find an existing project.');
+    return;
+  }
 
   var lastColumn = sheet.getLastColumn();
   var headers = sheet.getRange(KIT_HEADER_ROW_, 1, 1, lastColumn).getDisplayValues()[0];
@@ -171,11 +172,15 @@ function kitAddRowFromSidebar(payload) {
     throw new Error('The selected tab is not supported.');
   }
 
+  var config = KIT_SOURCE_SHEET_CONFIG_[payload.sheetName];
+  if (config.addRow === false) {
+    throw new Error('Project rows must be created through Kit’s project provisioner in Slack.');
+  }
+
   var spreadsheet = SpreadsheetApp.getActive();
   var sheet = spreadsheet.getSheetByName(payload.sheetName);
   if (!sheet) throw new Error('The selected tab no longer exists.');
 
-  var config = KIT_SOURCE_SHEET_CONFIG_[payload.sheetName];
   var lastColumn = sheet.getLastColumn();
   var headers = sheet.getRange(KIT_HEADER_ROW_, 1, 1, lastColumn).getDisplayValues()[0];
   var submitted = payload.values || {};
