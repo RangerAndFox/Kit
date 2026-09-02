@@ -323,6 +323,19 @@ type ClaimedDropboxEvent = DropboxInboxEvent & {
   attempt_count: number
 }
 
+const FRAMEIO_PROCESSING_POLL_SECONDS = 300
+const FRAMEIO_PROCESSING_TIMEOUT_MS = 24 * 60 * 60 * 1000
+
+/** A provider has accepted the work but has not completed it yet. This is a
+ * scheduling outcome, not an error, and must not consume the inbox retry
+ * budget. */
+export class DropboxEventDeferred extends Error {
+  constructor(message: string, readonly delaySeconds = FRAMEIO_PROCESSING_POLL_SECONDS) {
+    super(message)
+    this.name = 'DropboxEventDeferred'
+  }
+}
+
 async function dispatchDropboxEvent(app: App, event: ClaimedDropboxEvent): Promise<void> {
   const payload = event.payload as any
   if (event.event_type === 'accessibility_srt') {
@@ -348,12 +361,12 @@ async function dispatchDropboxEvent(app: App, event: ClaimedDropboxEvent): Promi
 export async function drainDropboxInbox(
   app: App,
   options: { workerId?: string; batchSize?: number; maxBatches?: number } = {},
-): Promise<{ claimed: number; completed: number; failed: number; deadLettered: number }> {
+): Promise<{ claimed: number; completed: number; deferred: number; failed: number; deadLettered: number }> {
   const sb = createAdminClient()
   const workerId = options.workerId || `bolt:${process.pid}:${crypto.randomUUID()}`
   const batchSize = Math.min(Math.max(options.batchSize || 10, 1), 100)
   const maxBatches = Math.min(Math.max(options.maxBatches || 10, 1), 100)
-  const result = { claimed: 0, completed: 0, failed: 0, deadLettered: 0 }
+  const result = { claimed: 0, completed: 0, deferred: 0, failed: 0, deadLettered: 0 }
 
   for (let batch = 0; batch < maxBatches; batch++) {
     const { data, error } = await sb.rpc('claim_dropbox_events', {
@@ -377,6 +390,19 @@ export async function drainDropboxInbox(
         if (!completed) throw new Error('completion lease was lost')
         result.completed++
       } catch (error: any) {
+        if (error instanceof DropboxEventDeferred) {
+          const { data: deferred, error: deferError } = await sb.rpc('defer_dropbox_event', {
+            p_event_id: event.id,
+            p_claim_token: event.claim_token,
+            p_reason: error.message,
+            p_delay_seconds: error.delaySeconds,
+          })
+          if (deferError) throw new Error(`deferral checkpoint failed: ${deferError.message}`)
+          if (!deferred) throw new Error('deferral lease was lost')
+          result.deferred++
+          console.log(`[dropbox-inbox] ${event.event_type} ${event.id} deferred: ${error.message}`)
+          continue
+        }
         result.failed++
         const message = error?.message || String(error)
         const { data: status, error: failError } = await sb.rpc('fail_dropbox_event', {
@@ -848,11 +874,22 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
   // Remote upload is asynchronous. Never announce or create a review share
   // until Frame.io's documented status endpoint reports a terminal ready state.
   if (transfer.state !== 'ready') {
-    const statusResp = await frameioGet(normalizeFrameioStatusPath(transfer.frameio_status_path))
-    const providerStatus = String(
-      statusResp?.data?.status || statusResp?.status || statusResp?.data?.state || statusResp?.state || '',
-    ).toLowerCase()
-    const readiness = classifyFrameioUploadStatus(providerStatus)
+    let statusResp: unknown
+    try {
+      statusResp = await frameioGet(normalizeFrameioStatusPath(transfer.frameio_status_path))
+    } catch (error) {
+      // A remote-upload placeholder may be accepted before it is visible to
+      // the status read path. Treat that eventual-consistency 404 exactly like
+      // another non-terminal processing response during the bounded window.
+      if (error instanceof FrameioApiError && error.status === 404) {
+        deferFrameioProcessing(
+          transfer.created_at,
+          'Frame.io upload status is not visible yet (404); inbox will retry',
+        )
+      }
+      throw error
+    }
+    const { readiness, providerStatus } = classifyFrameioUploadStatusResponse(statusResp)
     const { error: stateError } = await sb.from('frameio_delivery_transfers').update({
       state: readiness,
       last_provider_status: providerStatus || null,
@@ -861,7 +898,12 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
     }).eq('id', transfer.id)
     if (stateError) throw new Error(`Frame.io transfer state checkpoint failed: ${stateError.message}`)
     if (readiness === 'failed') throw new Error(`Frame.io upload failed: ${providerStatus || 'unknown provider status'}`)
-    if (readiness !== 'ready') throw new Error(`Frame.io upload is still processing (${providerStatus || 'pending'}); inbox will retry`)
+    if (readiness !== 'ready') {
+      deferFrameioProcessing(
+        transfer.created_at,
+        `Frame.io upload is still processing (${providerStatus || 'pending'}); inbox will retry`,
+      )
+    }
     transfer.state = 'ready'
   }
   const breadcrumb =
@@ -1299,12 +1341,39 @@ export async function reconcileMissingFrameioProjectLinks(): Promise<FrameioLink
 
 // ─── Frame.io helpers ───────────────────────────────────────
 
+class FrameioApiError extends Error {
+  constructor(
+    readonly method: string,
+    readonly path: string,
+    readonly status: number,
+    readonly responseBody: string,
+  ) {
+    super(`Frame.io ${method} ${path} ${status}: ${responseBody}`)
+    this.name = 'FrameioApiError'
+  }
+}
+
+export function shouldTimeoutFrameioProcessing(
+  createdAt: string | null | undefined,
+  nowMs = Date.now(),
+): boolean {
+  const createdMs = Date.parse(String(createdAt || ''))
+  return Number.isFinite(createdMs) && nowMs - createdMs >= FRAMEIO_PROCESSING_TIMEOUT_MS
+}
+
+function deferFrameioProcessing(createdAt: string | null | undefined, message: string): never {
+  if (shouldTimeoutFrameioProcessing(createdAt)) {
+    throw new Error(`${message.replace(/; inbox will retry$/, '')}; exceeded 24-hour processing window`)
+  }
+  throw new DropboxEventDeferred(message)
+}
+
 async function frameioGet(path: string): Promise<any> {
   const r = await fetch(`${FRAMEIO_API}${path}`, {
     headers: await frameioHeaders(),
     signal: AbortSignal.timeout(15_000),
   })
-  if (!r.ok) throw new Error(`Frame.io GET ${path} ${r.status}: ${await r.text()}`)
+  if (!r.ok) throw new FrameioApiError('GET', path, r.status, await r.text())
   return r.json()
 }
 
@@ -1315,7 +1384,7 @@ async function frameioPost(path: string, body: any): Promise<any> {
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(15_000),
   })
-  if (!r.ok) throw new Error(`Frame.io POST ${path} ${r.status}: ${await r.text()}`)
+  if (!r.ok) throw new FrameioApiError('POST', path, r.status, await r.text())
   return r.json()
 }
 
@@ -1359,4 +1428,30 @@ export function classifyFrameioUploadStatus(status: string): 'processing' | 'rea
   if (['failed', 'error', 'cancelled', 'canceled'].includes(value)) return 'failed'
   if (['ready', 'complete', 'completed', 'uploaded', 'processed', 'transcoded'].includes(value)) return 'ready'
   return 'processing'
+}
+
+/** Frame.io's upload-status endpoint reports upload_complete/upload_failed
+ * booleans, while file resources report a string status. Support both shapes
+ * because the remote-upload status link returns the former. */
+export function classifyFrameioUploadStatusResponse(response: unknown): {
+  readiness: 'processing' | 'ready' | 'failed'
+  providerStatus: string
+} {
+  const outer = response && typeof response === 'object'
+    ? response as Record<string, unknown>
+    : {}
+  const data = outer.data && typeof outer.data === 'object'
+    ? outer.data as Record<string, unknown>
+    : outer
+  if (data.upload_failed === true) return { readiness: 'failed', providerStatus: 'failed' }
+  if (data.upload_complete === true) return { readiness: 'ready', providerStatus: 'completed' }
+
+  const providerStatus = String(data.status || data.state || '').trim().toLowerCase()
+  if (data.upload_complete === false && !providerStatus) {
+    return { readiness: 'processing', providerStatus: 'pending' }
+  }
+  return {
+    readiness: classifyFrameioUploadStatus(providerStatus),
+    providerStatus: providerStatus || 'pending',
+  }
 }
