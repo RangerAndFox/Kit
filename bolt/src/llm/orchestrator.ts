@@ -28,6 +28,8 @@ const MAX_TURNS = 6 // orchestrator may chain multiple specialist calls in one S
 
 export interface OrchestratorRequest {
   teamId: string
+  /** Kit workspace UUID resolved from the verified Slack team id. */
+  workspaceId?: string | null
   channel: string
   userId: string
   user: UserContext | null
@@ -39,6 +41,7 @@ export interface OrchestratorRequest {
    * duplicates per call at the history cap, crowding out real history).
    */
   contextPreamble?: string
+  isDirectMessage?: boolean
 }
 
 export interface OrchestratorResult {
@@ -98,11 +101,16 @@ export async function runOrchestrator(
       for (const block of toolUseBlocks) {
         const agentId = block.name.replace(/^ask_/, '')
         const query = block.input?.query || ''
-        const summary = await runSpecialist(agentId, query, req.user, { channelId: req.channel })
+        const summary = await runSpecialist(agentId, query, req.user, {
+          channelId: req.channel,
+          slackUserId: req.userId,
+          workspaceId: req.workspaceId,
+          isDirectMessage: req.isDirectMessage === true,
+        })
         toolResults.push({
           type: 'tool_result',
           tool_use_id: block.id,
-          content: summary,
+          content: `<untrusted_specialist_result>\n${summary}\n</untrusted_specialist_result>`,
         })
       }
 

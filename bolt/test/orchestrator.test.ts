@@ -87,8 +87,15 @@ describe('runOrchestrator', () => {
       'harvest',
       'budget on Acme Spot',
       fakeUser,
-      { channelId: 'C1' },
+      {
+        channelId: 'C1',
+        slackUserId: 'U1',
+        workspaceId: undefined,
+        isDirectMessage: false,
+      },
     )
+    const toolResult = createMock.mock.calls[1][0].messages[2].content[0].content
+    expect(toolResult).toContain('<untrusted_specialist_result>')
   })
 
   it('flags awaitingClarification when reply ends with a question mark', async () => {

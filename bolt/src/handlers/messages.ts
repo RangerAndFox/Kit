@@ -614,11 +614,13 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
     // copy of this header into every stored message).
     const { reply } = await runOrchestrator({
       teamId,
+      workspaceId,
       channel: channelId,
       userId,
       user,
       message: messageText,
       contextPreamble: contextLines.join('\n'),
+      isDirectMessage: channelType === 'im',
     })
 
     await postReply(reply)

@@ -2,6 +2,9 @@
   "name": "kit-app",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "check:migrations": "node scripts/check-migrations.mjs",
     "dev": "next dev --port 3001",

@@ -51,7 +51,7 @@ Do not move or combine them without preserving those separate contracts. See [.a
 
 ## Local development
 
-Requirements: Node 20.19+ (Railway uses the Node 20 image), npm, and the environment variables for the integrations being exercised.
+Requirements: Node 22 LTS (matching CI and Railway), npm, and the environment variables for the integrations being exercised.
 
 Next.js/Inngest:
 

@@ -110,6 +110,7 @@ import {
   parseSlackProjectChannel,
   reconcileProjectPicker,
   type PickerProjectRow,
+  type SlackChannelLike,
   type SlackProjectChannel,
 } from './updateproject-reconcile'
 
@@ -1731,7 +1732,7 @@ export function registerInteractionHandlers(app: App) {
     // this modal sat open is NOT flagged as this user's change and reverted. Fall
     // back to the fresh snapshot only for an older modal without an embedded snap.
     const baseline = meta.snap || snap.snapshot
-    const plan = computeUpdatePlan({ projectId, ...baseline } as any, form as any, snap.provisioned)
+    const plan = computeUpdatePlan({ projectId, ...baseline }, form, snap.provisioned)
     if (!plan.hasChanges) {
       // An unchanged form can still be an intentional repair request. Project
       // Control / the projects row is authoritative; if somebody renamed the
@@ -1741,7 +1742,7 @@ export function registerInteractionHandlers(app: App) {
       if (snap.provisioned.slack && snap.current.slackChannelId) {
         try {
           const info = await client.conversations.info({ channel: snap.current.slackChannelId })
-          slackDrift = detectSlackIdentityDrift(info.channel as any, {
+          slackDrift = detectSlackIdentityDrift(info.channel as SlackChannelLike, {
             projectId,
             projectNumber: snap.snapshot.projectNumber,
             client: snap.snapshot.clientName,

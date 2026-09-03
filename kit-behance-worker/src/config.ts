@@ -2,6 +2,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import * as dotenv from 'dotenv'
+import { assertProfileOutsideSyncedStorage } from './profile-security.js'
 
 dotenv.config({ path: process.env.KIT_ENV_FILE || path.resolve('../.env.local') })
 dotenv.config()
@@ -28,16 +29,20 @@ const workerSecret = (): string => {
   throw new Error('Missing KIT_STUDIO_WORKER_SECRET (environment or macOS Keychain item com.rangerandfox.kit-studio-worker).')
 }
 
+const dropboxSyncPath = path.resolve(need('DROPBOX_SYNC_PATH'))
+const profileDir = path.resolve(process.env.BEHANCE_PROFILE_DIR || './.behance-profile')
+assertProfileOutsideSyncedStorage(profileDir, dropboxSyncPath)
+
 export const config = {
   workerApiUrl: process.env.KIT_STUDIO_WORKER_API_URL || 'https://kit-amber.vercel.app/api/internal/studio-worker',
   workerApiSecret: workerSecret(),
   chromePath: process.env.BEHANCE_CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  profileDir: path.resolve(process.env.BEHANCE_PROFILE_DIR || './.behance-profile'),
+  profileDir,
   headless: process.env.BEHANCE_HEADLESS === 'true',
   startUrl: process.env.BEHANCE_START_URL || 'https://www.behance.net/',
   expectedProfileSlug: (process.env.BEHANCE_EXPECTED_PROFILE_SLUG || 'rangerandfox').trim().replace(/^@/, '').toLowerCase(),
   creativeField: process.env.BEHANCE_CREATIVE_FIELD || 'Motion Graphics',
-  dropboxSyncPath: path.resolve(need('DROPBOX_SYNC_PATH')),
+  dropboxSyncPath,
   workerId: process.env.WORKER_ID || `behance-${os.hostname()}`,
   displayName: process.env.WORKER_DISPLAY_NAME || os.hostname(),
   pollIntervalMs: num('POLL_INTERVAL_MS', 5000),

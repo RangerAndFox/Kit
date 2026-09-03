@@ -2,7 +2,7 @@
 # Persistent Node.js process for Slack Socket Mode
 # No cold starts, no timeouts, runs 24/7
 
-FROM node:20-slim
+FROM node:22-slim
 
 # Archive media worker: frame extraction, GIF generation, and duration probes.
 RUN apt-get update \

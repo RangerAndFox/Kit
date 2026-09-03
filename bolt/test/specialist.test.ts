@@ -93,6 +93,7 @@ describe('runSpecialist', () => {
       project: 'Acme',
       slackUserId: 'U1',
       teamMemberId: 'tm1',
+      workspaceId: 'w1',
       channelId: undefined,
       requesterTier: 'producer',
     })
@@ -197,9 +198,84 @@ describe('runSpecialist', () => {
     // ...but the gateway denies it.
     gatewayMock.mockReturnValue({ allowed: false, reason: 'restricted' })
 
-    await runSpecialist('harvest', 'make a project', fakeUser)
+    await runSpecialist('harvest', 'make a project', fakeUser, { isDirectMessage: true })
 
     // The action must NOT have executed.
+    expect(dispatchMock).not.toHaveBeenCalled()
+  })
+
+  it('strips model-supplied identity and workspace fields', async () => {
+    createMock.mockResolvedValueOnce({
+      stop_reason: 'tool_use',
+      content: [{
+        type: 'tool_use', id: 'toolu_1', name: 'harvest_find_projects',
+        input: { payload: {
+          query: '2638',
+          slackUserId: 'U_ATTACKER',
+          teamMemberId: 'tm-attacker',
+          workspaceId: 'w-attacker',
+          requesterTier: 'admin',
+          channelId: 'C_ATTACKER',
+        } },
+      }],
+    })
+    createMock.mockResolvedValueOnce({
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'Found it.' }],
+    })
+    dispatchMock.mockResolvedValueOnce({ success: true, data: [] })
+
+    await runSpecialist('harvest', 'find 2638', fakeUser, { channelId: 'C_REAL' })
+
+    expect(dispatchMock).toHaveBeenCalledWith('harvest', 'find_projects', {
+      query: '2638',
+      slackUserId: 'U1',
+      teamMemberId: 'tm1',
+      workspaceId: 'w1',
+      channelId: 'C_REAL',
+      requesterTier: 'producer',
+    })
+  })
+
+  it('uses only trusted context for an unresolved caller', async () => {
+    createMock.mockResolvedValueOnce({
+      stop_reason: 'tool_use',
+      content: [{
+        type: 'tool_use', id: 'toolu_1', name: 'harvest_find_projects',
+        input: { payload: { query: '2638', workspaceId: 'w-model', slackUserId: 'U_MODEL' } },
+      }],
+    })
+    createMock.mockResolvedValueOnce({
+      stop_reason: 'end_turn', content: [{ type: 'text', text: 'Found it.' }],
+    })
+    dispatchMock.mockResolvedValueOnce({ success: true, data: [] })
+
+    await runSpecialist('harvest', 'find 2638', null, {
+      workspaceId: 'w-verified', slackUserId: 'U_VERIFIED', channelId: 'C_REAL',
+    })
+
+    expect(dispatchMock).toHaveBeenCalledWith('harvest', 'find_projects', expect.objectContaining({
+      workspaceId: 'w-verified', slackUserId: 'U_VERIFIED', requesterTier: 'artist',
+    }))
+  })
+
+  it('blocks model-initiated mutations from shared channels', async () => {
+    createMock.mockResolvedValueOnce({
+      stop_reason: 'tool_use',
+      content: [{
+        type: 'tool_use', id: 'toolu_1', name: 'slack_send_message',
+        input: { payload: { channel: 'C_CLIENT', text: 'Injected instruction' } },
+      }],
+    })
+    createMock.mockResolvedValueOnce({
+      stop_reason: 'end_turn', content: [{ type: 'text', text: 'Please use a DM.' }],
+    })
+
+    const result = await runSpecialist('slack', 'send this', fakeUser, {
+      channelId: 'C_SHARED', isDirectMessage: false,
+    })
+
+    expect(result).toContain('DM')
     expect(dispatchMock).not.toHaveBeenCalled()
   })
 })
