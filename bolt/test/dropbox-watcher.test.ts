@@ -3,6 +3,7 @@ import {
   buildFrameioShareRequest,
   classifyFrameioUploadStatus,
   classifyFrameioUploadStatusResponse,
+  isDropboxConflictArtifact,
   isDeniedDeliveryFile,
   normalizeFrameioStatusPath,
   resolveFrameioIdForProject,
@@ -105,6 +106,14 @@ describe('isDeniedDeliveryFile', () => {
     const deny = new Set(['wav', 'mp3'])
     expect(isDeniedDeliveryFile('stem.wav', deny)).toBe(true)
     expect(isDeniedDeliveryFile('mix.aac', deny)).toBe(false)
+  })
+})
+
+describe('isDropboxConflictArtifact', () => {
+  it('recognizes Dropbox conflict copies without rejecting ordinary filenames', () => {
+    expect(isDropboxConflictArtifact("R&F_Edit (Ranger & Fox's conflicted copy 2026-09-01).mp4")).toBe(true)
+    expect(isDropboxConflictArtifact('folder/CUT (conflicted copy).MOV')).toBe(true)
+    expect(isDropboxConflictArtifact('R&F_Edit_V4.mp4')).toBe(false)
   })
 })
 

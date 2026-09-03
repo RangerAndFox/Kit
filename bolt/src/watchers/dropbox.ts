@@ -110,6 +110,16 @@ export function isDeniedDeliveryFile(
   return deny.has(base.slice(dot + 1).toLowerCase())
 }
 
+/** Dropbox creates conflict artifacts when two synced computers save the same
+ * file concurrently. They are backup copies, not separate client deliveries.
+ * Mirroring both to Frame.io can make its remote-upload service coalesce the
+ * two requests, invalidating one status URL while leaving one healthy asset.
+ */
+export function isDropboxConflictArtifact(filename: string): boolean {
+  const base = filename.split('/').pop() || filename
+  return /\([^)]*conflicted copy[^)]*\)/i.test(base)
+}
+
 
 // ─── Signature verification ─────────────────────────────────
 
@@ -232,7 +242,7 @@ export function classifyDropboxEntry(entry: DropEntry): DropboxInboxEvent | null
   const match = entry.path_display.match(PATH_RE)
   if (!match) return null
   const [, year, projectSafeName, subfolder, filename] = match
-  if (isDeniedDeliveryFile(filename)) return null
+  if (isDeniedDeliveryFile(filename) || isDropboxConflictArtifact(filename)) return null
   return {
     event_key: stableDropboxEventKey('frameio_delivery', entry),
     event_type: 'frameio_delivery',
@@ -688,6 +698,13 @@ export function buildFrameioShareRequest(
 }
 
 async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
+  // Defend the worker as well as intake: an artifact queued by an older
+  // deployment must not be uploaded after this filter ships.
+  if (isDropboxConflictArtifact(d.name)) {
+    console.log(`[dropbox-watcher] skipping Dropbox conflicted copy: ${d.name}`)
+    return
+  }
+
   // ── Lookup project (or discover from Frame.io) ──────────
   const sb = createAdminClient()
   const { data: existing, error } = await sb

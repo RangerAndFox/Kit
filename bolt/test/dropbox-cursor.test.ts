@@ -40,5 +40,9 @@ describe('durable Dropbox event classification', () => {
       tag: 'folder',
       path_display: '/production/2026/2637_Fabric/09_Outgoing/02_Delivery',
     })).toBeNull()
+    expect(classifyDropboxEntry({
+      ...base,
+      path_display: "/production/2026/2637_Fabric/09_Outgoing/01_Client Progress/cut (Ranger & Fox's conflicted copy 2026-09-01).mp4",
+    })).toBeNull()
   })
 })
