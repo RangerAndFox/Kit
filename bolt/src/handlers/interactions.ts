@@ -106,6 +106,7 @@ import {
 import { sendNdaFromModal } from '../onboarding/nda/send'
 import {
   LIVE_SLACK_PROJECT_PREFIX,
+  detectSlackIdentityDrift,
   parseSlackProjectChannel,
   reconcileProjectPicker,
   type PickerProjectRow,
@@ -1732,8 +1733,37 @@ export function registerInteractionHandlers(app: App) {
     const baseline = meta.snap || snap.snapshot
     const plan = computeUpdatePlan({ projectId, ...baseline } as any, form as any, snap.provisioned)
     if (!plan.hasChanges) {
-      await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: ':information_source: No changes detected — nothing to update.' })
-      return
+      // An unchanged form can still be an intentional repair request. Project
+      // Control / the projects row is authoritative; if somebody renamed the
+      // linked channel directly in Slack, reconcile it back to that spine rather
+      // than telling the producer there is nothing to do.
+      let slackDrift: ReturnType<typeof detectSlackIdentityDrift> = null
+      if (snap.provisioned.slack && snap.current.slackChannelId) {
+        try {
+          const info = await client.conversations.info({ channel: snap.current.slackChannelId })
+          slackDrift = detectSlackIdentityDrift(info.channel as any, {
+            projectId,
+            projectNumber: snap.snapshot.projectNumber,
+            client: snap.snapshot.clientName,
+            projectName: snap.snapshot.projectName,
+          })
+        } catch (err: any) {
+          console.warn('[update] Slack drift check failed:', err?.data?.error || err?.message)
+        }
+      }
+      if (!slackDrift) {
+        await client.chat.postMessage({ channel: statusChannel, ...(threadTs ? { thread_ts: threadTs } : {}), text: ':information_source: No changes detected — everything is already in sync.' })
+        return
+      }
+      plan.hasChanges = true
+      plan.services.slack = true
+      plan.changes.push({
+        field: 'slack_channel_identity',
+        label: 'Slack Channel',
+        old: `#${slackDrift.currentName}`,
+        new: `#${slackDrift.expectedName}`,
+      })
+      plan.derived.slackSlug = { old: slackDrift.currentName, new: slackDrift.expectedName }
     }
 
     // Identity-collision guard: a new number that already belongs to a DIFFERENT

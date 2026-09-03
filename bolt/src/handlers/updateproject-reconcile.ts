@@ -1,4 +1,5 @@
 import { projectNumberFromCode, projectNumberKey } from '../../../src/lib/studio-knowledge/project-sync'
+import { deriveSlackSlug } from '../../../src/lib/provisioner/identifiers'
 
 export const LIVE_SLACK_PROJECT_PREFIX = 'slack:'
 
@@ -33,6 +34,32 @@ export interface ReconciledProjectOption {
   /** A projects.id, or `slack:C…` when the channel must be adopted/re-linked. */
   id: string
   label: string
+}
+
+export interface SlackIdentityDrift {
+  currentName: string
+  expectedName: string
+}
+
+/**
+ * Detect a Slack channel-name drift from Kit's authoritative project spine.
+ *
+ * The update modal is prefilled from the project record / Project Control
+ * Sheet. An operator may therefore submit the form unchanged specifically to
+ * repair a channel that somebody renamed directly in Slack. Historically that
+ * submission was rejected as a no-op, leaving the channel permanently out of
+ * sync. Both the normal slug and Kit's deterministic collision slug are valid
+ * steady states; anything else needs a Slack-only reconciliation pass.
+ */
+export function detectSlackIdentityDrift(
+  channel: SlackChannelLike,
+  expected: { projectId: string; projectNumber: string; client: string; projectName: string },
+): SlackIdentityDrift | null {
+  const currentName = String(channel.name || '').trim()
+  if (!channel.id || !currentName || channel.is_archived) return null
+  const { slackSlug, slackCollisionSlug } = deriveSlackSlug(expected)
+  if (currentName === slackSlug || currentName === slackCollisionSlug) return null
+  return { currentName, expectedName: slackSlug }
 }
 
 function titleFromSlug(value: string): string {

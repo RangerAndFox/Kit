@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  detectSlackIdentityDrift,
   parseSlackProjectChannel,
   reconcileProjectPicker,
 } from '../src/handlers/updateproject-reconcile'
@@ -77,5 +78,31 @@ describe('live Slack project reconciliation', () => {
     ], [live2637])
 
     expect(options[0].id).toBe('slack:C2637')
+  })
+
+  it('detects a manually renamed channel so an unchanged update can repair it', () => {
+    expect(detectSlackIdentityDrift({
+      id: 'C2638',
+      name: '2638-msft-2638-msft-customer-service-sizzle',
+    }, {
+      projectId: '31c306e9-53c1-4278-923f-a7135d9507a0',
+      projectNumber: '2638',
+      client: 'Microsoft',
+      projectName: 'D365 Customer Service Sizzle',
+    })).toEqual({
+      currentName: '2638-msft-2638-msft-customer-service-sizzle',
+      expectedName: '2638-microsoft-d365-customer-service-sizzle',
+    })
+  })
+
+  it('accepts both the normal and deterministic collision slugs as synced', () => {
+    const expected = {
+      projectId: '31c306e9-53c1-4278-923f-a7135d9507a0',
+      projectNumber: '2638',
+      client: 'Microsoft',
+      projectName: 'D365 Customer Service Sizzle',
+    }
+    expect(detectSlackIdentityDrift({ id: 'C1', name: '2638-microsoft-d365-customer-service-sizzle' }, expected)).toBeNull()
+    expect(detectSlackIdentityDrift({ id: 'C1', name: '2638-microsoft-d365-customer-service-sizzle-31c306e9' }, expected)).toBeNull()
   })
 })
