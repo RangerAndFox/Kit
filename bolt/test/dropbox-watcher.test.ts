@@ -3,6 +3,7 @@ import {
   buildFrameioShareRequest,
   classifyFrameioUploadStatus,
   classifyFrameioUploadStatusResponse,
+  frameioFolderNotificationCopy,
   isDropboxConflictArtifact,
   isDeniedDeliveryFile,
   normalizeFrameioStatusPath,
@@ -93,6 +94,29 @@ describe('Frame.io folder notification batching', () => {
 
   it('allows a later delivery to the same folder to notify again', () => {
     expect(shouldNotifyFrameioFolder('2026-09-03T14:45:00.000Z', now, fifteenMinutes)).toBe(true)
+  })
+})
+
+describe('Frame.io folder notification wording', () => {
+  it('calls work in 01_Client Progress Client Progress, never a delivery', () => {
+    expect(frameioFolderNotificationCopy('01_Client Progress / 073026 - StyleFrames')).toEqual({
+      heading: 'Client Progress folder updated',
+      linkLabel: 'Open Client Progress folder on Frame.io',
+    })
+  })
+
+  it('keeps delivery language for 02_Delivery', () => {
+    expect(frameioFolderNotificationCopy('02_Delivery / Final')).toEqual({
+      heading: 'Delivery folder updated',
+      linkLabel: 'Open Delivery folder on Frame.io',
+    })
+  })
+
+  it('uses the matching context in recovered notifications', () => {
+    expect(frameioFolderNotificationCopy('01_Client Progress / recovered share', true).heading)
+      .toBe('Recovered Client Progress folder share')
+    expect(frameioFolderNotificationCopy('02_Delivery / recovered share', true).heading)
+      .toBe('Recovered Delivery folder share')
   })
 })
 

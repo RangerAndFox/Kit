@@ -478,12 +478,13 @@ async function notifyProjectShare(
   },
 ): Promise<void> {
   const { project, folderLabel, reviewUrl, subfolderLine, progression } = input
-  const linkLine = reviewUrl ? `<${reviewUrl}|Open delivery folder on Frame.io>` : '_(no review link)_'
+  const copy = frameioFolderNotificationCopy(subfolderLine, Boolean(input.recovered))
+  const linkLine = reviewUrl ? `<${reviewUrl}|${copy.linkLabel}>` : '_(no review link)_'
   const text = input.recovered
-    ? `♻️ *Recovered Frame.io folder share for ${project.name}* (${project.client})\n` +
+    ? `♻️ *${copy.heading} for ${project.name}* (${project.client})\n` +
       `• Folder: \`${folderLabel}\`\n` +
       `• ${linkLine}`
-    : `📦 *Delivery folder updated for ${project.name}* (${project.client})\n` +
+    : `📦 *${copy.heading} for ${project.name}* (${project.client})\n` +
       `• Folder: \`${subfolderLine}\`\n` +
       `• ${linkLine}`
 
@@ -509,7 +510,7 @@ async function notifyProjectShare(
 
   const posted = await app.client.chat.postMessage({
     channel: target,
-    text: input.recovered ? `♻️ Recovered Frame.io folder share for *${project.name}*` : `📦 Delivery folder updated for *${project.name}*`,
+    text: `${input.recovered ? '♻️' : '📦'} ${copy.heading} for *${project.name}*`,
     blocks,
   })
   if (progression?.eventId && posted.ts) {
@@ -722,6 +723,23 @@ export function shouldNotifyFrameioFolder(
   if (!lastNotifiedAt) return true
   const timestamp = Date.parse(lastNotifiedAt)
   return !Number.isFinite(timestamp) || nowMs - timestamp >= cooldownMs
+}
+
+export function frameioFolderNotificationCopy(
+  subfolderLine: string,
+  recovered = false,
+): { heading: string; linkLabel: string } {
+  const isClientProgress = /^01_Client Progress(?:\s*\/|$)/i.test(subfolderLine.trim())
+  if (isClientProgress) {
+    return {
+      heading: recovered ? 'Recovered Client Progress folder share' : 'Client Progress folder updated',
+      linkLabel: 'Open Client Progress folder on Frame.io',
+    }
+  }
+  return {
+    heading: recovered ? 'Recovered Delivery folder share' : 'Delivery folder updated',
+    linkLabel: 'Open Delivery folder on Frame.io',
+  }
 }
 
 type FrameioFolderShare = {
