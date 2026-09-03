@@ -6,6 +6,7 @@
  */
 
 import { createAdminClient } from '../../../src/lib/supabase/admin'
+import type { ProjectMatch } from './keyword'
 
 const MODAL_CALLBACK_ID = 'kit_onboard_submit'
 const PROJECT_BLOCK_ID = 'project'
@@ -115,6 +116,103 @@ export interface ParsedOnboardSubmission {
   channelId: string
   projectId: string
   artists: { name: string; email: string; legalName?: string }[]
+}
+
+const EDIT_CALLBACK_ID = 'kit_onboard_edit_submit'
+
+/** Focused correction form for the natural-language confirmation card. */
+export function buildOnboardEditModal(opts: {
+  project: ProjectMatch
+  artistName: string
+  artistEmail: string
+  artistLegalName?: string | null
+  channelId: string
+  messageTs: string
+}) {
+  return {
+    type: 'modal',
+    callback_id: EDIT_CALLBACK_ID,
+    private_metadata: JSON.stringify({
+      projectId: opts.project.id,
+      channelId: opts.channelId,
+      messageTs: opts.messageTs,
+    }),
+    title: { type: 'plain_text', text: 'Edit Freelancer' },
+    submit: { type: 'plain_text', text: 'Save changes' },
+    close: { type: 'plain_text', text: 'Cancel' },
+    blocks: [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Project:* ${[opts.project.project_code, opts.project.client, opts.project.name].filter(Boolean).join(' · ')}`,
+        },
+      },
+      {
+        type: 'input',
+        block_id: 'artist_name',
+        label: { type: 'plain_text', text: 'Artist name' },
+        element: {
+          type: 'plain_text_input',
+          action_id: 'value',
+          initial_value: opts.artistName,
+        },
+      },
+      {
+        type: 'input',
+        block_id: 'artist_email',
+        label: { type: 'plain_text', text: 'Email' },
+        element: {
+          type: 'email_text_input',
+          action_id: 'value',
+          initial_value: opts.artistEmail,
+        },
+      },
+      {
+        type: 'input',
+        block_id: 'artist_legal_name',
+        optional: true,
+        label: { type: 'plain_text', text: 'Legal/entity name (for NDA)' },
+        element: {
+          type: 'plain_text_input',
+          action_id: 'value',
+          ...(opts.artistLegalName ? { initial_value: opts.artistLegalName } : {}),
+        },
+      },
+    ],
+  }
+}
+
+export function parseOnboardEditSubmission(viewInput: unknown): {
+  projectId: string
+  channelId: string
+  messageTs: string
+  artistName: string
+  artistEmail: string
+  artistLegalName?: string
+} | null {
+  try {
+    const view = viewInput as {
+      private_metadata?: string
+      state?: { values?: Record<string, { value?: { value?: string } }> }
+    }
+    const meta = JSON.parse(view.private_metadata || '{}')
+    const values = view.state?.values || {}
+    const artistName = values.artist_name?.value?.value?.trim()
+    const artistEmail = values.artist_email?.value?.value?.trim()
+    const artistLegalName = values.artist_legal_name?.value?.value?.trim() || undefined
+    if (!meta.projectId || !meta.channelId || !meta.messageTs || !artistName || !artistEmail) return null
+    return {
+      projectId: meta.projectId,
+      channelId: meta.channelId,
+      messageTs: meta.messageTs,
+      artistName,
+      artistEmail,
+      artistLegalName,
+    }
+  } catch {
+    return null
+  }
 }
 
 export function parseOnboardSubmission(view: any): ParsedOnboardSubmission | null {

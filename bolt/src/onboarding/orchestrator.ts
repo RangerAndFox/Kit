@@ -16,6 +16,8 @@ import { inviteArtistToFrameIo } from './services/frameio'
 import { inviteArtistToHarvest } from './services/harvest'
 import { rehydrateProjectExternalLinks } from './rehydrate'
 import { postNdaCardIfFirstTimer } from './nda/send'
+import { ensureDailyAssignmentPerson } from '../../../src/lib/project-control/sheets'
+import { workbookConfigFromEnv } from '../../../src/lib/project-control/types'
 
 async function loadProject(projectId: string): Promise<OnboardingProject | null> {
   const sb = createAdminClient()
@@ -152,6 +154,27 @@ export async function runOnboarding(opts: {
   const onboardingId = created?.id || null
   if (createErr) {
     console.warn(`[onboarding] tracking row insert failed: ${createErr.message}`)
+  }
+
+  // Make the producer-confirmed name immediately selectable in the Project
+  // Control Daily Assignments form. This deliberately happens after the user
+  // presses Onboard (never while the inferred-name review card is still open).
+  // It does not require a Slack id, so Slack Connect invitees are available to
+  // schedule before they accept the invite.
+  let peopleR: ServiceResult = { status: 'skipped', message: 'Project Control is not configured.' }
+  const workbook = workbookConfigFromEnv()
+  if (workbook?.assignmentsSheetId != null) {
+    try {
+      const roster = await ensureDailyAssignmentPerson(workbook, input.artistName)
+      peopleR = {
+        status: 'ok',
+        message: roster.added
+          ? `${input.artistName} added to the Daily Assignments people list.`
+          : `${input.artistName} is already in the Daily Assignments people list.`,
+      }
+    } catch (err: unknown) {
+      peopleR = { status: 'failed', message: err instanceof Error ? err.message : String(err) }
+    }
   }
 
   // Run the 4 invites in parallel.
@@ -305,6 +328,7 @@ export async function runOnboarding(opts: {
   return {
     onboardingId,
     results: {
+      people: peopleR,
       slack: slackR,
       dropbox: dropboxR,
       frameio: frameioR,
@@ -328,6 +352,7 @@ export function buildRequesterSummary(opts: {
   const icon = (s: string) =>
     s === 'ok' ? ':white_check_mark:' : s === 'skipped' ? ':white_circle:' : ':x:'
   const order: [string, string][] = [
+    ['people', 'Daily Assignments'],
     ['slack', 'Slack'],
     ['dropbox', 'Dropbox'],
     ['frameio', 'Frame.io'],

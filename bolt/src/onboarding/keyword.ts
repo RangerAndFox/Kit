@@ -104,7 +104,7 @@ Return ONLY the JSON object — no prose, no code fences.`
   }
 }
 
-interface ProjectMatch {
+export interface ProjectMatch {
   id: string
   name: string
   client: string | null
@@ -144,16 +144,18 @@ async function resolveProject(query: string): Promise<
 /**
  * Render the confirmation card.
  */
-function buildConfirmCard(opts: {
+export function buildConfirmCard(opts: {
   artistName: string
   artistEmail: string
+  artistLegalName?: string | null
   project: ProjectMatch
 }) {
-  const { artistName, artistEmail, project } = opts
+  const { artistName, artistEmail, artistLegalName, project } = opts
   const value = JSON.stringify({
     p: project.id,
     n: artistName,
     e: artistEmail,
+    ...(artistLegalName ? { l: artistLegalName } : {}),
   })
   return {
     text: `Onboard ${artistName} to ${project.name}?`,
@@ -177,6 +179,12 @@ function buildConfirmCard(opts: {
             text: { type: 'plain_text', text: ':white_check_mark: Onboard' },
             style: 'primary',
             action_id: 'kit_onboard_confirm',
+            value,
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Edit' },
+            action_id: 'kit_onboard_edit',
             value,
           },
           {

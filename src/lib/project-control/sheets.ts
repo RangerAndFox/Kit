@@ -161,6 +161,7 @@ interface SpreadsheetMetadataResponse {
   sheets?: Array<{
     properties?: {
       sheetId?: number
+      title?: string
       gridProperties?: { rowCount?: number }
     }
     tables?: Array<{
@@ -174,6 +175,81 @@ interface SpreadsheetMetadataResponse {
       }
     }>
   }>
+}
+
+/**
+ * Add a person to the workbook roster that backs the Daily Assignments
+ * "Person" dropdown. The roster is intentionally keyed by the producer-edited
+ * display name (rather than a provider id) because that exact value is what the
+ * canvas renders. Safe to replay: matching is case-insensitive and whitespace
+ * normalized.
+ */
+export async function ensureDailyAssignmentPerson(
+  config: WorkbookConfig,
+  personName: string,
+): Promise<{ added: boolean; row: number }> {
+  const name = personName.trim().replace(/\s+/g, ' ')
+  if (!name) throw new Error('Daily Assignments person name is required')
+
+  const fields = encodeURIComponent('sheets(properties(sheetId,title,gridProperties(rowCount)))')
+  const metadata = await api<SpreadsheetMetadataResponse>(
+    'GET',
+    `${SHEETS_BASE}/${config.spreadsheetId}?fields=${fields}`,
+  )
+  const lists = metadata.sheets?.find((sheet) => sheet.properties?.title === 'Lists')?.properties
+  if (lists?.sheetId == null) throw new Error('Project Control Lists sheet was not found')
+
+  // D5:D100 is the canonical expandable people roster. Daily Assignments uses
+  // this same bounded range for validation, leaving plenty of room without an
+  // unbounded whole-column dependency.
+  const startRowIndex = 4
+  const endRowIndex = 100
+  const rows = await getGridData(
+    config,
+    { startRowIndex, endRowIndex, startColumnIndex: 3, endColumnIndex: 4 },
+    'formattedValue,effectiveValue',
+    lists.sheetId,
+  )
+  const key = name.toLocaleLowerCase('en-US')
+  let openRowIndex: number | null = null
+  for (let offset = 0; offset < endRowIndex - startRowIndex; offset++) {
+    const display = normalizeCell(rows[offset]?.values?.[0]).display.trim().replace(/\s+/g, ' ')
+    if (display.toLocaleLowerCase('en-US') === key) {
+      return { added: false, row: startRowIndex + offset + 1 }
+    }
+    if (openRowIndex == null && !display) openRowIndex = startRowIndex + offset
+  }
+  if (openRowIndex == null) throw new Error('Project Control People list is full (Lists!D5:D100)')
+
+  const requests: unknown[] = [{
+    updateCells: {
+      start: { sheetId: lists.sheetId, rowIndex: openRowIndex, columnIndex: 3 },
+      rows: [{ values: [{ userEnteredValue: { stringValue: name } }] }],
+      fields: 'userEnteredValue',
+    },
+  }]
+  if (config.assignmentsSheetId != null) {
+    requests.push({
+      setDataValidation: {
+        range: {
+          sheetId: config.assignmentsSheetId,
+          startRowIndex: config.headerRow,
+          endRowIndex: 1000,
+          startColumnIndex: 2,
+          endColumnIndex: 3,
+        },
+        rule: {
+          condition: {
+            type: 'ONE_OF_RANGE',
+            values: [{ userEnteredValue: '=Lists!$D$5:$D$100' }],
+          },
+          showCustomUi: true,
+        },
+      },
+    })
+  }
+  await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests })
+  return { added: true, row: openRowIndex + 1 }
 }
 interface BatchUpdateResponse {
   replies?: Array<{ createDeveloperMetadata?: { developerMetadata?: { metadataId?: number } } }>

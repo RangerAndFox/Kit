@@ -12,6 +12,7 @@
 
 import { randomUUID } from 'node:crypto'
 import type { App } from '@slack/bolt'
+import type { View } from '@slack/types'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import {
   dispatch,
@@ -91,7 +92,8 @@ import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
 import { peekIntake, deleteIntake, updateIntake } from '../../../src/lib/storyboard/stash'
 import { extractScriptFromFile } from '../../../src/lib/storyboard/files'
 import { handleCheckinConfirm, handleCheckinRedo, handleCheckinRetryFailed } from '../checkins/confirm'
-import { parseOnboardSubmission } from '../onboarding/modal'
+import { buildOnboardEditModal, parseOnboardEditSubmission, parseOnboardSubmission } from '../onboarding/modal'
+import { buildConfirmCard } from '../onboarding/keyword'
 import { canOnboard } from '../onboarding/permissions'
 import { runOnboarding, buildRequesterSummary } from '../onboarding/orchestrator'
 import { rehydrateProjectExternalLinks } from '../onboarding/rehydrate'
@@ -449,10 +451,77 @@ export function registerInteractionHandlers(app: App) {
   // two quick clicks (or a Slack action retry) would run the full onboarding
   // twice — duplicate service invites, duplicate paperwork rows, two NDAs.
   const onboardInFlight = new Set<string>()
+
+  app.action('kit_onboard_edit', async ({ ack, body, client }) => {
+    await ack()
+    const actionBody = body as unknown as {
+      actions?: Array<{ value?: string }>
+      container?: { channel_id?: string; message_ts?: string }
+      channel?: { id?: string }
+      message?: { ts?: string }
+      trigger_id: string
+    }
+    const raw = actionBody.actions?.[0]?.value || '{}'
+    let payload: { p?: string; n?: string; e?: string; l?: string }
+    try { payload = JSON.parse(raw) } catch { payload = {} }
+    const channelId = actionBody.container?.channel_id || actionBody.channel?.id || ''
+    const messageTs = actionBody.container?.message_ts || actionBody.message?.ts || ''
+    if (!payload.p || !payload.n || !payload.e || !channelId || !messageTs) return
+
+    const sb = createAdminClient()
+    const { data: project } = await sb
+      .from('projects')
+      .select('id, name, client, project_code')
+      .eq('id', payload.p)
+      .maybeSingle()
+    if (!project) return
+
+    await client.views.open({
+      trigger_id: actionBody.trigger_id,
+      view: buildOnboardEditModal({
+        project,
+        artistName: payload.n,
+        artistEmail: payload.e,
+        artistLegalName: payload.l,
+        channelId,
+        messageTs,
+      }) as View,
+    })
+  })
+
+  app.view('kit_onboard_edit_submit', async ({ ack, view, client }) => {
+    const edited = parseOnboardEditSubmission(view)
+    if (!edited) {
+      await ack({
+        response_action: 'errors',
+        errors: { artist_name: 'Enter the artist’s correct name and email.' },
+      })
+      return
+    }
+    await ack()
+    const sb = createAdminClient()
+    const { data: project } = await sb
+      .from('projects')
+      .select('id, name, client, project_code')
+      .eq('id', edited.projectId)
+      .maybeSingle()
+    if (!project) return
+    await client.chat.update({
+      channel: edited.channelId,
+      ts: edited.messageTs,
+      ...buildConfirmCard({
+        artistName: edited.artistName,
+        artistEmail: edited.artistEmail,
+        artistLegalName: edited.artistLegalName,
+        project,
+      }),
+    })
+  })
+
   app.action('kit_onboard_confirm', async ({ ack, body, client, respond }) => {
     await ack()
     const raw = (body as any).actions?.[0]?.value || '{}'
-    let payload: { p?: string; n?: string; e?: string }
+    let payload: { p?: string; n?: string; e?: string; l?: string }
     try {
       payload = JSON.parse(raw)
     } catch {
@@ -500,7 +569,7 @@ export function registerInteractionHandlers(app: App) {
     try {
       const { results } = await runOnboarding({
         app,
-        input: { projectId, artistEmail, artistName, requestedBy },
+        input: { projectId, artistEmail, artistName, artistLegalName: payload.l, requestedBy },
       })
       // Pull project name for the summary
       let projectName = projectId

@@ -22,6 +22,7 @@ import {
   adoptLegacyProjectRow,
   activateWorkbackDraft,
   clearProjectControlProject,
+  ensureDailyAssignmentPerson,
   __setSheetsTransportForTests,
 } from './sheets'
 import { kitOwnedCreationCells, parseDateToSerial, MASTER_HEADERS } from './render'
@@ -36,6 +37,63 @@ const CONFIG: WorkbookConfig = {
 }
 
 afterEach(() => __setSheetsTransportForTests(null))
+
+describe('ensureDailyAssignmentPerson', () => {
+  const config: WorkbookConfig = {
+    ...CONFIG,
+    assignmentsSheetId: 958596238,
+  }
+
+  it('adds the corrected display name to Lists and expands assignment validation', async () => {
+    type Request = {
+      updateCells?: {
+        start: { sheetId: number; rowIndex: number; columnIndex: number }
+        rows: Array<{ values: Array<{ userEnteredValue: { stringValue: string } }> }>
+      }
+      setDataValidation?: { rule: { condition: { values: Array<{ userEnteredValue: string }> } } }
+    }
+    let written: Request[] = []
+    __setSheetsTransportForTests(async <T>(method: string, url: string, body?: unknown): Promise<T> => {
+      if (method === 'GET' && url.includes('?fields=')) {
+        return { sheets: [{ properties: { sheetId: 739835192, title: 'Lists', gridProperties: { rowCount: 1000 } } }] } as T
+      }
+      if (url.includes(':getByDataFilter')) {
+        return { sheets: [{ properties: { sheetId: 739835192 }, data: [{ rowData: [
+          { values: [{ formattedValue: 'Ally' }] },
+          { values: [{ formattedValue: 'Jonathan' }] },
+          { values: [{}] },
+        ] }] }] } as T
+      }
+      if (url.includes(':batchUpdate')) {
+        written = (body as { requests: Request[] }).requests
+        return { replies: [] } as T
+      }
+      throw new Error(`unexpected URL ${url}`)
+    })
+
+    const result = await ensureDailyAssignmentPerson(config, '  Taylor   Smith ')
+    assert.deepEqual(result, { added: true, row: 7 })
+    assert.deepEqual(written[0].updateCells?.start, { sheetId: 739835192, rowIndex: 6, columnIndex: 3 })
+    assert.equal(written[0].updateCells?.rows[0].values[0].userEnteredValue.stringValue, 'Taylor Smith')
+    assert.equal(
+      written[1].setDataValidation?.rule.condition.values[0].userEnteredValue,
+      '=Lists!$D$5:$D$100',
+    )
+  })
+
+  it('is idempotent for case-insensitive existing names', async () => {
+    __setSheetsTransportForTests(async <T>(method: string, url: string): Promise<T> => {
+      if (method === 'GET') return { sheets: [{ properties: { sheetId: 7, title: 'Lists' } }] } as T
+      if (url.includes(':getByDataFilter')) {
+        return { sheets: [{ properties: { sheetId: 7 }, data: [{ rowData: [
+          { values: [{ formattedValue: 'Taylor Smith' }] },
+        ] }] }] } as T
+      }
+      throw new Error('should not write an existing person')
+    })
+    assert.deepEqual(await ensureDailyAssignmentPerson(config, 'taylor smith'), { added: false, row: 5 })
+  })
+})
 
 describe('clearProjectControlProject', () => {
   it('clears only matching project rows across every normalized table and removes the durable metadata', async () => {
