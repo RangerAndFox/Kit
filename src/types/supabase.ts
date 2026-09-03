@@ -2354,6 +2354,59 @@ export type Database = {
           },
         ]
       }
+      frameio_folder_shares: {
+        Row: {
+          created_at: string
+          file_count: number
+          folder_path: string
+          frameio_folder_id: string
+          frameio_project_id: string
+          id: string
+          last_file_name: string | null
+          last_notified_at: string | null
+          project_id: string
+          share_name: string
+          share_url: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          file_count?: number
+          folder_path: string
+          frameio_folder_id: string
+          frameio_project_id: string
+          id?: string
+          last_file_name?: string | null
+          last_notified_at?: string | null
+          project_id: string
+          share_name: string
+          share_url: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          file_count?: number
+          folder_path?: string
+          frameio_folder_id?: string
+          frameio_project_id?: string
+          id?: string
+          last_file_name?: string | null
+          last_notified_at?: string | null
+          project_id?: string
+          share_name?: string
+          share_url?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "frameio_folder_shares_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       frameio_token_state: {
         Row: {
           access_expires_at: string | null

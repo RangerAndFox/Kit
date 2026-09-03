@@ -8,8 +8,8 @@
  *   2. Find the Frame.io `03_Outgoing/{same subfolder}` destination
  *   3. Get a Dropbox temporary download link
  *   4. Hand it to Frame.io remote_upload (no buffering through this server)
- *   5. Create a Frame.io review link
- *   6. DM the project's PM (project_manager_slack_id)
+ *   5. Reuse one Frame.io review link for the containing folder
+ *   6. DM the project's PM once per folder batch (not once per asset)
  *
  * Webhook signature is verified via HMAC-SHA256 of the raw POST body
  * using DROPBOX_APP_SECRET, per Dropbox's spec.
@@ -43,6 +43,18 @@ const DROPBOX_API = 'https://api.dropboxapi.com/2'
 const FRAMEIO_API = 'https://api.frame.io/v4'
 
 const WATCH_ROOT = '/production'
+
+// A folder can receive dozens of files in one creative export. Those files
+// still upload independently, but producers should see one useful folder-level
+// update instead of dozens of asset previews. A later delivery to the same
+// folder can notify again after this quiet window.
+const configuredFolderCooldownMinutes = Number(process.env.FRAMEIO_FOLDER_NOTIFICATION_COOLDOWN_MINUTES || '15')
+const FOLDER_NOTIFICATION_COOLDOWN_MS = Math.max(
+  60_000,
+  (Number.isFinite(configuredFolderCooldownMinutes) && configuredFolderCooldownMinutes > 0
+    ? configuredFolderCooldownMinutes
+    : 15) * 60_000,
+)
 
 // Match `/production/<year>/<safeName>/09_Outgoing/(01_Client Progress|02_Delivery)/<filename>`
 // path_display preserves the original casing.
@@ -458,22 +470,21 @@ async function notifyProjectShare(
   app: App,
   input: {
     project: DeliveryProject
-    fileName: string
+    folderLabel: string
     reviewUrl: string
     subfolderLine: string
     progression: RegisteredProjectShare | null
     recovered?: boolean
   },
 ): Promise<void> {
-  const { project, fileName, reviewUrl, subfolderLine, progression } = input
-  const linkLine = reviewUrl ? `<${reviewUrl}|Open review on Frame.io>` : '_(no review link)_'
+  const { project, folderLabel, reviewUrl, subfolderLine, progression } = input
+  const linkLine = reviewUrl ? `<${reviewUrl}|Open delivery folder on Frame.io>` : '_(no review link)_'
   const text = input.recovered
-    ? `♻️ *Recovered Frame.io share for ${project.name}* (${project.client})\n` +
-      `• File: \`${fileName}\`\n` +
+    ? `♻️ *Recovered Frame.io folder share for ${project.name}* (${project.client})\n` +
+      `• Folder: \`${folderLabel}\`\n` +
       `• ${linkLine}`
-    : `📦 *New delivery for ${project.name}* (${project.client})\n` +
-      `• Subfolder: \`${subfolderLine}\`\n` +
-      `• File: \`${fileName}\`\n` +
+    : `📦 *Delivery folder updated for ${project.name}* (${project.client})\n` +
+      `• Folder: \`${subfolderLine}\`\n` +
       `• ${linkLine}`
 
   const pmId = project.project_manager_slack_id || undefined
@@ -488,8 +499,8 @@ async function notifyProjectShare(
   const blocks: any[] = [{ type: 'section', text: { type: 'mrkdwn', text } }]
   if (progression?.eventId) {
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: progression.milestone
-      ? `Kit matched this to *${progression.milestone}* (${progression.confidence}). Advance the live workback?`
-      : 'Kit could not confidently match this filename to a workback milestone. The latest-share link was updated; review the schedule manually.' } })
+      ? `Kit matched this folder to *${progression.milestone}* (${progression.confidence}). Advance the live workback?`
+      : 'Kit could not confidently match this folder to a workback milestone. The folder-level latest-share link was updated; review the schedule manually.' } })
     if (progression.milestone) blocks.push({ type: 'actions', elements: [
       { type: 'button', action_id: 'kit_project_share_advance', style: 'primary', text: { type: 'plain_text', text: 'Yes, advance workback' }, value: progression.eventId },
       { type: 'button', action_id: 'kit_project_share_dismiss', text: { type: 'plain_text', text: 'No, keep current milestone' }, value: progression.eventId },
@@ -498,15 +509,21 @@ async function notifyProjectShare(
 
   const posted = await app.client.chat.postMessage({
     channel: target,
-    text: input.recovered ? `♻️ Recovered Frame.io share for *${project.name}*` : `📦 New delivery for *${project.name}*`,
+    text: input.recovered ? `♻️ Recovered Frame.io folder share for *${project.name}*` : `📦 Delivery folder updated for *${project.name}*`,
     blocks,
   })
   if (progression?.eventId && posted.ts) {
-    const { error } = await createAdminClient().from('project_share_events')
+    const sb = createAdminClient()
+    const { error } = await sb.from('project_share_events')
       .update({ slack_channel_id: target, slack_message_ts: posted.ts, updated_at: new Date().toISOString() })
       .eq('id', progression.eventId)
       .is('slack_message_ts', null)
     if (error) throw new Error(`share notification ledger update failed: ${error.message}`)
+    const { error: folderError } = await sb.from('frameio_folder_shares')
+      .update({ last_notified_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .eq('project_id', project.id)
+      .eq('share_url', reviewUrl)
+    if (folderError) throw new Error(`folder notification checkpoint failed: ${folderError.message}`)
   }
   console.log(`[dropbox-watcher] notified ${pmId ? `PM ${pmId}` : channelId ? `channel ${channelId}` : `fallback ${fallbackPm}`}`)
 }
@@ -681,7 +698,7 @@ async function resolveProjectChannelBySafeName(safeName: string): Promise<string
 export function buildFrameioShareRequest(
   accountId: string,
   projectId: string,
-  fileId: string,
+  assetId: string,
   name: string,
 ): { path: string; body: Record<string, unknown> } {
   return {
@@ -691,10 +708,100 @@ export function buildFrameioShareRequest(
         type: 'asset',
         name,
         access: 'public',
-        asset_ids: [fileId],
+        asset_ids: [assetId],
       },
     },
   }
+}
+
+export function shouldNotifyFrameioFolder(
+  lastNotifiedAt: string | null | undefined,
+  nowMs = Date.now(),
+  cooldownMs = FOLDER_NOTIFICATION_COOLDOWN_MS,
+): boolean {
+  if (!lastNotifiedAt) return true
+  const timestamp = Date.parse(lastNotifiedAt)
+  return !Number.isFinite(timestamp) || nowMs - timestamp >= cooldownMs
+}
+
+type FrameioFolderShare = {
+  id: string
+  shareUrl: string
+  lastNotifiedAt: string | null
+}
+
+async function ensureFrameioFolderShare(input: {
+  projectId: string
+  frameioProjectId: string
+  frameioFolderId: string
+  folderPath: string
+  shareName: string
+  fileName: string
+  accountId: string
+}): Promise<FrameioFolderShare> {
+  const sb = createAdminClient()
+  const { data: existing, error: readError } = await sb.from('frameio_folder_shares')
+    .select('id,share_url,last_notified_at,file_count')
+    .eq('project_id', input.projectId)
+    .eq('frameio_folder_id', input.frameioFolderId)
+    .maybeSingle()
+  if (readError) throw new Error(`folder share lookup failed: ${readError.message}`)
+  if (existing) {
+    const { error: updateError } = await sb.from('frameio_folder_shares').update({
+      last_file_name: input.fileName,
+      file_count: Number(existing.file_count || 0) + 1,
+      updated_at: new Date().toISOString(),
+    }).eq('id', existing.id)
+    if (updateError) throw new Error(`folder share activity update failed: ${updateError.message}`)
+    return {
+      id: existing.id,
+      shareUrl: existing.share_url,
+      lastNotifiedAt: existing.last_notified_at,
+    }
+  }
+
+  // Frame.io treats folders as shareable assets. Sharing the destination
+  // folder once means later files appear at the same review URL automatically.
+  const shareRequest = buildFrameioShareRequest(
+    input.accountId,
+    input.frameioProjectId,
+    input.frameioFolderId,
+    input.shareName,
+  )
+  const response = await frameioPost(shareRequest.path, shareRequest.body)
+  const link = response.data || response
+  const shareUrl = link.short_url || link.url || link.share_url || link.view_url
+  if (!shareUrl) throw new Error('Frame.io folder share response did not contain a URL')
+
+  const { data: created, error: insertError } = await sb.from('frameio_folder_shares').insert({
+    project_id: input.projectId,
+    frameio_project_id: input.frameioProjectId,
+    frameio_folder_id: input.frameioFolderId,
+    folder_path: input.folderPath,
+    share_name: input.shareName,
+    share_url: shareUrl,
+    last_file_name: input.fileName,
+  }).select('id,share_url,last_notified_at').single()
+  if (insertError) throw new Error(`folder share checkpoint failed: ${insertError.message}`)
+  return { id: created.id, shareUrl: created.share_url, lastNotifiedAt: created.last_notified_at }
+}
+
+async function hasRecentFolderNotification(
+  projectId: string,
+  shareUrl: string,
+  nowMs = Date.now(),
+): Promise<boolean> {
+  const cutoff = new Date(nowMs - FOLDER_NOTIFICATION_COOLDOWN_MS).toISOString()
+  const { data, error } = await createAdminClient().from('project_share_events')
+    .select('id')
+    .eq('project_id', projectId)
+    .eq('share_url', shareUrl)
+    .gte('created_at', cutoff)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) throw new Error(`folder notification lookup failed: ${error.message}`)
+  return Boolean(data)
 }
 
 async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
@@ -935,49 +1042,32 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
     `[dropbox-watcher] queued Frame.io upload for ${fileName} → ${project.name} / ${breadcrumb} (file id ${file.id})`,
   )
 
-  // ── Create a Frame.io share link ────────────────────────
-  // Frame.io v4 creates shares inside a project and accepts asset_ids in the
-  // create payload. The account-level /share_links route never existed in v4.
-  // If the create fails, fall back to the file's view_url (logged-in
-  // Frame.io view) so the PM at least gets a working link.
-  const shareName =
-    traversedNames.length > 0
-      ? `${d.subfolder} / ${traversedNames.join(' / ')} – ${fileName}`
-      : `${d.subfolder} – ${fileName}`
-  let reviewUrl: string | undefined = transfer.frameio_share_url || undefined
-  try {
-    if (reviewUrl) throw new Error('__share_already_checkpointed__')
-    const shareRequest = buildFrameioShareRequest(
-      acct,
-      frameioId,
-      file.id,
-      shareName,
-    )
-    const linkResp = await frameioPost(shareRequest.path, shareRequest.body)
-    const link = linkResp.data || linkResp
-    reviewUrl =
-      link.short_url || link.url || link.share_url || link.view_url
-    if (!reviewUrl) throw new Error('Frame.io share response did not contain a URL')
-    const { error: shareCheckpointError } = await sb.from('frameio_delivery_transfers')
-      .update({ frameio_share_url: reviewUrl, updated_at: new Date().toISOString() })
-      .eq('id', transfer.id).is('frameio_share_url', null)
-    if (shareCheckpointError) throw new Error(`share checkpoint failed: ${shareCheckpointError.message}`)
-    console.log(`[dropbox-watcher] share link created and checkpointed: ${reviewUrl}`)
-  } catch (err: any) {
-    if (err?.message !== '__share_already_checkpointed__') {
-      console.warn(`[dropbox-watcher] share create failed (${err.message}); falling back to file view_url`)
-    }
-  }
-
-  if (!reviewUrl) {
-    reviewUrl =
-      file.view_url ||
-      `https://next.frame.io/project/${frameioId}/view/${file.id}`
-  }
-  if (!reviewUrl) throw new Error('Frame.io returned no review or view URL')
+  // ── Reuse one share for the containing Frame.io folder ──
+  const subfolderLine = traversedNames.length > 0
+    ? `${d.subfolder} / ${traversedNames.join(' / ')}`
+    : d.subfolder
+  const folderPath = `03_Outgoing / ${subfolderLine}`
+  const folderShare = await ensureFrameioFolderShare({
+    projectId: project.id,
+    frameioProjectId: frameioId,
+    frameioFolderId: targetFolderId,
+    folderPath,
+    shareName: `${project.project_code || project.name} – ${subfolderLine}`,
+    fileName,
+    accountId: acct,
+  })
+  const reviewUrl = folderShare.shareUrl
+  const { error: shareCheckpointError } = await sb.from('frameio_delivery_transfers')
+    .update({ frameio_share_url: reviewUrl, updated_at: new Date().toISOString() })
+    .eq('id', transfer.id)
+  if (shareCheckpointError) throw new Error(`folder share transfer checkpoint failed: ${shareCheckpointError.message}`)
+  console.log(`[dropbox-watcher] folder share reused for ${folderPath}: ${reviewUrl}`)
 
   let progression: RegisteredProjectShare | null = null
+  const shouldNotify = shouldNotifyFrameioFolder(folderShare.lastNotifiedAt) &&
+    !(await hasRecentFolderNotification(project.id, reviewUrl))
   try {
+    if (!shouldNotify) throw new Error('__folder_notification_suppressed__')
     const storedProjectNumber = asJsonRecord(project.external_ids).project_number
     const projectNumber = (typeof storedProjectNumber === 'string' ? storedProjectNumber : null) || extractProjectNumber(d.safeName) || String(project.project_code || '').split('-')[0] || ''
     progression = await registerProjectShare({
@@ -985,26 +1075,31 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
       projectNumber,
       dropboxFileId: d.dropboxId,
       dropboxRev: d.rev,
-      fileName,
+      fileName: subfolderLine,
       shareUrl: reviewUrl,
     })
   } catch (err: any) {
+    if (err?.message === '__folder_notification_suppressed__') {
+      console.log(`[dropbox-watcher] suppressed duplicate folder notification for ${folderPath}`)
+    } else {
     // The review upload is already successful; a Sheet/migration problem must
     // be visible but must never roll back or repeat the media upload.
-    console.warn(`[dropbox-watcher] project-control share update failed: ${err.message}`)
+      console.warn(`[dropbox-watcher] project-control share update failed: ${err.message}`)
+    }
   }
 
-  const subfolderLine =
-    traversedNames.length > 0
-      ? `${d.subfolder} / ${traversedNames.join(' / ')}`
-      : d.subfolder
-  await notifyProjectShare(app, {
-    project,
-    fileName,
-    reviewUrl,
-    subfolderLine,
-    progression,
-  })
+  // A durable share event is the notification outbox. If its Sheet half is
+  // temporarily unavailable, the recovery sweep will send exactly one post;
+  // posting here without that event would create an untracked duplicate.
+  if (shouldNotify && progression?.eventId) {
+    await notifyProjectShare(app, {
+      project,
+      folderLabel: subfolderLine,
+      reviewUrl,
+      subfolderLine,
+      progression,
+    })
+  }
 }
 
 /** Retry the Sheet + Slack half of durable Frame.io share events. This closes
@@ -1036,7 +1131,7 @@ export async function reconcilePendingProjectShares(
       if (projectError || !project) throw new Error(projectError?.message || `Project not found: ${event.project_id}`)
       await notifyProjectShare(app, {
         project: { ...project, external_links: asJsonRecord(project.external_links) },
-        fileName: event.file_name,
+        folderLabel: event.file_name,
         reviewUrl: event.share_url,
         subfolderLine: '01_Client Progress / recovered share',
         progression,

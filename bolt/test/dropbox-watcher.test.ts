@@ -8,6 +8,7 @@ import {
   normalizeFrameioStatusPath,
   resolveFrameioIdForProject,
   selectFrameioProjectByNumber,
+  shouldNotifyFrameioFolder,
   shouldTimeoutFrameioProcessing,
 } from '../src/watchers/dropbox'
 
@@ -56,25 +57,42 @@ describe('Frame.io remote-upload readiness', () => {
 })
 
 describe('buildFrameioShareRequest', () => {
-  it('uses the Frame.io v4 project share contract with the uploaded asset', () => {
+  it('uses the Frame.io v4 project share contract with a shareable folder asset', () => {
     expect(
       buildFrameioShareRequest(
         'account-123',
         'project-456',
-        'file-789',
-        '02_Delivery – final.mov',
+        'folder-789',
+        '2637 – 02_Delivery / Final',
       ),
     ).toEqual({
       path: '/accounts/account-123/projects/project-456/shares',
       body: {
         data: {
           type: 'asset',
-          name: '02_Delivery – final.mov',
+          name: '2637 – 02_Delivery / Final',
           access: 'public',
-          asset_ids: ['file-789'],
+          asset_ids: ['folder-789'],
         },
       },
     })
+  })
+})
+
+describe('Frame.io folder notification batching', () => {
+  const now = Date.parse('2026-09-03T15:00:00.000Z')
+  const fifteenMinutes = 15 * 60_000
+
+  it('notifies for a folder that has never been announced', () => {
+    expect(shouldNotifyFrameioFolder(null, now, fifteenMinutes)).toBe(true)
+  })
+
+  it('suppresses additional assets arriving in the same batch window', () => {
+    expect(shouldNotifyFrameioFolder('2026-09-03T14:50:01.000Z', now, fifteenMinutes)).toBe(false)
+  })
+
+  it('allows a later delivery to the same folder to notify again', () => {
+    expect(shouldNotifyFrameioFolder('2026-09-03T14:45:00.000Z', now, fifteenMinutes)).toBe(true)
   })
 })
 
