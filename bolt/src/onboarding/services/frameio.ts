@@ -4,9 +4,14 @@
  * v4 doesn't have a /collaborators endpoint. The correct flow is:
  *   1. Resolve the user by email:
  *      GET /accounts/{acct}/users?filter[email]={email}
- *   2. PATCH the project's user with a role:
+ *   2. PATCH the project's user with a project role:
  *      PATCH /accounts/{acct}/projects/{id}/users/{user_id}
- *      body: { data: { role: 'team_member' } }
+ *      body: { data: { role: 'editor' } }
+ *
+ * Project permissions cover the project's root folder and everything beneath
+ * it, so this is the Frame.io equivalent of adding the freelancer to the
+ * project's Frame folder. We default to `editor`: enough to upload and work
+ * with project media without granting project-admin/full-access privileges.
  *
  * If the user isn't already in our Frame.io account, the GET returns
  * nothing — that means they need to be invited at the account/workspace
@@ -19,6 +24,44 @@ import type { OnboardingProject, ServiceResult } from '../types'
 import { frameioHeaders } from '../../../../src/lib/frameio/auth'
 
 const FRAMEIO_API = 'https://api.frame.io/v4'
+
+export const FRAMEIO_PROJECT_ROLES = [
+  'full_access',
+  'editor',
+  'edit_only',
+  'commenter',
+  'viewer',
+] as const
+
+export type FrameIoProjectRole = typeof FRAMEIO_PROJECT_ROLES[number]
+
+export function resolveFreelancerFrameIoRole(value?: string): FrameIoProjectRole {
+  const candidate = (value || 'editor').trim().toLowerCase()
+  if ((FRAMEIO_PROJECT_ROLES as readonly string[]).includes(candidate)) {
+    return candidate as FrameIoProjectRole
+  }
+  throw new Error(
+    `Invalid FRAMEIO_FREELANCER_PROJECT_ROLE "${value}"; expected one of ${FRAMEIO_PROJECT_ROLES.join(', ')}`,
+  )
+}
+
+export function buildFrameIoProjectAccessRequest(opts: {
+  accountId: string
+  projectId: string
+  userId: string
+  role: FrameIoProjectRole
+  headers: Record<string, string>
+}): { url: string; init: RequestInit } {
+  return {
+    url: `${FRAMEIO_API}/accounts/${opts.accountId}/projects/${opts.projectId}/users/${opts.userId}`,
+    init: {
+      method: 'PATCH',
+      headers: opts.headers,
+      body: JSON.stringify({ data: { role: opts.role } }),
+      signal: AbortSignal.timeout(15_000),
+    },
+  }
+}
 
 /**
  * Look up a Frame.io v4 user by email.
@@ -98,23 +141,25 @@ export async function inviteArtistToFrameIo(opts: {
       }
     }
 
+    const role = resolveFreelancerFrameIoRole(process.env.FRAMEIO_FREELANCER_PROJECT_ROLE)
     const hdrs = await frameioHeaders()
-    const res = await fetch(
-      `${FRAMEIO_API}/accounts/${acct}/projects/${frameioId}/users/${userId}`,
-      {
-        method: 'PATCH',
-        headers: hdrs,
-        body: JSON.stringify({ data: { role: 'team_member' } }),
-        signal: AbortSignal.timeout(15_000),
-      },
-    )
+    const request = buildFrameIoProjectAccessRequest({
+      accountId: acct,
+      projectId: frameioId,
+      userId,
+      role,
+      headers: hdrs,
+    })
+    // PATCH is intentionally idempotent: re-running onboarding updates the
+    // person's role rather than creating a duplicate project collaborator.
+    const res = await fetch(request.url, request.init)
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       throw new Error(`PATCH project user ${res.status}: ${text}`)
     }
     return {
       status: 'ok',
-      message: `Granted ${artistEmail} team_member access on Frame.io project ${frameioId}`,
+      message: `Added ${artistEmail} to ${project.name}'s Frame.io project folder with ${role} access.`,
       externalId: userId,
     }
   } catch (err: any) {

@@ -381,7 +381,7 @@ PMs and CDs onboard a contractor across Slack, Dropbox, Frame.io, and Harvest in
 **Per-service behavior**
 - **Slack:** `conversations.inviteShared` for non-workspace artists (Business+ compatible Slack Connect invite); `conversations.invite` for existing members.
 - **Dropbox:** `sharing/share_folder` + `sharing/add_folder_member` with email. Reads `external_links.dropbox_id`.
-- **Frame.io:** No v4 invite-by-email endpoint exists. Kit looks up the user by email (paginated `GET /accounts/{acct}/users?sort=email_asc`), then PATCHes the project user with role. If the user isn't yet in the Frame.io account, Kit surfaces a `https://next.frame.io/signup?email=...` link in the welcome message.
+- **Frame.io:** Kit looks up the user by email (paginated `GET /accounts/{acct}/users?sort=email_asc`), then idempotently PATCHes the user onto the Frame.io project with `editor` access. Project access covers the project's root folder and its contents. `FRAMEIO_FREELANCER_PROJECT_ROLE` may override the role with one of Frame.io v4's supported project roles. If the user isn't yet in the Frame.io account, Kit surfaces a `https://next.frame.io/signup?email=...` link in the welcome message and asks the producer to re-run onboarding after signup.
 - **Harvest:** Studio runs at seat cap, so a shared "freelancers" bucket user is reused. Set `HARVEST_FREELANCER_USER_ID` to that user's id. Kit calls `assignUserToProject` idempotently. Real per-freelancer hours get logged under the bucket with the artist's name in the notes field.
 
 **Welcome message**
