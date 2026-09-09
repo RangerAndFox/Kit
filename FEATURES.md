@@ -406,9 +406,9 @@ At or after 5pm on each person's local workday, Kit sends an hours prompt in its
 **Code path**
 - Durable sender: `bolt/src/checkins/reminder-delivery.ts`, scheduled hourly from `bolt/src/app.ts`. Each `(staff, local workday)` occurrence is claimed in `daily_hours_reminders`, reconciled against Slack metadata after ambiguous sends, and creates/links the `daily_hours_checkins` conversation row only once.
 - Candidate composition: `bolt/src/checkins/daily-hours.ts`. Pulls recent Harvest entries and Slack project-channel activity to suggest likely projects.
-- Reply parser: `bolt/src/checkins/reply.ts` — Haiku call with structured-output prompt → returns array of `{project_match, hours, notes}` entries.
-- Ad-hoc fast path: `bolt/src/checkins/adhoc.ts` — detects unprompted hours intent, runs the same parser, gates on `employment_type === 'employee'`.
-- Confirmation card + write: `bolt/src/checkins/confirm.ts` — Block Kit buttons (`kit_checkin_confirm` / `kit_checkin_redo`); on confirm, calls `createTimeEntry` per parsed entry.
+- Reply parser: `bolt/src/checkins/reply.ts` — Haiku call with a current-local-date anchor returns `{project_match, hours, notes, date}` entries. `bolt/src/checkins/date.ts` then resolves casual phrases such as `Tuesday the 8th`, `last Tuesday`, and `the 31st` deterministically; a scan of the original reply recovers one unambiguous shared date if the model omitted it.
+- Ad-hoc fast path: `bolt/src/checkins/adhoc.ts` — detects unprompted hours intent, resolves the sender's current Slack timezone, runs the same parser, and gates on `employment_type === 'employee'`.
+- Confirmation card + write: `bolt/src/checkins/confirm.ts` — groups entries beneath the exact interpreted weekday and calendar date (`Today — Wednesday, September 9, 2026` for same-day time) before the Block Kit confirm/redo buttons. On confirm, calls `createTimeEntry` per parsed entry. Redo clears the parse and prompts for either a conversational or ISO date.
 - Time entry client: `src/lib/harvest/time-parser.ts` + `src/lib/harvest/client.ts`.
 - DB tracking: `daily_hours_checkins` rows with `staff_id`, `slack_user_id`, `check_in_date`, `status`, `parsed_entries`, `dm_channel_id`, `dm_ts`, `origin` ('scheduled' | 'adhoc').
 

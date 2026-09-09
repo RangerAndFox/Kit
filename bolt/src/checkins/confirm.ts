@@ -361,6 +361,8 @@ export async function handleCheckinRedo(opts: {
     app,
     channelId: checkin.dm_channel_id || '',
     threadTs: checkin.dm_ts,
-    text: ":arrows_counterclockwise: Cleared — go ahead and resend your hours.",
+    text:
+      ":arrows_counterclockwise: Cleared — resend your hours with the date if needed. " +
+      "For example: `Tuesday the 8th: 4h on 2637` or `2026-09-08: 4h on 2637`.",
   })
 }

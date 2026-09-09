@@ -23,7 +23,8 @@ import {
   checkinDateMinusDays,
   resolveSpentDate,
   resolveDayPhrase,
-  formatShortDate,
+  inferSharedDayFromText,
+  formatLongDate,
 } from './date'
 import { handleCheckinConfirm, handleCheckinRedo } from './confirm'
 import type { Json } from '../../../src/types/supabase'
@@ -287,8 +288,9 @@ Rules:
 - "projectQuery" should be the project name as the user said it (no normalization needed — we'll fuzzy-match it ourselves).
 - "hours" must be a number (parse "4h" → 4, "2.5 hours" → 2.5, "30 min" → 0.5).
 - "notes" is anything they added after the hours (or null).
-- "date": if the user names a day for an entry ("yesterday", "Monday", "last Tuesday", "June 20"), copy that day reference VERBATIM as a short lowercase string (e.g. "monday", "yesterday", "june 20"). Do NOT convert it to a calendar date — we resolve the real date ourselves. If no day is mentioned, use null.
+- "date": if the user names a day for an entry ("yesterday", "Monday", "last Tuesday", "Tuesday the 8th", "June 20"), copy that day reference VERBATIM as a short lowercase string (e.g. "monday", "tuesday the 8th", "yesterday", "june 20"). Do NOT convert it to a calendar date — we resolve the real date ourselves. If no day is mentioned, use null.
 - Each entry keeps its OWN day. A message can span several days, e.g. "8h ProjectA monday, 6h ProjectB tuesday" → two entries, date "monday" and "tuesday".
+- A day phrase that scopes the whole message applies to every entry. Example: "On Tuesday the 8th I did 4h on ProjectA and 3h on ProjectB" → both entries use date "tuesday the 8th".
 - If the user just gives bare numbers in order matching the candidate list, map them positionally.
 - Report each (project, day) ONCE. Combine repeats into a single entry with the hours summed; never emit the same project/day twice, and never pad the list to reach a total.
 - Extract ONLY what the message actually states. If it names three projects, return exactly three entries.
@@ -365,18 +367,26 @@ export function buildConfirmBlocks(opts: {
   anchorDate?: string
 }) {
   const { checkinId, entries, anchorDate } = opts
-  const dayLabel = (e: ParsedEntry) =>
-    e.spentDate && e.spentDate !== anchorDate ? ` _[${formatShortDate(e.spentDate)}]_` : ''
-  const lines = entries.map((e) => {
+  const entryLine = (e: ParsedEntry) => {
     if (e.resolution === 'matched') {
       const note = e.notes ? ` _(${e.notes})_` : ''
-      return `• *${e.hours}h* — ${e.harvest_project_name}${dayLabel(e)}${note}`
+      return `• *${e.hours}h* — ${e.harvest_project_name}${note}`
     }
     if (e.resolution === 'ambiguous') {
       const opts = (e.candidates || []).map((c) => c.name).join(' / ')
       return `• *${e.hours}h* — _"${e.projectQuery}"_ ⚠️ multiple matches: ${opts}`
     }
     return `• *${e.hours}h* — _"${e.projectQuery}"_ ❌ no Harvest project matched`
+  }
+  const byDate = new Map<string, ParsedEntry[]>()
+  for (const entry of entries) {
+    const date = entry.spentDate || anchorDate || 'Date not specified'
+    byDate.set(date, [...(byDate.get(date) || []), entry])
+  }
+  const datedLines = [...byDate.entries()].flatMap(([date, datedEntries]) => {
+    const exactDate = date === 'Date not specified' ? date : formatLongDate(date)
+    const heading = date === anchorDate ? `*Today — ${exactDate}*` : `*${exactDate}*`
+    return [heading, ...datedEntries.map(entryLine)]
   })
   const allMatched = entries.every((e) => e.resolution === 'matched')
 
@@ -389,7 +399,7 @@ export function buildConfirmBlocks(opts: {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*Logging to Harvest:*\n${lines.join('\n')}`,
+        text: `*Logging to Harvest:*\n\n${datedLines.join('\n')}`,
       },
     },
     {
@@ -509,7 +519,7 @@ export async function handleCheckinReply(opts: {
     await app.client.chat.postMessage({
       channel: open.dm_channel_id,
       text:
-        ":thinking_face: I couldn't parse that. Try a format like: _'4h on Rayfin, 2h on IQ Sizzle'_ — or reply `skip`.",
+        ":thinking_face: I couldn't parse that. Try a format like: _'Tuesday the 8th: 4h on Rayfin, 2h on IQ Sizzle'_ — or reply `skip`.",
     })
     return true
   }
@@ -531,6 +541,7 @@ export async function handleCheckinReply(opts: {
   }
 
   // Resolve each entry against Harvest in parallel.
+  const sharedDay = inferSharedDayFromText(replyText, open.check_in_date)
   const resolved: ParsedEntry[] = await Promise.all(
     parsed.entries.map(async (e: any) => {
       const r = await resolveHarvestProject(e.projectQuery)
@@ -538,7 +549,10 @@ export async function handleCheckinReply(opts: {
         projectQuery: e.projectQuery,
         hours: Number(e.hours),
         notes: e.notes || undefined,
-        spentDate: resolveSpentDate(resolveDayPhrase(e.date, open.check_in_date), open.check_in_date),
+        spentDate: resolveSpentDate(
+          resolveDayPhrase(e.date, open.check_in_date) || sharedDay,
+          open.check_in_date,
+        ),
         resolution: r.resolution,
         harvest_project_id: r.project?.id,
         harvest_project_name: r.project?.name,

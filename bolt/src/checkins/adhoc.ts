@@ -17,7 +17,8 @@ import {
   buildConfirmBlocks,
   type ParsedEntry,
 } from './reply'
-import { checkinToday, resolveSpentDate, resolveDayPhrase } from './date'
+import { checkinToday, resolveSpentDate, resolveDayPhrase, inferSharedDayFromText } from './date'
+import { resolveUserTimezone } from './user-tz'
 import type { Json } from '../../../src/types/supabase'
 
 /**
@@ -95,7 +96,10 @@ export async function handleAdhocHoursEntry(opts: {
   }
 
   // 2. Parse with the LLM
-  const today = checkinToday()
+  // Anchor relative phrases (today / Tuesday / the 8th) to this person's
+  // current Slack timezone, not UTC or a studio-wide timezone.
+  const timezone = await resolveUserTimezone({ app, slackUserId })
+  const today = checkinToday(new Date(), timezone)
   let parsed: { entries: any[]; skip: boolean }
   try {
     parsed = await parseReplyWithLLM({
@@ -120,6 +124,7 @@ export async function handleAdhocHoursEntry(opts: {
   }
 
   // 3. Resolve each project against Harvest
+  const sharedDay = inferSharedDayFromText(messageText, today)
   const resolved: ParsedEntry[] = await Promise.all(
     parsed.entries.map(async (e: any) => {
       const r = await resolveHarvestProject(e.projectQuery)
@@ -127,7 +132,7 @@ export async function handleAdhocHoursEntry(opts: {
         projectQuery: e.projectQuery,
         hours: Number(e.hours),
         notes: e.notes || undefined,
-        spentDate: resolveSpentDate(resolveDayPhrase(e.date, today), today),
+        spentDate: resolveSpentDate(resolveDayPhrase(e.date, today) || sharedDay, today),
         resolution: r.resolution,
         harvest_project_id: r.project?.id,
         harvest_project_name: r.project?.name,

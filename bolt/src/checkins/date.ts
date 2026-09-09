@@ -72,6 +72,20 @@ export function formatShortDate(ymd: string, tz: string = checkinTimezone()): st
   }).format(new Date(`${ymd}T12:00:00Z`))
 }
 
+/** "Tuesday, September 8, 2026" for a calendar-only YYYY-MM-DD. */
+export function formatLongDate(ymd: string): string {
+  if (!YMD_RE.test(ymd)) return ymd
+  return new Intl.DateTimeFormat('en-US', {
+    // The date is already resolved in the person's timezone. Render the
+    // calendar value itself in UTC so positive-offset zones cannot shift it.
+    timeZone: 'UTC',
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  }).format(new Date(`${ymd}T12:00:00Z`))
+}
+
 const WEEKDAYS: Record<string, number> = {
   sunday: 0, sun: 0,
   monday: 1, mon: 1,
@@ -112,12 +126,29 @@ function resolveMonthDay(month1: number, day: number, anchorYmd: string): string
   return null
 }
 
+/** Resolve a bare day-of-month ("the 8th") to the nearest non-future date. */
+function resolveDayOfMonth(day: number, anchorYmd: string): string | null {
+  if (day < 1 || day > 31) return null
+  const [anchorYear, anchorMonth] = anchorYmd.split('-').map(Number)
+  for (let monthOffset = 0; monthOffset >= -1; monthOffset--) {
+    const monthDate = new Date(Date.UTC(anchorYear, anchorMonth - 1 + monthOffset, 1, 12))
+    const candidate = resolveMonthDay(
+      monthDate.getUTCMonth() + 1,
+      day,
+      `${monthDate.getUTCFullYear()}-${String(monthDate.getUTCMonth() + 1).padStart(2, '0')}-31`,
+    )
+    if (candidate && candidate <= anchorYmd) return candidate
+  }
+  return null
+}
+
 /**
  * Resolve a human day reference to a YYYY-MM-DD relative to the anchor day,
  * deterministically (NOT via the LLM — models are unreliable at "what date
  * was Monday?"). Handles: ISO dates, today/yesterday, "N days ago", weekday
  * names ("monday", "last tuesday" → the most recent past occurrence), and
- * month/day ("june 20", "6/20"). Returns null for anything unrecognized, so
+ * month/day ("june 20", "6/20"), and conversational combinations such as
+ * "Tuesday the 8th". Returns null for anything unrecognized, so
  * the caller falls back to the anchor day. Backfilling only reaches back a
  * few days in practice; resolveSpentDate() still guards the final value.
  */
@@ -139,6 +170,15 @@ export function resolveDayPhrase(
   const ago = s.match(/^(\d+)\s+days?\s+ago$/)
   if (ago) return ymdAddDays(anchorYmd, -Number(ago[1]))
 
+  // A weekday plus an ordinal date is more specific than the weekday alone:
+  // "Tuesday the 8th" on Wednesday September 9 means September 8. The numeric
+  // day wins if the speaker accidentally names the wrong weekday; the exact
+  // interpreted weekday/date is shown on the confirmation card before logging.
+  const weekdayOrdinal = s.match(
+    /^(?:on\s+)?(?:sun(?:day)?|mon(?:day)?|tue(?:s|sday)?|wed(?:s|nesday)?|thu(?:r|rs|rsday)?|fri(?:day)?|sat(?:urday)?)\s+(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?$/,
+  )
+  if (weekdayOrdinal) return resolveDayOfMonth(Number(weekdayOrdinal[1]), anchorYmd)
+
   // Weekday, optionally prefixed by on/last/this/past. "last <weekday>" that
   // lands on the anchor's own weekday means the prior week.
   const hadLast = /\blast\b/.test(s)
@@ -151,7 +191,11 @@ export function resolveDayPhrase(
   }
 
   // Month + day in either order: "june 20" / "20 june".
-  const cleaned = s.replace(/^on\s+/, '').replace(/(\d+)(?:st|nd|rd|th)\b/, '$1')
+  const cleaned = s
+    .replace(/^on\s+/, '')
+    .replace(/^(?:sun(?:day)?|mon(?:day)?|tue(?:s|sday)?|wed(?:s|nesday)?|thu(?:r|rs|rsday)?|fri(?:day)?|sat(?:urday)?)\s+/, '')
+    .replace(/^the\s+/, '')
+    .replace(/(\d+)(?:st|nd|rd|th)\b/, '$1')
   let m = cleaned.match(/^([a-z]+)\s+(\d{1,2})$/)
   if (m && m[1] in MONTHS) return resolveMonthDay(MONTHS[m[1]], Number(m[2]), anchorYmd)
   m = cleaned.match(/^(\d{1,2})\s+([a-z]+)$/)
@@ -161,7 +205,44 @@ export function resolveDayPhrase(
   m = cleaned.match(/^(\d{1,2})[\/\-](\d{1,2})$/)
   if (m) return resolveMonthDay(Number(m[1]), Number(m[2]), anchorYmd)
 
+  // Bare ordinal/day: "the 8th" / "8". This is deliberately last so a
+  // month/day expression cannot be mistaken for a single day.
+  m = cleaned.match(/^(\d{1,2})$/)
+  if (m) return resolveDayOfMonth(Number(m[1]), anchorYmd)
+
   return null
+}
+
+/**
+ * Find one unambiguous day in a full casual sentence. This is a deterministic
+ * fallback for cases where the LLM extracts the hours/projects correctly but
+ * leaves each entry's `date` null (for example, "I worked those on Tuesday the
+ * 8th"). If the message names multiple distinct days, return null and trust the
+ * per-entry dates instead of smearing one date across every line.
+ */
+export function inferSharedDayFromText(text: string, anchorYmd: string): string | null {
+  const source = String(text || '').toLowerCase()
+  const weekday = '(?:sun(?:day)?|mon(?:day)?|tue(?:s|sday)?|wed(?:s|nesday)?|thu(?:r|rs|rsday)?|fri(?:day)?|sat(?:urday)?)'
+  const month = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)'
+  const patterns = [
+    /\b\d{4}-\d{2}-\d{2}\b/g,
+    new RegExp(`\\b(?:on\\s+)?${weekday}\\s+(?:the\\s+)?\\d{1,2}(?:st|nd|rd|th)?\\b`, 'g'),
+    new RegExp(`\\b(?:on\\s+)?${weekday}\\s+${month}\\s+\\d{1,2}(?:st|nd|rd|th)?\\b`, 'g'),
+    /\b(?:the\s+)?day before yesterday\b|\byesterday\b|\btoday\b|\btonight\b/g,
+    /\b\d+\s+days?\s+ago\b/g,
+    new RegExp(`\\b${month}\\s+\\d{1,2}(?:st|nd|rd|th)?\\b`, 'g'),
+    /\b\d{1,2}[\/-]\d{1,2}\b/g,
+    new RegExp(`\\b(?:(?:last|this|past|on)\\s+)?${weekday}\\b`, 'g'),
+    /\bthe\s+\d{1,2}(?:st|nd|rd|th)\b/g,
+  ]
+  const dates = new Set<string>()
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) {
+      const resolved = resolveDayPhrase(match[0], anchorYmd)
+      if (resolved) dates.add(resolved)
+    }
+  }
+  return dates.size === 1 ? [...dates][0] : null
 }
 
 /** Shift a YYYY-MM-DD by N calendar days (negative = back). */
