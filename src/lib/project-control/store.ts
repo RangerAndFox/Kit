@@ -343,6 +343,31 @@ export async function listSyncableBindings(spreadsheetId: string): Promise<Bindi
   return (data as BindingRow[]) || []
 }
 
+/** Resolve a human-visible project code to the one connected binding in this
+ * workbook. Null is deliberately ambiguous: callers fall back to a safe full
+ * workbook pass rather than silently skipping an edit. */
+export async function resolveSyncableProjectIdByCode(
+  spreadsheetId: string,
+  projectCode: string,
+): Promise<string | null> {
+  const { data: projects, error: projectError } = await db()
+    .from('projects')
+    .select('id')
+    .eq('project_code', projectCode)
+  if (projectError) throw new Error(`resolveSyncableProjectIdByCode projects: ${projectError.message}`)
+  const projectIds = ((projects as Array<{ id: string }>) || []).map((row) => row.id)
+  if (projectIds.length === 0) return null
+  const { data: bindings, error: bindingError } = await db()
+    .from('project_control_bindings')
+    .select('project_id')
+    .eq('spreadsheet_id', spreadsheetId)
+    .eq('creation_state', 'connected')
+    .in('project_id', projectIds)
+  if (bindingError) throw new Error(`resolveSyncableProjectIdByCode bindings: ${bindingError.message}`)
+  const matches = (bindings as Array<{ project_id: string }>) || []
+  return matches.length === 1 ? matches[0].project_id : null
+}
+
 export type ProjectCanvasType = 'overview' | 'reference' | 'schedule' | 'notesAndFeedback'
 export interface ProjectCanvasRow {
   id: string

@@ -19,8 +19,8 @@ Human edits or structurally changes Master Project List
   → Apps Script installable On edit / On change triggers  (scripts/apps-script/project-control-sheet-edit.gs)
   → POST /api/webhooks/project-control/sheet-edited   (HMAC-signed, Production only)
   → inngest.send('project-control/sheet.edited', id=<requestId>)
-  → projectControlSyncOnEdit  (debounced per workbook)
-  → runProjectControlSync()   ← SAME core as the */10 cron
+  → projectControlSyncOnEdit  (debounced per project when known)
+  → runProjectControlSync({ force: true, projectCode }) ← SAME core as */10 cron
   → edits ONLY each binding's persisted canvas_id
 ```
 
@@ -66,7 +66,13 @@ Endpoint (POST only): `/api/webhooks/project-control/sheet-edited`
 Inngest event: `project-control/sheet.edited`. Replay dedupe is enforced by
 **function-level idempotency** on `event.data.request_id` (the Apps Script
 `requestId`) — Inngest's event-level `id` does not dedupe a debounced function;
-`debounce` (keyed on `spreadsheet_id`) separately coalesces distinct bursts.
+`debounce` (keyed on the authenticated project code when one edited range maps
+to one project, otherwise the workbook) separately coalesces distinct bursts.
+Edit-triggered runs bypass the coarse Drive-version gate because Google can
+deliver the edit trigger before Drive increments its file version. A resolved
+single-project edit refreshes only that project's canvases; ambiguous or
+multi-project edits safely fall back to a full workbook pass. Targeted passes do
+not advance the full-workbook cursor.
 
 ## Apps Script setup
 

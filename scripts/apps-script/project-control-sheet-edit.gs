@@ -74,7 +74,7 @@ function onMasterProjectListEdit(e) {
     // Ignore header rows and above (labels, not project data).
     if (e.range.getRow() <= headerRow) return;
 
-    requestKitProjectControlRefresh_(webhookUrl, secret, spreadsheetId, primarySheetId, 'edit');
+    requestKitProjectControlRefresh_(webhookUrl, secret, spreadsheetId, primarySheetId, 'edit', kitProjectIdForRange_(e.range, headerRow));
   } catch (err) {
     Logger.log('[kit] onMasterProjectListEdit error: %s', err && err.message ? err.message : err);
   }
@@ -228,7 +228,7 @@ function kitAddRowFromSidebar(payload) {
   applyKitProjectFilter_(sheet, projectId);
   SpreadsheetApp.flush();
 
-  requestKitProjectControlRefreshFromProperties_('sidebar-add-row');
+  requestKitProjectControlRefreshFromProperties_('sidebar-add-row', projectId);
   sheet.activate();
   sheet.getRange(targetRow, 1).activate();
   return { row: targetRow, sheetName: payload.sheetName, projectId: projectId };
@@ -355,7 +355,7 @@ function kitTodayInputValue_() {
   return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
 }
 
-function requestKitProjectControlRefreshFromProperties_(reason) {
+function requestKitProjectControlRefreshFromProperties_(reason, projectId) {
   var props = PropertiesService.getScriptProperties();
   var webhookUrl = props.getProperty('WEBHOOK_URL');
   var secret = props.getProperty('WEBHOOK_SECRET');
@@ -364,7 +364,24 @@ function requestKitProjectControlRefreshFromProperties_(reason) {
     .split(',').map(function (id) { return String(id).trim(); }).filter(Boolean);
   var primarySheetId = props.getProperty('SHEET_ID') || sheetIds[0];
   if (!webhookUrl || !secret || !spreadsheetId || !primarySheetId) return;
-  requestKitProjectControlRefresh_(webhookUrl, secret, spreadsheetId, primarySheetId, reason);
+  requestKitProjectControlRefresh_(webhookUrl, secret, spreadsheetId, primarySheetId, reason, projectId);
+}
+
+/** Return one project ID only when every non-empty row in the edited range
+ * belongs to that same project. Multi-project pastes intentionally fall back
+ * to a full workbook refresh. */
+function kitProjectIdForRange_(range, headerRow) {
+  var startRow = Math.max(range.getRow(), headerRow + 1);
+  var endRow = range.getLastRow();
+  if (startRow > endRow) return '';
+  var ids = range.getSheet().getRange(startRow, 1, endRow - startRow + 1, 1).getDisplayValues();
+  var unique = {};
+  ids.forEach(function (row) {
+    var id = String(row[0] || '').trim();
+    if (id) unique[id] = true;
+  });
+  var keys = Object.keys(unique);
+  return keys.length === 1 ? keys[0] : '';
 }
 
 function spreadsheetToast_(message) {
@@ -452,7 +469,7 @@ function onMasterProjectListChange(e) {
   }
 }
 
-function requestKitProjectControlRefresh_(webhookUrl, secret, spreadsheetId, primarySheetId, reason) {
+function requestKitProjectControlRefresh_(webhookUrl, secret, spreadsheetId, primarySheetId, reason, projectId) {
   // Minimal metadata only — NO sheet contents, NO credentials.
   var payload = {
     requestId: Utilities.getUuid(),
@@ -460,6 +477,7 @@ function requestKitProjectControlRefresh_(webhookUrl, secret, spreadsheetId, pri
     spreadsheetId: spreadsheetId,
     sheetId: Number(primarySheetId)
   };
+  if (projectId) payload.projectCode = String(projectId).trim();
   var body = JSON.stringify(payload);
   var sigBytes = Utilities.computeHmacSha256Signature(body, secret);
   var signature = 'sha256=' + sigBytes.map(function (b) {

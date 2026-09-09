@@ -105,6 +105,30 @@ function makeDeps(over: { bindings?: BindingRow[]; cursor?: string | null; versi
 }
 
 describe('runProjectControlSync', () => {
+  it('forces an authenticated edit pass even before the Drive version advances', async () => {
+    const { deps, edits } = makeDeps({
+      cursor: `v2|project-views:${PROJECT_VIEW_RENDER_VERSION}`,
+      versions: ['v2', 'v2'],
+      bindings: [binding({ last_row_hash: 'old' })],
+    })
+    await runProjectControlSync(deps, { force: true })
+    assert.deepEqual(edits, ['C1'])
+  })
+
+  it('targets one resolved project and does not advance the full-workbook cursor', async () => {
+    const { deps, edits, store } = makeDeps({
+      bindings: [
+        binding({ project_id: 'p1', canvas_id: 'C1', last_row_hash: 'old' }),
+        binding({ project_id: 'p2', canvas_id: 'C2', last_row_hash: 'old' }),
+      ],
+    })
+    deps.store.resolveSyncableProjectIdByCode = async (_sheet, code) => code === '2629' ? 'p2' : null
+    const result = await runProjectControlSync(deps, { force: true, projectCode: '2629' })
+    assert.deepEqual(edits, ['C2'])
+    assert.equal(result.considered, 1)
+    assert.equal(store.advanced, null)
+  })
+
   it('edits only the changed row’s bound canvas', async () => {
     const { deps, edits, store } = makeDeps({
       bindings: [binding({ project_id: 'p1', canvas_id: 'C1', last_row_hash: 'old' }), binding({ project_id: 'p2', canvas_id: 'C2', last_row_hash: ROW_HASH })],
@@ -296,12 +320,12 @@ describe('projectControlSync functions — cron + event share ONE core', () => {
     assert.deepEqual(cron.opts.triggers, [{ cron: '*/10 * * * *' }])
   })
 
-  it('on-edit is triggered by the named event, debounced per workbook AND idempotent per request', () => {
+  it('on-edit is triggered by the named event, debounced per target AND idempotent per request', () => {
     assert.equal(onEdit.opts.id, 'project-control-sync-on-edit')
     assert.deepEqual(onEdit.opts.triggers, [{ event: 'project-control/sheet.edited' }])
     // Debounce (trailing edge) coalesces DISTINCT bursts but never drops the
-    // final edit. Keyed on the workbook.
-    assert.equal(onEdit.opts.debounce.key, 'event.data.spreadsheet_id')
+    // final edit. Keyed on the authenticated target key.
+    assert.equal(onEdit.opts.debounce.key, 'event.data.debounce_key')
     assert.equal(onEdit.opts.debounce.period, '5s')
     // Function-level idempotency dedupes REPLAYED notifications — the event-level
     // `id` does NOT dedupe a debounced function, so this is what actually
@@ -309,10 +333,9 @@ describe('projectControlSync functions — cron + event share ONE core', () => {
     assert.equal(onEdit.opts.idempotency, 'event.data.request_id')
   })
 
-  it('both handlers are the IDENTICAL thin wrapper (no second sync implementation)', () => {
-    // Same source ⇒ the event-triggered run and cron-triggered run execute the
-    // exact same orchestration (runProjectControlSync).
-    assert.equal(cron.fn.toString(), onEdit.fn.toString())
+  it('the edit handler forces the shared core and accepts a project target', () => {
+    assert.match(onEdit.fn.toString(), /force:\s*true/)
+    assert.match(onEdit.fn.toString(), /project_code/)
   })
 
   it('both delegate their work to a single step.run("sync", …)', async () => {
@@ -321,7 +344,7 @@ describe('projectControlSync functions — cron + event share ONE core', () => {
       // A fake step that records the id and does NOT execute the callback, so the
       // real (DB-backed) core never runs here — we only prove the wrapper shape.
       const step = { run: (id: string, _cb: () => unknown) => { ids.push(id); return 'SENTINEL' } }
-      const out = await f.fn({ step } as any)
+      const out = await f.fn({ event: { data: { project_code: '2629' } }, step } as any)
       assert.equal(out, 'SENTINEL')
       assert.deepEqual(ids, ['sync'])
     }

@@ -98,6 +98,11 @@ describe('authorizeSheetEditWebhook — denial paths (uniform, fail closed)', ()
     }
   })
 
+  it('denies a malformed optional project code', () => {
+    const raw = body({ projectCode: '2629 / injected' })
+    assert.equal(authorizeSheetEditWebhook({ rawBody: raw, signature: sign(raw), secret: SECRET, config: CONFIG, now }).ok, false)
+  })
+
   it('denies a request for a different spreadsheet or sheet', () => {
     const otherSheet = body({ sheetId: 7 })
     const otherBook = body({ spreadsheetId: 'OTHER' })
@@ -111,7 +116,18 @@ describe('sheetEditEvent', () => {
     const ev = sheetEditEvent({ requestId: 'req-9', timestamp: NOW, spreadsheetId: 'SID', sheetId: 42 })
     assert.equal(ev.name, SHEET_EDITED_EVENT)
     assert.equal(ev.id, 'req-9') // dedupe id
-    assert.deepEqual(ev.data, { spreadsheet_id: 'SID', sheet_id: 42, request_id: 'req-9', ts: NOW })
+    assert.deepEqual(ev.data, {
+      spreadsheet_id: 'SID', sheet_id: 42, request_id: 'req-9', ts: NOW,
+      debounce_key: 'SID:workbook',
+    })
+  })
+
+  it('carries an authenticated project code for a targeted refresh', () => {
+    const ev = sheetEditEvent({
+      requestId: 'req-10', timestamp: NOW, spreadsheetId: 'SID', sheetId: 42, projectCode: '2629',
+    })
+    assert.equal(ev.data.project_code, '2629')
+    assert.equal(ev.data.debounce_key, 'SID:2629')
   })
 })
 

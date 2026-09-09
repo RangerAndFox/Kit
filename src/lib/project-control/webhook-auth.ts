@@ -40,6 +40,8 @@ export interface SheetEditNotification {
   spreadsheetId: string
   /** Must equal the configured target sheet (tab) id. */
   sheetId: number
+  /** Project code from column A when one edited range resolves to one project. */
+  projectCode?: string
 }
 
 export type AuthResult =
@@ -77,10 +79,12 @@ function parseNotification(rawBody: string): SheetEditNotification | null {
   const spreadsheetId = typeof p.spreadsheetId === 'string' ? p.spreadsheetId.trim() : ''
   const timestamp = typeof p.timestamp === 'number' ? p.timestamp : NaN
   const sheetId = typeof p.sheetId === 'number' ? p.sheetId : NaN
+  const projectCode = typeof p.projectCode === 'string' ? p.projectCode.trim() : undefined
   if (!requestId || !spreadsheetId || !Number.isFinite(timestamp) || !Number.isFinite(sheetId)) {
     return null
   }
-  return { requestId, timestamp, spreadsheetId, sheetId }
+  if (projectCode !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(projectCode)) return null
+  return { requestId, timestamp, spreadsheetId, sheetId, ...(projectCode ? { projectCode } : {}) }
 }
 
 export interface AuthorizeArgs {
@@ -137,14 +141,28 @@ export interface SheetEditEvent {
   /** Conventional event id (the Apps Script requestId). Dedupe is enforced at
    *  the function level on `data.request_id`, not via this field. */
   id: string
-  data: { spreadsheet_id: string; sheet_id: number; request_id: string; ts: number }
+  data: {
+    spreadsheet_id: string
+    sheet_id: number
+    request_id: string
+    ts: number
+    project_code?: string
+    debounce_key: string
+  }
 }
 
 export function sheetEditEvent(n: SheetEditNotification): SheetEditEvent {
   return {
     name: SHEET_EDITED_EVENT,
     id: n.requestId,
-    data: { spreadsheet_id: n.spreadsheetId, sheet_id: n.sheetId, request_id: n.requestId, ts: n.timestamp },
+    data: {
+      spreadsheet_id: n.spreadsheetId,
+      sheet_id: n.sheetId,
+      request_id: n.requestId,
+      ts: n.timestamp,
+      ...(n.projectCode ? { project_code: n.projectCode } : {}),
+      debounce_key: `${n.spreadsheetId}:${n.projectCode || 'workbook'}`,
+    },
   }
 }
 

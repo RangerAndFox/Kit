@@ -43,6 +43,7 @@ import {
 } from '../project-control/render'
 import {
   listSyncableBindings,
+  resolveSyncableProjectIdByCode,
   updateBinding,
   getSyncState,
   claimWorkbookLease,
@@ -75,6 +76,7 @@ export interface SyncCanvasPort {
 }
 export interface SyncStorePort {
   listSyncableBindings(spreadsheetId: string): Promise<BindingRow[]>
+  resolveSyncableProjectIdByCode?(spreadsheetId: string, projectCode: string): Promise<string | null>
   updateBinding(projectId: string, patch: Partial<BindingRow>): Promise<void>
   getSyncState(spreadsheetId: string): Promise<SyncStateRow | null>
   claimWorkbookLease(spreadsheetId: string, kind: 'creation' | 'sync', holder: string): Promise<boolean>
@@ -116,6 +118,7 @@ export function defaultSyncDeps(): SyncDeps {
     canvas: { createControlCanvas, editControlCanvas, reconcileControlCanvas, setControlCanvasReadOnly, setControlCanvasEditable },
     store: {
       listSyncableBindings, updateBinding, getSyncState, claimWorkbookLease,
+      resolveSyncableProjectIdByCode,
       renewWorkbookLease, releaseWorkbookLease, advanceCursor, claimNotification,
       listProjectCanvases, upsertProjectCanvas, updateProjectCanvas,
     },
@@ -154,7 +157,18 @@ export interface SyncSummary {
   cursorAdvanced: boolean
 }
 
-export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()): Promise<SyncSummary> {
+export interface SyncOptions {
+  /** An authenticated human edit must inspect row hashes even if Drive's coarse
+   * file version has not advanced yet. */
+  force?: boolean
+  /** Limit an edit-triggered pass to one project when it can be resolved safely. */
+  projectCode?: string
+}
+
+export async function runProjectControlSync(
+  deps: SyncDeps = defaultSyncDeps(),
+  options: SyncOptions = {},
+): Promise<SyncSummary> {
   const empty: SyncSummary = {
     ran: false, considered: 0, updated: 0, unchanged: 0, orphaned: 0, errored: 0, cursorAdvanced: false,
   }
@@ -180,11 +194,23 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
     const cursorVersion = state?.drive_version || null
     const cursorVersionKey = `${v1}|project-views:${PROJECT_VIEW_RENDER_VERSION}`
 
-    const bindings = await deps.store.listSyncableBindings(config.spreadsheetId)
+    const allBindings = await deps.store.listSyncableBindings(config.spreadsheetId)
+    let bindings = allBindings
+    let targeted = false
+    if (options.projectCode && deps.store.resolveSyncableProjectIdByCode) {
+      const projectId = await deps.store.resolveSyncableProjectIdByCode(config.spreadsheetId, options.projectCode)
+      if (projectId) {
+        const match = allBindings.filter((binding) => binding.project_id === projectId)
+        if (match.length === 1) {
+          bindings = match
+          targeted = true
+        }
+      }
+    }
     const needsRecovery = bindings.filter((b) => b.sync_status !== 'synced')
 
     // Coarse gate: unchanged workbook AND nothing to recover ⇒ cheap exit.
-    if (cursorVersionKey === cursorVersion && needsRecovery.length === 0) {
+    if (!options.force && cursorVersionKey === cursorVersion && needsRecovery.length === 0) {
       return { ...empty, ran: true, reason: 'no_change', considered: bindings.length }
     }
 
@@ -350,7 +376,7 @@ export async function runProjectControlSync(deps: SyncDeps = defaultSyncDeps()):
     // was stable across the pass.
     const v2 = await deps.sheets.getWorkbookVersion(config.spreadsheetId)
     let cursorAdvanced = false
-    if (allOk && v1 === v2) {
+    if (!targeted && allOk && v1 === v2) {
       await deps.store.advanceCursor(config.spreadsheetId, cursorVersionKey)
       cursorAdvanced = true
     }
@@ -390,10 +416,10 @@ export const projectControlSync = inngest.createFunction(
  *   - `idempotency` (function-level), keyed on `event.data.request_id`: a
  *     replayed/retried notification carrying the same Apps Script requestId
  *     collapses to a single run within the idempotency window.
- *   - `debounce`, keyed on the workbook (`event.data.spreadsheet_id`): a burst
- *     of DISTINCT quick edits coalesces into ONE trailing run, so the FINAL
- *     Sheet state always reaches the Canvas (trailing edge — never suppresses
- *     the last edit) without fanning out one run per keystroke.
+ *   - `debounce`, keyed on the project when known (otherwise the workbook): a
+ *     burst of DISTINCT quick edits coalesces into ONE trailing run, so the
+ *     FINAL Sheet state always reaches the Canvas (trailing edge — never
+ *     suppresses the last edit) without fanning out one run per keystroke.
  *
  * These are belt-and-suspenders over the core's own safety: the workbook lease
  * + per-row hash already make repeated runs harmless (an unchanged row is a
@@ -410,10 +436,16 @@ export const projectControlSyncOnEdit = inngest.createFunction(
     // long enough to collapse that burst while keeping the Canvas refresh
     // perceptibly live; the previous 20-second window made a healthy update
     // look broken before the sync had even started.
-    debounce: { period: '5s', key: 'event.data.spreadsheet_id' },
+    debounce: { period: '5s', key: 'event.data.debounce_key' },
     triggers: [{ event: 'project-control/sheet.edited' }],
   },
-  async ({ step }: { step: { run: <T>(id: string, fn: () => Promise<T> | T) => Promise<T> } }) => {
-    return step.run('sync', () => runProjectControlSync())
+  async ({ event, step }: {
+    event: { data: { project_code?: string } }
+    step: { run: <T>(id: string, fn: () => Promise<T> | T) => Promise<T> }
+  }) => {
+    return step.run('sync', () => runProjectControlSync(defaultSyncDeps(), {
+      force: true,
+      projectCode: event.data.project_code,
+    }))
   },
 )
