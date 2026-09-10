@@ -227,10 +227,11 @@ export async function handleCheckinConfirm(opts: {
 
   // Update row — store the real Harvest entry ids so a "logged" status is
   // verifiable (and any hand-entered duplicate is traceable back to these).
-  await sb
+  const finalStatus = failures.length === 0 ? 'logged' : 'failed'
+  const { data: finalized, error: finalizeError } = await sb
     .from('daily_hours_checkins')
     .update({
-      status: failures.length === 0 ? 'logged' : 'failed',
+      status: finalStatus,
       logged_at: new Date().toISOString(),
       harvest_entry_ids: allEntryIds.length ? allEntryIds : null,
       // A partial failure keeps only the still-unlogged lines. The successful
@@ -241,6 +242,24 @@ export async function handleCheckinConfirm(opts: {
       updated_at: new Date().toISOString(),
     })
     .eq('id', checkin.id)
+    .eq('status', 'logging')
+    .select('id, status')
+
+  // Never claim success in Slack unless the durable row confirms it. Harvest
+  // may already contain the entries, so include their ids and stop; an admin
+  // can reconcile the row without asking the person to submit again.
+  if (finalizeError || !finalized?.length) {
+    const reason = finalizeError?.message || 'the check-in row changed before finalization'
+    console.error(`[checkin-confirm] finalize failed for ${checkin.id}: ${reason}`)
+    const ids = allEntryIds.length ? ` Harvest IDs already created: ${allEntryIds.join(', ')}.` : ''
+    await postResult({
+      app,
+      channelId: checkin.dm_channel_id || '',
+      threadTs: checkin.dm_ts,
+      text: `:warning: Harvest accepted the entries, but Kit could not finalize the confirmation.${ids} An admin has to reconcile this; do not submit the hours again.`,
+    })
+    return
+  }
 
   // Reply with the result — cite the Harvest entry id per line so the write
   // is verifiable in Harvest (heads off "did it actually log?" re-entry).
@@ -347,7 +366,8 @@ export async function handleCheckinRedo(opts: {
     .update({
       status: 'sent',
       parsed_entries: null,
-      reply_ts: null,
+      // Keep the rejected reply as the recovery cursor. The next human reply
+      // will replace it when handleCheckinReply claims the row.
       updated_at: new Date().toISOString(),
     })
     .eq('id', checkin.id)

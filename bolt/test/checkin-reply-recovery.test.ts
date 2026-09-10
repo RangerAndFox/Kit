@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 
 import {
   looksLikeRecoverableCheckinReply,
+  recoveryAfterTs,
   recoverMissedCheckinReplies,
   type RecoverableCheckin,
   type ReplyRecoveryDeps,
@@ -20,6 +21,13 @@ const ROW: RecoverableCheckin = {
 }
 
 describe('missed hours reply recovery', () => {
+  it('keeps recovery after the rejected reply when a redo returns the row to sent', () => {
+    expect(recoveryAfterTs({ dm_ts: '1000.000001', reply_ts: '1001.000001' })).toBe(
+      '1001.000001',
+    )
+    expect(recoveryAfterTs({ dm_ts: '1000.000001', reply_ts: null })).toBe('1000.000001')
+  })
+
   it('accepts explicit hours and skip replies but ignores unrelated conversation', () => {
     expect(looksLikeRecoverableCheckinReply('2 hours Fabric\n30 mins Biz Apps')).toBe(true)
     expect(looksLikeRecoverableCheckinReply('skip')).toBe(true)

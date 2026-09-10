@@ -476,13 +476,13 @@ export async function handleCheckinReply(opts: {
   if (!claimed || claimed.length === 0) return false
 
   // Re-open the check-in (undo the claim) — used on every path where this
-  // message turned out not to complete the check-in. Clear reply_ts too: the
-  // row is unanswered again, and a leftover stamp mislabels it as a real reply
-  // downstream (health digest / runbook). Mirrors handleCheckinRedo's revert.
+  // message turned out not to complete the check-in. Keep reply_ts as the
+  // durable recovery cursor: clearing it lets the safety poll ingest the same
+  // rejected/failed message again and can resurrect a card after Redo.
   const reopen = () =>
     sb
       .from('daily_hours_checkins')
-      .update({ status: 'sent', reply_ts: null, updated_at: new Date().toISOString() })
+      .update({ status: 'sent', updated_at: new Date().toISOString() })
       .eq('id', open.id)
       .eq('status', 'replied')
 
@@ -562,8 +562,11 @@ export async function handleCheckinReply(opts: {
     }),
   )
 
-  // Stash on the row.
-  await sb
+  // Stash on the row only while this parser still owns its `replied` claim.
+  // A Redo can arrive while Harvest resolution is in flight. Without this
+  // compare-and-set, the late parser overwrites `sent` back to `parsed` and
+  // recreates the card the person just cleared.
+  const { data: stored, error: storeError } = await sb
     .from('daily_hours_checkins')
     .update({
       status: 'parsed',
@@ -571,6 +574,22 @@ export async function handleCheckinReply(opts: {
       updated_at: new Date().toISOString(),
     })
     .eq('id', open.id)
+    .eq('status', 'replied')
+    .select('id')
+
+  if (storeError) {
+    console.warn(`[checkin-reply] parsed write failed for ${open.id}: ${storeError.message}`)
+    await reopen()
+    await app.client.chat.postMessage({
+      channel: open.dm_channel_id,
+      text: ":warning: I parsed those hours but couldn't save the confirmation. Please resend them once.",
+    })
+    return true
+  }
+  if (!stored?.length) {
+    console.log(`[checkin-reply] discarded stale parse for ${open.id}; row was changed during parsing`)
+    return true
+  }
 
   // Post confirmation card threaded under the original DM.
   await app.client.chat.postMessage({

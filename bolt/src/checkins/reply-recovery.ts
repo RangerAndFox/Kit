@@ -48,6 +48,17 @@ export interface ReplyRecoveryTally {
   failed: number
 }
 
+/**
+ * Start strictly after the last message Kit already consumed or attempted.
+ *
+ * This matters after Redo: the row returns to `sent`, but `reply_ts` remains a
+ * recovery cursor. Falling back to the original reminder timestamp would make
+ * the poller parse the rejected hours again and resurrect the old card.
+ */
+export function recoveryAfterTs(row: Pick<RecoverableCheckin, 'dm_ts' | 'reply_ts'>): string {
+  return row.reply_ts || (row.dm_ts as string)
+}
+
 const SKIP_RE = /^(?:skip|off|no work|didn't work|pto)[.\s!]*$/i
 
 /** Keep the recovery poll narrower than the live message handler. */
@@ -92,9 +103,10 @@ export function makeReplyRecoveryDeps(app: App): ReplyRecoveryDeps {
     async readMessages(row) {
       const channel = row.dm_channel_id as string
       const rootTs = row.dm_ts as string
-      // A parsed row has already consumed the original hours reply. Start
-      // strictly after it so recovery sees only a later yes/redo decision.
-      const afterTs = row.status === 'parsed' && row.reply_ts ? row.reply_ts : rootTs
+      // Start after the last message already consumed on every status. A redo
+      // returns the row to `sent`, but must not make the rejected reply visible
+      // to this recovery poll again.
+      const afterTs = recoveryAfterTs(row)
       const history: any = await app.client.conversations.history({
         channel,
         oldest: afterTs,
