@@ -105,6 +105,13 @@ function makeDeps(over: { bindings?: BindingRow[]; cursor?: string | null; versi
 }
 
 describe('runProjectControlSync', () => {
+  it('never widens a missing immutable admin target into a workbook-wide refresh', async () => {
+    const { deps, edits } = makeDeps()
+    const result = await runProjectControlSync(deps, { force: true, projectId: 'missing' })
+    assert.equal(result.reason, 'project_binding_missing')
+    assert.deepEqual(edits, [])
+  })
+
   it('forces an authenticated edit pass even before the Drive version advances', async () => {
     const { deps, edits } = makeDeps({
       cursor: `v2|project-views:${PROJECT_VIEW_RENDER_VERSION}`,

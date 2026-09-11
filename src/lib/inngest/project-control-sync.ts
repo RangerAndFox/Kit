@@ -151,6 +151,8 @@ export interface SyncOptions {
   force?: boolean
   /** Limit an edit-triggered pass to one project when it can be resolved safely. */
   projectCode?: string
+  /** Admin requests already have immutable identity; never widen a missing target to all projects. */
+  projectId?: string
 }
 
 export async function runProjectControlSync(
@@ -185,7 +187,11 @@ export async function runProjectControlSync(
     const allBindings = await deps.store.listSyncableBindings(config.spreadsheetId)
     let bindings = allBindings
     let targeted = false
-    if (options.projectCode && deps.store.resolveSyncableProjectIdByCode) {
+    if (options.projectId) {
+      bindings = allBindings.filter(binding => binding.project_id === options.projectId)
+      if (bindings.length !== 1) return { ...empty, reason: 'project_binding_missing' }
+      targeted = true
+    } else if (options.projectCode && deps.store.resolveSyncableProjectIdByCode) {
       const projectId = await deps.store.resolveSyncableProjectIdByCode(config.spreadsheetId, options.projectCode)
       if (projectId) {
         const match = allBindings.filter((binding) => binding.project_id === projectId)

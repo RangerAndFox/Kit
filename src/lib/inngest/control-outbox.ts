@@ -50,7 +50,7 @@ async function dispatchAction(row: OutboxRow): Promise<void> {
       db.from('project_control_canvases').update({ sync_status: 'pending' }).eq('project_id', row.project_id).neq('canvas_type', 'notesAndFeedback'),
     ])
     if (updates.some(result => result.error)) throw new Error('Could not checkpoint requested refresh')
-    requireCompletedSync(await runProjectControlSync(undefined, { force: true, projectCode: project.project_code }))
+    requireCompletedSync(await runProjectControlSync(undefined, { force: true, projectId: row.project_id }))
   } else if (row.payload.action === 'retry_behance') {
     const { data: job, error: jobError } = await db.from('behance_draft_jobs').select('archive_job_id,status').eq('id', row.payload.jobId).eq('project_id', row.project_id).eq('workspace_id', row.payload.workspaceId).single()
     if (jobError || !job) throw new Error('Draft no longer available')
