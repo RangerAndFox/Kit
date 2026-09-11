@@ -94,7 +94,7 @@ function makeDeps(over: { bindings?: BindingRow[]; cursor?: string | null; versi
     },
     canvas: { editControlCanvas: async (o) => { if (over.editThrows) throw new Error('edit failed'); edits.push(o.canvasId) } },
     store,
-    post: async (t: string) => { posts.push(t) },
+    enqueueAlert: async (pid, key, t) => { if (await store.claimNotification(pid, key)) posts.push(t) },
     config: CONFIG,
     enabled: true,
     now: () => 't',

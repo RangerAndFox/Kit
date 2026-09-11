@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import "./globals.css";
 
+// Every HTML response must receive fresh framework-script nonces from Proxy.
+export const dynamic = 'force-dynamic';
+
 export const metadata: Metadata = {
   title: "Kit — Production Intelligence",
   description:

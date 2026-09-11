@@ -14,6 +14,7 @@ import { healthDailyDigest } from './health-digest'
 import { projectControlSync, projectControlSyncOnEdit } from './project-control-sync'
 import { selectRegisteredFunctions } from './registration'
 import { archivePublisher, archiveRecovery } from '../archive/workflow'
+import { controlOutboxDelivery } from './control-outbox'
 
 /** Canonical Kit Inngest function list, kept outside the Next route module. */
 export const inngestFunctions = [
@@ -35,6 +36,7 @@ export const inngestFunctions = [
   projectControlSyncOnEdit,
   archivePublisher,
   archiveRecovery,
+  controlOutboxDelivery,
 ]
 
 /** Exact fail-closed list registered by the API adapter. */

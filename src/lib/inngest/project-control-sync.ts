@@ -15,6 +15,8 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { RetryAfterError } from 'inngest'
+import { enqueueSyncAlert } from '../control-center/outbox'
 import { inngest } from './client'
 import {
   workbookConfigFromEnv,
@@ -50,7 +52,6 @@ import {
   renewWorkbookLease,
   releaseWorkbookLease,
   advanceCursor,
-  claimNotification,
   type BindingRow,
   type SyncStateRow,
   listProjectCanvases,
@@ -83,7 +84,6 @@ export interface SyncStorePort {
   renewWorkbookLease(spreadsheetId: string, kind: 'creation' | 'sync', holder: string): Promise<boolean>
   releaseWorkbookLease(spreadsheetId: string, kind: 'creation' | 'sync', holder: string): Promise<void>
   advanceCursor(spreadsheetId: string, driveVersion: string): Promise<void>
-  claimNotification(projectId: string, key: string): Promise<boolean>
   listProjectCanvases?(projectId: string): Promise<ProjectCanvasRow[]>
   upsertProjectCanvas?(input: { projectId: string; canvasType: ProjectCanvasType; canvasId: string; canvasUrl?: string | null }): Promise<void>
   updateProjectCanvas?(projectId: string, canvasType: ProjectCanvasType, patch: Partial<ProjectCanvasRow>): Promise<void>
@@ -92,24 +92,12 @@ export interface SyncDeps {
   sheets: SyncSheetsPort
   canvas: SyncCanvasPort
   store: SyncStorePort
-  post: (text: string) => Promise<void>
+  enqueueAlert: (projectId: string, key: string, text: string) => Promise<void>
   config: WorkbookConfig | null
   enabled: boolean
   now: () => string
   sleep: (ms: number) => Promise<void>
   perBindingDelayMs: number
-}
-
-async function postAlert(text: string): Promise<void> {
-  const token = process.env.SLACK_BOT_TOKEN
-  const channel = process.env.KIT_PROJECT_CONTROL_ALERT_CHANNEL_ID || process.env.KIT_HEALTH_CHANNEL_ID
-  if (!token || !channel) return
-  await fetch('https://slack.com/api/chat.postMessage', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=utf-8' },
-    body: JSON.stringify({ channel, text, mrkdwn: true }),
-    signal: AbortSignal.timeout(8_000),
-  }).catch(() => null)
 }
 
 export function defaultSyncDeps(): SyncDeps {
@@ -119,10 +107,10 @@ export function defaultSyncDeps(): SyncDeps {
     store: {
       listSyncableBindings, updateBinding, getSyncState, claimWorkbookLease,
       resolveSyncableProjectIdByCode,
-      renewWorkbookLease, releaseWorkbookLease, advanceCursor, claimNotification,
+      renewWorkbookLease, releaseWorkbookLease, advanceCursor,
       listProjectCanvases, upsertProjectCanvas, updateProjectCanvas,
     },
-    post: postAlert,
+    enqueueAlert: enqueueSyncAlert,
     config: workbookConfigFromEnv(),
     enabled: projectControlSyncEnabled(),
     now: () => new Date().toISOString(),
@@ -178,7 +166,7 @@ export async function runProjectControlSync(
 
   /** Notify once per transition (persisted dedupe on the binding). */
   const notifyOnce = async (projectId: string, key: string, text: string): Promise<void> => {
-    if (await deps.store.claimNotification(projectId, key)) await deps.post(text)
+    await deps.enqueueAlert(projectId, key, text)
   }
 
   // Unique holder PER ACQUISITION (observable prefix + random suffix), never a
@@ -368,7 +356,7 @@ export async function runProjectControlSync(
         errored++
         allOk = false
         await deps.store.updateBinding(b.project_id, { sync_status: 'error', error: `sync_failed: ${(err as Error).message}` }).catch(() => {})
-        await notifyOnce(b.project_id, `error:${String((err as Error).message).slice(0, 40)}`, `:red_circle: Project Control sync failed for \`${b.project_id}\`: ${(err as Error).message}`)
+        await notifyOnce(b.project_id, `error:${String((err as Error).message).slice(0, 40)}`, `:red_circle: Project Control sync failed for \`${b.project_id}\`. An administrator can inspect the private control center for details.`)
       }
     }
 
@@ -397,11 +385,12 @@ export const projectControlSync = inngest.createFunction(
   {
     id: 'project-control-sync',
     name: 'Project Control — Sheet→Canvas sync',
-    retries: 1,
+    retries: 6,
+    concurrency: { limit: 1, key: "'project-control-workbook'", scope: 'env' },
     triggers: [{ cron: '*/10 * * * *' }],
   },
   async ({ step }: { step: { run: <T>(id: string, fn: () => Promise<T> | T) => Promise<T> } }) => {
-    return step.run('sync', () => runProjectControlSync())
+    return step.run('sync', async () => retryIncompleteSync(await runProjectControlSync()))
   },
 )
 
@@ -430,7 +419,8 @@ export const projectControlSyncOnEdit = inngest.createFunction(
   {
     id: 'project-control-sync-on-edit',
     name: 'Project Control — Sheet edit refresh',
-    retries: 1,
+    retries: 6,
+    concurrency: { limit: 1, key: "'project-control-workbook'", scope: 'env' },
     idempotency: 'event.data.request_id',
     // A producer commonly fills several cells in one new row. Five seconds is
     // long enough to collapse that burst while keeping the Canvas refresh
@@ -443,9 +433,23 @@ export const projectControlSyncOnEdit = inngest.createFunction(
     event: { data: { project_code?: string } }
     step: { run: <T>(id: string, fn: () => Promise<T> | T) => Promise<T> }
   }) => {
-    return step.run('sync', () => runProjectControlSync(defaultSyncDeps(), {
+    return step.run('sync', async () => retryIncompleteSync(await runProjectControlSync(defaultSyncDeps(), {
       force: true,
       projectCode: event.data.project_code,
-    }))
+    })))
   },
 )
+
+/** A busy lease is retryable work, never a successfully consumed edit. */
+export function retryIncompleteSync(result: SyncSummary): SyncSummary {
+  if (result.reason === 'sync_lease_unavailable' || result.reason === 'sync_lease_lost' || result.errored > 0 || result.orphaned > 0) {
+    throw new RetryAfterError('Project sync incomplete; retrying safely', '15s')
+  }
+  return result
+}
+
+export function requireCompletedSync(result: SyncSummary): SyncSummary {
+  retryIncompleteSync(result)
+  if (!result.ran || result.considered === 0) throw new Error('No project synchronization was performed')
+  return result
+}
