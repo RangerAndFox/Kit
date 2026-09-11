@@ -14,7 +14,7 @@ export interface OutboxRow {
 }
 
 export interface OutboxPorts {
-  markStarted(): Promise<void>
+  markStarted(started: boolean): Promise<void>
   reconcile(): Promise<{ state: 'found'; ts: string } | { state: 'absent' | 'unknown' }>
   post(): Promise<{ ok: boolean; ts?: string }>
   action(): Promise<void>
@@ -40,9 +40,14 @@ export async function deliverOutbox(row: OutboxRow, ports: OutboxPorts): Promise
         return
       }
     }
-    await ports.markStarted()
+    await ports.markStarted(true)
     const result = await ports.post()
-    if (!result.ok || !result.ts) throw new Error('Slack did not acknowledge delivery')
+    if (!result.ok) {
+      // Explicit ok:false is proof Slack did not post. No history read needed on retry.
+      await ports.markStarted(false)
+      throw new Error('Slack rejected delivery')
+    }
+    if (!result.ts) throw new Error('Slack did not acknowledge delivery')
     await ports.finish('sent', undefined, result.ts)
   } catch {
     // Deliberately avoid persisting raw provider responses or secrets.

@@ -7,7 +7,7 @@ const row: OutboxRow = { id: 'id', project_id: 'project', kind: 'sync_alert', pa
 function fake(over: Partial<OutboxPorts> = {}) {
   const events: string[] = []
   const ports: OutboxPorts = {
-    markStarted: async () => { events.push('checkpoint') },
+    markStarted: async started => { events.push(started ? 'checkpoint' : 'not-posted') },
     reconcile: async () => ({ state: 'absent' }),
     post: async () => { events.push('post'); return { ok: true, ts: '123' } },
     action: async () => { events.push('action') },
@@ -42,7 +42,7 @@ it('never reposts an ambiguous delivery when history is unavailable', async () =
 it('definitive Slack errors do not become successful deliveries', async () => {
   const { ports, events } = fake({ post: async () => ({ ok: false }) })
   await deliverOutbox(row, ports)
-  assert.deepEqual(events, ['checkpoint', 'retry'])
+  assert.deepEqual(events, ['checkpoint', 'not-posted', 'retry'])
 })
 it('action execution failures remain recoverable, not successful', async () => {
   const { ports, events } = fake({ action: async () => { throw new Error('provider unavailable') } })

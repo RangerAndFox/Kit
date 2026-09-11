@@ -33,7 +33,7 @@ Proxy generates a fresh script nonce for each HTML request and forwards the poli
 
 ## Verification evidence
 
-- Application tests: 835 passed. Bolt tests: 492 passed. Render worker: 6 passed. Browser worker: 14 passed. Worker/relay TypeScript builds passed.
+- Application tests: 836 passed. Bolt tests: 492 passed. Render worker: 6 passed. Browser worker: 14 passed. Worker/relay TypeScript builds passed.
 - Root TypeScript and lint ratchet passed; existing baseline lint debt is not claimed eliminated.
 - Node 22 production build passed. Local production login rendered and hydrated without browser errors; all page scripts carried nonces. Signed-out control-center access redirected to login. No email or OAuth submission was made in that local check.
 - Live rollback-only database tests proved atomic action+queue persistence, exclusive claims, rejection of stale claim completion, atomic audit acknowledgement, alert dedupe, and denial of ordinary member/anonymous table and RPC access. No test rows survived.

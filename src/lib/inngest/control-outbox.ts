@@ -74,8 +74,8 @@ export async function drainControlOutbox(): Promise<{ processed: number }> {
     const row = data?.[0] as OutboxRow | undefined
     if (!row) continue
     await deliverOutbox(row, {
-      async markStarted() {
-        const { data: saved, error: markError } = await db.from('kit_control_outbox').update({ send_started: true }).eq('id', row.id).eq('lease_token', token).gt('lease_until', new Date().toISOString()).select('id').single()
+      async markStarted(started) {
+        const { data: saved, error: markError } = await db.from('kit_control_outbox').update({ send_started: started }).eq('id', row.id).eq('lease_token', token).gt('lease_until', new Date().toISOString()).select('id').single()
         if (markError || !saved) throw new Error('Delivery checkpoint lost')
       },
       reconcile: () => reconcile(row),
