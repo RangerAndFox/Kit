@@ -43,7 +43,8 @@ import { hasPendingClarification } from '../llm/memory'
 import { setThinking, clearThinking } from '../llm/status'
 import { stashIntake } from '../../../src/lib/storyboard/stash'
 import { projectNameFromFilename } from '../../../src/lib/storyboard/parser'
-import { buildNewProjectCard } from './newproject-card'
+import { isNewProjectTrigger, sendNewProjectIntake } from './newproject-intake'
+export { isNewProjectTrigger } from './newproject-intake'
 import { isUpdateProjectTrigger } from './updateproject-card'
 import { buildUpdateProjectCardForContext } from './interactions'
 import { buildArchiveCardForContext } from '../archive/handlers'
@@ -134,6 +135,7 @@ async function handlePersonalChannelCheckinReply(opts: {
   messageTs: string
 }): Promise<boolean> {
   const { app, userId, channelId, messageText, messageTs } = opts
+  if (isNewProjectTrigger(normalizeDmShortcutText(messageText))) return false
   const open = await findOpenCheckin(userId)
   if (open) {
     const handled = await handleCheckinReply({ app, open, replyText: messageText, replyTs: messageTs })
@@ -430,12 +432,20 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
     return
   }
 
+  // Creation always uses the current private form, including channel/MPIM
+  // mentions and old four-field replies. Run BEFORE any hours interception.
+  if (isNewProjectTrigger(normalizeDmShortcutText(messageText))) {
+    await sendNewProjectIntake({ client: app.client, userId, channelId, threadTs: replyThreadTs })
+    return
+  }
+
   // ── Daily-hours check-in interception ─────────────────────
-  // If this is a DM (or assistant thread) and the user has an open
+  // If this is a verified DM and the user has an open
   // check-in for today, route the reply to the check-in parser instead
   // of the orchestrator. Prevents Kit from "having a conversation"
   // about hours when we already asked a structured question.
-  if (channelType === 'im' || assistantThreadTs) {
+  // A channel thread is NOT a DM, even when it has a reply-thread timestamp.
+  if (channelType === 'im') {
     const open = await findOpenCheckin(userId)
     if (open) {
       const handled = await handleCheckinReply({
@@ -489,11 +499,11 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
   }
 
   // ── Fast path 2: Ad-hoc hours entry ─────────────────────
-  // If this is a DM (or assistant thread) and the message mentions hours,
+  // If this is a verified DM and the message mentions hours,
   // route it through the same parse/confirm/log pipeline as the daily
   // check-in. Falls through to the orchestrator if the LLM determines
   // the message isn't actually a time entry.
-  if ((channelType === 'im' || assistantThreadTs) && looksLikeHoursIntent(messageText)) {
+  if (channelType === 'im' && looksLikeHoursIntent(messageText)) {
     const handled = await handleAdhocHoursEntry({
       app,
       slackUserId: userId,
@@ -700,39 +710,6 @@ export function isStoryboardScriptFile(f: any): boolean {
 }
 
 /**
- * Conservative keyword matcher. Returns true for messages whose entire
- * intent is "I want to create a storyboard now" — not for messages that
- * merely mention storyboarding in passing.
- */
-/**
- * Conservative matcher for "I want to start a new project right now"
- * phrasings. Mirrors the storyboard trigger style: only strict, short
- * intents fire the shortcut; everything looser goes to the orchestrator.
- */
-export function isNewProjectTrigger(text: string): boolean {
-  if (!text) return false
-  const t = text.toLowerCase().trim()
-  if (t.length > 60) return false
-  const exact = new Set([
-    'new project',
-    '/newproject',
-    '/new project',
-    'newproject',
-    'make a project',
-    'create a project',
-    'create project',
-    'make project',
-    'start a project',
-    'start project',
-    'spin up a project',
-    'spin up project',
-    'new gig',
-  ])
-  if (exact.has(t)) return true
-  return /^(new|make|create|start|spin up)\s+(a\s+)?project(\s+please)?\.?$/i.test(t)
-}
-
-/**
  * Strict DM shortcut for the founder Control Center. Keeping this matcher
  * narrow prevents ordinary questions that happen to mention a dashboard from
  * bypassing the conversational orchestrator.
@@ -880,9 +857,7 @@ export const DM_SHORTCUT_REGISTRY: readonly DmShortcut[] = [
     id: 'new-project',
     matches: isNewProjectTrigger,
     run: async (app, context) => {
-      await app.client.chat.postMessage(
-        buildNewProjectCard(context.channelId, context.threadTs),
-      )
+      await sendNewProjectIntake({ client: app.client, userId: context.userId, channelId: context.channelId, threadTs: context.threadTs })
     },
   },
   {

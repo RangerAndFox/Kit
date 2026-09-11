@@ -17,7 +17,7 @@ import type { View } from '@slack/types'
 import { buildStoryboardModal } from '../../../src/lib/storyboard/modal'
 import { stashIntake } from '../../../src/lib/storyboard/stash'
 import { dispatch } from '../../../src/lib/inngest/agents/registry'
-import { buildNewProjectCard } from './newproject-card'
+import { sendNewProjectIntake } from './newproject-intake'
 import { buildUpdateProjectCardForContext } from './interactions'
 import { buildOnboardModal } from '../onboarding/modal'
 import { canOnboard } from '../onboarding/permissions'
@@ -103,9 +103,7 @@ export function registerCommandHandlers(app: App) {
         // with a fresh trigger_id. Same UX as the storyboard flow and
         // as typing "new project" in a DM.
         try {
-          await client.chat.postMessage(
-            buildNewProjectCard(command.channel_id),
-          )
+          await sendNewProjectIntake({ client, userId: command.user_id, channelId: command.channel_id })
         } catch (err: any) {
           console.error('[Bolt] newproject card post failed:', err.data?.error || err.message)
           await respond({
