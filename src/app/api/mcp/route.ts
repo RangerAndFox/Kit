@@ -2,7 +2,8 @@
  * Kit MCP HTTP endpoint.
  *
  * Agents (from Anthropic's Managed Agents API) POST MCP JSON-RPC 2.0
- * requests here with Authorization: Bearer <KIT_MCP_SECRET>.
+ * requests here with an expiring, signed, workspace/tool-scoped bearer token.
+ * The signing secret is never used as a client credential.
  *
  * We implement streamable HTTP in stateless mode (single request/response
  * with JSON body) — no SSE, no sessions. This works cleanly on Vercel.

@@ -24,6 +24,7 @@ import { STUDIO_KNOWLEDGE_SYSTEM_PROMPT } from './prompts/studio-knowledge-syste
 import { DELIVERY_SYSTEM_PROMPT } from './prompts/delivery-system'
 import { BRAIN_SYSTEM_PROMPT } from './prompts/brain-system'
 import { currentDateLine } from './date-context'
+import { isLegacyProjectProvision, PROJECT_INTAKE_REQUIRED } from './project-provisioning-policy'
 
 const SYSTEM_PROMPTS: Record<string, string> = {
   harvest: HARVEST_SYSTEM_PROMPT,
@@ -77,7 +78,7 @@ export async function runSpecialist(
       system: [
         {
           type: 'text',
-          text: `${systemPrompt}\n\n${UNTRUSTED_DATA_RULES}`,
+          text: `${systemPrompt}\n\n${UNTRUSTED_DATA_RULES}\n\n${PROJECT_INTAKE_REQUIRED}`,
           cache_control: { type: 'ephemeral' },
         },
         // Uncached (changes daily) so the static prompt above stays cacheable.
@@ -167,7 +168,10 @@ export async function runSpecialist(
             payload.projectId as string | undefined,
           )
           const capability = getAgent(agentId)?.capabilities.find((candidate) => candidate.action === action)
-          if (capability?.mutates && context.isDirectMessage !== true) {
+          if (isLegacyProjectProvision(agentId, action)) {
+            // Enforce even for a stale model response / authorized admin DM.
+            result = { success: false, error: PROJECT_INTAKE_REQUIRED }
+          } else if (capability?.mutates && context.isDirectMessage !== true) {
             result = {
               success: false,
               error: 'This action changes studio or client data and cannot run directly from a shared channel. Open a DM with Kit to use its confirmation flow.',

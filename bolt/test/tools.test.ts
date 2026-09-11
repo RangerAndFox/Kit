@@ -33,6 +33,13 @@ describe('buildOrchestratorTools', () => {
 })
 
 describe('buildSpecialistTools', () => {
+  it.each(['slack', 'frameio', 'harvest', 'dropbox'])('does not expose legacy %s project creation', (agentId) => {
+    expect(buildSpecialistTools(agentId).map((tool) => tool.name)).not.toContain(`${agentId}_provision`)
+  })
+
+  it('preserves storyboard creation as an artifact workflow', () => {
+    expect(buildSpecialistTools('boords').map((tool) => tool.name)).toContain('boords_provision')
+  })
   it('returns harvest action tools namespaced with harvest_ prefix', () => {
     const tools = buildSpecialistTools('harvest')
     const names = tools.map((t) => t.name)

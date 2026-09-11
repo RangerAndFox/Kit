@@ -5,6 +5,7 @@
 
 import { createAdminClient } from '@/lib/supabase/admin';
 import type { TeamRole } from '@/types/database';
+import { resolveWorkspaceMember, memberCanAccessProject } from './member';
 
 export interface ScopeResult {
   projectIds: string[] | 'all';
@@ -17,20 +18,21 @@ export interface ScopeResult {
 export async function scopeQuery(
   userId: string,
   workspaceId: string,
-  role: TeamRole
+  _role: TeamRole
 ): Promise<ScopeResult> {
-  // Founders have access to all projects in the workspace
-  if (role === 'founder') {
+  void _role; // Kept for compatibility; authorization comes from the stored member.
+  const admin = createAdminClient();
+  const member = await resolveWorkspaceMember(admin, userId, workspaceId);
+  if (!member) return { projectIds: [] };
+  if (member.role === 'founder') {
     return { projectIds: 'all' };
   }
 
   // Other roles get only their assigned projects
-  const admin = createAdminClient();
-
   const { data: projectAccess, error } = await admin
 .from('project_access')
     .select('project_id')
-    .eq('team_member_id', userId)
+    .eq('team_member_id', member.id)
     .eq('workspace_id', workspaceId);
 
   if (error) {
@@ -38,7 +40,7 @@ export async function scopeQuery(
     return { projectIds: [] };
   }
 
-  const projectIds = projectAccess?.map((p: any) => p.project_id) || [];
+  const projectIds = projectAccess?.map(p => p.project_id) || [];
   return { projectIds };
 }
 
@@ -53,33 +55,8 @@ export async function canAccessProject(
 ): Promise<boolean> {
   const admin = createAdminClient();
 
-  // First, get the user's role
-  const { data: teamMember, error: memberError } = await admin
-.from('team_members')
-    .select('role')
-        .eq('auth_user_id', userId)
-    .eq('workspace_id', workspaceId)
-    .single();
-
-  if (memberError || !teamMember) {
-    return false;
-  }
-
-  // Founders can access all projects
-  if (teamMember.role === 'founder') {
-    return true;
-  }
-
-  // Check project_access table for other roles
-  const { data: access, error: accessError } = await admin
-.from('project_access')
-    .select('id')
-    .eq('team_member_id', userId)
-    .eq('project_id', projectId)
-    .eq('workspace_id', workspaceId)
-    .single();
-
-  return !accessError && !!access;
+  const member = await resolveWorkspaceMember(admin, userId, workspaceId);
+  return member ? memberCanAccessProject(admin, member, workspaceId, projectId) : false;
 }
 
 /**
@@ -118,15 +95,8 @@ export async function checkPermission(
 ): Promise<boolean> {
   const admin = createAdminClient();
 
-  // Get team member info
-  const { data: teamMember, error: memberError } = await admin
-.from('team_members')
-    .select('role')
-        .eq('auth_user_id', userId)
-    .eq('workspace_id', workspaceId)
-    .single();
-
-  if (memberError || !teamMember) {
+  const teamMember = await resolveWorkspaceMember(admin, userId, workspaceId);
+  if (!teamMember) {
     return false;
   }
 
@@ -134,7 +104,7 @@ export async function checkPermission(
 
   // Admins can do everything
   if (role === 'founder') {
-    return true;
+    return projectId ? memberCanAccessProject(admin, teamMember, workspaceId, projectId) : true;
   }
 
   // Producers can read and write (but not delete or admin)
@@ -172,18 +142,8 @@ export async function getUserRole(
 ): Promise<TeamRole | null> {
   const admin = createAdminClient();
 
-  const { data: teamMember, error } = await admin
-.from('team_members')
-    .select('role')
-        .eq('auth_user_id', userId)
-    .eq('workspace_id', workspaceId)
-    .single();
-
-  if (error || !teamMember) {
-    return null;
-  }
-
-  return teamMember.role as TeamRole;
+  const member = await resolveWorkspaceMember(admin, userId, workspaceId);
+  return member?.role ?? null;
 }
 
 /**
@@ -219,9 +179,9 @@ export async function getPermissionFlags(
 
   return {
     canEditProject: canEditProject(role) && canAccess,
-    canViewFinancials: canViewFinancials(role),
+    canViewFinancials: canViewFinancials(role) && canAccess,
     canManageTeam: canManageTeam(role),
-    canDeleteProject: role === 'founder',
+    canDeleteProject: role === 'founder' && canAccess,
     canAccessProject: canAccess,
   };
 }

@@ -554,21 +554,6 @@ export async function advanceCursor(spreadsheetId: string, driveVersion: string)
     .eq('spreadsheet_id', spreadsheetId)
 }
 
-// ─── Notification dedupe ─────────────────────────────────────────────────────
-
-/**
- * Returns true (and records the key) only when this error/recovery signature
- * differs from the last one announced for this binding — so transitions are
- * announced once, not every tick.
- */
-export async function claimNotification(projectId: string, key: string): Promise<boolean> {
-  const binding = await getBindingByProject(projectId)
-  if (!binding) return false
-  if (binding.error_notified_key === key) return false
-  await updateBinding(projectId, { error_notified_key: key })
-  return true
-}
-
 // ─── Per-service durable provisioning steps (deterministic ownership) ─────────
 
 const STEP_LEASE_MS = 5 * 60 * 1000 // > any bounded single provider call

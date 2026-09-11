@@ -94,7 +94,7 @@ function makeDeps(over: { bindings?: BindingRow[]; cursor?: string | null; versi
     },
     canvas: { editControlCanvas: async (o) => { if (over.editThrows) throw new Error('edit failed'); edits.push(o.canvasId) } },
     store,
-    post: async (t: string) => { posts.push(t) },
+    enqueueAlert: async (pid, key, t) => { if (await store.claimNotification(pid, key)) posts.push(t) },
     config: CONFIG,
     enabled: true,
     now: () => 't',
@@ -105,6 +105,13 @@ function makeDeps(over: { bindings?: BindingRow[]; cursor?: string | null; versi
 }
 
 describe('runProjectControlSync', () => {
+  it('never widens a missing immutable admin target into a workbook-wide refresh', async () => {
+    const { deps, edits } = makeDeps()
+    const result = await runProjectControlSync(deps, { force: true, projectId: 'missing' })
+    assert.equal(result.reason, 'project_binding_missing')
+    assert.deepEqual(edits, [])
+  })
+
   it('forces an authenticated edit pass even before the Drive version advances', async () => {
     const { deps, edits } = makeDeps({
       cursor: `v2|project-views:${PROJECT_VIEW_RENDER_VERSION}`,

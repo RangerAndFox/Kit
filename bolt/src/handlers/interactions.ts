@@ -95,6 +95,7 @@ import { handleCheckinConfirm, handleCheckinRedo, handleCheckinRetryFailed } fro
 import { buildOnboardEditModal, parseOnboardEditSubmission, parseOnboardSubmission } from '../onboarding/modal'
 import { buildConfirmCard } from '../onboarding/keyword'
 import { canOnboard } from '../onboarding/permissions'
+import { resolvePrivateProjectIntake } from './newproject-intake'
 import { runOnboarding, buildRequesterSummary } from '../onboarding/orchestrator'
 import { rehydrateProjectExternalLinks } from '../onboarding/rehydrate'
 import { registerDeliveryViewHandlers } from '../delivery/submit-handler'
@@ -649,9 +650,12 @@ export function registerInteractionHandlers(app: App) {
     }
     const availableServiceIds = getProvisionableServices() as string[]
     try {
+      // Old cards may still live in shared channels. Resolve the actor's DM
+      // server-side; never send intake progress/financials to card metadata.
+      const target = await resolvePrivateProjectIntake(client, actor, channelId, threadTs)
       await client.views.open({
         trigger_id: (body as any).trigger_id,
-        view: buildNewProjectModal(channelId, availableServiceIds, threadTs) as any,
+        view: buildNewProjectModal(target.channelId, availableServiceIds, target.threadTs) as any,
       })
     } catch (err: any) {
       console.error('[Bolt] newproject modal open failed:', err.data?.error || err.message)
@@ -1012,11 +1016,8 @@ export function registerInteractionHandlers(app: App) {
     }
     const meta = JSON.parse(view.private_metadata || '{}')
     const channelId = meta.channel_id || ''
-    const threadTs = meta.thread_ts || undefined
-    // Progress and errors post into the same channel/thread the user
-    // launched the flow from. Falls back to DMing the user when we
-    // somehow don't have a channel (shouldn't happen via the card).
-    const statusChannel = channelId || userId
+    let threadTs: string | undefined
+    let statusChannel: string
     const values = view.state?.values || {}
 
     // Extract form values. Services are read from the checkbox group;
@@ -1052,6 +1053,17 @@ export function registerInteractionHandlers(app: App) {
     }
 
     await ack()
+
+    // Re-check even for a modal opened before this fix. No provider work
+    // starts unless a private status destination has been verified.
+    try {
+      const target = await resolvePrivateProjectIntake(client, userId, channelId, meta.thread_ts)
+      statusChannel = target.channelId
+      threadTs = target.threadTs
+    } catch {
+      console.error('[Bolt] private project intake DM unavailable; no provider work started')
+      return
+    }
 
     // Resolve workspace
     const teamId = body.team?.id || ''
@@ -1140,6 +1152,10 @@ export function registerInteractionHandlers(app: App) {
   // ─── New Project: duplicate-resolution buttons ────────────
   app.action('kit_provision_dup_duplicate', async ({ ack, body, client, respond }) => {
     await ack()
+    if (!(await canOnboard(body.user.id)) || (process.env.NODE_ENV === 'production' && !projectControlCreationEnabled())) {
+      await respond({ replace_original: false, response_type: 'ephemeral', text: ':no_entry: This project request is unavailable. An authorized producer must use the current New Project form.' })
+      return
+    }
     const value = (body as any).actions?.[0]?.value || ''
     if (!projectControlCreationEnabled()) {
       const pending = takePendingProvision(value)
@@ -1174,6 +1190,10 @@ export function registerInteractionHandlers(app: App) {
 
   app.action('kit_provision_dup_replace', async ({ ack, body, client, respond }) => {
     await ack()
+    if (!(await canOnboard(body.user.id)) || (process.env.NODE_ENV === 'production' && !projectControlCreationEnabled())) {
+      await respond({ replace_original: false, response_type: 'ephemeral', text: ':no_entry: This project request is unavailable. An authorized producer must use the current New Project form.' })
+      return
+    }
     const value = (body as any).actions?.[0]?.value || ''
     if (!projectControlCreationEnabled()) {
       const pending = takePendingProvision(value)
@@ -1259,8 +1279,16 @@ export function registerInteractionHandlers(app: App) {
     preClaimed?: boolean
     leaseHolder?: string
   }) {
-    const { client, form, workspaceId, userId, statusChannel, threadTs, requestKey } = args
+    const { client, form, workspaceId, userId, requestKey } = args
     const creationEnabled = args.creationEnabled ?? projectControlCreationEnabled()
+    if (process.env.NODE_ENV === 'production' && !creationEnabled) {
+      throw new Error('Project provisioning requires the durable Project Control ledger')
+    }
+    // Recovery and duplicate-resolution can carry destinations saved by an
+    // older release. Re-resolve the private destination before any side effect.
+    const target = await resolvePrivateProjectIntake(client, userId, args.statusChannel, args.threadTs)
+    const statusChannel = target.channelId
+    const threadTs = target.threadTs
     // The lease holder for the durable heartbeat + the resume-safe claim. The
     // recovery sweep passes the holder it reclaimed with; the fresh path derives
     // it from the requester.
