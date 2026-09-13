@@ -59,10 +59,14 @@ function normalize(raw: string): string | null {
 
 export function parseRoleIntent(text: string): RoleIntent | null {
   if (!text) return null
+  // Mentioning a command is not consent to change someone's permissions.
+  if (/\b(?:don['’]t|do not|shouldn['’]t|should not|never)\b/i.test(text) || /^\s*(?:[>"`]|if\b|when\b|someone\b|\w+ said\b)/i.test(text)) return null
 
   for (const pattern of SET_PATTERNS) {
     const m = text.match(pattern)
     if (m) {
+      const prefix = text.slice(0, m.index).replace(/^\s*\/kit\s+/i, '').trim()
+      if (prefix && !/^(?:(?:hey|hi|kit|please|can you|could you|would you)[\s,!:]*)+$/i.test(prefix)) continue
       const role = normalize(m[2])
       if (role) return { targetSlackId: m[1], role, isQuery: false }
     }

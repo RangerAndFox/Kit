@@ -34,6 +34,26 @@ beforeEach(() => {
 })
 
 describe('runOrchestrator', () => {
+  it('offers a command through a host callback and never runs sibling specialist writes', async () => {
+    const openCommand = vi.fn().mockResolvedValue('Private review card opened. Nothing has run.')
+    createMock.mockResolvedValueOnce({ stop_reason: 'tool_use', content: [
+      { type: 'tool_use', id: 'side', name: 'ask_slack', input: { query: 'create a channel' } },
+      { type: 'tool_use', id: 'command', name: 'open_kit_command', input: { command: 'newproject', args: '' } },
+    ] })
+    const result = await runOrchestrator({ teamId: 'T1', channel: 'C1', userId: 'U1', user: fakeUser, message: 'Please get a project ready for us', openCommand })
+    expect(openCommand).toHaveBeenCalledWith({ command: 'newproject', args: '' })
+    expect(result.reply).toBe('Private review card opened. Nothing has run.')
+    expect(createMock).toHaveBeenCalledOnce()
+    expect(runSpecialistMock).not.toHaveBeenCalled()
+    expect(createMock.mock.calls[0][0].tools.map((tool: { name: string }) => tool.name)).toContain('open_kit_command')
+  })
+  it.each([{ command: 'exec', args: 'bad' }, { command: 'delete', args: 'project', userId: 'U_OTHER' }])('rejects invalid model command input', async input => {
+    const openCommand = vi.fn()
+    createMock.mockResolvedValueOnce({ stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'x', name: 'open_kit_command', input }] })
+    const result = await runOrchestrator({ teamId: 'T1', channel: 'C1', userId: 'U1', user: fakeUser, message: 'help', openCommand })
+    expect(openCommand).not.toHaveBeenCalled()
+    expect(result.reply).toContain('nothing was run')
+  })
   it('returns text for a chitchat turn (no tool)', async () => {
     createMock.mockResolvedValueOnce({
       stop_reason: 'end_turn',

@@ -23,6 +23,7 @@ import {
   appendAssistantTurn,
 } from './memory'
 import type { UserContext } from '../../../src/lib/inngest/access-control'
+import { OPEN_KIT_COMMAND_TOOL, commandRequestSchema } from '../handlers/command-catalog'
 
 const MAX_TURNS = 6 // orchestrator may chain multiple specialist calls in one Slack reply
 
@@ -42,6 +43,8 @@ export interface OrchestratorRequest {
    */
   contextPreamble?: string
   isDirectMessage?: boolean
+  /** Host-owned callback: model can offer a private card, never execute it. */
+  openCommand?: (request: unknown) => Promise<string>
 }
 
 export interface OrchestratorResult {
@@ -57,6 +60,7 @@ export async function runOrchestrator(
   appendUserTurn(req.teamId, req.channel, req.userId, req.message)
 
   const tools = buildOrchestratorTools()
+  if (req.openCommand) tools.push(OPEN_KIT_COMMAND_TOOL)
 
   // Re-load to include the just-appended user turn
   const fresh = loadConversation(req.teamId, req.channel, req.userId)
@@ -98,6 +102,18 @@ export async function runOrchestrator(
       messages.push({ role: 'assistant', content: response.content })
 
       const toolResults: any[] = []
+      // A command offer ends the turn. No sibling specialist write or second
+      // model call can run beside the confirmation card.
+      const commandBlock = toolUseBlocks.find((block) => block.name === 'open_kit_command')
+      if (commandBlock) {
+        const parsed = commandRequestSchema.safeParse(commandBlock.input)
+        let reply = 'I could not open that command. Please clarify what you want to do; nothing was run.'
+        if (parsed.success && req.openCommand) {
+          try { reply = await req.openCommand(parsed.data) } catch { /* safe response, no retry */ }
+        }
+        appendAssistantTurn(req.teamId, req.channel, req.userId, reply, false)
+        return { reply, awaitingClarification: false }
+      }
       for (const block of toolUseBlocks) {
         const agentId = block.name.replace(/^ask_/, '')
         const query = block.input?.query || ''

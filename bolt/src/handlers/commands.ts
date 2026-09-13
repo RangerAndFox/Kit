@@ -32,6 +32,7 @@ import { handlePilotCommand } from './pilots'
 import { buildArchiveCardForContext } from '../archive/handlers'
 import { dashboardBaseUrl } from './dashboard-card'
 import { buildProjectDeletionCardForContext } from '../project-deletion/handlers'
+import { registerKitCommand } from './command-dispatch'
 
 /**
  * Resolve the Slack user's Kit access context for a slash command.
@@ -57,7 +58,7 @@ async function resolveCommandUser(client: any, workspaceId: string, slackUserId:
 
 export function registerCommandHandlers(app: App) {
   // ─── /kit ─────────────────────────────────────────────────
-  app.command('/kit', async ({ command, ack, client, respond }) => {
+  registerKitCommand(app, '/kit', async ({ command, ack, client, respond }) => {
     const subcommand = (command.text || '').trim().split(/\s+/)[0]?.toLowerCase() || 'help'
     const args = (command.text || '').trim().split(/\s+/).slice(1).join(' ')
 
@@ -192,6 +193,11 @@ export function registerCommandHandlers(app: App) {
           break
         }
         try {
+          if (args.trim()) {
+            const { handleOnboardKeyword } = await import('../onboarding/keyword')
+            await handleOnboardKeyword({ app: { client } as App, channelId: command.channel_id, userId: command.user_id, text: 'onboard ' + args })
+            break
+          }
           const view = await buildOnboardModal({ channelId: command.channel_id })
           await client.views.open({ trigger_id: command.trigger_id, view: view as View })
         } catch (err: any) {
@@ -391,6 +397,10 @@ export function registerCommandHandlers(app: App) {
       case 'accessibility': {
         await ack()
         const sub = (args || '').trim().toLowerCase()
+        if (sub === 'convert') {
+          await respond({ response_type: 'ephemeral', text: 'To convert SRT captions, put the .srt file in the existing Dropbox Delivery-Queue. Kit’s delivery scan generates matching .vtt, .ttml and .txt files beside it. Nothing has been converted by opening this message. Ask for “accessibility status” to check video captions/DV jobs.' })
+          break
+        }
         const { createAdminClient } = await import('../../../src/lib/supabase/admin')
         const sb = createAdminClient()
         if (sub === '' || sub === 'status') {
@@ -948,7 +958,8 @@ export function registerCommandHandlers(app: App) {
         await respond({
           response_type: 'ephemeral',
           text:
-            '*Kit Commands*\n\n' +
+            '*Kit Commands — natural language welcome*\n\n' +
+            'Ask normally: “show me the dashboard”, “edit project 2637”, “add a freelancer”, “check delivery jobs”, or “post a timesheet meme”. Kit opens the same private review card/form. Permissions still apply; nothing runs from a review card until you click Continue.\n\n' +
             '`/kit dashboard` — Founder-only live health and operations portal\n' +
             '`/kit newproject` — Post the new-project card (pick services, fill in details)\n' +
             '`/kit update` — Edit an established project and ripple the change across every outlet\n' +
@@ -970,6 +981,9 @@ export function registerCommandHandlers(app: App) {
             '`/kit sync-staff` — Admin only: map staff to Harvest users by email (activates hours check-ins)\n' +
             '`/kit sync-projects` — Admin only: preview Harvest→Supabase project reconciliation; `run` to apply\n' +
             '`/kit meme` — Admin only: post this week’s timesheet meme to the team channel now\n' +
+            '`/kit celebrate <event>` — Celebrate now or schedule with MM-DD\n' +
+            '`/kit birthday @person MM-DD` — Set a team birthday\n' +
+            '`/kit pilot help` — Visual-development pilot commands (feature-gated)\n' +
             '`/kit backfill-time` — Admin only: preview confirmable back-dated check-ins; `run` to log them to Harvest\n' +
             '`/kit help` — Show this message\n\n' +
             'You can also DM me and type *new project*, *update project*, *archive project*, *delete project*, or *new storyboard* to get the same cards. Or @mention me to ask about projects, budgets, files, reviews, or to log time.',
@@ -983,14 +997,14 @@ export function registerCommandHandlers(app: App) {
   // Opens the storyboard settings modal with no script attached;
   // the user can paste a script into the multiline field or leave
   // it blank for a placeholder storyboard.
-  app.command('/storyboard', async ({ command, ack, client, respond }) => {
+  registerKitCommand(app, '/storyboard', async ({ command, ack, client, respond }) => {
     await ack()
 
     const args = (command.text || '').trim()
 
     // Resume path: `/storyboard resume <jobId>`
     if (/^resume\b/i.test(args)) {
-      const jobId = args.replace(/^resume\s+/i, '').trim()
+      const jobId = args.replace(/^resume\b\s*/i, '').trim()
       if (!jobId) {
         await respond({
           response_type: 'ephemeral',
