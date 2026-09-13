@@ -52,7 +52,9 @@ import { dashboardBaseUrl } from './dashboard-card'
 import { isArchiveTrigger } from '../../../src/lib/archive/types'
 import { isDeleteProjectTrigger } from '../../../src/lib/project-deletion/types'
 import { buildProjectDeletionCardForContext } from '../project-deletion/handlers'
-import { handleNaturalCommandShortcut, offerNaturalCommand } from './natural-commands'
+import { handleGuidanceFollowup, handleNaturalCommandShortcut, offerNaturalCommand } from './natural-commands'
+import { guidanceBlocks, guidanceCanStart, isGuidanceQuestion } from './command-guidance'
+import { clearGuidanceInvitation, pendingGuidance, pendingGuidanceClarification, rememberGuidanceClarification, rememberGuidanceInvitation } from './guidance-followup'
 import { isCommandRequest } from './command-catalog'
 import {
   findOpenCheckin,
@@ -133,11 +135,15 @@ async function handlePersonalChannelCheckinReply(opts: {
   app: App
   userId: string
   channelId: string
+  teamId: string
+  threadTs?: string
   messageText: string
   messageTs: string
 }): Promise<boolean> {
   const { app, userId, channelId, messageText, messageTs } = opts
-  if (isNewProjectTrigger(normalizeDmShortcutText(messageText)) || isCommandRequest(messageText)) return false
+  if (await handleGuidanceFollowup(opts, normalizeDmShortcutText(messageText))) return true
+  if (pendingGuidance(opts) || pendingGuidanceClarification(opts)) return false
+  if (isGuidanceQuestion(messageText) || isNewProjectTrigger(normalizeDmShortcutText(messageText)) || isCommandRequest(messageText)) return false
   const open = await findOpenCheckin(userId)
   if (open) {
     const handled = await handleCheckinReply({ app, open, replyText: messageText, replyTs: messageTs })
@@ -272,6 +278,8 @@ export function registerMessageHandlers(app: App) {
             app,
             userId,
             channelId,
+            teamId,
+            threadTs: msgEvent.thread_ts,
             messageText: (msgEvent.text || '').trim(),
             messageTs: msgEvent.ts,
           })
@@ -288,7 +296,9 @@ export function registerMessageHandlers(app: App) {
     // applies a cheap classifier first so most chatter never reaches
     // Claude. We deliberately run this BEFORE the early-return below
     // so non-@mention messages still feed the brain.
-    if (!isDM && (msgEvent.text || '').trim().length > 0) {
+    const guidanceScope = { teamId, channelId, userId, threadTs: msgEvent.thread_ts }
+    const hasGuidanceContext = !!pendingGuidance(guidanceScope) || pendingGuidanceClarification(guidanceScope)
+    if (!isDM && (msgEvent.text || '').trim().length > 0 && !isGuidanceQuestion(msgEvent.text || '') && !hasGuidanceContext) {
       handleBrainIngestMessage({
         app,
         channelId,
@@ -344,7 +354,8 @@ export function registerMessageHandlers(app: App) {
     if (!isDM) {
       if (
         !hasPendingClarification(teamId, channelId, userId) &&
-        !getPendingOnboarding(channelId, userId)
+        !getPendingOnboarding(channelId, userId) &&
+        !hasGuidanceContext
       )
         return
     }
@@ -427,7 +438,7 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
 
   const postReply = async (text: string) => {
     const safeText = channelType === 'im' ? text : guardSharedSlackReply(text)
-    await app.client.chat.postMessage({
+    return app.client.chat.postMessage({
       channel: channelId,
       text: safeText,
       ...(replyThreadTs ? { thread_ts: replyThreadTs } : {}),
@@ -439,13 +450,26 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
     return
   }
 
+  const guidanceScope = { teamId, channelId, userId, threadTs: replyThreadTs }
+  const clarifyingGuide = pendingGuidanceClarification(guidanceScope)
+  if (clarifyingGuide) {
+    clearGuidanceInvitation(guidanceScope)
+    if (/^(?:no(?: thanks)?|cancel|not now|nevermind|never mind)[.!?]*$/i.test(messageText.trim())) {
+      await postReply('No problem — nothing has run.')
+      return
+    }
+  }
+  const guidanceInput = clarifyingGuide ? `Explain how to ${messageText}` : messageText
+  const guidanceQuestion = isGuidanceQuestion(guidanceInput)
+  if (await handleGuidanceFollowup({ app, userId, channelId, teamId, threadTs: replyThreadTs, messageTs }, normalizeDmShortcutText(messageText))) return
+
   // Creation always uses the current private form, including channel/MPIM
   // mentions and old four-field replies. Run BEFORE any hours interception.
-  if (isNewProjectTrigger(normalizeDmShortcutText(messageText))) {
+  if (!guidanceQuestion && isNewProjectTrigger(normalizeDmShortcutText(messageText))) {
     await sendNewProjectIntake({ client: app.client, userId, channelId, threadTs: replyThreadTs })
     return
   }
-  if (await handleNaturalCommandShortcut({ app, userId, channelId, teamId, threadTs: replyThreadTs, messageTs }, normalizeDmShortcutText(messageText))) return
+  if (!guidanceQuestion && await handleNaturalCommandShortcut({ app, userId, channelId, teamId, threadTs: replyThreadTs, messageTs }, normalizeDmShortcutText(messageText))) return
 
   // ── Daily-hours check-in interception ─────────────────────
   // If this is a verified DM and the user has an open
@@ -453,7 +477,7 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
   // of the orchestrator. Prevents Kit from "having a conversation"
   // about hours when we already asked a structured question.
   // A channel thread is NOT a DM, even when it has a reply-thread timestamp.
-  if (channelType === 'im' && !isCommandRequest(messageText)) {
+  if (channelType === 'im' && !guidanceQuestion && !isCommandRequest(messageText)) {
     const open = await findOpenCheckin(userId)
     if (open) {
       const handled = await handleCheckinReply({
@@ -492,118 +516,121 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
     workspaceId ? resolveProjectFromChannel(workspaceId, channelId) : Promise.resolve(null),
   ])
 
-  // ── Fast path 1: Frame.io link ──────────────────────────
-  if (messageHasFrameIoLink(messageText)) {
-    console.log('[Bolt] Frame.io link detected')
-    await handleFrameIoLink({
-      text: messageText,
-      channelId,
-      threadTs,
-      messageTs,
-      userId,
-      workspaceId: workspaceId || '',
-    })
-    return
-  }
-
-  // ── Fast path 2: Ad-hoc hours entry ─────────────────────
-  // If this is a verified DM and the message mentions hours,
-  // route it through the same parse/confirm/log pipeline as the daily
-  // check-in. Falls through to the orchestrator if the LLM determines
-  // the message isn't actually a time entry.
-  if (channelType === 'im' && looksLikeHoursIntent(messageText)) {
-    const handled = await handleAdhocHoursEntry({
-      app,
-      slackUserId: userId,
-      channelId,
-      messageText,
-      messageTs,
-      threadTs: assistantThreadTs,
-    })
-    if (handled) return
-  }
-
-  // ── Fast path 3: Freelancer onboarding ──────────────────
-  // Triggers when:
-  //  - "@Kit onboard …" (or "onboard …" in a DM) is mentioned, OR
-  //  - This user has a pending onboarding flow in this channel (they're
-  //    answering an earlier "what's the email?" question without @Kit).
-  //
-  // Reply threading: thread only inside a DM Assistant thread; channel
-  // @mentions post in main channel flow.
-  const hasPendingOnboard = !!getPendingOnboarding(channelId, userId)
-  if (isOnboardTrigger(messageText) || hasPendingOnboard) {
-    const handled = await handleOnboardKeyword({
-      app,
-      channelId,
-      threadTs: assistantThreadTs,
-      userId,
-      text: messageText,
-    })
-    if (handled) return
-  }
-
-  // ── Fast path 3.5: Role management ──────────────────────
-  // Admin says "make @X a producer" / "@X role" in chat. Slash commands
-  // aren't available in the Assistant/DM pane, so we handle it here.
-  // Non-admins / non-matches fall through (handler returns false).
-  try {
-    const handledRole = await handleRoleMessage({
-      app,
-      channelId,
-      userId,
-      text: messageText,
-      threadTs: assistantThreadTs,
-    })
-    if (handledRole) {
-      await clearThinking(app, channelId, replyThreadTs || threadTs)
+  // Instruction questions must bypass ALL action handlers, including a
+  // pending onboarding flow or notes/hour parsers from an earlier turn.
+  if (!guidanceQuestion) {
+    // ── Fast path 1: Frame.io link ──────────────────────────
+    if (messageHasFrameIoLink(messageText)) {
+      console.log('[Bolt] Frame.io link detected')
+      await handleFrameIoLink({
+        text: messageText,
+        channelId,
+        threadTs,
+        messageTs,
+        userId,
+        workspaceId: workspaceId || '',
+      })
       return
     }
-  } catch (err: any) {
-    console.error('[Bolt] role handler failed:', err.message || err)
-  }
 
-  // ── Fast path 3.6: Frame.io upload toggle ───────────────
-  // "@Kit turn off Frame.io upload" / "is frame upload on?" etc. Producers and
-  // admins can change it; anyone can check status. Runs after the Frame.io
-  // *link* fast path above, so review links are never captured here.
-  try {
-    const handledToggle = await handleFrameioToggleMessage({
-      app,
-      channelId,
-      userId,
-      text: messageText,
-      threadTs: assistantThreadTs,
-      workspaceId,
-      caller: user,
-    })
-    if (handledToggle) {
-      await clearThinking(app, channelId, replyThreadTs || threadTs)
-      return
+    // ── Fast path 2: Ad-hoc hours entry ─────────────────────
+    // If this is a verified DM and the message mentions hours,
+    // route it through the same parse/confirm/log pipeline as the daily
+    // check-in. Falls through to the orchestrator if the LLM determines
+    // the message isn't actually a time entry.
+    if (channelType === 'im' && looksLikeHoursIntent(messageText)) {
+      const handled = await handleAdhocHoursEntry({
+        app,
+        slackUserId: userId,
+        channelId,
+        messageText,
+        messageTs,
+        threadTs: assistantThreadTs,
+      })
+      if (handled) return
     }
-  } catch (err: any) {
-    console.error('[Bolt] frame.io toggle handler failed:', err.message || err)
-  }
 
-  // ── Fast path 4: Notes capture ───────────────────────────
-  if (isNoteTrigger(messageText)) {
+    // ── Fast path 3: Freelancer onboarding ──────────────────
+    // Triggers when:
+    //  - "@Kit onboard …" (or "onboard …" in a DM) is mentioned, OR
+    //  - This user has a pending onboarding flow in this channel (they're
+    //    answering an earlier "what's the email?" question without @Kit).
+    //
+    // Reply threading: thread only inside a DM Assistant thread; channel
+    // @mentions post in main channel flow.
+    const hasPendingOnboard = !!getPendingOnboarding(channelId, userId)
+    if (isOnboardTrigger(messageText) || hasPendingOnboard) {
+      const handled = await handleOnboardKeyword({
+        app,
+        channelId,
+        threadTs: assistantThreadTs,
+        userId,
+        text: messageText,
+      })
+      if (handled) return
+    }
+
+    // ── Fast path 3.5: Role management ──────────────────────
+    // Admin says "make @X a producer" / "@X role" in chat. Slash commands
+    // aren't available in the Assistant/DM pane, so we handle it here.
+    // Non-admins / non-matches fall through (handler returns false).
     try {
-      const handled = await handleNoteMessage({
+      const handledRole = await handleRoleMessage({
         app,
         channelId,
         userId,
         text: messageText,
+        threadTs: assistantThreadTs,
       })
-      if (handled) {
+      if (handledRole) {
         await clearThinking(app, channelId, replyThreadTs || threadTs)
         return
       }
     } catch (err: any) {
-      console.error('[Bolt] note handler failed:', err.message || err)
-      // fall through to orchestrator
+      console.error('[Bolt] role handler failed:', err.message || err)
+    }
+
+    // ── Fast path 3.6: Frame.io upload toggle ───────────────
+    // "@Kit turn off Frame.io upload" / "is frame upload on?" etc. Producers and
+    // admins can change it; anyone can check status. Runs after the Frame.io
+    // *link* fast path above, so review links are never captured here.
+    try {
+      const handledToggle = await handleFrameioToggleMessage({
+        app,
+        channelId,
+        userId,
+        text: messageText,
+        threadTs: assistantThreadTs,
+        workspaceId,
+        caller: user,
+      })
+      if (handledToggle) {
+        await clearThinking(app, channelId, replyThreadTs || threadTs)
+        return
+      }
+    } catch (err: any) {
+      console.error('[Bolt] frame.io toggle handler failed:', err.message || err)
+    }
+
+    // ── Fast path 4: Notes capture ───────────────────────────
+    if (isNoteTrigger(messageText)) {
+      try {
+        const handled = await handleNoteMessage({
+          app,
+          channelId,
+          userId,
+          text: messageText,
+        })
+        if (handled) {
+          await clearThinking(app, channelId, replyThreadTs || threadTs)
+          return
+        }
+      } catch (err: any) {
+        console.error('[Bolt] note handler failed:', err.message || err)
+        // fall through to orchestrator
+      }
     }
   }
-
   // ── Path 6: Orchestrator ────────────────────────────────
   await setThinking(app, channelId, replyThreadTs || threadTs, 'thinking…')
 
@@ -630,19 +657,25 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
     // Preamble travels separately: it's injected into the current API call
     // only, so conversation memory stores clean turns (it used to bake one
     // copy of this header into every stored message).
-    const { reply } = await runOrchestrator({
+    const { reply, guidance, guidanceClarification } = await runOrchestrator({
       teamId,
       workspaceId,
       channel: channelId,
       userId,
       user,
-      message: messageText,
+      message: guidanceInput,
       contextPreamble: contextLines.join('\n'),
       isDirectMessage: channelType === 'im',
       openCommand: (request) => offerNaturalCommand({ app, userId, teamId, channelId, threadTs: replyThreadTs, messageTs }, request),
     })
 
-    await postReply(reply)
+    if (guidance) {
+      const sent = await app.client.chat.postMessage({ channel: channelId, thread_ts: replyThreadTs, text: reply, blocks: guidanceBlocks(guidance, user?.tier) })
+      if (sent.ok && guidanceCanStart(guidance, user?.tier)) rememberGuidanceInvitation({ teamId, channelId, userId, threadTs: replyThreadTs || sent.ts }, guidance)
+    } else {
+      const sent = await postReply(reply)
+      if (sent.ok && guidanceClarification) rememberGuidanceClarification({ teamId, channelId, userId, threadTs: replyThreadTs || sent.ts })
+    }
   } catch (err: any) {
     console.error('[Bolt] orchestrator error:', err)
     const reason =
@@ -932,6 +965,9 @@ export async function handleDmShortcut(
   context: DmShortcutContext,
 ): Promise<boolean> {
   const shortcutText = normalizeDmShortcutText(context.text)
+  if (pendingGuidanceClarification(context)) return false
+  if (await handleGuidanceFollowup({ app, ...context }, shortcutText)) return true
+  if (isGuidanceQuestion(shortcutText)) return false
   if (!isNewProjectTrigger(shortcutText) && await handleNaturalCommandShortcut({ app, ...context }, shortcutText)) return true
   const shortcut = DM_SHORTCUT_REGISTRY.find((candidate) =>
     candidate.matches(shortcutText),

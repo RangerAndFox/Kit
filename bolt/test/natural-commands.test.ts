@@ -6,21 +6,25 @@ vi.mock('../../src/lib/inngest/access-control', () => ({ resolveUserContext: res
 vi.mock('../../src/lib/supabase/admin', () => ({ createAdminClient: db }))
 vi.mock('../src/handlers/command-store', () => ({ saveCommandRequest: save, readCommandRequest: read, claimCommandRequest: claim, finishCommandRequest: finish }))
 vi.mock('../src/handlers/command-dispatch', () => ({ dispatchKitCommand: dispatch }))
-import { offerNaturalCommand, registerNaturalCommandHandlers, executeNaturalCommand, canUseCommand, commandActor } from '../src/handlers/natural-commands'
+import { offerNaturalCommand, registerNaturalCommandHandlers, executeNaturalCommand, canUseCommand, commandActor, handleGuidanceFollowup } from '../src/handlers/natural-commands'
+import { rememberGuidanceInvitation, pendingGuidance } from '../src/handlers/guidance-followup'
+import { resetMemoryForTest } from '../src/llm/memory'
 import { KIT_COMMANDS } from '../src/handlers/command-catalog'
 import type { CommandRecord } from '../src/handlers/command-store'
 
 const record: CommandRecord = { id: '11111111-1111-4111-8111-111111111111', request_key: 'key', workspace_id: 'w1', team_id: 'T1', user_id: 'U1', source_channel: 'C_SHARED', dm_channel: 'D_ACTOR', command: 'help', args: '', status: 'pending', expires_at: '2099-01-01T00:00:00Z' }
-const client = { auth: { test: vi.fn() }, conversations: { open: vi.fn() }, chat: { postMessage: vi.fn(), postEphemeral: vi.fn() } }
+const client = { auth: { test: vi.fn() }, conversations: { open: vi.fn(), replies: vi.fn() }, chat: { postMessage: vi.fn(), postEphemeral: vi.fn() } }
 let actions: Map<string, (args: Record<string, unknown>) => Promise<void>>
 let app: App
 beforeEach(() => {
   vi.resetAllMocks()
+  resetMemoryForTest()
   actions = new Map()
   app = { client, action: (name: string, handler: (args: Record<string, unknown>) => Promise<void>) => actions.set(name, handler) } as unknown as App
   registerNaturalCommandHandlers(app)
   client.auth.test.mockResolvedValue({ ok: true, team_id: 'T1' })
   client.conversations.open.mockResolvedValue({ ok: true, channel: { id: 'D_ACTOR' } })
+  client.conversations.replies.mockResolvedValue({ ok: true, messages: [], has_more: false })
   client.chat.postMessage.mockResolvedValue({ ok: true, ts: '5.0' })
   client.chat.postEphemeral.mockResolvedValue({ ok: true })
   const query = { select: vi.fn(), eq: vi.fn(), maybeSingle: vi.fn().mockResolvedValue({ data: { id: 'w1' } }) }
@@ -40,6 +44,49 @@ async function click(action = 'kit_command_continue', changes: Record<string, un
 }
 
 describe('private natural command confirmations', () => {
+  it('a guidance start button only creates a private review card under the real clicker identity', async () => {
+    await click('kit_guidance_start', { channel: { id: 'C_SHARED' }, message: { ts: '3.0', thread_ts: '1.0' }, actions: [{ value: 'onboard' }] })
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ command: 'onboard', args: '', user_id: 'U1', team_id: 'T1', source_channel: 'C_SHARED', dm_channel: 'D_ACTOR' }))
+    expect(dispatch).not.toHaveBeenCalled()
+    expect(client.chat.postMessage.mock.calls[0][0].channel).toBe('D_ACTOR')
+  })
+  it('guidance dismissal, unknown names and role revocation cannot start a workflow', async () => {
+    await click('kit_guidance_dismiss', { message: { ts: '3.0' }, actions: [{ value: 'onboard' }] })
+    await click('kit_guidance_start', { message: { ts: '3.0' }, actions: [{ value: '__proto__' }] })
+    resolveUser.mockResolvedValue({ workspaceId: 'w1', tier: 'artist' })
+    await click('kit_guidance_start', { message: { ts: '3.0' }, actions: [{ value: 'onboard' }] })
+    expect(save).not.toHaveBeenCalled()
+    expect(dispatch).not.toHaveBeenCalled()
+  })
+  it('a threaded yes uses the offered command and never dispatches it', async () => {
+    rememberGuidanceInvitation(context(), 'onboard')
+    expect(await handleGuidanceFollowup(context(), 'yes please')).toBe(true)
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ command: 'onboard', args: '' }))
+    expect(pendingGuidance(context())).toBeNull()
+    expect(dispatch).not.toHaveBeenCalled()
+  })
+  it('a threaded no consumes the invitation without creating any review request', async () => {
+    rememberGuidanceInvitation(context(), 'onboard')
+    expect(await handleGuidanceFollowup(context(), 'not now')).toBe(true)
+    expect(save).not.toHaveBeenCalled()
+    expect(dispatch).not.toHaveBeenCalled()
+  })
+  it('an expired/lost guidance context cannot fall through to an unrelated time confirmation', async () => {
+    client.conversations.replies.mockResolvedValue({ ok: true, messages: [{ blocks: [{ type: 'actions', elements: [{ action_id: 'kit_guidance_start', value: 'onboard' }] }] }] })
+    expect(await handleGuidanceFollowup(context(), 'yes')).toBe(true)
+    expect(save).not.toHaveBeenCalled()
+    expect(dispatch).not.toHaveBeenCalled()
+    expect(JSON.stringify(client.chat.postEphemeral.mock.calls)).toContain('no longer awaiting')
+  })
+  it('fails closed on an unreadable or truncated confirmation thread, without breaking verified hours threads', async () => {
+    client.conversations.replies.mockRejectedValueOnce(new Error('outage'))
+    expect(await handleGuidanceFollowup(context(), 'yes')).toBe(true)
+    client.conversations.replies.mockResolvedValueOnce({ ok: true, messages: [], has_more: true })
+    expect(await handleGuidanceFollowup(context(), 'yes')).toBe(true)
+    expect(await handleGuidanceFollowup(context(), 'yes')).toBe(false)
+    expect(save).not.toHaveBeenCalled()
+    expect(dispatch).not.toHaveBeenCalled()
+  })
   it.each(Object.keys(KIT_COMMANDS))('can offer %s but never executes from a message', async command => {
     await offerNaturalCommand(context(), { command, args: '' })
     expect(save).toHaveBeenCalledOnce()

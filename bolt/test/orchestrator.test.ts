@@ -34,6 +34,44 @@ beforeEach(() => {
 })
 
 describe('runOrchestrator', () => {
+  it('explains onboarding before offering to start, without any model or action calls', async () => {
+    const openCommand = vi.fn()
+    const result = await runOrchestrator({ teamId: 'T1', channel: 'D1', userId: 'U1', user: fakeUser, message: 'How do I onboard an artist?', openCommand })
+    expect(result.guidance).toBe('onboard')
+    expect(result.reply).toContain('correct full name and email')
+    expect(result.reply).toContain('Want me to open the onboarding setup now?')
+    expect(openCommand).not.toHaveBeenCalled()
+    expect(runSpecialistMock).not.toHaveBeenCalled()
+    expect(createMock).not.toHaveBeenCalled()
+  })
+  it('supports semantic how-to questions through an explanation-only tool surface', async () => {
+    createMock.mockResolvedValueOnce({ stop_reason: 'tool_use', content: [
+      { type: 'tool_use', id: 'x', name: 'explain_kit_command', input: { command: 'onboard' } },
+      { type: 'tool_use', id: 'y', name: 'open_kit_command', input: { command: 'onboard', args: '' } },
+      { type: 'tool_use', id: 'z', name: 'ask_slack', input: { query: 'invite someone' } },
+    ] })
+    const openCommand = vi.fn()
+    const result = await runOrchestrator({ teamId: 'T1', channel: 'D1', userId: 'U1', user: fakeUser, message: 'Walk me through getting a collaborator set up', openCommand })
+    expect(result.guidance).toBe('onboard')
+    expect(createMock.mock.calls[0][0].tools.map((t: { name: string }) => t.name)).toEqual(['explain_kit_command'])
+    expect(openCommand).not.toHaveBeenCalled()
+    expect(runSpecialistMock).not.toHaveBeenCalled()
+  })
+  it.each(['ask_slack', 'open_kit_command'])('blocks hallucinated %s calls during instruction-only turns', async name => {
+    createMock.mockResolvedValueOnce({ stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'x', name, input: { command: 'onboard', args: '' } }] })
+    const openCommand = vi.fn()
+    const result = await runOrchestrator({ teamId: 'T1', channel: 'D1', userId: 'U1', user: fakeUser, message: 'Explain how that thing works', openCommand })
+    expect(result.reply).toContain('Which Kit function')
+    expect(openCommand).not.toHaveBeenCalled()
+    expect(runSpecialistMock).not.toHaveBeenCalled()
+  })
+  it('rejects invalid model-supplied guidance rather than reflecting raw input', async () => {
+    createMock.mockResolvedValueOnce({ stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'x', name: 'explain_kit_command', input: { command: 'onboard', email: 'private@example.test' } }] })
+    const result = await runOrchestrator({ teamId: 'T1', channel: 'D1', userId: 'U1', user: fakeUser, message: 'Explain that workflow' })
+    expect(result.guidance).toBeUndefined()
+    expect(result.reply).not.toContain('private@example')
+    expect(runSpecialistMock).not.toHaveBeenCalled()
+  })
   it('offers a command through a host callback and never runs sibling specialist writes', async () => {
     const openCommand = vi.fn().mockResolvedValue('Private review card opened. Nothing has run.')
     createMock.mockResolvedValueOnce({ stop_reason: 'tool_use', content: [
