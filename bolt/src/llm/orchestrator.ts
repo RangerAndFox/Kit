@@ -24,6 +24,8 @@ import {
 } from './memory'
 import type { UserContext } from '../../../src/lib/inngest/access-control'
 import { OPEN_KIT_COMMAND_TOOL, commandRequestSchema } from '../handlers/command-catalog'
+import type { KitCommandName } from '../handlers/command-catalog'
+import { EXPLAIN_KIT_COMMAND_TOOL, guidanceRequestSchema, guidanceText, isGuidanceQuestion, parseGuidanceCommand } from '../handlers/command-guidance'
 
 const MAX_TURNS = 6 // orchestrator may chain multiple specialist calls in one Slack reply
 
@@ -50,6 +52,9 @@ export interface OrchestratorRequest {
 export interface OrchestratorResult {
   reply: string
   awaitingClarification: boolean
+  /** Static product guidance; the host renders its optional start button. */
+  guidance?: KitCommandName
+  guidanceClarification?: boolean
 }
 
 export async function runOrchestrator(
@@ -59,8 +64,19 @@ export async function runOrchestrator(
   loadConversation(req.teamId, req.channel, req.userId)
   appendUserTurn(req.teamId, req.channel, req.userId, req.message)
 
-  const tools = buildOrchestratorTools()
-  if (req.openCommand) tools.push(OPEN_KIT_COMMAND_TOOL)
+  const explain = (command: KitCommandName): OrchestratorResult => {
+    const reply = guidanceText(command, req.user?.tier)
+    appendAssistantTurn(req.teamId, req.channel, req.userId, reply, false)
+    return { reply, awaitingClarification: false, guidance: command }
+  }
+  const guidanceOnly = isGuidanceQuestion(req.message)
+  const directGuide = parseGuidanceCommand(req.message)
+  if (directGuide) return explain(directGuide)
+  // A how-to question cannot call a specialist or offer an action card, even
+  // if the model ignores its prompt or returns multiple tool calls.
+  const tools = guidanceOnly ? [] : buildOrchestratorTools()
+  tools.push(EXPLAIN_KIT_COMMAND_TOOL)
+  if (req.openCommand && !guidanceOnly) tools.push(OPEN_KIT_COMMAND_TOOL)
 
   // Re-load to include the just-appended user turn
   const fresh = loadConversation(req.teamId, req.channel, req.userId)
@@ -102,6 +118,14 @@ export async function runOrchestrator(
       messages.push({ role: 'assistant', content: response.content })
 
       const toolResults: any[] = []
+      const guidanceBlock = toolUseBlocks.find((block) => block.name === 'explain_kit_command')
+      if (guidanceBlock || guidanceOnly) {
+        const parsed = guidanceRequestSchema.safeParse(guidanceBlock?.input)
+        if (parsed.success) return explain(parsed.data.command)
+        const reply = 'Which Kit function would you like a walkthrough of? Nothing has run.'
+        appendAssistantTurn(req.teamId, req.channel, req.userId, reply, true)
+        return { reply, awaitingClarification: true, guidanceClarification: true }
+      }
       // A command offer ends the turn. No sibling specialist write or second
       // model call can run beside the confirmation card.
       const commandBlock = toolUseBlocks.find((block) => block.name === 'open_kit_command')
@@ -147,7 +171,7 @@ export async function runOrchestrator(
       awaitingClarification,
     )
 
-    return { reply, awaitingClarification }
+    return { reply, awaitingClarification, ...(guidanceOnly && awaitingClarification ? { guidanceClarification: true } : {}) }
   }
 
   // Hitting the turn cap is a failure, not a pending question — marking it

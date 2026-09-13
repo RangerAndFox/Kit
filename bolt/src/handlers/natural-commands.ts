@@ -6,6 +6,8 @@ import { resolveUserContext, type UserContext } from '../../../src/lib/inngest/a
 import { KIT_COMMANDS, commandRequestSchema, parseFastCommand, type KitCommandName } from './command-catalog'
 import { dispatchKitCommand, type CommandInvocation } from './command-dispatch'
 import { saveCommandRequest, readCommandRequest, claimCommandRequest, finishCommandRequest, type CommandRecord } from './command-store'
+import { COMMAND_GUIDES, guidanceRequestSchema } from './command-guidance'
+import { clearGuidanceInvitation, consumeGuidanceReply, guidanceReplyIntent } from './guidance-followup'
 
 export interface NaturalCommandContext {
   app: App
@@ -14,6 +16,39 @@ export interface NaturalCommandContext {
   channelId: string
   threadTs?: string
   messageTs?: string
+}
+
+export async function handleGuidanceFollowup(context: NaturalCommandContext, text: string): Promise<boolean> {
+  const reply = consumeGuidanceReply(context, text)
+  if (!reply) {
+    // Memory is best-effort and expires. Never let a yes to an expired or
+    // restarted guide fall through and confirm an unrelated Harvest entry.
+    if (guidanceReplyIntent(text) === null || !context.threadTs || context.threadTs === context.messageTs) return false
+    let guidanceThread = false
+    let verified = false
+    try {
+      const history = await context.app.client.conversations.replies({ channel: context.channelId, ts: context.threadTs, limit: 100 })
+      guidanceThread = !!history.messages?.some(message => message.blocks?.some(block => block.type === 'actions' && block.elements?.some(element => 'action_id' in element && ['kit_guidance_start', 'kit_guidance_dismiss'].includes(String(element.action_id)))))
+      verified = history.ok === true && !history.has_more
+    } catch { /* ambiguous reply: use a specific confirmation button instead */ }
+    if (!guidanceThread && verified) return false
+    const summary = guidanceThread
+      ? 'That guide is no longer awaiting a text reply. Use its Start privately button or ask for a fresh guide. Nothing has run.'
+      : 'I could not verify which prompt this reply belongs to. Please use the relevant confirmation button. Nothing has run.'
+    if (context.channelId.startsWith('D')) await context.app.client.chat.postMessage({ channel: context.channelId, thread_ts: context.threadTs, text: summary })
+    else await context.app.client.chat.postEphemeral({ channel: context.channelId, thread_ts: context.threadTs, user: context.userId, text: summary })
+    return true
+  }
+  const request = COMMAND_GUIDES[reply.command].start
+  const summary = reply.start && request
+    ? await offerNaturalCommand(context, request)
+    : 'No problem — nothing has run. Ask whenever you’re ready.'
+  if (context.channelId.startsWith('D')) {
+    await context.app.client.chat.postMessage({ channel: context.channelId, thread_ts: context.threadTs, text: summary })
+  } else {
+    await context.app.client.chat.postEphemeral({ channel: context.channelId, thread_ts: context.threadTs, user: context.userId, text: summary })
+  }
+  return true
 }
 
 export async function handleNaturalCommandShortcut(context: NaturalCommandContext, text: string): Promise<boolean> {
@@ -113,6 +148,20 @@ export async function executeNaturalCommand(app: App, record: CommandRecord, tri
 }
 
 export function registerNaturalCommandHandlers(app: App): void {
+  // Generic how-to buttons carry only a catalog key. The clicker's real
+  // identity is resolved afresh before offering the existing private review.
+  const guidanceAction = (start: boolean) => async ({ ack, body, client }: SlackActionMiddlewareArgs<BlockAction<ButtonAction>> & { client: WebClient }) => {
+    await ack()
+    const parsed = guidanceRequestSchema.safeParse({ command: body.actions?.[0]?.value })
+    if (!parsed.success || !body.user?.id || !body.team?.id || !body.channel?.id || !body.message?.ts) return
+    const context = { app, userId: body.user.id, teamId: body.team.id, channelId: body.channel.id, threadTs: body.message?.thread_ts || body.message?.ts, messageTs: `guidance:${body.message?.ts}:${parsed.data.command}` }
+    clearGuidanceInvitation(context)
+    const request = COMMAND_GUIDES[parsed.data.command].start
+    const summary = start && request ? await offerNaturalCommand(context, request) : 'No problem — nothing has run.'
+    await client.chat.postEphemeral({ channel: context.channelId, thread_ts: context.threadTs, user: context.userId, text: summary })
+  }
+  app.action('kit_guidance_start', guidanceAction(true))
+  app.action('kit_guidance_dismiss', guidanceAction(false))
   const handle = (cancel: boolean) => async ({ ack, body, client }: SlackActionMiddlewareArgs<BlockAction<ButtonAction>> & { client: WebClient }) => {
     await ack()
     const actor = body.user?.id

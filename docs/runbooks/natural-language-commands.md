@@ -38,6 +38,19 @@ Hours and Frame.io auto-upload already have dedicated natural-language handlers.
 
 SRT conversion is an existing automatic Dropbox Delivery-Queue workflow. The conversational entry explains where to put the SRT; opening that instruction does not convert a file. Video accessibility job status is separate from standalone SRT conversion.
 
+## Ask how before starting
+
+Ask “How do I onboard an artist?”, “Walk me through creating a project”, or “Explain SRT conversion.” Kit returns maintained steps, prerequisites and access restrictions, then offers to help start. The guide itself does not open an intake, create a command request, invite anyone or call a provider to perform work.
+
+- All 24 command families have a guide. Unsupported or ambiguous topics require clarification rather than invented instructions.
+- Functions with a self-contained entry point show **Start privately / Not now** to eligible users. Start opens the existing private **Continue / Cancel** review; downstream forms and destructive confirmations still apply.
+- A “yes” in the same guidance thread, from the same person, can open that review too. Invitations expire after 15 minutes, close on another topic, and never authorize execution by themselves. A reply from another user or thread is not consent for this guide.
+- If context expired or was lost, Kit checks the Slack thread before allowing a short confirmation to reach another workflow. An old guide or an unreadable/truncated thread prompts the user to use the explicit button; it never silently confirms an unrelated time log.
+- A reply to “Which function would you like a walkthrough of?” remains a request for instructions, not permission to execute that function.
+- Functions that need an identifier first ask for that information instead of guessing. Users without the required role receive the explanation and are directed to their producer/admin; no action is offered.
+- How-to turns bypass legacy onboarding, hours, roles, upload toggles and notes handlers. The model has only the explanation tool for recognized instructional questions, and unexpected action-tool calls are rejected.
+- Instructions come from the maintained catalog, not project/transcript content. Failed provider outcomes are not represented as completed setup.
+
 ## Review and safety
 
 - New-project requests continue to open the verified private current form; submission is still required.
