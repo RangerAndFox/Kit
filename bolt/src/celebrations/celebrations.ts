@@ -94,6 +94,7 @@ export async function postBirthdayMemes(app: App): Promise<number> {
       headline: `:birthday: *Happy birthday, ${who}!*`,
       briefing: `It's ${b.full_name || 'a teammate'}'s birthday today at the studio.`,
       altText: 'birthday meme',
+      publicOccasion: 'birthday',
     }).catch((e) => console.warn(`[celebrations] birthday post failed: ${e?.message || e}`))
     posted++
   }
@@ -112,6 +113,7 @@ export async function postHolidayMeme(app: App): Promise<boolean> {
     headline: ':tada: *Studio holiday!*',
     briefing: `Today is a US public holiday and the studio is closed — the team has the day off.`,
     altText: 'holiday meme',
+    publicOccasion: 'holiday',
   }).catch((e) => console.warn(`[celebrations] holiday post failed: ${e?.message || e}`))
   return true
 }
@@ -175,9 +177,10 @@ export async function postDeliveryCelebration(app: App, projectName: string): Pr
   if (!(await claimOnce('delivery', projectName, today))) return false
   await postMeme(app, {
     channel,
-    headline: `:rocket: *We shipped it — ${projectName} delivered!*`,
-    briefing: `The team just delivered the "${projectName}" project to the client.`,
-    altText: 'delivery celebration meme',
+    headline: `:package: *Delivery files ready — ${projectName}*`,
+    briefing: 'The team prepared files in the delivery folder. This does not confirm client receipt or approval.',
+    altText: 'delivery preparation meme',
+    publicOccasion: 'delivery_prepared',
   }).catch((e) => console.warn(`[celebrations] delivery post failed: ${e?.message || e}`))
   return true
 }

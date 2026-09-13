@@ -11,6 +11,7 @@ import {
   getAllAgents,
   getAgent,
 } from '../../../src/lib/inngest/agents/registry'
+import { isLegacyProjectProvision } from './project-provisioning-policy'
 
 export interface ClaudeTool {
   name: string
@@ -59,7 +60,7 @@ export function buildSpecialistTools(agentId: string): ClaudeTool[] {
     throw new Error(`buildSpecialistTools: unknown agent "${agentId}"`)
   }
 
-  return agent.capabilities.map((cap) => {
+  return agent.capabilities.filter((cap) => !isLegacyProjectProvision(agentId, cap.action)).map((cap) => {
     const inputDesc = cap.inputDescription
       ? `Expected fields: ${cap.inputDescription}`
       : 'Pass any relevant fields as object properties.'

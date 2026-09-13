@@ -11,6 +11,7 @@
 import { dropboxRpc } from '../dropbox/client'
 import { frameioHeaders } from '../frameio/auth'
 import { createAdminClient } from '../supabase/admin'
+import { outboxDb } from '../control-center/outbox'
 import { listTranscriptFiles, driveTranscriptsFolderId } from '../integrations/drive-transcripts'
 import type { CheckResult, Status } from './diff'
 
@@ -44,6 +45,14 @@ async function probe(
  */
 export async function runIntegrationProbes(): Promise<CheckResult[]> {
   const probes: Array<Promise<CheckResult>> = [
+    probe('control-outbox', 'Control requests and alerts', async () => {
+      const { data, error } = await outboxDb().from('kit_control_outbox').select('id,status,created_at')
+        .neq('status', 'sent').order('created_at').limit(20)
+      if (error) throw new Error('Control outbox could not be inspected')
+      const stuck = data?.find(row => row.status === 'review' || Date.now() - Date.parse(row.created_at) > 15 * 60_000)
+      if (stuck) throw new Error(`Request ${stuck.id} ${stuck.status === 'review' ? 'needs manual review' : 'is overdue'}`)
+      return 'no overdue or unconfirmed control requests'
+    }),
     probe('dropbox', 'Dropbox', async () => {
       // /check/user is Dropbox's canonical authed no-op: echoes `query` back.
       const res = await dropboxRpc('/check/user', { query: 'kit-health' })

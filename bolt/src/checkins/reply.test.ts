@@ -18,7 +18,7 @@ describe('hours confirmation card dates', () => {
       checkinId: 'checkin-1',
       anchorDate: '2026-09-09',
       entries: [matched(4, 'Fabric IQ', '2026-09-09')],
-    }) as any[]
+    }) as Array<{ text: { text: string } }>
 
     expect(blocks[0].text.text).toContain(
       '*Today — Wednesday, September 9, 2026*\n• *4h* — Fabric IQ',
@@ -33,7 +33,7 @@ describe('hours confirmation card dates', () => {
         matched(4, 'Fabric IQ', '2026-09-08'),
         matched(2, 'Kimmel', '2026-09-09'),
       ],
-    }) as any[]
+    }) as Array<{ text: { text: string } }>
     const text = blocks[0].text.text
 
     expect(text).toContain('*Tuesday, September 8, 2026*\n• *4h* — Fabric IQ')

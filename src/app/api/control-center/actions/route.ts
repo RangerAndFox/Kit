@@ -4,8 +4,6 @@ import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { getControlCenterAccess } from '@/lib/control-center/access'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { inngest } from '@/lib/inngest/client'
-import { queueBehanceDraft } from '@/lib/archive/behance-store'
 
 export const runtime = 'nodejs'
 const MAX_ACTION_BYTES = 16 * 1024
@@ -34,27 +32,19 @@ export async function POST(request: NextRequest) {
     if (parsed.data.action === 'reconcile_project') {
       const { data: binding, error } = await db.from('project_control_bindings').select('spreadsheet_id,sheet_id').eq('project_id', project.id).maybeSingle()
       if (error || !binding) throw new Error(error?.message || 'This project has no control-sheet binding.')
-      const updates = await Promise.all([
-        db.from('project_control_bindings').update({ sync_status: 'pending', error: null, updated_at: new Date().toISOString() }).eq('project_id', project.id),
-        db.from('project_control_canvases').update({ sync_status: 'pending', error: null, updated_at: new Date().toISOString() }).eq('project_id', project.id),
-      ])
-      const updateError = updates.find((result) => result.error)?.error
-      if (updateError) throw new Error(updateError.message)
-      await inngest.send({ name: 'project-control/sheet.edited', id: requestId, data: { spreadsheet_id: binding.spreadsheet_id, sheet_id: Number(binding.sheet_id), request_id: requestId, ts: Date.now() } })
     } else {
       const { data: job } = await db.from('behance_draft_jobs').select('id,archive_job_id,status').eq('workspace_id', access.workspaceId).eq('project_id', project.id).eq('id', parsed.data.jobId).maybeSingle()
       if (!job || !['failed', 'retryable'].includes(job.status)) throw new Error('This Behance draft is no longer retryable.')
-      await queueBehanceDraft(job.archive_job_id, `control-center:${access.userId}`)
     }
-    await db.from('kit_actions').insert({
-      workspace_id: access.workspaceId, project_id: project.id, action_type: `control_center:${parsed.data.action}`,
-      title: `${project.project_code || 'Project'} ${parsed.data.action === 'reconcile_project' ? 'Canvas reconcile requested' : 'Behance retry requested'}`,
-      description: 'Founder-initiated action accepted by the Kit Control Center and awaiting terminal reconciliation.', priority: 'medium', status: 'pending',
-      metadata: { request_id: requestId, initiated_by: access.userId },
+    const { data: queued, error: queueError } = await db.rpc('enqueue_control_action', {
+      p_id: requestId, p_workspace_id: access.workspaceId, p_project_id: project.id,
+      p_action: parsed.data.action, p_actor: access.userId,
+      p_job_id: parsed.data.action === 'retry_behance' ? parsed.data.jobId : null,
     })
+    if (queueError || queued !== requestId) throw new Error('Durable queue write failed')
     return NextResponse.json({ ok: true, requestId, status: 'queued' }, { status: 202 })
-  } catch (error) {
-    console.error('[control-center action]', error)
+  } catch {
+    console.error('[control-center action] durable request not accepted')
     return NextResponse.json({ error: 'Action could not be queued.' }, { status: 409 })
   }
 }

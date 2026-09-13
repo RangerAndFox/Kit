@@ -17,6 +17,7 @@ import {
   handleDmShortcut,
 } from './handlers/messages'
 import { registerCommandHandlers } from './handlers/commands'
+import { registerNaturalCommandHandlers } from './handlers/natural-commands'
 import { registerInteractionHandlers } from './handlers/interactions'
 import { registerBrainApprovalHandlers } from './brain/approvals'
 import {
@@ -95,6 +96,7 @@ const assistant = new Assistant({
         teamId: m.team || '',
         threadTs: m.thread_ts,
         text: (m.text || '').trim(),
+        messageTs: m.ts,
       })
     ) return
 
@@ -121,6 +123,7 @@ app.assistant(assistant)
 
 registerMessageHandlers(app)
 registerCommandHandlers(app)
+registerNaturalCommandHandlers(app)
 const { runProjectControlRecoverySweep } = registerInteractionHandlers(app)
 registerBrainApprovalHandlers(app)
 registerArchiveHandlers(app)

@@ -58,6 +58,7 @@ Boxes: ${template.layout}
 Rules:
 - The joke is about filling out / forgetting timesheets.
 - Keep each box punchy (a handful of words). No profanity, no calling out individuals.
+- Use plain English text and ASCII punctuation. No emoji, emoticons, Slack codes, or decorative symbols.
 - Return STRICT JSON, no prose, no code fences: { "boxes": [ ... ] } with EXACTLY ${template.boxes} string(s), in order.`
 
   const res = await anthropic.messages.create({
@@ -104,7 +105,7 @@ export async function postWeeklyTimesheetMeme(
   const header = `<!channel> :calendar: *Timesheet meme of the week*`
   const blocks: any[] = [{ type: 'section', text: { type: 'mrkdwn', text: header } }]
   if (imageUrl) {
-    blocks.push({ type: 'image', image_url: imageUrl, alt_text: `${template.name} timesheet meme` })
+    blocks.push({ type: 'image', image_url: imageUrl, alt_text: `${template.name}: ${boxes.join(' / ')}`.slice(0, 2000) })
     blocks.push({
       type: 'context',
       elements: [{ type: 'mrkdwn', text: `_${template.name}_ · log your hours in Harvest :saluting_face:` }],

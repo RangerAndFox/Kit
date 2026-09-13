@@ -3,7 +3,8 @@
  *
  * Used by:
  *   - /kit newproject  (commands.ts)
- *   - "new project" / "new" keyword in DM  (messages.ts)
+ *   - "new project" in DMs, Assistant threads and channel mentions
+ * All entry points route through newproject-intake.ts into a verified DM.
  *
  * Clicking the primary button posts a `kit_open_newproject_modal` action
  * with the channel id as its value, which the interaction handler uses
@@ -24,15 +25,16 @@ export function buildNewProjectCard(channelId: string, threadTs?: string) {
   return {
     channel: channelId,
     ...(threadTs ? { thread_ts: threadTs } : {}),
-    text: 'New project — pick services and fill in the details.',
+    text: 'New project — review the current private setup form. Nothing is created until you submit.',
     blocks: [
       {
         type: 'section',
         text: {
           type: 'mrkdwn',
           text:
-            ':rocket: *New project.* Pick which services to provision (Slack, ' +
-            'Frame.io, Harvest, Dropbox) and fill in the project details in the next step.',
+            ':rocket: *New project — private setup*\n' +
+            'Review the project details, connected services, dates and workback in the current form. ' +
+            'Kit uses the Project Control workflow to keep the project connected. Nothing is created until you submit.',
         },
       },
       {

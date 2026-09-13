@@ -5,6 +5,7 @@ export interface McpPrincipal {
   workspaceId: string
   tools: string[]
   expiresAt?: number
+  tokenId?: string
 }
 
 interface TokenPayload {
@@ -13,6 +14,15 @@ interface TokenPayload {
   workspace_id: string
   tools: string[]
   exp?: number
+  iat?: number
+  jti?: string
+}
+
+const MAX_TOKEN_SECONDS = 90 * 24 * 60 * 60
+const DEFAULT_TOKEN_SECONDS = 30 * 24 * 60 * 60
+
+export function mcpTokenFingerprint(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex')
 }
 
 function signingSecret(): string {
@@ -28,12 +38,19 @@ export function createMcpToken(principal: McpPrincipal, secret = signingSecret()
   if (!principal.subject || !principal.workspaceId || principal.tools.length === 0) {
     throw new Error('MCP tokens require a subject, workspace, and at least one tool')
   }
+  const issuedAt = Math.floor(Date.now() / 1000)
+  const expiresAt = principal.expiresAt ?? issuedAt + DEFAULT_TOKEN_SECONDS
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= issuedAt || expiresAt > issuedAt + MAX_TOKEN_SECONDS) {
+    throw new Error('MCP expiry must be in the future and within 90 days')
+  }
   const payload: TokenPayload = {
     v: 1,
     sub: principal.subject,
     workspace_id: principal.workspaceId,
     tools: [...new Set(principal.tools)].sort(),
-    ...(principal.expiresAt ? { exp: principal.expiresAt } : {}),
+    exp: expiresAt,
+    iat: issuedAt,
+    jti: principal.tokenId || crypto.randomUUID(),
   }
   const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url')
   return `kit1.${encoded}.${signature(encoded, secret)}`
@@ -41,11 +58,13 @@ export function createMcpToken(principal: McpPrincipal, secret = signingSecret()
 
 export function verifyMcpToken(token: string, secret = signingSecret()): McpPrincipal | null {
   if (!secret) return null
+  const revoked = (process.env.KIT_MCP_REVOKED_TOKEN_HASHES || '').split(',').map(v => v.trim())
+  if (revoked.includes(mcpTokenFingerprint(token))) return null
   const parts = token.split('.')
   if (parts.length !== 3 || parts[0] !== 'kit1') return null
   const expected = signature(parts[1], secret)
   const supplied = parts[2]
-  if (expected.length !== supplied.length) return null
+  if (!/^[A-Za-z0-9_-]+$/.test(supplied) || expected.length !== supplied.length) return null
   if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(supplied))) return null
 
   try {
@@ -57,12 +76,17 @@ export function verifyMcpToken(token: string, secret = signingSecret()): McpPrin
       !Array.isArray(payload.tools) || payload.tools.length === 0 ||
       payload.tools.some((tool) => typeof tool !== 'string' || !tool)
     ) return null
-    if (payload.exp !== undefined && (!Number.isSafeInteger(payload.exp) || payload.exp <= Math.floor(Date.now() / 1000))) return null
+    const now = Math.floor(Date.now() / 1000)
+    if (!Number.isSafeInteger(payload.exp) || payload.exp! <= now || payload.exp! > now + MAX_TOKEN_SECONDS) return null
+    if (payload.iat !== undefined && (!Number.isSafeInteger(payload.iat) || payload.iat > now + 60 || payload.exp! - payload.iat > MAX_TOKEN_SECONDS)) return null
+    const notBefore = Number(process.env.KIT_MCP_NOT_BEFORE || '0')
+    if (!Number.isFinite(notBefore) || (notBefore > 0 && (!payload.iat || payload.iat < notBefore))) return null
     return {
       subject: payload.sub,
       workspaceId: payload.workspace_id,
       tools: payload.tools,
       ...(payload.exp ? { expiresAt: payload.exp } : {}),
+      ...(payload.jti ? { tokenId: payload.jti } : {}),
     }
   } catch {
     return null

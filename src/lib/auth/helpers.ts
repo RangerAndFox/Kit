@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
+import type { Database } from '@/types/supabase'
 
 export async function getCurrentUser() {
   const supabase = await createClient()
@@ -15,10 +16,10 @@ export async function getCurrentTeamMember() {
   const { data: member } = await supabase
 .from('team_members')
     .select('*, workspaces(*)')
-    .eq('user_id', user.id)
-    .single() as any
+    .eq('auth_user_id', user.id)
+    .single()
 
-  return member
+  return member as Database['public']['Tables']['team_members']['Row'] | null
 }
 
 export async function requireAuth() {

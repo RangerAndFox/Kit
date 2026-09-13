@@ -63,6 +63,7 @@ const CHANNEL_MENTION_RE = /<#(C[A-Z0-9]+)(?:\|[^>]+)?>/i
  */
 export function parseFrameioToggleIntent(text: string): FrameioToggleIntent | null {
   if (!text) return null
+  if (/\b(?:don['’]t|do not|shouldn['’]t|should not|never)\b/i.test(text) || /^\s*(?:[>"`]|if\b|when\b|someone\b|\w+ said\b)/i.test(text)) return null
 
   const chan = text.match(CHANNEL_MENTION_RE)
   const number = parseProjectNumber(text)

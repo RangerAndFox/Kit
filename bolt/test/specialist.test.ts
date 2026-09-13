@@ -59,6 +59,17 @@ beforeEach(() => {
 })
 
 describe('runSpecialist', () => {
+  it.each(['slack', 'frameio', 'harvest', 'dropbox'])('blocks stale %s provision calls even for an authorized producer in a DM', async (agentId) => {
+    createMock.mockResolvedValueOnce({
+      stop_reason: 'tool_use',
+      content: [{ type: 'tool_use', id: 'legacy', name: `${agentId}_provision`, input: { payload: { projectNumber: '9999', confirmed: true } } }],
+    }).mockResolvedValueOnce({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'Use the current New Project form.' }] })
+    await runSpecialist(agentId, 'create the project like last time', fakeUser, { isDirectMessage: true })
+    expect(dispatchMock).not.toHaveBeenCalled()
+    const result = createMock.mock.calls[1][0].messages[2].content[0]
+    expect(result.is_error).toBe(true)
+    expect(result.content).toContain('New Project form')
+  })
   it('calls a tool then returns the summary', async () => {
     createMock.mockResolvedValueOnce({
       stop_reason: 'tool_use',
