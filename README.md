@@ -22,6 +22,8 @@ See [FEATURES.md](FEATURES.md) for the detailed feature and integration referenc
 ## Slack entry points
 
 - DM Kit and type `new project`, `update project`, `delete project`, or `storyboard`.
+- Project setup also understands plain requests: “Kit, make a new project,” “Can you make us a project for Acme?” or “We need a new project.” In a channel, use a real `@Kit` mention so Slack delivers the request to Kit.
+- All project-creation requests open the same private setup form for producers/admins. Review the details and submit it to create the project; casual wording does not skip permissions or confirmation. Channel acknowledgements are private and do not repeat project details.
 - `/kit newproject` opens the project provisioner.
 - `/kit update` opens the existing-project picker and prefilled update form.
 - `/kit delete project` opens the founder/admin-only inventory and typed-confirmation deletion flow.

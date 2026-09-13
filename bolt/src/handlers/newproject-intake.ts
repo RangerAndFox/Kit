@@ -2,18 +2,44 @@ import type { WebClient } from '@slack/web-api'
 import { canOnboard } from '../onboarding/permissions'
 import { buildNewProjectCard } from './newproject-card'
 
-/** Explicit creation intent, not a passing mention in a time-log reply. */
+/** Strip only direct-address/request prefixes, never arbitrary prose or quotes. */
+function projectRequestText(value: string): string {
+  // app_mention may already have removed @Kit, leaving its comma/colon behind.
+  let intent = value.replace(/[’]/g, "'").replace(/\s+/g, ' ').trim().replace(/^[,!:—–-]+\s*/, '')
+  const prefix = /^(?:(?:hey|hi|hello|kit|please)\b[\s,!:—–-]*|(?:can|could|would|will)\s+you\b[\s,!:—–-]*|let's\s+|(?:i|we)(?:\s+(?:need|want|would like)|'d like)\s+(?:you\s+to\s+|to\s+)?|help\s+(?:me|us)\s+(?:to\s+)?)/i
+  while (prefix.test(intent)) intent = intent.replace(prefix, '')
+  return intent
+}
+
+/**
+ * Recognize a request to OPEN intake, not permission to provision providers.
+ * Shared by all inbound routes; deliberately independent of LLM interpretation.
+ */
 export function isNewProjectTrigger(text: string): boolean {
   const value = String(text || '').replace(/<@[A-Z0-9]+(?:\|[^>]+)?>/gi, '').trim()
   if (!value) return false
-  const intent = value.replace(/^(?:(?:hey\s+)?kit[,!]?\s+)?(?:(?:please|can you|could you|would you|let['’]s|i(?:'d| would) like to|i want to|we need to)\s+)*/i, '')
-  if (/^(?:new|make|create|start|set up|setup|provision|spin up)\s+(?:(?:a|the)\s+)?(?:new\s+)?project\s+(?:tabs?|canvases?|folders?|schedules?|boards?|storyboards?|reports?|updates?)\b/i.test(intent)) return false
-  if (/^(?:\/kit\s+)?\/?new\s*project\b/i.test(intent)) return true
-  if (/^(?:new gig|(?:make|create|start|set up|setup|provision|spin up)\s+(?:(?:a|the)\s+)?(?:new\s+)?project)\b/i.test(intent)) return true
   // Catch replies to the retired four-field intake before an open hours
   // check-in can consume them. Do not extract or echo their sensitive values.
   if (/project\s*(?:id|number)\s*:/i.test(value) && /client\s*:/i.test(value) && /project\s*name\s*:/i.test(value)) return true
-  return /^1[.)]\s*\d{4,6}[A-Z]?\s*\n2[.)]\s*[^\n]+\n3[.)]\s*[^\n]+\n4[.)]\s*(?:\$?[\d,.]+\s*[kK]?|T&M|none|no budget)\s*$/i.test(value)
+  if (/^1[.)]\s*\d{4,6}[A-Z]?\s*\n2[.)]\s*[^\n]+\n3[.)]\s*[^\n]+\n4[.)]\s*(?:\$?[\d,.]+\s*[kK]?|T&M|none|no budget)\s*$/i.test(value)) return true
+
+  const intent = projectRequestText(value)
+  const request = intent.match(/^(?:\/kit\s+)?\/?new\s*project\b(.*)$/i)
+    || intent.match(/^(?:(?:(?:a|another)\s+)?new project|new gig)\b(.*)$/i)
+    || intent.match(/^(?:make|create|start|add|provision|set[ -]?up|spin[ -]?up|kick[ -]?off)\s+(?:(?:me|us)\s+)?(?:(?:a|the|another)\s+)?(?:brand[ -]new\s+|new\s+)?project\b(.*)$/i)
+    || intent.match(/^(?:set|spin)\s+(?:(?:me|us)\s+)?(?:(?:a|the|another)\s+)?new project\s+up\b(.*)$/i)
+    || intent.match(/^get\s+(?:(?:me|us)\s+)?(?:(?:a|another)\s+)?new project\s+(?:started|going)\b(.*)$/i)
+  if (!request) return false
+
+  // A project *resource* request is not a request for a whole new project.
+  // Check before punctuation cleanup so possessives are handled explicitly.
+  const tail = request[1].trim()
+  if (/^(?:'s\s+)?(?:tabs?|canvases?|folders?|schedules?|workbacks?|boards?|storyboards?|reports?|updates?|briefs?|templates?|links?|statuses|status|files?|tasks?|assignments?|budgets?|invoices?|proposals?|channels?|names?|descriptions?|overviews?|references?)\b/i.test(tail)) return false
+
+  // Require an intake-like continuation. This keeps "new project is delayed",
+  // quoted examples, negated requests and hours narratives out of the shortcut.
+  // Descriptions are never extracted/echoed here; the producer reviews the form.
+  return /^(?:[.!?,]*\s*(?:(?:please|thanks|thank you|now|today|for me|for us)[.!?,]*)?$|(?:for|with|called|named|titled|in|using)\b|(?:id|number)\s*[:#]?\s*\d|#?\d{4,6}[A-Z]?\b|:\s*\S)/i.test(tail)
 }
 
 /** Never trust a card's channel metadata as an authorization/privacy boundary. */
