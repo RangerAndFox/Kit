@@ -23,6 +23,7 @@ import {
   activateWorkbackDraft,
   clearProjectControlProject,
   ensureDailyAssignmentPerson,
+  recordArtistOffboardingInSheet,
   __setSheetsTransportForTests,
 } from './sheets'
 import { kitOwnedCreationCells, parseDateToSerial, MASTER_HEADERS } from './render'
@@ -37,6 +38,29 @@ const CONFIG: WorkbookConfig = {
 }
 
 afterEach(() => __setSheetsTransportForTests(null))
+
+describe('artist offboarding metadata',()=>{
+  const exclusion={engagementId:'engagement',projectNumber:'2637',person:'Example Artist',lastWorkingDate:'2026-09-13'}
+  it('writes only access metadata, verifies it, and deduplicates retries',async()=>{
+    let saved:unknown;let writes=0
+    __setSheetsTransportForTests(async<T>(_method:string,url:string,body?:unknown):Promise<T>=>{
+      if(url.endsWith('developerMetadata:search')) return {matchedDeveloperMetadata:saved?[{developerMetadata:{metadataValue:JSON.stringify(saved)}}]:[]} as T
+      assert.ok(url.endsWith(':batchUpdate'));writes++
+      const requests=(body as {requests:Array<{createDeveloperMetadata:{developerMetadata:{metadataValue:string}}}>}).requests
+      assert.equal(requests.length,1);saved=JSON.parse(requests[0].createDeveloperMetadata.developerMetadata.metadataValue);return {} as T
+    })
+    await recordArtistOffboardingInSheet({...CONFIG,assignmentsSheetId:2},exclusion)
+    await recordArtistOffboardingInSheet({...CONFIG,assignmentsSheetId:2},exclusion)
+    assert.equal(writes,1);assert.deepEqual(saved,exclusion)
+  })
+  it('conflicting identity never writes a new exclusion',async()=>{
+    __setSheetsTransportForTests(async<T>(_method:string,url:string):Promise<T>=>{
+      assert.ok(url.endsWith('developerMetadata:search'))
+      return {matchedDeveloperMetadata:[{developerMetadata:{metadataValue:JSON.stringify({...exclusion,projectNumber:'2638'})}}]} as T
+    })
+    await assert.rejects(recordArtistOffboardingInSheet({...CONFIG,assignmentsSheetId:2},exclusion),/conflicts/)
+  })
+})
 
 describe('ensureDailyAssignmentPerson', () => {
   const config: WorkbookConfig = {
@@ -513,6 +537,7 @@ describe('RF Production workbook adapter', () => {
   it('reads only the Projects row during sync because Links come from the shared snapshot', async () => {
     const calls: number[] = []
     __setSheetsTransportForTests(async <T>(_method: string, url: string, body?: unknown): Promise<T> => {
+      if (url.includes('developerMetadata:search')) return {matchedDeveloperMetadata:[]} as T
       if (!url.includes(':getByDataFilter')) throw new Error(`unexpected url ${url}`)
       const sheetId = (body as { dataFilters: Array<{ gridRange: { sheetId: number } }> }).dataFilters[0].gridRange.sheetId
       calls.push(sheetId)
@@ -535,6 +560,7 @@ describe('RF Production workbook adapter', () => {
     }
     let reads = 0
     __setSheetsTransportForTests(async <T>(_method: string, url: string, body?: unknown): Promise<T> => {
+      if (url.includes('developerMetadata:search')) return {matchedDeveloperMetadata:[]} as T
       if (!url.includes(':getByDataFilter')) throw new Error(`unexpected url ${url}`)
       reads++
       const sheetId = Number((body as { dataFilters: Array<{ gridRange: { sheetId: number } }> }).dataFilters[0].gridRange.sheetId)

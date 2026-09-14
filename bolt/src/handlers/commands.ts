@@ -33,6 +33,7 @@ import { buildArchiveCardForContext } from '../archive/handlers'
 import { dashboardBaseUrl } from './dashboard-card'
 import { buildProjectDeletionCardForContext } from '../project-deletion/handlers'
 import { registerKitCommand } from './command-dispatch'
+import { openOffboarding } from '../offboarding/handlers'
 
 /**
  * Resolve the Slack user's Kit access context for a slash command.
@@ -63,6 +64,12 @@ export function registerCommandHandlers(app: App) {
     const args = (command.text || '').trim().split(/\s+/).slice(1).join(' ')
 
     switch (subcommand) {
+      case 'offboard': {
+        await ack()
+        try { await openOffboarding(client,command.user_id,command.team_id,args) }
+        catch { await respond({response_type:'ephemeral',text:'Could not open private offboarding. Producer/admin access and a verified workspace are required.'}) }
+        break
+      }
       // ── Founder Control Center ──────────────────────────────
       case 'dashboard':
       case 'control': {
@@ -976,6 +983,7 @@ export function registerCommandHandlers(app: App) {
             '`/kit archive project` — Prepare an approved project for Dropbox, Vimeo, website, social, and Behance drafts\n' +
             '`/kit delete project` — Founder/admin only: delete a project across Kit-owned systems after typed confirmation\n' +
             '`/kit onboard` — Onboard a freelancer to a project (Slack/Dropbox/Frame.io/Harvest)\n' +
+            '`/kit offboard` — Remove an artist’s project access after private review; keep their work and other projects\n' +
             '`/kit status <name>` — Quick project lookup\n' +
             '`/kit note [project | body]` — Save a freeform note to a project (or current channel\'s project)\n' +
             '`/storyboard` — Turn a script into a Boords storyboard\n' +

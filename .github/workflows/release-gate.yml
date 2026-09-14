@@ -43,6 +43,8 @@ jobs:
         run: npm run typecheck
       - name: Unit tests
         run: npm run test:app
+      - name: Artist access migration and authorization tests
+        run: node scripts/test-artist-access-database.mjs
       - name: Production build
         run: npx next build --webpack
 

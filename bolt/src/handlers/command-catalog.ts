@@ -11,6 +11,7 @@ export const KIT_COMMANDS = {
   archive: { tier: 'producer', description: 'Archive/portfolio workflow including website, social, Vimeo, Behance drafts. Opens a picker, never publishes immediately.' },
   delete: { tier: 'admin', description: 'Delete a project everywhere. Arguments: project. Opens inventory and typed-confirmation workflow; never deletes immediately.' },
   onboard: { tier: 'producer', description: 'Add a freelancer/artist to project services. Opens editable onboarding form.' },
+  offboard: { tier: 'producer', description: 'Remove an artist from ONE project after private project/artist selection and explicit confirmation. Preserves other projects, files, history and shared Harvest account. Never executes directly from chat. Optional artist/project hint does not select a target.' },
   status: { tier: 'artist', description: 'Quick non-financial project lookup. Arguments: exact project code/name from user; ask which project if missing.' },
   pilot: { tier: 'producer', description: 'Visual development pilot. Args: help; readiness [project UUID]; status|check|show <pilot UUID>; create <project UUID> :: <title>; visual-language <pilot UUID> :: <text>; ref <pilot UUID> <type> <url> :: <label>; generation <pilot UUID> <ref> :: <label>; accept|reject <generation UUID>; map <pilot UUID> <package> <type> :: <purpose>; validate <pilot UUID> <tool> pass|fail <ref> :: <subject>; evidence <pilot UUID> <category> [metric] :: <label> :: <value> [unit]; finalize <pilot UUID> <recommendation> :: <rationale>. Never invent UUIDs/enums. Ask for missing identifiers; downstream validates and retains feature gate.' },
   deliver: { tier: 'producer', description: 'Transcode/delivery form. Args: optional Dropbox source path; status lists queue. Does not publish client progress.' },
@@ -53,10 +54,12 @@ export function normalizeCommandRequest(text: string): string {
 export function parseFastCommand(text: string): KitCommandRequest | null {
   const value = normalizeCommandRequest(text)
   if (/^(?:don't|do not|not|never|if|when|how|tell me how)\b/i.test(value) || /^[>"`]/.test(value)) return null
-  const literal = value.match(/^(?:\/kit\s+)?(dashboard|newproject|update|archive|delete|onboard|status|pilot|deliver|profiles|workers|render|access|celebrate|birthday|brain|role|sync-staff|sync-projects|backfill-time|meme|note|help|storyboard)\b(?:\s+([\s\S]*))?$/i)
+  const literal = value.match(/^(?:\/kit\s+)?(dashboard|newproject|update|archive|delete|onboard|offboard|status|pilot|deliver|profiles|workers|render|access|celebrate|birthday|brain|role|sync-staff|sync-projects|backfill-time|meme|note|help|storyboard)\b(?:\s+([\s\S]*))?$/i)
   // Exact command names and their arguments can be typed without a slash.
   if (literal && !/^(?:update|archive|delete|onboard|status|note|role|render|deliver|celebrate|birthday)$/i.test(literal[1])) return { command: literal[1].toLowerCase() as KitCommandName, args: literal[2] || '' }
   const aliases: [RegExp, KitCommandName, string?][] = [
+    [/^(?:offboard|remove)(?: a| an| the)* (?:freelancer|artist|contractor)(?:\s+(.+))?$/i, 'offboard'],
+    [/^remove\s+(.+?\s+from\s+(?:the\s+)?project\s+.+)$/i, 'offboard'],
     [/^(?:show|open|pull up)(?: me)?(?: the| my| kit)? (?:dashboard|control center)$/i, 'dashboard'],
     [/^(?:help|what can you do|show(?: me)?(?: the)? (?:commands|help)|list(?: the)? commands)$/i, 'help'],
     [/^(?:update|edit|change)(?: the)? project(?:\s+(.+))?$/i, 'update'],
@@ -100,6 +103,6 @@ export function parseFastCommand(text: string): KitCommandRequest | null {
 export function isCommandRequest(text: string): boolean {
   if (parseFastCommand(text)) return true
   const value = normalizeCommandRequest(text)
-  return /^(?:show|open|list|check|create|make|start|update|edit|archive|delete|onboard|invite|sync|preview|run|set|give|convert|render|resume|save)\b/i.test(value)
+  return /^(?:show|open|list|check|create|make|start|update|edit|archive|delete|onboard|offboard|invite|sync|preview|run|set|give|convert|render|resume|save)\b/i.test(value)
     && /\b(?:project|dashboard|profile|worker|render|caption|srt|brain|role|freelancer|artist|staff|meme|birthday|pilot|storyboard|note|accessibility)\b/i.test(value)
 }

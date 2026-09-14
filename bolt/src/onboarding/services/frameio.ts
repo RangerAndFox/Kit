@@ -22,6 +22,7 @@
 
 import type { OnboardingProject, ServiceResult } from '../types'
 import { frameioHeaders } from '../../../../src/lib/frameio/auth'
+import { frameUserRoles } from '../../../../src/lib/frameio/user-roles'
 
 const FRAMEIO_API = 'https://api.frame.io/v4'
 
@@ -75,31 +76,14 @@ async function lookupFrameIoUserByEmail(
   accountId: string,
   email: string,
 ): Promise<string | null> {
-  const target = email.toLowerCase()
-  let after: string | undefined
-  // Cap at 10 pages (1000 users) so a misconfigured account doesn't loop forever.
-  for (let page = 0; page < 10; page++) {
-    const hdrs = await frameioHeaders()
-    const qs = new URLSearchParams({ sort: 'email_asc', page_size: '100' })
-    if (after) qs.set('after', after)
-    const url = `${FRAMEIO_API}/accounts/${accountId}/users?${qs.toString()}`
-    const res = await fetch(url, { headers: hdrs, signal: AbortSignal.timeout(15_000) })
-    if (!res.ok) {
-      const text = await res.text().catch(() => '')
-      throw new Error(`user lookup ${res.status}: ${text}`)
-    }
-    const data = await res.json()
-    const list = data?.data || []
-    if (Array.isArray(list)) {
-      for (const u of list) {
-        const e = (u?.email || u?.attributes?.email || '').toLowerCase()
-        if (e === target) return u.id
-      }
-    }
-    after = data?.links?.next?.after || data?.meta?.next_cursor || undefined
-    if (!after) break
-  }
-  return null
+  const users = await frameUserRoles('/users',async path=>{
+    const res=await fetch(`${FRAMEIO_API}/accounts/${encodeURIComponent(accountId)}${path}`,{headers:await frameioHeaders(),signal:AbortSignal.timeout(15_000)})
+    if (!res.ok) throw new Error(`Frame.io identity lookup failed (${res.status})`)
+    return await res.json()
+  })
+  const matches=users.filter(user=>user.email===email.trim().toLowerCase())
+  if (matches.length>1) throw new Error('Frame.io artist identity is ambiguous')
+  return matches[0]?.id || null
 }
 
 export async function inviteArtistToFrameIo(opts: {
