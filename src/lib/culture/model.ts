@@ -99,13 +99,13 @@ export function nextDate(item: Meme, now: Date, holidays: string[] = []): string
   }
   return null
 }
-/** Find the next local midnight without assuming a fixed UTC offset across DST. */
+/** First valid minute of the next local date. Some DST changes skip midnight. */
 export function nextMidnight(now: Date, timezone: string): string {
   const today = localParts(now, timezone).date
   for (let minute = 1; minute <= 1560; minute++) {
     const time = new Date(Math.floor(now.getTime() / 60000) * 60000 + minute * 60000)
     const local = localParts(time, timezone)
-    if (local.date !== today && local.time === '00:00') return time.toISOString()
+    if (local.date > today) return time.toISOString()
   }
   throw new Error('Could not determine a safe cutover time.')
 }

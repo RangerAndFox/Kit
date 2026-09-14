@@ -84,8 +84,9 @@ rules at one minute without extending this into a dedicated work queue.
    Preflight checks all seeds and reports row/kind/field issues without echoing
    private copy. No legacy birthday or schedule is silently dropped at handover.
 6. Setup imports existing birthdays and three built-in rules. Pending custom
-   celebrations import as drafts. The handover is the **next local midnight**;
-   legacy jobs continue until then. Check the worker heartbeat before the cutoff.
+   celebrations import as drafts. The handover is the **start of the next local
+   date** (the first valid minute if DST skips midnight); legacy jobs continue
+   until then. Check the worker heartbeat before the cutoff.
    Review imported destination/template/date values and pending custom drafts.
 7. After cutoff, verify role denial for artists/producers, perform a reversible
    draft edit, then an approved test-channel scheduled post. Confirm one Slack

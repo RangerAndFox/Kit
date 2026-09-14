@@ -114,7 +114,8 @@ export async function managedBirthday(app: App, personId: string, monthDay: stri
   const existing = (await items(config)).find(item => item.kind === 'birthday' && item.person_id === personId)
   const item = existing || newMeme('birthday', config.default_channel_id, config.timezone, randomUUID())
   const personName = name || user.user.real_name || user.user.name || ''
-  await saveMeme(config.workspace_id, actor, { ...item, name: `${personName}’s birthday`, person_id: personId, person_name: personName, month_day: monthDay, status: existing?.status === 'paused' ? 'paused' : 'enabled' }, true, `birthday:${personId}`)
+  // A Slack date/name update must not override an admin's draft or pause hold.
+  await saveMeme(config.workspace_id, actor, { ...item, name: `${personName}’s birthday`, person_id: personId, person_name: personName, month_day: monthDay, status: existing?.status ?? 'enabled' }, true, `birthday:${personId}`)
   return active(config) ? true : null
 }
 export async function managedCelebration(app: App, label: string, fireDate: string | null, actor = 'slack'): Promise<boolean | null> {

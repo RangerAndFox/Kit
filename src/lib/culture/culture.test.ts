@@ -45,6 +45,18 @@ test('DST repeats have one occurrence key; setup uses the next local midnight', 
   assert.equal(dueKey(item, new Date('2026-11-01T06:30Z'), () => false), '2026-11-01')
   assert.equal(nextMidnight(new Date('2026-11-01T05:30Z'), item.timezone), '2026-11-02T05:00:00.000Z')
 })
+test('handover uses the first valid instant of the next date when DST skips midnight', () => {
+  for (const [now, timezone, expected] of [
+    ['2026-09-05T16:00:00Z', 'America/Santiago', '2026-09-06T04:00:00.000Z'],
+    ['2026-03-07T17:00:00Z', 'America/Havana', '2026-03-08T05:00:00.000Z'],
+    ['2026-11-01T04:30:00Z', 'America/Havana', '2026-11-02T05:00:00.000Z'],
+  ]) {
+    const result = nextMidnight(new Date(now), timezone)
+    assert.equal(result, expected)
+    assert.ok(Date.parse(result) > Date.parse(now))
+    assert.ok(Date.parse(result) - Date.parse(now) <= 27 * 3600000)
+  }
+})
 test('financial details, contacts, links and Slack mass mentions fail validation', () => {
   for (const value of ['$5000', 'client@example.com', 'budget is great', 'https://example.com', '<!channel>', 'Call 212-555-1212']) {
     assert.equal(publicSafeText(value), false)
@@ -73,12 +85,12 @@ test('posting ledger distinguishes preparation failures, uncertain sends and con
   }
 })
 test('acknowledgement persistence failure becomes review, never a second Slack send', async () => {
-  let sends = 0; const statuses: string[] = []
+  let sends = 0; const statuses: Array<[string, string | undefined]> = []
   assert.equal(await deliverCulture({ beginSend: async () => true,
     prepareAndPost: async before => { await before(); sends++; return { posted: true, ts: '123' } },
-    finish: async status => { statuses.push(status); if (status === 'posted') throw new Error('database outage') },
+    finish: async (status, ts) => { statuses.push([status, ts]); if (status === 'posted') throw new Error('database outage') },
   }), false)
-  assert.equal(sends, 1); assert.deepEqual(statuses, ['posted', 'review'])
+  assert.equal(sends, 1); assert.deepEqual(statuses, [['posted', '123'], ['review', '123']])
 })
 test('a second acknowledgement failure does not throw or resend', async () => {
   let sends = 0
