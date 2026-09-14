@@ -4,8 +4,15 @@ import { dueKey, memeSchema, newMeme, nextMidnight, publicSafeText, validMonthDa
 import { deliverCulture } from './delivery'
 import { handleCulture, type CultureHttpPorts } from './http'
 import { sendCultureMessage } from './slack-send'
+import { cultureRpcRow } from './rpc'
 
 const fixture = () => ({ ...newMeme('custom', 'C12345678', 'America/New_York', '11111111-1111-4111-8111-111111111111'), name: 'Studio wins', fire_date: '2026-09-14' })
+test('single-row RPC responses support PostgREST arrays and singular objects without accepting ambiguity', () => {
+  assert.deepEqual(cultureRpcRow([fixture()]), fixture())
+  assert.deepEqual(cultureRpcRow(fixture()), fixture())
+  for (const value of [null, [], [null], { id: null, name: null }, [{ id: null, name: null }]]) assert.equal(cultureRpcRow(value), null)
+  for (const value of [[fixture(), fixture()], {}, { id: 'invalid' }, true, undefined]) assert.throws(() => cultureRpcRow(value))
+})
 test('calendar validation rejects impossible dates and protects birthdays without a birth year', () => {
   assert.equal(validMonthDay('02-29'), true)
   for (const value of ['04-31', '02-30', '13-01', '1-2']) assert.equal(validMonthDay(value), false)

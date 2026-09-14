@@ -29,7 +29,11 @@ beforeEach(() => {
   mocks.rpc.mockImplementation(async (name: string) => ({ error:null, data:name === 'claim_culture_post' ? {id:'33333333-3333-4333-8333-333333333333'} : true }))
   mocks.post.mockImplementation(async (_app: App, options: { beforeSend: () => Promise<void> }) => { await options.beforeSend(); mocks.sends(); return {posted:true,ts:'123.456'} })
 })
-it('managed posting verifies destination and records a confirmed ack without exposing project names', async () => {
+it.each(['array', 'object'])('managed posting handles a %s RPC claim, verifies destination and records a private-safe ack', async shape => {
+  mocks.rpc.mockImplementation(async (name: string) => {
+    const row = {id:'33333333-3333-4333-8333-333333333333'}
+    return {error:null,data:name === 'claim_culture_post' ? (shape === 'array' ? [row] : row) : true}
+  })
   expect(await postCultureItem(app(),config,item,'2026-09-14:project','Secret client project')).toBe(true)
   expect(mocks.verify).toHaveBeenCalledWith(config.workspace_id,item.channel_id)
   expect(mocks.sends).toHaveBeenCalledTimes(1)
@@ -42,7 +46,7 @@ it('an already claimed occurrence performs no generation or Slack send', async (
   expect(mocks.post).not.toHaveBeenCalled()
 })
 it('a changed configuration is fenced before the Slack side effect', async () => {
-  mocks.rpc.mockImplementation(async (name:string)=>({error:null,data:name==='claim_culture_post'?{id:'job'}:false}))
+  mocks.rpc.mockImplementation(async (name:string)=>({error:null,data:name==='claim_culture_post'?[{id:'33333333-3333-4333-8333-333333333333'}]:false}))
   expect(await postCultureItem(app(),config,item,'day')).toBe(false)
   expect(mocks.sends).not.toHaveBeenCalled()
   expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({status:'failed'}))

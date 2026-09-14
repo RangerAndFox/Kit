@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createAdminClient } from '../supabase/admin'
 import { studioHolidays } from './holidays'
+import { cultureRpcRow } from './rpc'
 import { memeSchema, newMeme, nextMidnight, validMonthDay, publicSafeText, type Meme, type CultureData, type CultureWorkspace } from './model'
 
 export const cultureDb = (): SupabaseClient => createAdminClient() as SupabaseClient
@@ -87,7 +88,9 @@ export async function saveMeme(workspaceId: string, actor: string, input: unknow
   }
   const { data, error } = await cultureDb().rpc('save_culture_meme', { p_workspace: workspaceId, p_actor: actor, p_item: item, p_confirm: confirmed, p_legacy_key: legacyKey || null })
   if (error || !data) throw new Error('Could not save: refresh for recent changes, check for an existing birthday, or wait for an in-flight post to finish.')
-  return memeSchema.parse(Object.fromEntries(MEME_FIELDS.split(',').map(key => [key, data[key]])))
+  const row = cultureRpcRow(data)
+  if (!row) throw new Error('Culture save did not return its record.')
+  return memeSchema.parse(Object.fromEntries(MEME_FIELDS.split(',').map(key => [key, row[key]])))
 }
 
 /** Explicit setup, after verified admin + Slack-team binding. Import never occurs on a GET. */

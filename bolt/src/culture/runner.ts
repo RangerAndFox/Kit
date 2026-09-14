@@ -3,6 +3,7 @@ import type { App } from '@slack/bolt'
 import { cultureDb, workspaceForTeam, MEME_FIELDS, saveMeme, verifyDestination } from '../../../src/lib/culture/store'
 import { dueKey, escapeSlack, localParts, memeSchema, newMeme, type Meme, type CultureWorkspace } from '../../../src/lib/culture/model'
 import { deliverCulture } from '../../../src/lib/culture/delivery'
+import { cultureRpcRow } from '../../../src/lib/culture/rpc'
 import { isStudioHoliday } from '../../../src/lib/culture/holidays'
 import { CELEBRATION_TEMPLATES, postMeme } from '../memes/meme-engine'
 import { postWeeklyTimesheetMeme, weekIndexFromMs } from '../memes/timesheet-meme'
@@ -35,8 +36,9 @@ async function items(config: CultureWorkspace): Promise<Meme[]> {
 export async function postCultureItem(app: App, config: CultureWorkspace, item: Meme, key: string, projectName?: string): Promise<boolean> {
   const db = cultureDb()
   const owner = randomUUID()
-  const { data: job, error } = await db.rpc('claim_culture_post', { p_workspace: config.workspace_id, p_meme: item.id, p_revision: item.revision, p_key: key, p_owner: owner })
+  const { data, error } = await db.rpc('claim_culture_post', { p_workspace: config.workspace_id, p_meme: item.id, p_revision: item.revision, p_key: key, p_owner: owner })
   if (error) throw new Error('Culture posting claim failed.')
+  const job = cultureRpcRow(data)
   if (!job?.id) return false
   return deliverCulture({
     beginSend: async () => {
