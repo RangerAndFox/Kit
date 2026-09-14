@@ -103,13 +103,10 @@ export async function postWeeklyTimesheetMeme(
   if (!channel) return { posted: false, template: '', image: false, reason: 'KIT_TEAM_CHANNEL_ID not set' }
 
   const template = (options?.templateId !== 'rotation' && TEMPLATES.find(item => item.id === options?.templateId)) || pickWeeklyTemplate(weekIndex)
-  const boxes = await generateCaption(template)
-  if (!publicSafeText(boxes.join(' '))) throw new Error('Meme wording requires private review.')
-  if (!boxes.some(Boolean)) {
-    return { posted: false, template: template.name, image: false, reason: 'caption generation returned empty' }
-  }
+  const generated = await generateCaption(template).catch(() => [])
+  const boxes = publicSafeText(generated.join(' ')) ? generated : []
 
-  const imageUrl = await renderMemeImage(template, boxes)
+  const imageUrl = boxes.some(Boolean) ? await renderMemeImage(template, boxes) : null
 
   const header = `<!channel> :calendar: *Timesheet meme of the week*`
   const blocks: any[] = [{ type: 'section', text: { type: 'mrkdwn', text: header } }]
@@ -119,8 +116,10 @@ export async function postWeeklyTimesheetMeme(
       type: 'context',
       elements: [{ type: 'mrkdwn', text: `_${template.name}_ · log your hours in Harvest :saluting_face:` }],
     })
-  } else {
+  } else if (boxes.some(Boolean)) {
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: textMeme(template, boxes) } })
+  } else {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: 'A friendly reminder to log your hours. Thanks, team!' } })
   }
 
   await options?.beforeSend()

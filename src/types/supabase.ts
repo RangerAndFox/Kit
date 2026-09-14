@@ -14,6 +14,221 @@ export type Database = {
   }
   public: {
     Tables: {
+      culture_audit: {
+        Row: {
+          action: string
+          actor: string
+          created_at: string
+          id: number
+          meme_id: string
+          revision: number
+          workspace_id: string
+        }
+        Insert: {
+          action: string
+          actor: string
+          created_at?: string
+          id?: never
+          meme_id: string
+          revision: number
+          workspace_id: string
+        }
+        Update: {
+          action?: string
+          actor?: string
+          created_at?: string
+          id?: never
+          meme_id?: string
+          revision?: number
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "culture_audit_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      culture_memes: {
+        Row: {
+          briefing: string
+          channel_id: string
+          created_at: string
+          created_by: string
+          fire_date: string | null
+          id: string
+          kind: string
+          legacy_key: string | null
+          local_time: string
+          month_day: string | null
+          name: string
+          person_id: string | null
+          person_name: string | null
+          revision: number
+          schedule: string
+          status: string
+          template_id: string
+          timezone: string
+          updated_at: string
+          updated_by: string
+          weekday: number | null
+          workspace_id: string
+        }
+        Insert: {
+          briefing?: string
+          channel_id: string
+          created_at?: string
+          created_by: string
+          fire_date?: string | null
+          id: string
+          kind: string
+          legacy_key?: string | null
+          local_time?: string
+          month_day?: string | null
+          name: string
+          person_id?: string | null
+          person_name?: string | null
+          revision?: number
+          schedule: string
+          status?: string
+          template_id?: string
+          timezone: string
+          updated_at?: string
+          updated_by: string
+          weekday?: number | null
+          workspace_id: string
+        }
+        Update: {
+          briefing?: string
+          channel_id?: string
+          created_at?: string
+          created_by?: string
+          fire_date?: string | null
+          id?: string
+          kind?: string
+          legacy_key?: string | null
+          local_time?: string
+          month_day?: string | null
+          name?: string
+          person_id?: string | null
+          person_name?: string | null
+          revision?: number
+          schedule?: string
+          status?: string
+          template_id?: string
+          timezone?: string
+          updated_at?: string
+          updated_by?: string
+          weekday?: number | null
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "culture_memes_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "culture_workspaces"
+            referencedColumns: ["workspace_id"]
+          },
+        ]
+      }
+      culture_posts: {
+        Row: {
+          channel_id: string
+          created_at: string
+          error: string | null
+          id: string
+          lease_until: string
+          meme_id: string
+          name: string
+          occurrence_key: string
+          owner: string
+          posted_at: string | null
+          revision: number
+          slack_ts: string | null
+          status: string
+          workspace_id: string
+        }
+        Insert: {
+          channel_id: string
+          created_at?: string
+          error?: string | null
+          id?: string
+          lease_until: string
+          meme_id: string
+          name: string
+          occurrence_key: string
+          owner: string
+          posted_at?: string | null
+          revision: number
+          slack_ts?: string | null
+          status?: string
+          workspace_id: string
+        }
+        Update: {
+          channel_id?: string
+          created_at?: string
+          error?: string | null
+          id?: string
+          lease_until?: string
+          meme_id?: string
+          name?: string
+          occurrence_key?: string
+          owner?: string
+          posted_at?: string | null
+          revision?: number
+          slack_ts?: string | null
+          status?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "culture_posts_workspace_id_meme_id_fkey"
+            columns: ["workspace_id", "meme_id"]
+            isOneToOne: false
+            referencedRelation: "culture_memes"
+            referencedColumns: ["workspace_id", "id"]
+          },
+        ]
+      }
+      culture_workspaces: {
+        Row: {
+          created_at: string
+          default_channel_id: string
+          heartbeat_at: string | null
+          starts_at: string
+          timezone: string
+          workspace_id: string
+        }
+        Insert: {
+          created_at?: string
+          default_channel_id: string
+          heartbeat_at?: string | null
+          starts_at: string
+          timezone: string
+          workspace_id: string
+        }
+        Update: {
+          created_at?: string
+          default_channel_id?: string
+          heartbeat_at?: string | null
+          starts_at?: string
+          timezone?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "culture_workspaces_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: true
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       accessibility_jobs: {
         Row: {
           created_at: string | null
@@ -6077,6 +6292,91 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      begin_culture_send: {
+        Args: { p_owner: string; p_post: string }
+        Returns: boolean
+      }
+      claim_culture_post: {
+        Args: {
+          p_key: string
+          p_meme: string
+          p_owner: string
+          p_revision: number
+          p_workspace: string
+        }
+        Returns: {
+          channel_id: string
+          created_at: string
+          error: string | null
+          id: string
+          lease_until: string
+          meme_id: string
+          name: string
+          occurrence_key: string
+          owner: string
+          posted_at: string | null
+          revision: number
+          slack_ts: string | null
+          status: string
+          workspace_id: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "culture_posts"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      initialize_culture: {
+        Args: {
+          p_actor: string
+          p_channel: string
+          p_items: Json
+          p_starts_at: string
+          p_timezone: string
+          p_workspace: string
+        }
+        Returns: boolean
+      }
+      save_culture_meme: {
+        Args: {
+          p_actor: string
+          p_confirm?: boolean
+          p_item: Json
+          p_legacy_key?: string
+          p_workspace: string
+        }
+        Returns: {
+          briefing: string
+          channel_id: string
+          created_at: string
+          created_by: string
+          fire_date: string | null
+          id: string
+          kind: string
+          legacy_key: string | null
+          local_time: string
+          month_day: string | null
+          name: string
+          person_id: string | null
+          person_name: string | null
+          revision: number
+          schedule: string
+          status: string
+          template_id: string
+          timezone: string
+          updated_at: string
+          updated_by: string
+          weekday: number | null
+          workspace_id: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "culture_memes"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       acquire_archive_job_lease: {
         Args: {
           p_job_id: string

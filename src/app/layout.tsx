@@ -1,5 +1,9 @@
 import type { Metadata } from "next";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
+
+const inter = Inter({ subsets: ['latin'], variable: '--font-inter', display: 'swap' });
+const mono = JetBrains_Mono({ subsets: ['latin'], variable: '--font-jetbrains', display: 'swap' });
 
 // Every HTML response must receive fresh framework-script nonces from Proxy.
 export const dynamic = 'force-dynamic';
@@ -16,8 +20,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
-      <body className="font-satoshi bg-[#0C0E12] text-white antialiased">
+    <html lang="en" className={`dark ${inter.variable} ${mono.variable}`}>
+      <body>
         {children}
       </body>
     </html>

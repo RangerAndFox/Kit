@@ -7,6 +7,9 @@ table per birthday, timesheet, holiday, delivery celebration and custom meme.
 Supports destination, compatible template/rotation, employee/display name,
 month-day birthday (no birth year), local time/time zone, recurrence, briefing,
 draft/enabled/paused state, upcoming occurrences and latest 100 posting attempts.
+The shared shell, Control Center and Culture Center use compact Inter typography,
+neutral near-black surfaces and restrained lime primary actions. Kit branding and
+all seven navigation destinations remain available on desktop and mobile.
 New dashboard rules are draft-first. Enabled edits require explicit review.
 This is not a new project-data store and does not change Sheets or project canvases.
 
@@ -22,8 +25,10 @@ This is not a new project-data store and does not change Sheets or project canva
   `culture_posts`, `culture_audit`. RLS plus revoked anon/authenticated grants;
   service-only, invoker-rights RPCs. Atomic revision checks, updates and audits.
 - **Slack:** verified bot team must map to exactly one persisted workspace.
-  Destinations must be active internal channels Kit has joined; reject external
-  and organization-shared channels. No token or contact details reach the UI.
+  Enabled destinations must be active internal channels Kit has joined; reject external
+  and organization-shared channels. Existing rules can be paused or saved as
+  drafts during a Slack outage; those operations remain authorized, validated,
+  workspace-scoped and audited. No token or contact details reach the UI.
 - Custom/ad-hoc captions stay text-only in Slack, not the public image renderer.
   Built-in image prompts remain generic. Conservative financial/contact/link
   guards apply to input and generated captions. These guards are not a proof of
@@ -75,7 +80,9 @@ rules at one minute without extending this into a dedicated work queue.
    and the legacy schedule remains active. Choose the initial destination and
    studio time zone and click **Import existing memes** after reviewing it.
    Legacy global tables import only when exactly one workspace exists. Any
-   ambiguity/invalid birthday blocks the import transaction instead of guessing.
+   ambiguity or invalid seed blocks the atomic import instead of guessing.
+   Preflight checks all seeds and reports row/kind/field issues without echoing
+   private copy. No legacy birthday or schedule is silently dropped at handover.
 6. Setup imports existing birthdays and three built-in rules. Pending custom
    celebrations import as drafts. The handover is the **next local midnight**;
    legacy jobs continue until then. Check the worker heartbeat before the cutoff.
@@ -94,14 +101,34 @@ posts in Slack before any deliberate remediation; no automatic replay button.
 
 ## Local verification
 
-September 14 implementation check: 845 root tests and 815 Bolt tests passed;
-typecheck, lint ratchet, migration integrity and production build passed. The
-PostgreSQL/PGlite migration harness passed. Synthetic browser checks covered
-draft save/reopen, date edit/save, required enable review, Escape dismissal,
-seven populated/empty tables, and contained table scrolling at 390px width.
-No Slack posts or production mutations were performed. These local checks used
-Node 20.20.2; supported Node 22 CI and hosted Supabase validation remain release
-gates. No independent review, public push or deployment is claimed here.
+September 14 release-candidate verification: 848 root tests and 822 Bolt tests
+passed. Typecheck, lint ratchet, migration integrity and production build passed.
+The redesigned shared navigation, Control Center and Culture Center were visually
+checked with synthetic data. Draft save/reopen, pause during Slack channel outage
+and contained mobile tables were exercised. No live Slack posts were performed.
+Local checks use Node 20.20.2; supported Node 22 CI remains a release gate.
+
+A disposable hosted Supabase branch passed `scripts/culture-hosted-test.sql`:
+service-role saves, confirmation and handover gates, duplicate claims, owner/
+revision fencing, uncertain-send review, pause cancellation, audit durability,
+cross-workspace rejection, RLS and denied public RPC grants. Synthetic SQL writes
+rolled back. Separate PostgREST service-role calls returned HTTP 200 with a single
+object for save (revisions 1 then 2), and an all-null object for a non-claim.
+Anonymous HTTP reads of all four tables and a posting RPC returned 401.
+Generated Culture table/RPC types were merged without replacing unrelated
+production types. The disposable branch and its API fixtures were deleted.
+
+Hosted-branch limitation: automatic history replay failed because the remote
+production-baseline migration is a marker with no SQL statements. The disposable
+branch was bootstrapped from the local baseline after normalizing its generated
+literal newline delimiters, then the unchanged Culture migration was applied.
+This validates Culture against that schema, not a clean replay of every later
+production migration. The immutable baseline and production history were not
+modified. Do not treat this as a successful full-history migration test.
+
+Required independent review, production migration/deploy, managed handover and
+an approved test-channel post remain separate release steps. Do not report the
+feature as live based on these isolated checks.
 
 - `npm run typecheck`
 - `npm run test:app`

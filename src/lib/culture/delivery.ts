@@ -15,7 +15,12 @@ export async function deliverCulture(ports: DeliveryPorts): Promise<boolean> {
     await ports.finish('posted', result.ts)
     return true
   } catch {
-    await ports.finish(sending ? 'review' : 'failed')
+    try { await ports.finish(sending ? 'review' : 'failed') }
+    catch {
+      // Leave the durable sending lease intact: recovery marks it for review,
+      // never replay. One acknowledgement outage must not abort the whole tick.
+      console.error('[culture] acknowledgement_persistence_failed', { sending })
+    }
     return false
   }
 }

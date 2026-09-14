@@ -1,203 +1,44 @@
-@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap");
-@import url("https://api.fontshare.com/v2/css?f[]=satoshi@400,500,600,700&display=swap");
 @import "tailwindcss";
 
-@font-face {
-  font-family: "RF Plaak";
-  src: url("https://rangerandfox.studio/wp-content/themes/allday/fonts/p/h/p-h.woff") format("woff");
-  font-display: swap;
-  font-style: normal;
-  font-weight: 700 900;
+@theme inline {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-satoshi: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
 }
-
-@font-face {
-  font-family: "RF Oakes";
-  src: url("https://rangerandfox.studio/wp-content/themes/allday/fonts/OakesGroteskRegular/font.woff2") format("woff2");
-  font-display: swap;
-  font-style: normal;
-  font-weight: 400 600;
-}
-
 @theme {
-  --color-background: #0c0e12;
-  --color-surface: #181b24;
-  --color-text: #ffffff;
-  --color-text-secondary: #b4b8c3;
-  --color-border: #2a2f3d;
-
-  /* Health & Status Colors */
-  --color-success: #10b981;
-  --color-warning: #f59e0b;
-  --color-danger: #ef4444;
-
-  /* Accent */
-  --color-accent: #6366f1;
-
-  /* Semantic */
-  --color-info: #3b82f6;
-
-  /* Font Families */
-  --font-satoshi: "Satoshi", sans-serif;
-  --font-mono: "JetBrains Mono", monospace;
-
-  /* Shadows */
-  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
-  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1);
-  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.2);
-  --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.3);
+  --color-background: #08090a;
+  --color-surface: #0f1011;
+  --color-text: #f4f4f5;
+  --color-text-secondary: #a0a4ac;
+  --color-border: #23252a;
+  --color-accent: #e4f222;
+  --color-success: #6ac995;
+  --color-warning: #dfb46b;
+  --color-danger: #ef8585;
+  --color-info: #8daef4;
 }
 
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-html {
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-html.dark {
-  color-scheme: dark;
-}
-
-body {
-  background-color: #08090a;
-  color: #f0f2f5;
-  font-family: "RF Oakes", "Satoshi", sans-serif;
-  font-size: 14px;
-  line-height: 1.6;
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-}
-
-::selection {
-  color: #08090a;
-  background: #00ff66;
-}
-
-/* Card Utilities */
-.kit-card {
-  background-color: #181b24;
-  border-radius: 0.5rem;
-  padding: 1rem;
-}
-
-.kit-card-interactive {
-  background-color: #181b24;
-  border-radius: 0.5rem;
-  padding: 1rem;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  cursor: pointer;
-}
-
-.kit-card-interactive:hover {
-  background-color: #1f2332;
-  box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.2);
-}
-
-.kit-card-interactive:active {
-  transform: scale(0.98);
-}
-
-/* Text Utilities */
-.text-xs {
-  font-size: 12px;
-}
-
-.text-sm {
-  font-size: 14px;
-}
-
-.text-base {
-  font-size: 16px;
-}
-
-.text-lg {
-  font-size: 18px;
-}
-
-.text-xl {
-  font-size: 20px;
-}
-
-.text-2xl {
-  font-size: 24px;
-}
-
-.text-3xl {
-  font-size: 30px;
-}
-
-/* Data/Numbers Typography */
-.font-mono {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 14px;
-}
-
-/* Accessible Toggle Switch */
-.toggle-switch {
-  display: inline-flex;
-  align-items: center;
-  cursor: pointer;
-}
-
-.toggle-switch input {
-  appearance: none;
-  -webkit-appearance: none;
-  -moz-appearance: none;
-  width: 2.5rem;
-  height: 1.5rem;
-  background-color: #2a2f3d;
-  border-radius: 9999px;
-  cursor: pointer;
-  position: relative;
-  transition: background-color 0.2s;
-  border: none;
-  outline: 2px solid transparent;
-  outline-offset: 2px;
-}
-
-.toggle-switch input:focus-visible {
-  outline: 2px solid #6366f1;
-  outline-offset: 2px;
-}
-
-.toggle-switch input:checked {
-  background-color: #10b981;
-}
-
-.toggle-switch input::before {
-  content: '';
-  position: absolute;
-  width: 1.25rem;
-  height: 1.25rem;
-  border-radius: 9999px;
-  background-color: #ffffff;
-  top: 0.125rem;
-  left: 0.125rem;
-  transition: left 0.2s;
-}
-
-.toggle-switch input:checked::before {
-  left: 1.125rem;
-}
-
-.toggle-switch input:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* Ensure minimum text size */
-p, span, div, a, button, label {
-  font-size: 14px;
-}
-
-/* Ensure no text-[10px] is applied globally */
-@layer utilities {
-  .text-\[10px\] {
-    @apply text-xs;
+/* Base rules must not override utility spacing or component font sizes. */
+@layer base {
+  html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+  html.dark { color-scheme: dark; }
+  body { min-height:100vh; background:var(--color-background); color:var(--color-text); font-family:var(--font-sans); font-size:14px; line-height:1.55; letter-spacing:-.01em; font-feature-settings:"cv01" on,"ss03" on,"zero" on; }
+  button,input,select,textarea { font:inherit; }
+  button:not(:disabled),[role=button]:not(:disabled) { cursor:pointer; }
+  :focus-visible { outline:2px solid #d0d6e0; outline-offset:3px; }
+  ::selection { color:#08090a; background:#e4f222; }
+  @media(prefers-reduced-motion:reduce) {
+    *,*::before,*::after { animation-duration:.01ms !important; transition-duration:.01ms !important; scroll-behavior:auto !important; }
   }
+}
+@layer components {
+  .kit-card,.kit-card-interactive { background:#0f1011; border:1px solid #23252a; border-radius:12px; padding:20px; }
+  .kit-card-interactive { transition:background .15s,border-color .15s; cursor:pointer; }
+  .kit-card-interactive:hover { background:#161718; border-color:#383b3f; }
+  .toggle-switch { display:inline-flex; align-items:center; cursor:pointer; }
+  .toggle-switch input { appearance:none; width:40px; height:24px; background:#383b3f; border-radius:999px; cursor:pointer; position:relative; transition:background .15s; }
+  .toggle-switch input:checked { background:#e4f222; }
+  .toggle-switch input::before { content:''; position:absolute; width:18px; height:18px; border-radius:50%; background:#f4f4f5; top:3px; left:3px; transition:left .15s; }
+  .toggle-switch input:checked::before { left:19px; background:#08090a; }
+  .toggle-switch input:disabled { opacity:.5; cursor:not-allowed; }
 }

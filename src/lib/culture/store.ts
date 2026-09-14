@@ -3,7 +3,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { createAdminClient } from '../supabase/admin'
 import { studioHolidays } from './holidays'
 import { cultureRpcRow } from './rpc'
-import { memeSchema, newMeme, nextMidnight, validMonthDay, publicSafeText, type Meme, type CultureData, type CultureWorkspace } from './model'
+import { memeSchema, newMeme, nextMidnight, type Meme, type CultureData, type CultureWorkspace } from './model'
+import { validateLegacySeeds } from './legacy-import'
 
 export const cultureDb = (): SupabaseClient => createAdminClient() as SupabaseClient
 export const MEME_FIELDS = 'id,revision,kind,name,briefing,channel_id,template_id,status,schedule,month_day,weekday,fire_date,local_time,timezone,person_id,person_name'
@@ -60,7 +61,7 @@ export async function loadCultureData(workspaceId: string): Promise<CultureData>
     db.from('culture_memes').select(MEME_FIELDS).eq('workspace_id', workspaceId).order('created_at').limit(500),
     db.from('culture_posts').select('id,meme_id,name,occurrence_key,channel_id,status,created_at,posted_at,slack_ts,error').eq('workspace_id', workspaceId).order('created_at', { ascending: false }).limit(100),
     db.from('team_members').select('slack_user_id,name').eq('workspace_id', workspaceId).not('slack_user_id', 'is', null).limit(1000),
-    cultureChannels(workspaceId).then(value => ({ value, error: null })).catch(() => ({ value: [], error: 'Channel verification is unavailable. Changes are disabled until Slack reconnects.' })),
+    cultureChannels(workspaceId).then(value => ({ value, error: null })).catch(() => ({ value: [], error: 'Slack channel verification is unavailable. You can still pause rules or save drafts; enabling requires Slack to reconnect.' })),
   ])
   if (memes.error || posts.error || people.error) throw new Error('Culture Center could not load its saved records.')
   const saved = (memes.data || []).map(row => memeSchema.parse(row))
@@ -76,7 +77,9 @@ export async function saveMeme(workspaceId: string, actor: string, input: unknow
   const item = memeSchema.parse(input)
   if (item.status === 'enabled' && !confirmed) throw new Error('Review the destination, schedule and public-safe wording before enabling.')
   if (!legacyKey && item.revision === 0 && item.status !== 'draft') throw new Error('Save new memes as drafts first.')
-  await verifyDestination(workspaceId, item.channel_id)
+  // Stopping a rule must not depend on the provider we are trying to stop.
+  // Non-posting records remain workspace scoped, validated and audited below.
+  if (item.status === 'enabled') await verifyDestination(workspaceId, item.channel_id)
   if (item.person_id) {
     const db = cultureDb()
     const { data, error } = await db.from('team_members').select('slack_user_id').eq('workspace_id', workspaceId).eq('slack_user_id', item.person_id).maybeSingle()
@@ -106,14 +109,13 @@ export async function initializeCulture(workspaceId: string, actor: string, chan
   const seeds: Array<Meme & { legacy_key: string }> = []
   for (const kind of ['timesheet', 'holiday', 'delivery'] as const) seeds.push({ ...newMeme(kind, channel, timezone, randomUUID()), status: 'enabled', legacy_key: kind })
   for (const b of birthdays.data || []) {
-    if (!validMonthDay(b.month_day) || !b.full_name || !publicSafeText(b.full_name)) throw new Error('A legacy birthday needs a valid name and date before importing.')
     seeds.push({ ...newMeme('birthday', channel, timezone, randomUUID()), name: `${b.full_name}’s birthday`, person_id: b.slack_user_id, person_name: b.full_name, month_day: b.month_day, status: 'enabled', legacy_key: `birthday:${b.slack_user_id}` })
   }
   for (const row of scheduled.data || []) {
     const legacyKey = `scheduled:${row.fire_date}:${row.label}`
-    if (!seeds.some(item => item.legacy_key === legacyKey)) seeds.push({ ...newMeme('custom', channel, timezone, randomUUID()), name: row.label.slice(0, 100), briefing: row.label, fire_date: row.fire_date, status: 'draft', legacy_key: legacyKey })
+    if (!seeds.some(item => item.legacy_key === legacyKey)) seeds.push({ ...newMeme('custom', channel, timezone, randomUUID()), name: String(row.label || '').slice(0, 100), briefing: row.label || '', fire_date: row.fire_date, status: 'draft', legacy_key: legacyKey })
   }
-  for (const item of seeds) memeSchema.parse(Object.fromEntries(MEME_FIELDS.split(',').map(key => [key, item[key as keyof Meme]])))
+  validateLegacySeeds(seeds)
   const { error } = await db.rpc('initialize_culture', { p_workspace: workspaceId, p_actor: actor, p_channel: channel, p_timezone: timezone, p_starts_at: nextMidnight(new Date(), timezone), p_items: seeds })
   if (error) throw new Error('Culture Center setup was not saved. No schedules were changed.')
 }

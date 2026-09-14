@@ -120,6 +120,9 @@ export async function managedBirthday(app: App, personId: string, monthDay: stri
 export async function managedCelebration(app: App, label: string, fireDate: string | null, actor = 'slack'): Promise<boolean | null> {
   const config = await state(app)
   if (!config) return null
+  // An immediate celebration before handover belongs only to the legacy path.
+  // Do not create an enabled, already-expired managed rule alongside that post.
+  if (!fireDate && !active(config)) return null
   const local = localParts(new Date(), config.timezone)
   const date = fireDate || local.date
   const legacy = `scheduled:${date}:${label}`

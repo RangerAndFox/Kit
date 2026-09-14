@@ -5,8 +5,20 @@ import { deliverCulture } from './delivery'
 import { handleCulture, type CultureHttpPorts } from './http'
 import { sendCultureMessage } from './slack-send'
 import { cultureRpcRow } from './rpc'
+import { LegacyImportReviewError, validateLegacySeeds } from './legacy-import'
 
 const fixture = () => ({ ...newMeme('custom', 'C12345678', 'America/New_York', '11111111-1111-4111-8111-111111111111'), name: 'Studio wins', fire_date: '2026-09-14' })
+test('legacy preflight reports every invalid row without leaking private copy or skipping schedules', () => {
+  const good = { ...fixture(), legacy_key: 'safe' }
+  validateLegacySeeds([good])
+  assert.throws(() => validateLegacySeeds([good, {...good, briefing:'budget $5000'}, {...good, fire_date:'2026-02-30'}]), error => {
+    assert.ok(error instanceof LegacyImportReviewError)
+    assert.equal(error.issues.length, 2)
+    assert.match(error.message, /row 2.*row 3/)
+    assert.doesNotMatch(error.message, /5000|budget/)
+    return true
+  })
+})
 test('single-row RPC responses support PostgREST arrays and singular objects without accepting ambiguity', () => {
   assert.deepEqual(cultureRpcRow([fixture()]), fixture())
   assert.deepEqual(cultureRpcRow(fixture()), fixture())
@@ -67,6 +79,14 @@ test('acknowledgement persistence failure becomes review, never a second Slack s
     finish: async status => { statuses.push(status); if (status === 'posted') throw new Error('database outage') },
   }), false)
   assert.equal(sends, 1); assert.deepEqual(statuses, ['posted', 'review'])
+})
+test('a second acknowledgement failure does not throw or resend', async () => {
+  let sends = 0
+  assert.equal(await deliverCulture({ beginSend: async () => true,
+    prepareAndPost: async before => { await before(); sends++; return { posted: true, ts: '123' } },
+    finish: async () => { throw new Error('database outage') },
+  }), false)
+  assert.equal(sends, 1)
 })
 function ports(allowed = true) {
   const calls: unknown[][] = []

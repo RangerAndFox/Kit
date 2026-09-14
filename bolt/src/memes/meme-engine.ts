@@ -181,8 +181,10 @@ export async function postMeme(
   const template = pickTemplate(CELEBRATION_TEMPLATES, opts.templateIndex)
   const publicBriefing = opts.publicOccasion && Object.hasOwn(PUBLIC_MEME_BRIEFINGS, opts.publicOccasion)
     ? PUBLIC_MEME_BRIEFINGS[opts.publicOccasion] : null
-  const boxes = await generateCaption(template, publicBriefing || briefing).catch(() => [])
-  if (!publicSafeText(boxes.join(' '))) throw new Error('Meme wording requires private review.')
+  const generated = await generateCaption(template, publicBriefing || briefing).catch(() => [])
+  // Discard unsafe model output, not the entire occasion. The approved headline
+  // remains, and neither Slack nor the public renderer receives the caption.
+  const boxes = publicSafeText(generated.join(' ')) ? generated : []
   const imageUrl = publicBriefing && boxes.some(Boolean) ? await renderMemeImage(template, boxes) : null
 
   const blocks: any[] = [{ type: 'section', text: { type: 'mrkdwn', text: headline } }]

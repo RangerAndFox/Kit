@@ -99,13 +99,12 @@ export function ControlCenter({ initialData }: { initialData: ControlCenterPaylo
         <header className={stylesModule.hero}>
           <div className={stylesModule.heroCopy}>
             <div className={stylesModule.kicker}>
-              <strong>{data.workspace.name} / Founder view</strong>
-              <span>Operational intelligence / 2026</span>
+              <strong>{data.workspace.name} / Workspace overview</strong>
             </div>
             <div>
-              <h1 className={stylesModule.heroTitle}>Control<br /><span>Center</span></h1>
+              <h1 className={stylesModule.heroTitle}>Control Center</h1>
               <p className={stylesModule.heroDescription}>
-                Live health, queues, usage and project operations. A single operational view across Kit’s connected studio systems.
+                Health, activity and the work moving through your studio.
               </p>
             </div>
           </div>
@@ -168,7 +167,7 @@ export function ControlCenter({ initialData }: { initialData: ControlCenterPaylo
           </Panel>
 
           <Panel title="Integrations" icon={CloudCog} eyebrow="Provider state / 02" action={<Link href="/status" className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.1em] text-[#00ff66] hover:text-[#8affb2]">Technical status <ExternalLink size={12} /></Link>}>
-            <div className="space-y-2">
+            <div className={stylesModule.integrationGrid}>
               {data.integrations.map((check) => <HealthRow key={check.key} check={check} />)}
               {!data.integrations.length ? <EmptyState icon={CloudCog} title="No checks available" detail="The live health probe did not return integration data." /> : null}
             </div>

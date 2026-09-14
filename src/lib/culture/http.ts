@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { memeSchema, validTimezone, type CultureData } from './model'
+import { LegacyImportReviewError } from './legacy-import'
 
 const Input = z.discriminatedUnion('action', [
   z.object({ action: z.literal('initialize'), channel: z.string().regex(/^[CG][A-Z0-9]{8,}$/), timezone: z.string().max(80).refine(validTimezone), confirmed: z.literal(true) }).strict(),
@@ -45,7 +46,10 @@ export async function handleCulture(request: Request, ports: CultureHttpPorts): 
     // Do not reload after mutation: an unrelated Slack lookup failure must not
     // turn a successful save into a false failure and encourage duplicate adds.
     return json({ ok: true })
-  } catch {
+  } catch (cause) {
+    // No raw exception/body: provider errors can contain private record values.
+    console.error('[culture-center] request_failed', { method: request.method, workspaceId: access.workspaceId, code: cause instanceof LegacyImportReviewError ? cause.code : 'operation_failed' })
+    if (cause instanceof LegacyImportReviewError) return json({ error: cause.message }, 409)
     return json({ error: request.method === 'GET' ? 'Culture Center is unavailable. Check the migration and Slack connection.' : 'Not saved. Refresh for current changes, verify the employee/channel, and check for an existing birthday or a post currently sending.' }, 409)
   }
 }

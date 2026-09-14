@@ -17,7 +17,7 @@ vi.mock('../../src/lib/culture/store', () => ({
 }))
 vi.mock('../src/memes/meme-engine', () => ({ CELEBRATION_TEMPLATES: [{id:'61544'}], postMeme: mocks.post }))
 vi.mock('../src/memes/timesheet-meme', () => ({ postWeeklyTimesheetMeme: vi.fn(), weekIndexFromMs: () => 1 }))
-import { cultureIsActive, postCultureItem } from '../src/culture/runner'
+import { cultureIsActive, managedCelebration, postCultureItem } from '../src/culture/runner'
 const config = { workspace_id: '11111111-1111-4111-8111-111111111111', starts_at: '2020-01-01T00:00:00Z', default_channel_id: 'C12345678', timezone: 'UTC', heartbeat_at: null }
 const item = { ...newMeme('delivery','C12345678','UTC','22222222-2222-4222-8222-222222222222'), revision:1, status:'enabled' as const }
 const app = () => ({ client: { auth: { test: async () => ({ ok:true, team_id:'T12345678' }) } } }) as unknown as App
@@ -68,4 +68,11 @@ it('a mismatched/unmapped Slack team fails closed', async () => {
   mocks.workspace.mockRejectedValue(new Error('unknown team'))
   await expect(cultureIsActive(app())).rejects.toThrow('unknown team')
   expect(mocks.lookup).not.toHaveBeenCalled()
+})
+it('an immediate celebration before handover creates no managed record', async () => {
+  mocks.lookup.mockResolvedValue({data:{...config, starts_at:new Date(Date.now()+3600000).toISOString()},error:null})
+  expect(await managedCelebration(app(),'Studio wins',null)).toBeNull()
+  expect(mocks.lookup).toHaveBeenCalledTimes(1)
+  expect(mocks.rpc).not.toHaveBeenCalled()
+  expect(mocks.post).not.toHaveBeenCalled()
 })

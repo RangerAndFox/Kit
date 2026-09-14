@@ -62,11 +62,21 @@ describe('image caption boundary', () => {
 })
 
 describe('Slack delivery and public-image privacy', () => {
-  it('rejects generated financial/contact details before posting or rendering', async () => {
+  it('drops unsafe generated captions and posts only the approved headline', async () => {
     captions(['Our budget is $5000', 'Contact private@example.test'])
     const { app, postMessage } = slack()
-    await expect(postMeme(app, { channel: 'C_FIXTURE', headline: 'A studio win', briefing: 'Celebrate teamwork', templateIndex: 1 })).rejects.toThrow()
-    expect(postMessage).not.toHaveBeenCalled()
+    expect((await postMeme(app, { channel: 'C_FIXTURE', headline: 'A studio win', briefing: 'Celebrate teamwork', templateIndex: 1 })).posted).toBe(true)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(postMessage.mock.calls)).not.toMatch(/5000|private@example|budget/)
+    expect(postMessage.mock.calls[0][0].blocks).toHaveLength(1)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+  it('uses a safe timesheet reminder when the generated caption is unsafe', async () => {
+    captions(['Our budget is $5000', 'Contact private@example.test'])
+    const { app, postMessage } = slack()
+    expect((await postWeeklyTimesheetMeme(app, 1)).posted).toBe(true)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(postMessage.mock.calls)).not.toMatch(/5000|private@example|budget/)
     expect(fetchMock).not.toHaveBeenCalled()
   })
   it('uses only a generic occasion for image generation, keeping project details out of the prompt', async () => {
