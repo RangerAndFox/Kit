@@ -27,6 +27,7 @@ import {
 import { generateWorkback } from './workback'
 import type { CreationSubmission } from './render'
 import type { ProjectSupplement } from './views'
+import { OFFBOARD_METADATA_KEY, parseExclusion, projectAssignmentView, type AssignmentExclusion } from '../artist-access/assignments'
 
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 const SCOPES = [
@@ -100,6 +101,28 @@ export async function readSpreadsheetValues(
 }
 
 type Transport = <T>(method: string, url: string, body?: unknown) => Promise<T>
+
+async function readArtistExclusions(config: WorkbookConfig): Promise<AssignmentExclusion[]> {
+  const data = await api<{matchedDeveloperMetadata?:Array<{developerMetadata?:{metadataValue?:string}}>}>('POST',`${SHEETS_BASE}/${config.spreadsheetId}/developerMetadata:search`,{
+    dataFilters:[{developerMetadataLookup:{metadataKey:OFFBOARD_METADATA_KEY}}],
+  })
+  return (data.matchedDeveloperMetadata || []).map(row=>parseExclusion(row.developerMetadata?.metadataValue || ''))
+}
+
+/** Project-specific, idempotent projection of the access ledger. No assignment
+ * values, files, global People entries or historical rows are deleted. */
+export async function recordArtistOffboardingInSheet(config: WorkbookConfig, exclusion: AssignmentExclusion): Promise<void> {
+  if (config.assignmentsSheetId==null) throw new Error('Daily Assignments is not configured')
+  const existing = await readArtistExclusions(config)
+  const matching = (row: AssignmentExclusion) => row.engagementId===exclusion.engagementId && row.projectNumber===exclusion.projectNumber && row.person===exclusion.person && row.lastWorkingDate===exclusion.lastWorkingDate
+  if (existing.some(row=>row.engagementId===exclusion.engagementId && !matching(row))) throw new Error('Assignment exclusion conflicts with the recorded identity')
+  if (existing.some(matching)) return
+  await api('POST',`${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`,{requests:[{createDeveloperMetadata:{developerMetadata:{
+    metadataKey:OFFBOARD_METADATA_KEY,metadataValue:JSON.stringify(exclusion),visibility:'DOCUMENT',location:{spreadsheet:true},
+  }}}]})
+  const verified=await readArtistExclusions(config)
+  if (!verified.some(matching)) throw new Error('Assignment exclusion was not verified')
+}
 
 async function httpTransport<T>(method: string, url: string, body?: unknown): Promise<T> {
   const token = await getAccessToken()
@@ -1047,7 +1070,7 @@ async function sheetHasProject(config: WorkbookConfig, sheetId: number, projectN
 async function readTableRows(config: WorkbookConfig, sheetId: number | undefined, headers: readonly string[]): Promise<Array<Record<string, string>>> {
   if (sheetId == null) return []
   const data = await getGridData(config, { startRowIndex: config.headerRow, startColumnIndex: 0, endColumnIndex: headers.length }, 'formattedValue,effectiveValue,hyperlink', sheetId)
-  return data.flatMap((r) => {
+  const rows = data.flatMap((r) => {
     if (!normalizeCell(r.values?.[0]).display.trim()) return []
     const row: Record<string, string> = {}
     headers.forEach((h, i) => {
@@ -1065,6 +1088,7 @@ async function readTableRows(config: WorkbookConfig, sheetId: number | undefined
     })
     return [row]
   })
+  return headers.includes('Daily Assignment') ? projectAssignmentView(rows,await readArtistExclusions(config)) : rows
 }
 
 async function readTableForProject(config: WorkbookConfig, sheetId: number | undefined, headers: readonly string[], projectNumber: string): Promise<Array<Record<string, string>>> {

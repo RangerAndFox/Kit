@@ -18,6 +18,9 @@ import { rehydrateProjectExternalLinks } from './rehydrate'
 import { postNdaCardIfFirstTimer } from './nda/send'
 import { ensureDailyAssignmentPerson } from '../../../src/lib/project-control/sheets'
 import { workbookConfigFromEnv } from '../../../src/lib/project-control/types'
+import { beginOnboarding, recordGrant, finishOnboarding } from '../../../src/lib/artist-access/store'
+import type { Engagement } from '../../../src/lib/artist-access/types'
+import { commandActor } from '../handlers/natural-commands'
 
 async function loadProject(projectId: string): Promise<OnboardingProject | null> {
   const sb = createAdminClient()
@@ -98,6 +101,23 @@ function composeWelcomeDm(opts: {
 export async function runOnboarding(opts: {
   app: App
   input: OnboardingInput
+}) {
+  // Re-check authorization at the actual side-effect boundary, including old
+  // onboarding cards and modal submissions. No default/first workspace fallback.
+  const {user} = await commandActor(opts.app.client,opts.input.requestedBy,'')
+  if (!['admin','producer'].includes(user.tier)) throw new Error('Onboarding requires producer/admin access.')
+  const {data:project,error} = await createAdminClient().from('projects').select('id').eq('id',opts.input.projectId).eq('workspace_id',user.workspaceId).maybeSingle()
+  if (error || !project) throw new Error('Project is not in your verified workspace.')
+  const hold = await beginOnboarding(user.workspaceId,project.id,opts.input.artistEmail,opts.input.artistName,opts.input.requestedBy)
+  const result = await runTrackedOnboarding({...opts,hold})
+  await finishOnboarding(hold.engagement,hold.owner,opts.input.requestedBy)
+  return result
+}
+
+async function runTrackedOnboarding(opts: {
+  app: App
+  input: OnboardingInput
+  hold: {engagement: Engagement; owner: string}
 }): Promise<{
   onboardingId: string | null
   results: Record<string, ServiceResult>
@@ -184,20 +204,37 @@ export async function runOnboarding(opts: {
     project.external_links?.slack_channel_id ||
     null
 
+  const checkpointFailures: string[] = []
+  async function tracked(service: 'slack'|'dropbox'|'frameio'|'harvest', operation: Promise<ServiceResult>): Promise<ServiceResult> {
+    let result: ServiceResult
+    try { result = await operation } catch { result = {status:'failed',message:'Service invitation needs review.'} }
+    const grant = {
+      status:result.status,
+      ...(service==='slack' ? {resource:projectChannelId || undefined,subject:result.slackUserId,invite:result.externalId ? String(result.externalId) : undefined} : {}),
+      ...(service==='dropbox' ? {resource:result.externalId ? String(result.externalId) : undefined,subject:input.artistEmail.toLowerCase().trim()} : {}),
+      ...(service==='frameio' ? {resource:project!.external_links?.frameio_id || project!.external_links?.frameio_project_id,subject:result.externalId ? String(result.externalId) : undefined,account:process.env.FRAMEIO_ACCOUNT_ID} : {}),
+      ...(service==='harvest' ? {resource:project!.external_links?.harvest_id || project!.external_links?.harvest_project_id,subject:result.externalId ? String(result.externalId) : undefined} : {}),
+    }
+    try { await recordGrant(opts.hold.engagement,opts.hold.owner,input.requestedBy,service,grant) }
+    catch { checkpointFailures.push(service) }
+    return result
+  }
+
   const settled = await Promise.allSettled([
-    inviteArtistToSlack({
+    tracked('slack',inviteArtistToSlack({
       email: input.artistEmail,
       fullName: input.artistName,
       projectChannelId,
-    }),
-    inviteArtistToDropbox({ project, artistEmail: input.artistEmail }),
-    inviteArtistToFrameIo({ project, artistEmail: input.artistEmail }),
-    inviteArtistToHarvest({
+    })),
+    tracked('dropbox',inviteArtistToDropbox({ project, artistEmail: input.artistEmail })),
+    tracked('frameio',inviteArtistToFrameIo({ project, artistEmail: input.artistEmail })),
+    tracked('harvest',inviteArtistToHarvest({
       project,
       artistEmail: input.artistEmail,
       artistName: input.artistName,
-    }),
+    })),
   ])
+  if (checkpointFailures.length) throw new Error('Access recording failed. Onboarding is held for administrator reconciliation; do not repeat invitations.')
   // One service throwing must not abort the others (or the NDA + tracking
   // below). A rejected invite becomes a failed ServiceResult.
   const asResult = (s: PromiseSettledResult<ServiceResult>, name: string): ServiceResult =>

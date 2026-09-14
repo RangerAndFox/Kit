@@ -203,6 +203,9 @@ function kitAddRowFromSidebar(payload) {
   if (payload.sheetName !== 'Projects' && projectIds.indexOf(projectId) === -1) {
     throw new Error('Project ID ' + projectId + ' was not found in Projects.');
   }
+  if (payload.sheetName === 'Daily Assignments' && !kitArtistCanBeAssigned_(projectId, submitted['Person'])) {
+    throw new Error('This artist has been offboarded from this project. Choose another person; their other projects are unaffected.');
+  }
 
   if (config.uniqueProject) {
     var existing = sheet.getRange(KIT_HEADER_ROW_ + 1, 1, sheet.getMaxRows() - KIT_HEADER_ROW_, 1)
@@ -388,6 +391,26 @@ function spreadsheetToast_(message) {
   SpreadsheetApp.getActive().toast(message, 'Kit', 4);
 }
 
+// Service-written projection of project offboarding; no emails or private notes.
+// Retain the global People roster so other projects and past rows remain valid.
+function kitArtistCanBeAssigned_(projectId, person) {
+  var key = function (value) { return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase(); };
+  var records = SpreadsheetApp.getActive().createDeveloperMetadataFinder().withKey('kit_artist_offboarded').find();
+  return !records.some(function (entry) {
+    var row = JSON.parse(entry.getValue());
+    if (!row || !row.projectNumber || !row.person) throw new Error('Artist access metadata needs administrator review.');
+    return String(row.projectNumber) === String(projectId).trim() && key(row.person) === key(person);
+  });
+}
+
+function kitAssignablePeople(projectId) {
+  var sheet = SpreadsheetApp.getActive().getSheetByName('Lists');
+  if (!sheet) throw new Error('People roster unavailable.');
+  return sheet.getRange('D5:D100').getDisplayValues().map(function(row) { return row[0]; }).filter(function(name) {
+    return name && kitArtistCanBeAssigned_(projectId, name);
+  });
+}
+
 function buildKitAddRowHtml_(sheetName, fields, note) {
   var fieldHtml = fields.map(function (field) {
     var label = escapeKitHtml_(field.header) + (field.required ? ' <span class="required">*</span>' : '');
@@ -399,8 +422,8 @@ function buildKitAddRowHtml_(sheetName, fields, note) {
           ? ''
           : String(field.defaultValue);
     var control;
-    if (field.options && field.options.length) {
-      var options = ['<option value="">Select…</option>'].concat(field.options.map(function (option) {
+    if ((field.options && field.options.length) || field.header === 'Person') {
+      var options = ['<option value="">Select…</option>'].concat((field.options || []).map(function (option) {
         var selected = String(option) === value ? ' selected' : '';
         return '<option value="' + escapeKitHtml_(option) + '"' + selected + '>' + escapeKitHtml_(option) + '</option>';
       })).join('');
@@ -431,7 +454,14 @@ function buildKitAddRowHtml_(sheetName, fields, note) {
     'button.disabled=true;status.className="status";status.textContent="Adding row…";' +
     'google.script.run.withSuccessHandler(function(result){status.className="status success";status.textContent="Added row "+result.row+".";setTimeout(function(){google.script.host.close();},700);})' +
     '.withFailureHandler(function(error){button.disabled=false;status.className="status error";status.textContent=(error&&error.message)||String(error);})' +
-    '.kitAddRowFromSidebar({sheetName:' + JSON.stringify(sheetName) + ',values:values});}</script></body></html>';
+    '.kitAddRowFromSidebar({sheetName:' + JSON.stringify(sheetName) + ',values:values});}' +
+    (sheetName === 'Daily Assignments' ?
+      'var projectInput=Array.from(document.querySelectorAll("[data-header]")).find(function(el){return el.getAttribute("data-header")==="Project ID";}),personInput=document.querySelector("[data-header=Person]");' +
+      'function refreshPeople(){if(!projectInput||!personInput)return;var selected=projectInput.value;personInput.disabled=true;' +
+      'google.script.run.withSuccessHandler(function(names){if(projectInput.value!==selected)return;personInput.replaceChildren(new Option("Select…",""));names.forEach(function(name){personInput.add(new Option(name,name));});personInput.disabled=false;})' +
+      '.withFailureHandler(function(){document.getElementById("status").textContent="Artist access could not be verified. Please reopen the form.";}).kitAssignablePeople(selected);}' +
+      'if(projectInput&&personInput){projectInput.addEventListener("change",refreshPeople);refreshPeople();}' : '') +
+    '</script></body></html>';
 }
 
 function escapeKitHtml_(value) {

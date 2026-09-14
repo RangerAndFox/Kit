@@ -8,6 +8,11 @@ type Guide = { title: string; steps: string[]; next: string; start?: KitCommandR
 
 /** Product instructions, not project data. Keep aligned with the canonical handlers. */
 export const COMMAND_GUIDES: Record<KitCommandName, Guide> = {
+  offboard: {
+    title:'Offboard an artist from a project',
+    steps:['A producer/admin selects the exact project and artist in the private offboarding picker.', 'Review the memberships to remove, then choose Offboard, Edit or Cancel. No files, time logs, paperwork, other projects or shared accounts are deleted.', 'Check every service result. Retry failed steps; resolve inherited permissions, public links or unsupported invitations manually. The person remains available for other projects.'],
+    next:'Want me to open the private offboarding review now?',start:{command:'offboard',args:''},
+  },
   onboard: {
     title: 'Onboard an artist',
     steps: ['Choose the project in the private onboarding form.', 'Enter the artist’s correct full name and email; add their legal/entity name if needed. Review and correct the details before selecting Onboard.', 'Kit attempts the configured project invitations, including Slack, Dropbox and Frame.io, and adds the artist to the Daily Assignments people list when Project Control is configured. Check the per-service result for anything needing attention.'],
@@ -49,7 +54,7 @@ export function isGuidanceQuestion(text: string): boolean {
   const value = normalizeCommandRequest(text)
   return /^(?:how\s+(?:do|does|can|could|would|should|to)\b|(?:show|tell|teach|walk|talk|guide)\s+(?:me|us)\s+(?:how|through)\b|(?:explain|instructions|guidance|walkthrough|tutorial)\b|what(?:'s| is| are)\s+(?:the\s+)?(?:process|steps|way)\b)/i.test(value)
     || /^what\s+do\s+(?:i|we)\s+need\s+(?:to|for)\b/i.test(value)
-    || /^(?:what (?:is|does)|what's|tell me about)\b.*\b(?:onboarding|archiving|provisioning|storyboards?|delivery profiles?|backfill|accessibility|srt conversion|kit commands?|kit functions?)\b/i.test(value)
+    || /^(?:what (?:is|does)|what's|tell me about)\b.*\b(?:onboarding|offboarding|archiving|provisioning|storyboards?|delivery profiles?|backfill|accessibility|srt conversion|kit commands?|kit functions?)\b/i.test(value)
     || /\b(?:need|want|like)\s+(?:some\s+)?(?:guidance|instructions|a walkthrough|pointers)\b/i.test(text)
 }
 
@@ -57,11 +62,12 @@ export function parseGuidanceCommand(text: string): KitCommandName | null {
   if (!isGuidanceQuestion(text)) return null
   const matches: KitCommandName[] = []
   const topics: [KitCommandName, RegExp][] = [
+    ['offboard', /\b(?:offboard\w*|remov\w*\s+(?:(?:an?|the)\s+)?(?:artist|freelancer|contractor))\b/i],
     ['onboard', /\b(?:onboard\w*|(?:add(?:ing)?|invit\w*|set\w*\s+up|get\w*)\b.*\b(?:artist|freelancer|contractor))\b/i],
     ['newproject', /\b(?:creat\w*|new|provision\w*|start|set up)\b.*\bproject\b/i],
     ['update', /\b(?:edit|updat\w*|change)\b.*\bproject\b/i],
     ['archive', /\b(?:archiv\w*|portfolio|behance|vimeo|wordpress|social drafts)\b/i],
-    ['delete', /\b(?:delet\w*|remov\w*)\b.*\bproject\b/i],
+    ['delete', /\b(?:delet\w*|remov\w*)\s+(?:(?:a|the)\s+)?project\b/i],
     ['dashboard', /\b(?:dashboard|control center|health and usage)\b/i],
     ['storyboard', /\b(?:storyboard\w*|boords|elevenlabs)\b/i],
     ['status', /\bproject (?:status|tracking)\b/i],
