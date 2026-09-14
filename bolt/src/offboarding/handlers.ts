@@ -16,6 +16,11 @@ type Identity = { workspace: string; actor: string; dm: string }
 type ActionBody = { user: {id:string}; team?: {id?:string}; channel?: {id?:string}; message?: {ts?:string} }
 type Action = { action_id: string; value?: string; selected_option?: {value:string} }
 type Project = {id:string;name:string;project_code:string|null;external_links:unknown}
+export function latestArtistRoster<T extends {artist_email:string}>(rows: T[]): T[] {
+  const people=new Map<string,T>()
+  for (const row of rows) {const key=row.artist_email.trim().toLowerCase();if (!people.has(key)) people.set(key,row)}
+  return [...people.values()]
+}
 const db = () => createAdminClient()
 const object = (value: unknown) => value && typeof value==='object' && !Array.isArray(value) ? value as Record<string,unknown> : {}
 const button = (label:string, action:string, value:string) => ({type:'button' as const,text:{type:'plain_text' as const,text:label},action_id:`kit_offboard_${action}`,value})
@@ -28,10 +33,14 @@ export async function offboardingIdentity(client: Client, actor: string, team: s
   if (!dm.ok || !dm.channel?.id?.startsWith('D')) throw new Error('Private conversation unavailable')
   return {workspace:resolved.user.workspaceId,actor,dm:dm.channel.id}
 }
-async function projects(identity: Identity): Promise<Project[]> {
-  const {data,error} = await db().from('projects').select('id,name,project_code,external_links').eq('workspace_id',identity.workspace).order('name').limit(101)
-  if (error || (data || []).length>100) throw new Error('Project picker needs administrator review')
-  return data || []
+export function projectPageRange(page: number): [number,number] {
+  if (!Number.isInteger(page) || page<0 || page>1000) throw new Error('Invalid project page')
+  return [page*90,page*90+90]
+}
+async function projectById(identity: Identity, id: string): Promise<Project> {
+  const {data,error} = await db().from('projects').select('id,name,project_code,external_links').eq('workspace_id',identity.workspace).eq('id',id).maybeSingle()
+  if (error || !data) throw new Error('Project unavailable')
+  return data
 }
 async function post(client: Client, identity: Identity, blocks: KnownBlock[], ts?: string) {
   const payload = {channel:identity.dm,text:'Artist offboarding — project access only',blocks}
@@ -40,24 +49,29 @@ async function post(client: Client, identity: Identity, blocks: KnownBlock[], ts
 }
 export async function openOffboarding(client: Client, actor: string, team: string, hint = '') {
   const identity = await offboardingIdentity(client,actor,team)
-  const rows = await projects(identity)
+  await chooseProject(client,identity,0,undefined,hint)
+}
+async function chooseProject(client: Client, identity: Identity, page: number, ts?: string, hint='') {
+  const {data,error} = await db().from('projects').select('id,name,project_code,external_links').eq('workspace_id',identity.workspace).order('name').order('id').range(...projectPageRange(page))
+  if (error) throw new Error('Project picker unavailable')
+  const rows=(data || []).slice(0,90)
   if (!rows.length) { await post(client,identity,[section('No projects are available to offboard from.')]); return }
   await post(client,identity,[section('*Offboard an artist from a project*\nChoose the exact project, then the artist. Nothing is removed until you confirm.'),
     ...(hint ? [section(`Your request: ${safeLabel(hint.slice(0,500))}\nThe picker below determines the actual target.`)] : []),
-    {type:'actions',elements:[{type:'static_select',action_id:'kit_offboard_project',placeholder:{type:'plain_text',text:'Choose project'},options:rows.map(p=>({text:{type:'plain_text',text:`${projectNumberFromCode(p.project_code)} — ${p.name}`.slice(0,75)},value:p.id}))}]}])
+    {type:'actions',elements:[{type:'static_select',action_id:'kit_offboard_project',placeholder:{type:'plain_text',text:`Choose project · page ${page+1}`},options:rows.map(p=>({text:{type:'plain_text',text:`${projectNumberFromCode(p.project_code)} — ${p.name}`.slice(0,75)},value:p.id}))}]},
+    {type:'actions',elements:[...(page>0?[button('Previous projects','page',String(page-1))]:[]),...((data || []).length>90?[button('More projects','page',String(page+1))]:[]),button('Cancel','dismiss','none')]}],ts)
 }
 async function chooseArtist(client: Client, identity: Identity, projectId: string, ts?: string) {
-  if (!(await projects(identity)).some(p=>p.id===projectId)) throw new Error('Project unavailable')
+  await projectById(identity,projectId)
   const {data,error} = await db().from('freelancer_onboardings').select('id,artist_name,artist_email').eq('project_id',projectId).order('created_at',{ascending:false}).limit(1001)
   if (error || (data || []).length>1000) throw new Error('Artist history needs administrator review')
-  const unique = [...new Map((data || []).map(row=>[row.artist_email.trim().toLowerCase(),row])).values()]
+  const unique = latestArtistRoster(data || [])
   if (!unique.length || unique.length>100) { await post(client,identity,[section('No unambiguous onboarding roster is available. Ask an administrator to reconcile project access; nothing has been removed.')],ts); return }
   await post(client,identity,[section('*Choose the artist*\nKit uses their recorded email and project identity—not a guessed name.'),
     {type:'actions',elements:[{type:'static_select',action_id:'kit_offboard_artist',placeholder:{type:'plain_text',text:'Choose artist'},options:unique.map(row=>({text:{type:'plain_text',text:`${row.artist_name} · ${row.artist_email}`.slice(0,75)},value:`${projectId}:${row.id}`}))},button('Cancel','dismiss','none')]}],ts)
 }
 async function snapshotFor(identity: Identity, projectId: string, onboardingId: string): Promise<OffboardSnapshot> {
-  const project = (await projects(identity)).find(p=>p.id===projectId)
-  if (!project) throw new Error('Project unavailable')
+  const project = await projectById(identity,projectId)
   const {data:history,error} = await db().from('freelancer_onboardings').select('artist_name,artist_email,artist_slack_user_id').eq('id',onboardingId).eq('project_id',projectId).maybeSingle()
   if (error || !history) throw new Error('Artist identity unavailable')
   const {data:members,error:membersError}=await db().from('team_members').select('email,role').eq('workspace_id',identity.workspace)
@@ -87,7 +101,7 @@ export function offboardingOutcome(request: OffboardRequest): KnownBlock[] {
   return blocks
 }
 export function registerOffboardingHandlers(app: App): void {
-  app.action(/^kit_offboard_(project|artist|confirm|retry|edit|cancel|dismiss)$/,async ({ack,body,action,client})=>{
+  app.action(/^kit_offboard_(page|project|artist|confirm|retry|edit|cancel|dismiss)$/,async ({ack,body,action,client})=>{
     await ack()
     const b=body as unknown as ActionBody; const a=action as unknown as Action
     let identity: Identity | undefined
@@ -96,6 +110,7 @@ export function registerOffboardingHandlers(app: App): void {
       if (b.channel?.id!==identity.dm) throw new Error('Use the private offboarding card')
       const value=a.selected_option?.value || a.value || ''; const op=a.action_id.slice('kit_offboard_'.length)
       if (op==='dismiss') {await post(client,identity,[section('Cancelled. Nothing removed.')],b.message?.ts);return}
+      if (op==='page') {await chooseProject(client,identity,Number(value),b.message?.ts);return}
       if (op==='project') {await chooseArtist(client,identity,value,b.message?.ts);return}
       if (op==='artist') {
         const [project,id]=value.split(':'); const snapshot=await snapshotFor(identity,project,id)

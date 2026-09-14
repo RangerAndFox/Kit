@@ -2,7 +2,7 @@ import {beforeEach,afterEach,it,expect,vi} from 'vitest'
 import {runOffboarding,type OffboardingPorts} from '../../src/lib/artist-access/workflow'
 import {OFFBOARD_STEPS,type OffboardRequest,type OffboardSnapshot} from '../../src/lib/artist-access/types'
 import {removeFrameArtist,removeSlackArtist,removeDropboxArtist} from '../../src/lib/artist-access/providers'
-import {offboardingReview,offboardingOutcome,offboardingIdentity} from '../src/offboarding/handlers'
+import {offboardingReview,offboardingOutcome,offboardingIdentity,projectPageRange,latestArtistRoster} from '../src/offboarding/handlers'
 import {commandActor} from '../src/handlers/natural-commands'
 import {parseFastCommand} from '../src/handlers/command-catalog'
 import {parseGuidanceCommand} from '../src/handlers/command-guidance'
@@ -47,6 +47,14 @@ it.each(['Do not offboard Alex','How do I offboard an artist?','"offboard Alex"'
 it('guidance describes offboarding, not project deletion',()=>expect(parseGuidanceCommand('How do I remove an artist from a project?')).toBe('offboard'))
 it('preserves literal project and person hints',()=>expect(parseFastCommand('remove Alex from project 2637')).toEqual({command:'offboard',args:'Alex from project 2637'}))
 it('explains offboarding without starting it',()=>expect(parseGuidanceCommand('What is offboarding?')).toBe('offboard'))
+it('pages large project rosters below Slack limits and rejects invalid page values',()=>{
+ expect(projectPageRange(0)).toEqual([0,90]);expect(projectPageRange(2)).toEqual([180,270])
+ for(const value of [-1,NaN,Infinity,1.5,1001])expect(()=>projectPageRange(value)).toThrow('Invalid')
+})
+it('uses the newest corrected identity when onboarding history contains retries',()=>{
+ const latest={artist_email:'Artist@Example.com',artist_name:'Corrected Name'}
+ expect(latestArtistRoster([latest,{artist_email:'artist@example.com',artist_name:'Old Guess'}])).toEqual([latest])
+})
 it('artists cannot even open the offboarding DM',async()=>{
  vi.mocked(commandActor).mockResolvedValue({teamId:'TSTUDIO',user:{tier:'artist',workspaceId:'w'}} as Awaited<ReturnType<typeof commandActor>>)
  const client={conversations:{open:vi.fn()}} as unknown as Parameters<typeof offboardingIdentity>[0]
