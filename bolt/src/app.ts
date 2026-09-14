@@ -46,7 +46,8 @@ const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   appToken: process.env.SLACK_APP_TOKEN,
   socketMode: true,
-  logLevel: LogLevel.DEBUG, // verbose: log every event received over Socket Mode
+  // DEBUG emits complete Slack messages and temporary interaction credentials.
+  logLevel: LogLevel.INFO,
 })
 
 // ─── Register Assistant ────────────────────────────────────
