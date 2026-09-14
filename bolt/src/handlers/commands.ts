@@ -459,12 +459,17 @@ export function registerCommandHandlers(app: App) {
           await respond({ response_type: 'ephemeral', text: 'What are we celebrating? e.g. `/kit celebrate we wrapped the shoot`' })
           break
         }
-        if (fireDate) {
-          await scheduleCelebration(label, fireDate, command.user_id)
-          await respond({ response_type: 'ephemeral', text: `:calendar: Scheduled a meme for *${label}* on ${fireDate}.` })
-        } else {
-          await celebrateNow(app, label)
-          await respond({ response_type: 'ephemeral', text: ':confetti_ball: Posted to the team channel!' })
+        try {
+          if (fireDate) {
+            await scheduleCelebration(label, fireDate, command.user_id, app)
+            await respond({ response_type: 'ephemeral', text: `:calendar: Scheduled a meme for *${label}* on ${fireDate}.` })
+          } else {
+            const posted = await celebrateNow(app, label)
+            await respond({ response_type: 'ephemeral', text: posted ? ':confetti_ball: Celebration posted!' : ':warning: No new post was confirmed. Check Culture Center before trying again.' })
+          }
+        } catch {
+          console.error('[culture-command] celebration_failed')
+          await respond({ response_type: 'ephemeral', text: ':warning: No celebration was confirmed. Check Culture Center and the destination channel before trying again. Use public-safe wording without financial or contact details.' })
         }
         break
       }
@@ -488,13 +493,18 @@ export function registerCommandHandlers(app: App) {
           const info = await client.users.info({ user: mention[1] })
           fullName = info.user?.real_name || info.user?.profile?.real_name || info.user?.name || undefined
         } catch { /* name is best-effort */ }
-        const ok = await setBirthday(mention[1], mmdd, fullName, command.user_id)
-        await respond({
-          response_type: 'ephemeral',
-          text: ok
-            ? `:birthday: Saved <@${mention[1]}>'s birthday as ${mmdd}. Kit posts a meme in the team channel on the day.`
-            : ":warning: Couldn't save that birthday — try again in a moment.",
-        })
+        try {
+          const ok = await setBirthday(mention[1], mmdd, fullName, command.user_id, app)
+          await respond({
+            response_type: 'ephemeral',
+            text: ok
+              ? `:birthday: Saved <@${mention[1]}>'s birthday as ${mmdd}. Kit posts a meme in the team channel on the day.`
+              : ":warning: Couldn't save that birthday — try again in a moment.",
+          })
+        } catch {
+          console.error('[culture-command] birthday_failed')
+          await respond({ response_type: 'ephemeral', text: ':warning: That birthday was not confirmed. Check the employee, date and channel in Culture Center, then try again.' })
+        }
         break
       }
 

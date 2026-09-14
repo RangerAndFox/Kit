@@ -12,6 +12,8 @@
 
 import type { App } from '@slack/bolt'
 import { anthropic, ORCHESTRATOR_MODEL } from '../llm/client'
+import { publicSafeText } from '../../../src/lib/culture/model'
+import { sendCultureMessage } from '../../../src/lib/culture/slack-send'
 
 export interface MemeTemplate {
   id: string // Imgflip template id
@@ -145,7 +147,7 @@ Rules:
     max_tokens: 400,
     system,
     messages: [{ role: 'user', content: `Write the meme for: ${briefing}` }],
-  })
+  }, { signal: AbortSignal.timeout(30_000) })
   const raw =
     res.content
       ?.filter((b) => b.type === 'text')
@@ -171,15 +173,18 @@ Rules:
  */
 export async function postMeme(
   app: App,
-  opts: { channel: string; headline: string; briefing: string; altText?: string; templateIndex?: number; publicOccasion?: keyof typeof PUBLIC_MEME_BRIEFINGS },
-): Promise<{ posted: boolean; template: string; image: boolean; reason?: string }> {
+  opts: { channel: string; headline: string; briefing: string; altText?: string; templateIndex?: number; publicOccasion?: keyof typeof PUBLIC_MEME_BRIEFINGS; beforeSend?: () => Promise<void>; clientMsgId?: string },
+): Promise<{ posted: boolean; template: string; image: boolean; reason?: string; ts?: string }> {
   const { channel, headline, briefing } = opts
   if (!channel) return { posted: false, template: '', image: false, reason: 'no channel' }
 
   const template = pickTemplate(CELEBRATION_TEMPLATES, opts.templateIndex)
   const publicBriefing = opts.publicOccasion && Object.hasOwn(PUBLIC_MEME_BRIEFINGS, opts.publicOccasion)
     ? PUBLIC_MEME_BRIEFINGS[opts.publicOccasion] : null
-  const boxes = await generateCaption(template, publicBriefing || briefing).catch(() => [])
+  const generated = await generateCaption(template, publicBriefing || briefing).catch(() => [])
+  // Discard unsafe model output, not the entire occasion. The approved headline
+  // remains, and neither Slack nor the public renderer receives the caption.
+  const boxes = publicSafeText(generated.join(' ')) ? generated : []
   const imageUrl = publicBriefing && boxes.some(Boolean) ? await renderMemeImage(template, boxes) : null
 
   const blocks: any[] = [{ type: 'section', text: { type: 'mrkdwn', text: headline } }]
@@ -189,6 +194,9 @@ export async function postMeme(
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: textMeme(template, boxes) } })
   }
 
-  await app.client.chat.postMessage({ channel, text: headline.replace(/[<>*_:]/g, ''), blocks })
-  return { posted: true, template: template.name, image: Boolean(imageUrl) }
+  await opts.beforeSend?.()
+  const message = { channel, text: headline.replace(/[<>*_:]/g, ''), blocks, ...(opts.clientMsgId ? { client_msg_id: opts.clientMsgId } : {}) }
+  const sent = opts.clientMsgId ? await sendCultureMessage(message) : await app.client.chat.postMessage(message)
+  if (!sent.ok || !sent.ts) throw new Error('Slack did not acknowledge the meme.')
+  return { posted: true, template: template.name, image: Boolean(imageUrl), ts: sent.ts }
 }

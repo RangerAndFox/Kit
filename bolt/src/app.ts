@@ -510,9 +510,11 @@ cron.schedule(
   () => {
     if (!process.env.KIT_TEAM_CHANNEL_ID) return
     import('./memes/timesheet-meme')
-      .then(({ postWeeklyTimesheetMeme, weekIndexFromMs }) =>
-        postWeeklyTimesheetMeme(app, weekIndexFromMs(Date.now())),
-      )
+      .then(async ({ postWeeklyTimesheetMeme, weekIndexFromMs }) => {
+        const { cultureIsActive } = await import('./culture/runner')
+        if (await cultureIsActive(app)) return { managedBy: 'Culture Center' }
+        return postWeeklyTimesheetMeme(app, weekIndexFromMs(Date.now()))
+      })
       .then((res) => console.log('[cron] timesheet-meme:', res))
       .catch((err) => console.error('[cron] timesheet-meme failed:', err))
   },
@@ -565,6 +567,18 @@ cron.schedule(
 )
 
 // ─── Start ─────────────────────────────────────────────────
+// Culture Center takes over legacy schedules only after its persisted cutoff.
+// This is the sole scheduled owner; the web dashboard only edits configuration.
+let cultureTickRunning = false
+cron.schedule('* * * * *', async () => {
+  if (cultureTickRunning) return
+  cultureTickRunning = true
+  try {
+    const { runCultureTick } = await import('./culture/runner')
+    await runCultureTick(app)
+  } catch { console.warn('[culture] tick could not complete; inspect Culture Center') }
+  finally { cultureTickRunning = false }
+}, { timezone: 'UTC' })
 
 ;(async () => {
   // Restore mid-conversation context persisted before the last restart so a

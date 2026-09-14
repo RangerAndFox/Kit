@@ -16,6 +16,8 @@
 import type { App } from '@slack/bolt'
 import { anthropic, ORCHESTRATOR_MODEL } from '../llm/client'
 import { renderMemeImage, normalizeBoxes, textMeme, type MemeTemplate } from './meme-engine'
+import { publicSafeText } from '../../../src/lib/culture/model'
+import { sendCultureMessage } from '../../../src/lib/culture/slack-send'
 
 // Re-exported so existing importers (and tests) keep resolving them here.
 export { normalizeBoxes }
@@ -66,7 +68,7 @@ Rules:
     max_tokens: 400,
     system,
     messages: [{ role: 'user', content: `Write this week's ${template.name} timesheet meme.` }],
-  })
+  }, { signal: AbortSignal.timeout(30_000) })
   const raw =
     res.content
       ?.filter((b) => b.type === 'text')
@@ -90,17 +92,21 @@ Rules:
 export async function postWeeklyTimesheetMeme(
   app: App,
   weekIndex: number,
-): Promise<{ posted: boolean; template: string; image: boolean; reason?: string }> {
-  const channel = process.env.KIT_TEAM_CHANNEL_ID
+  options?: { channel: string; templateId: string; beforeSend: () => Promise<void>; clientMsgId: string },
+): Promise<{ posted: boolean; template: string; image: boolean; reason?: string; ts?: string }> {
+  if (!options) {
+    const culture = await import('../culture/runner')
+    const managed = await culture.managedTimesheet(app)
+    if (managed) return managed
+  }
+  const channel = options?.channel || process.env.KIT_TEAM_CHANNEL_ID
   if (!channel) return { posted: false, template: '', image: false, reason: 'KIT_TEAM_CHANNEL_ID not set' }
 
-  const template = pickWeeklyTemplate(weekIndex)
-  const boxes = await generateCaption(template)
-  if (!boxes.some(Boolean)) {
-    return { posted: false, template: template.name, image: false, reason: 'caption generation returned empty' }
-  }
+  const template = (options?.templateId !== 'rotation' && TEMPLATES.find(item => item.id === options?.templateId)) || pickWeeklyTemplate(weekIndex)
+  const generated = await generateCaption(template).catch(() => [])
+  const boxes = publicSafeText(generated.join(' ')) ? generated : []
 
-  const imageUrl = await renderMemeImage(template, boxes)
+  const imageUrl = boxes.some(Boolean) ? await renderMemeImage(template, boxes) : null
 
   const header = `<!channel> :calendar: *Timesheet meme of the week*`
   const blocks: any[] = [{ type: 'section', text: { type: 'mrkdwn', text: header } }]
@@ -110,14 +116,20 @@ export async function postWeeklyTimesheetMeme(
       type: 'context',
       elements: [{ type: 'mrkdwn', text: `_${template.name}_ · log your hours in Harvest :saluting_face:` }],
     })
-  } else {
+  } else if (boxes.some(Boolean)) {
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: textMeme(template, boxes) } })
+  } else {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: 'A friendly reminder to log your hours. Thanks, team!' } })
   }
 
-  await app.client.chat.postMessage({
+  await options?.beforeSend()
+  const message = {
     channel,
     text: 'Timesheet meme of the week — log your hours!',
     blocks,
-  })
-  return { posted: true, template: template.name, image: Boolean(imageUrl) }
+    ...(options ? { client_msg_id: options.clientMsgId } : {}),
+  }
+  const sent = options ? await sendCultureMessage(message) : await app.client.chat.postMessage(message)
+  if (!sent.ok || !sent.ts) throw new Error('Slack did not acknowledge the meme.')
+  return { posted: true, template: template.name, image: Boolean(imageUrl), ts: sent.ts }
 }
