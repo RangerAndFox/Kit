@@ -25,6 +25,15 @@ const db = () => createAdminClient()
 const object = (value: unknown) => value && typeof value==='object' && !Array.isArray(value) ? value as Record<string,unknown> : {}
 const button = (label:string, action:string, value:string) => ({type:'button' as const,text:{type:'plain_text' as const,text:label},action_id:`kit_offboard_${action}`,value})
 const section = (text:string): KnownBlock => ({type:'section',text:{type:'mrkdwn',text}})
+export const OFFBOARD_ACTION_PATTERN = /^kit_offboard_(page|page_previous|page_next|project|artist|confirm|retry|edit|cancel|dismiss)$/
+export function projectPageButtons(page:number, hasMore:boolean) {
+  projectPageRange(page)
+  return [
+    ...(page>0?[button('Previous projects','page_previous',String(page-1))]:[]),
+    ...(hasMore?[button('More projects','page_next',String(page+1))]:[]),
+    button('Cancel','dismiss','none'),
+  ]
+}
 
 export async function offboardingIdentity(client: Client, actor: string, team: string): Promise<Identity> {
   const resolved = await commandActor(client,actor,team)
@@ -59,7 +68,7 @@ async function chooseProject(client: Client, identity: Identity, page: number, t
   await post(client,identity,[section('*Offboard an artist from a project*\nChoose the exact project, then the artist. Nothing is removed until you confirm.'),
     ...(hint ? [section(`Your request: ${safeLabel(hint.slice(0,500))}\nThe picker below determines the actual target.`)] : []),
     {type:'actions',elements:[{type:'static_select',action_id:'kit_offboard_project',placeholder:{type:'plain_text',text:`Choose project · page ${page+1}`},options:rows.map(p=>({text:{type:'plain_text',text:`${projectNumberFromCode(p.project_code)} — ${p.name}`.slice(0,75)},value:p.id}))}]},
-    {type:'actions',elements:[...(page>0?[button('Previous projects','page',String(page-1))]:[]),...((data || []).length>90?[button('More projects','page',String(page+1))]:[]),button('Cancel','dismiss','none')]}],ts)
+    {type:'actions',elements:projectPageButtons(page,(data || []).length>90)}],ts)
 }
 async function chooseArtist(client: Client, identity: Identity, projectId: string, ts?: string) {
   await projectById(identity,projectId)
@@ -101,7 +110,7 @@ export function offboardingOutcome(request: OffboardRequest): KnownBlock[] {
   return blocks
 }
 export function registerOffboardingHandlers(app: App): void {
-  app.action(/^kit_offboard_(page|project|artist|confirm|retry|edit|cancel|dismiss)$/,async ({ack,body,action,client})=>{
+  app.action(OFFBOARD_ACTION_PATTERN,async ({ack,body,action,client})=>{
     await ack()
     const b=body as unknown as ActionBody; const a=action as unknown as Action
     let identity: Identity | undefined
@@ -110,7 +119,7 @@ export function registerOffboardingHandlers(app: App): void {
       if (b.channel?.id!==identity.dm) throw new Error('Use the private offboarding card')
       const value=a.selected_option?.value || a.value || ''; const op=a.action_id.slice('kit_offboard_'.length)
       if (op==='dismiss') {await post(client,identity,[section('Cancelled. Nothing removed.')],b.message?.ts);return}
-      if (op==='page') {await chooseProject(client,identity,Number(value),b.message?.ts);return}
+      if (op==='page' || op==='page_previous' || op==='page_next') {await chooseProject(client,identity,Number(value),b.message?.ts);return}
       if (op==='project') {await chooseArtist(client,identity,value,b.message?.ts);return}
       if (op==='artist') {
         const [project,id]=value.split(':'); const snapshot=await snapshotFor(identity,project,id)

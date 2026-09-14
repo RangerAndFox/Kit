@@ -2,7 +2,7 @@ import {beforeEach,afterEach,it,expect,vi} from 'vitest'
 import {runOffboarding,type OffboardingPorts} from '../../src/lib/artist-access/workflow'
 import {OFFBOARD_STEPS,type OffboardRequest,type OffboardSnapshot} from '../../src/lib/artist-access/types'
 import {removeFrameArtist,removeSlackArtist,removeDropboxArtist} from '../../src/lib/artist-access/providers'
-import {offboardingReview,offboardingOutcome,offboardingIdentity,projectPageRange,latestArtistRoster} from '../src/offboarding/handlers'
+import {offboardingReview,offboardingOutcome,offboardingIdentity,projectPageRange,projectPageButtons,OFFBOARD_ACTION_PATTERN,latestArtistRoster} from '../src/offboarding/handlers'
 import {commandActor} from '../src/handlers/natural-commands'
 import {parseFastCommand} from '../src/handlers/command-catalog'
 import {parseGuidanceCommand} from '../src/handlers/command-guidance'
@@ -54,6 +54,16 @@ it('pages large project rosters below Slack limits and rejects invalid page valu
 it('uses the newest corrected identity when onboarding history contains retries',()=>{
  const latest={artist_email:'Artist@Example.com',artist_name:'Corrected Name'}
  expect(latestArtistRoster([latest,{artist_email:'artist@example.com',artist_name:'Old Guess'}])).toEqual([latest])
+})
+it.each([[0,true],[1,true],[2,false]] as const)('uses unique Slack action IDs on project page %i', (page,hasMore)=>{
+ const buttons=projectPageButtons(page,hasMore)
+ expect(new Set(buttons.map(b=>b.action_id)).size).toBe(buttons.length)
+ for(const b of buttons)expect(OFFBOARD_ACTION_PATTERN.test(b.action_id)).toBe(true)
+ expect(buttons.find(b=>b.text.text==='Previous projects')?.value).toBe(page>0?String(page-1):undefined)
+ expect(buttons.find(b=>b.text.text==='More projects')?.value).toBe(hasMore?String(page+1):undefined)
+ expect(buttons.at(-1)?.action_id).toBe('kit_offboard_dismiss')
+ // Existing live cards remain usable after deployment.
+ expect(OFFBOARD_ACTION_PATTERN.test('kit_offboard_page')).toBe(true)
 })
 it('artists cannot even open the offboarding DM',async()=>{
  vi.mocked(commandActor).mockResolvedValue({teamId:'TSTUDIO',user:{tier:'artist',workspaceId:'w'}} as Awaited<ReturnType<typeof commandActor>>)
