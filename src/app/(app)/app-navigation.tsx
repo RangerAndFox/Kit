@@ -3,10 +3,11 @@
 import Image from 'next/image'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Activity, FolderKanban, Gauge, MessageSquareText, Settings, Zap } from 'lucide-react'
+import { Activity, FolderKanban, Gauge, MessageSquareText, Settings, Smile, Zap } from 'lucide-react'
 
 const links = [
   { href: '/control-center', label: 'Control Center', icon: Gauge },
+  { href: '/culture-center', label: 'Culture Center', icon: Smile },
   { href: '/projects', label: 'Projects', icon: FolderKanban },
   { href: '/actions', label: 'Actions', icon: Zap },
   { href: '/ask', label: 'Ask Kit', icon: MessageSquareText },
@@ -58,7 +59,7 @@ export function AppNavigation() {
           return (
             <Link key={link.href} href={link.href} className={`flex min-w-14 flex-col items-center gap-1 px-2 py-1 text-[10px] ${active ? 'text-[#00ff66]' : 'text-[#767e8f]'}`}>
               <Icon size={17} aria-hidden="true" />
-              {link.label.replace('Control Center', 'Control')}
+              {link.label.replace('Control Center', 'Control').replace('Culture Center', 'Culture')}
             </Link>
           )
         })}

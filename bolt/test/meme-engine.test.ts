@@ -3,6 +3,7 @@ import type { App } from '@slack/bolt'
 
 const { createCaption } = vi.hoisted(() => ({ createCaption: vi.fn() }))
 vi.mock('../src/llm/client', () => ({ anthropic: { messages: { create: createCaption } }, ORCHESTRATOR_MODEL: 'test' }))
+vi.mock('../src/culture/runner', () => ({ managedTimesheet: async () => null }))
 import { CELEBRATION_TEMPLATES, isMemeImageUrl, normalizeImageCaption, postMeme, renderMemeImage } from '../src/memes/meme-engine'
 import { postWeeklyTimesheetMeme } from '../src/memes/timesheet-meme'
 
@@ -61,6 +62,13 @@ describe('image caption boundary', () => {
 })
 
 describe('Slack delivery and public-image privacy', () => {
+  it('rejects generated financial/contact details before posting or rendering', async () => {
+    captions(['Our budget is $5000', 'Contact private@example.test'])
+    const { app, postMessage } = slack()
+    await expect(postMeme(app, { channel: 'C_FIXTURE', headline: 'A studio win', briefing: 'Celebrate teamwork', templateIndex: 1 })).rejects.toThrow()
+    expect(postMessage).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
   it('uses only a generic occasion for image generation, keeping project details out of the prompt', async () => {
     const { app, postMessage } = slack()
     await postMeme(app, { channel: 'C_FIXTURE', headline: 'Delivery files ready - SecretClient Project123', briefing: 'SecretClient Project123 budget $50,000 contact private@example.test', publicOccasion: 'delivery_prepared', templateIndex: 1 })

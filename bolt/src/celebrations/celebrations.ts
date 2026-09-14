@@ -12,6 +12,7 @@ import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { postMeme } from '../memes/meme-engine'
 import { checkinToday, isStudioHoliday } from '../checkins/date'
+import { validMonthDay } from '../../../src/lib/culture/model'
 
 const teamChannel = () => process.env.KIT_TEAM_CHANNEL_ID || ''
 
@@ -29,7 +30,8 @@ export function parseBirthday(input: string): string | null {
   const mm = Number(m[1])
   const dd = Number(m[2])
   if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null
-  return `${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`
+  const value = `${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`
+  return validMonthDay(value) ? value : null
 }
 
 /** Does a stored 'MM-DD' birthday fall on `todayMd` ('MM-DD')? */
@@ -66,7 +68,12 @@ export function nextOccurrence(mm: number, dd: number, today: string): string {
 // ─── DB + post ─────────────────────────────────────────────────
 
 /** Set/replace a team member's birthday. Any Slack user — not staff-gated. */
-export async function setBirthday(slackUserId: string, mmdd: string, fullName?: string, createdBy?: string): Promise<boolean> {
+export async function setBirthday(slackUserId: string, mmdd: string, fullName?: string, createdBy?: string, app?: App): Promise<boolean> {
+  if (app) {
+    const { managedBirthday } = await import('../culture/runner')
+    const managed = await managedBirthday(app, slackUserId, mmdd, fullName, createdBy)
+    if (managed !== null) return managed
+  }
   const { error } = await createAdminClient()
     .from('birthdays')
     .upsert(
@@ -146,6 +153,9 @@ export async function postScheduledCelebrations(app: App): Promise<number> {
 
 /** Ad-hoc: post a meme for `label` right now. */
 export async function celebrateNow(app: App, label: string): Promise<boolean> {
+  const { managedCelebration } = await import('../culture/runner')
+  const managed = await managedCelebration(app, label, null)
+  if (managed !== null) return managed
   const channel = teamChannel()
   if (!channel || !label) return false
   await postMeme(app, {
@@ -158,11 +168,17 @@ export async function celebrateNow(app: App, label: string): Promise<boolean> {
 }
 
 /** Schedule an occasion for a future date. */
-export async function scheduleCelebration(label: string, fireDate: string, createdBy?: string): Promise<void> {
-  await createAdminClient()
+export async function scheduleCelebration(label: string, fireDate: string, createdBy?: string, app?: App): Promise<void> {
+  if (app) {
+    const { managedCelebration } = await import('../culture/runner')
+    const managed = await managedCelebration(app, label, fireDate, createdBy)
+    if (managed !== null) return
+  }
+  const { error } = await createAdminClient()
     .from('celebrations')
     .upsert({ kind: 'scheduled', label, fire_date: fireDate, created_by: createdBy || null },
             { onConflict: 'kind,label,fire_date', ignoreDuplicates: true })
+  if (error) throw new Error('Celebration could not be scheduled.')
 }
 
 /**
@@ -171,6 +187,9 @@ export async function scheduleCelebration(label: string, fireDate: string, creat
  * insert is the claim; only the first drop of the day posts.
  */
 export async function postDeliveryCelebration(app: App, projectName: string): Promise<boolean> {
+  const { managedDelivery } = await import('../culture/runner')
+  const managed = await managedDelivery(app, projectName)
+  if (managed !== null) return managed
   const channel = teamChannel()
   if (!channel || !projectName) return false
   const today = checkinToday()
@@ -187,6 +206,8 @@ export async function postDeliveryCelebration(app: App, projectName: string): Pr
 
 /** Daily runner (cron): birthdays + holiday + scheduled. */
 export async function runDailyCelebrations(app: App): Promise<{ birthdays: number; holiday: boolean; scheduled: number }> {
+  const { cultureIsActive } = await import('../culture/runner')
+  if (await cultureIsActive(app)) return { birthdays: 0, holiday: false, scheduled: 0 }
   const birthdays = await postBirthdayMemes(app).catch(() => 0)
   const holiday = await postHolidayMeme(app).catch(() => false)
   const scheduled = await postScheduledCelebrations(app).catch(() => 0)

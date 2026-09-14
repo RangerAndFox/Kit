@@ -460,11 +460,11 @@ export function registerCommandHandlers(app: App) {
           break
         }
         if (fireDate) {
-          await scheduleCelebration(label, fireDate, command.user_id)
+          await scheduleCelebration(label, fireDate, command.user_id, app)
           await respond({ response_type: 'ephemeral', text: `:calendar: Scheduled a meme for *${label}* on ${fireDate}.` })
         } else {
-          await celebrateNow(app, label)
-          await respond({ response_type: 'ephemeral', text: ':confetti_ball: Posted to the team channel!' })
+          const posted = await celebrateNow(app, label)
+          await respond({ response_type: 'ephemeral', text: posted ? ':confetti_ball: Celebration posted!' : ':warning: No new post was confirmed. Check Culture Center before trying again.' })
         }
         break
       }
@@ -488,7 +488,7 @@ export function registerCommandHandlers(app: App) {
           const info = await client.users.info({ user: mention[1] })
           fullName = info.user?.real_name || info.user?.profile?.real_name || info.user?.name || undefined
         } catch { /* name is best-effort */ }
-        const ok = await setBirthday(mention[1], mmdd, fullName, command.user_id)
+        const ok = await setBirthday(mention[1], mmdd, fullName, command.user_id, app)
         await respond({
           response_type: 'ephemeral',
           text: ok

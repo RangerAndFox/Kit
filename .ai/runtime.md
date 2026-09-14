@@ -10,6 +10,13 @@ fact.
 
 ## Railway — persistent Slack Bolt service
 
+- **Culture Center:** `bolt/src/culture/runner.ts` is the only owner of managed
+  meme posting (every-minute cron in `app.ts`). Vercel edits service-only records;
+  it does not run another scheduler. Explicit setup sets a next-local-midnight
+  handover; legacy Friday/daily jobs stop at that cutoff. See
+  `.ai/workflows/culture-center.md` for deployment order and safe rollback limits.
+  *(Verified in code; live migration/setup/deployment not yet verified.)*
+
 - **Responsibility:** the always-on Slack bot (Socket Mode, outbound
   WebSocket) plus in-process `node-cron` scheduled jobs.
 - **Entry point:** `bolt/src/app.ts`, launched via `npx tsx src/app.ts`

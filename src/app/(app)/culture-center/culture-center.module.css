@@ -1,0 +1,58 @@
+.root { min-height:100vh; background:#08090a; color:#edf1ed; }
+.frame { max-width:1600px; margin:auto; padding:28px; }
+.hero { display:flex; justify-content:space-between; gap:32px; padding:32px; border:1px solid #2b302f; background:linear-gradient(120deg,#111714,#08090a 65%); }
+.eyebrow,.footer { font:10px/1.5 "JetBrains Mono",monospace; letter-spacing:.13em; text-transform:uppercase; color:#9aa9a1; }
+.eyebrow span { color:#00ff66; margin-left:24px; }
+.hero h1 { font:900 clamp(60px,7vw,112px)/.85 "RF Plaak","Arial Narrow",sans-serif; letter-spacing:-.045em; text-transform:uppercase; margin:48px 0 26px; }
+.hero h1 span { color:#00ff66; }
+.description { color:#a9b4ae; font-size:15px; line-height:1.6; }
+.heroActions { display:flex; flex-direction:column; gap:12px; width:220px; align-self:flex-end; }
+.heroActions small { font:10px/1.7 "JetBrains Mono",monospace; color:#9aa9a1; margin-top:12px; }
+.root button,.dialog button { border:1px solid #46514a; color:#edf1ed; background:transparent; padding:10px 16px; font-size:13px; cursor:pointer; border-radius:0; min-height:40px; }
+.root button:hover:not(:disabled),.dialog button:hover:not(:disabled) { background:#25372b; border-color:#00ff66; }
+.root button.primary,.dialog button.primary { background:#00ff66; color:#08140d; border-color:#00ff66; font-weight:700; }
+.root button:disabled,.dialog button:disabled { cursor:not-allowed; opacity:.45; }
+.root :focus-visible,.dialog :focus-visible { outline:2px solid #00ff66; outline-offset:4px; }
+.metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); border:1px solid #2b302f; border-top:0; }
+.metrics div { display:flex; flex-direction:column; gap:12px; padding:24px 30px; border-right:1px solid #2b302f; }
+.metrics div:last-child { border:0; }
+.metrics strong { font:700 34px/1 "RF Plaak",sans-serif; letter-spacing:-.03em; }
+.metrics span { color:#a9b4ae; font:10px/1.5 "JetBrains Mono",monospace; text-transform:uppercase; }
+.green { color:#00ff66; }
+.section { margin-top:54px; }
+.sectionHeading { display:flex; gap:20px; justify-content:space-between; align-items:center; margin-bottom:20px; }
+.section h2,.setup h2,.dialog h2 { font:800 32px/1.1 "RF Plaak","Arial Narrow",sans-serif; letter-spacing:-.02em; text-transform:uppercase; margin:10px 0; }
+.sectionHeading p:not(.eyebrow),.setup p { color:#a9b4ae; font-size:13px; line-height:1.7; max-width:800px; }
+.tableScroll { position:relative; width:100%; overflow-x:auto; border:1px solid #333c36; }
+.root table { width:100%; border-collapse:collapse; font-size:13px; text-align:left; }
+.root th { color:#a8b6ad; background:#131916; font:10px/1.5 "JetBrains Mono",monospace; text-transform:uppercase; letter-spacing:.06em; white-space:nowrap; padding:14px 18px; }
+.root td { border-top:1px solid #2b302f; padding:18px; vertical-align:middle; line-height:1.6; min-width:110px; }
+.root td:first-child { min-width:210px; max-width:360px; overflow-wrap:anywhere; }
+.root td:last-child { min-width:80px; }
+.root td small { display:block; color:#99a89f; font-size:11px; margin-top:4px; max-width:360px; }
+.root td strong { font-weight:600; }
+.root .empty { color:#8e9d94; padding:28px 18px; }
+.badge { display:inline-block; padding:3px 8px; border:1px solid #465149; font:10px/1.6 "JetBrains Mono",monospace; text-transform:uppercase; white-space:nowrap; }
+.badge[data-status=enabled],.badge[data-status=posted] { color:#00ff66; border-color:#27753e; }
+.badge[data-status=review],.badge[data-status=failed] { color:#ffd087; border-color:#8e6a31; }
+.badge[data-status=paused],.badge[data-status=cancelled] { color:#9aa9a1; }
+.notice,.warning { padding:15px 18px; font-size:13px; line-height:1.6; border:1px solid #337344; background:#101f15; margin-top:18px; }
+.warning { background:#251e13; border-color:#8d6c38; color:#ffe1a8; }
+.info { color:#a8b5ad; font-size:12px; line-height:1.7; margin:18px 0; }
+.setup { padding:28px; border:1px solid #385740; margin-top:28px; background:#101812; }
+.formGrid { display:grid; grid-template-columns:1fr 1fr; gap:20px; border:0; margin:22px 0; padding:0; min-width:0; }
+.formGrid label { display:flex; flex-direction:column; gap:8px; color:#d6e0d9; font-size:13px; min-width:0; }
+.formGrid input,.formGrid select,.formGrid textarea { width:100%; min-width:0; padding:12px; font-family:inherit; font-size:14px; line-height:1.5; color:#edf1ed; background:#101612; border:1px solid #536359; border-radius:0; color-scheme:dark; }
+.formGrid textarea { resize:vertical; }
+.formGrid small { color:#9dacA3; font-size:11px; line-height:1.6; }
+.formGrid .check { grid-column:1/-1; display:flex; flex-direction:row; align-items:flex-start; gap:12px; line-height:1.7; }
+.check input { width:18px; height:18px; flex-shrink:0; margin-top:2px; accent-color:#00ff66; }
+.wide { grid-column:1/-1; }
+.dialog { width:min(780px,calc(100vw - 32px)); max-height:90dvh; margin:auto; overflow:auto; padding:28px; background:#0d120f; color:#edf1ed; border:1px solid #506558; box-shadow:0 32px 100px #0009; }
+.dialog::backdrop { background:#000b; backdrop-filter:blur(4px); }
+.dialogHeader { display:flex; justify-content:space-between; align-items:center; gap:16px; }
+.dialogFooter { display:flex; gap:12px; justify-content:flex-end; padding-top:22px; border-top:1px solid #35423a; }
+.footer { display:flex; justify-content:space-between; gap:24px; padding:44px 0 16px; }
+.srOnly { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+@media(max-width:900px) { .frame{padding:16px;} .hero{padding:24px;} .heroActions{width:180px;} .metrics div{padding:22px 16px;} .metrics strong{font-size:28px;} }
+@media(max-width:600px) { .hero{flex-direction:column;} .hero h1{margin-top:32px;} .heroActions{width:100%;align-self:stretch;} .metrics{grid-template-columns:1fr 1fr;} .metrics div:nth-child(2){border-right:0;} .metrics div:nth-child(-n+2){border-bottom:1px solid #2b302f;} .section h2{font-size:28px;} .sectionHeading{align-items:flex-start;} .formGrid{grid-template-columns:1fr;} .dialog{padding:20px;} .footer{flex-direction:column;} }

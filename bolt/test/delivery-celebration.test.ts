@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import type { App } from '@slack/bolt'
 const { post, select } = vi.hoisted(() => ({ post: vi.fn(), select: vi.fn() }))
 vi.mock('../src/memes/meme-engine', () => ({ postMeme: post }))
+vi.mock('../src/culture/runner', () => ({ managedDelivery: async () => null }))
 vi.mock('../../src/lib/supabase/admin', () => ({ createAdminClient: () => ({ from: () => ({ upsert: () => ({ select }) }) }) }))
 import { postDeliveryCelebration } from '../src/celebrations/celebrations'
 afterEach(() => { vi.unstubAllEnvs(); vi.resetAllMocks() })
