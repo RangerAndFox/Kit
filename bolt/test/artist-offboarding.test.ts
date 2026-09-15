@@ -78,12 +78,14 @@ it('provider identity failure or non-DM target fails closed',async()=>{
  await expect(offboardingIdentity(client,'UPRODUCER','TSTUDIO')).rejects.toThrow('Private')
 })
 
-function slackFixture(options:{external?:boolean;private?:boolean;email?:string;stillMember?:boolean}={}) {
+function slackFixture(options:{external?:boolean;private?:boolean;email?:string;stillMember?:boolean;host?:string;lookupMissing?:boolean}={}) {
  let member=true;const methods:string[]=[]
  const apiCall=vi.fn(async(method:string)=>{
    methods.push(method)
-   if(method==='conversations.info')return {ok:true,channel:{is_private:options.private!==false,is_ext_shared:options.external}}
-   if(method==='users.info')return {ok:true,user:{profile:{email:options.email || 'artist@example.com'}}}
+   if(method==='conversations.info')return {ok:true,channel:{is_private:options.private!==false,is_ext_shared:options.external,conversation_host_id:options.host || 'TSTUDIO'}}
+   if(method==='auth.test')return {ok:true,team_id:'TSTUDIO'}
+   if(method==='users.lookupByEmail')return options.lookupMissing?{ok:false,error:'users_not_found'}:{ok:true,user:{id:'UARTIST'}}
+   if(method==='users.info')return {ok:true,user:{team_id:options.external?'TEXTERNAL':'TSTUDIO',profile:{email:options.email || 'artist@example.com'}}}
    if(method==='conversations.members')return {ok:true,members:member?['UARTIST']:[],response_metadata:{}}
    if(method==='conversations.kick'){if(!options.stillMember)member=false;return {ok:true}}
    throw new Error('unexpected method')
@@ -93,8 +95,25 @@ it('Slack removes only the selected private-channel member and verifies absence'
  const slack=slackFixture();const before=vi.fn(async()=>{});expect((await removeSlackArtist(slack,snapshot,before)).status).toBe('removed')
  expect(before).toHaveBeenCalledTimes(1);expect(slack.methods.filter(m=>m==='conversations.kick')).toHaveLength(1)
 })
-it.each([{external:true},{email:'someoneelse@example.com'}])('Slack holds unsafe identities/connections for review',async options=>{
+it.each([{external:true,host:'TOTHER'},{email:'someoneelse@example.com'}])('Slack holds unsafe identities/connections for review',async options=>{
  const slack=slackFixture(options);expect((await removeSlackArtist(slack,snapshot,async()=>{})).status).toBe('review');expect(slack.methods).not.toContain('conversations.kick')
+})
+it('Slack Connect removes only the external artist from the hosted public project channel',async()=>{
+ const slack=slackFixture({external:true,private:false})
+ expect((await removeSlackArtist(slack,snapshot,async()=>{})).status).toBe('removed')
+ expect(slack.apiCall).toHaveBeenCalledWith('conversations.kick',{channel:'CPROJECT',user:'UARTIST'})
+ expect(slack.methods.filter(m=>!['auth.test','conversations.info','users.info','conversations.members','conversations.kick'].includes(m))).toEqual([])
+})
+it('Slack Connect resolves a missing external identity by exact channel-member email',async()=>{
+ const slack=slackFixture({external:true,lookupMissing:true})
+ const input=structuredClone(snapshot);input.engagement.artist_slack_id=null
+ expect((await removeSlackArtist(slack,input,async()=>{})).status).toBe('removed')
+ expect(slack.apiCall).toHaveBeenCalledWith('conversations.kick',{channel:'CPROJECT',user:'UARTIST'})
+})
+it('Slack Connect retains review when Slack refuses the targeted removal and never disconnects an organization',async()=>{
+ const slack=slackFixture({external:true,stillMember:true})
+ expect((await removeSlackArtist(slack,snapshot,async()=>{})).status).toBe('review')
+ expect(slack.methods.some(m=>m.includes('disconnect'))).toBe(false)
 })
 it.each([{private:false},{stillMember:true}])('Slack does not claim effective removal for public or retained membership',async options=>expect((await removeSlackArtist(slackFixture(options),snapshot,async()=>{})).status).toBe('review'))
 
