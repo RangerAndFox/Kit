@@ -362,7 +362,15 @@ export async function runProjectControlSync(
         errored++
         allOk = false
         await deps.store.updateBinding(b.project_id, { sync_status: 'error', error: `sync_failed: ${(err as Error).message}` }).catch(() => {})
-        await notifyOnce(b.project_id, `error:${String((err as Error).message).slice(0, 40)}`, `:red_circle: Project Control sync failed for \`${b.project_id}\`. An administrator can inspect the private control center for details.`)
+        // The binding remains in error and the cursor stays put, so the next
+        // pass retries both recovery and its durable alert. An unavailable
+        // alert outbox must not terminate the workbook loop and starve every
+        // later project. Never mark an unqueued notification acknowledged.
+        try {
+          await notifyOnce(b.project_id, `error:${String((err as Error).message).slice(0, 40)}`, `:red_circle: Project Control sync failed for \`${b.project_id}\`. An administrator can inspect the private control center for details.`)
+        } catch {
+          console.error('[project-control-sync] Alert enqueue failed; project remains retryable')
+        }
       }
     }
 

@@ -105,6 +105,38 @@ function makeDeps(over: { bindings?: BindingRow[]; cursor?: string | null; versi
 }
 
 describe('runProjectControlSync', () => {
+  it('does not starve later projects when a recovery notification cannot be persisted', async () => {
+    const { deps, edits, store } = makeDeps({ bindings: [
+      binding({project_id:'broken',canvas_id:'Cbroken',sync_status:'error',last_row_hash:'old'}),
+      binding({project_id:'later',canvas_id:'Clater',last_row_hash:'old'}),
+    ] })
+    deps.enqueueAlert = async () => { throw new Error('outbox unavailable') }
+    const result = await runProjectControlSync(deps, {force:true})
+    assert.deepEqual(edits, ['Cbroken','Clater'])
+    assert.equal(store.bindings[0].sync_status, 'error')
+    assert.equal(store.bindings[1].sync_status, 'synced')
+    assert.equal(result.errored, 1)
+    assert.equal(result.cursorAdvanced, false)
+    assert.equal(store.notified.size, 0)
+    assert.equal(store.releaseHolders.length, 1)
+  })
+
+  it('continues after a provider failure even when its alert also fails', async () => {
+    const { deps, edits, store } = makeDeps({bindings:[
+      binding({project_id:'broken',canvas_id:'Cbroken',last_row_hash:'old'}),
+      binding({project_id:'later',canvas_id:'Clater',last_row_hash:'old'}),
+    ]})
+    deps.canvas.editControlCanvas = async o => {
+      if(o.canvasId==='Cbroken')throw new Error('provider unavailable')
+      edits.push(o.canvasId)
+    }
+    deps.enqueueAlert = async () => { throw new Error('outbox unavailable') }
+    const result=await runProjectControlSync(deps,{force:true})
+    assert.deepEqual(edits,['Clater'])
+    assert.equal(store.bindings[0].error,'sync_failed: provider unavailable')
+    assert.equal(store.bindings[1].sync_status,'synced')
+    assert.equal(result.cursorAdvanced,false)
+  })
   it('never widens a missing immutable admin target into a workbook-wide refresh', async () => {
     const { deps, edits } = makeDeps()
     const result = await runProjectControlSync(deps, { force: true, projectId: 'missing' })
