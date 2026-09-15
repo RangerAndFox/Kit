@@ -22,6 +22,27 @@ const supplement: ProjectSupplement = {
 }
 
 describe('generated Canvas tables', () => {
+  it('adds a OneDrive row once, including normalized duplicate types', () => {
+    const markdown = renderOverviewView(row, { ...supplement, links: [
+      { 'Link Type': 'OneDrive', URL: 'https://example.test/old', Active: 'TRUE' },
+      { 'Link Type': ' one drive ', URL: 'https://example.test/current', Active: 'TRUE' },
+    ] })
+    assert.equal(markdown.split('| OneDrive |').length - 1, 1)
+    assert.match(markdown, /\[OneDrive\]\(https:\/\/example.test\/current\)/)
+    assert.doesNotMatch(markdown, /example.test\/old/)
+    assert.equal(renderOverviewView(row, { ...supplement, links: [] }).includes('| OneDrive |'), false)
+  })
+
+  it('does not project inactive, unknown, or restricted asset types', () => {
+    const markdown = renderOverviewView(row, { ...supplement, links: [
+      { 'Link Type': 'OneDrive', URL: 'https://example.test/inactive', Active: 'FALSE' },
+      { 'Link Type': 'Other', Label: 'OneDrive', URL: 'https://example.test/private' },
+      { 'Link Type': 'Budget', URL: 'https://example.test/budget' },
+      { 'Link Type': 'Harvest', URL: 'https://example.test/harvest' },
+    ] })
+    assert.doesNotMatch(markdown, /example.test|\| OneDrive \||\| Other \||\| Budget \||\| Harvest \|/)
+  })
+
   it('keeps multiline status and pipe characters inside a single table cell', () => {
     const markdown = renderOverviewView(row, supplement)
     assert.match(markdown, /Line one<br>Line two/)
