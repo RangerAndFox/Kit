@@ -13,7 +13,7 @@ export interface ProjectSupplement {
 
 // Bump when generated Canvas markup changes so the sync cursor performs one
 // complete regeneration even if the workbook itself has not changed.
-export const PROJECT_VIEW_RENDER_VERSION = '6'
+export const PROJECT_VIEW_RENDER_VERSION = '7'
 
 const val = (row: NormalizedRow, key: string) => row[key]?.display || '—'
 const link = (label: string, url?: string) => url ? `[${label}](${url})` : '—'
@@ -36,13 +36,24 @@ export function renderOverviewView(row: NormalizedRow, extra: ProjectSupplement)
   const assignmentRows = assignments.length > 0
     ? assignments.map((a) => [a.Person, a['Daily Assignment']])
     : [['—', 'No assignments for today']]
-  const links = Object.fromEntries(extra.links.map((x) => [x['Link Type'], x.URL]))
+  // Explicit team-safe types only: adding a producer-only option to Lists must
+  // never publish its link. Normalize spelling and deduplicate by type.
+  const assetTypes = ['Dropbox','Frame.io','Figma','Script','Boords','Client Visual Reference','Music Reference','ElevenLabs']
+  const typeKey = (value: string) => value.trim().toLowerCase().replace(/\s+/g, '')
+  const links = new Map<string, string>()
+  for (const entry of extra.links) {
+    if (String(entry.Active || '').trim().toUpperCase() === 'FALSE') continue
+    if (entry.URL?.trim()) links.set(typeKey(entry['Link Type'] || ''), entry.URL.trim())
+  }
+  // Optional supported assets add a row automatically, without duplicating
+  // the fixed template rows or leaking arbitrary Other/financial links.
+  if (links.has('onedrive')) assetTypes.splice(1, 0, 'OneDrive')
   return `${GENERATED_VIEW_NOTICE}\n\n# ${val(row, 'Project Number')} — ${val(row, 'Project Name')}\n\n` +
     `## Project info\n${table(['Field', 'Value'], [
       ['Client', val(row, 'Client')], ['Status', val(row, 'Quick Status')], ['Next Milestone', val(row, 'Next Share')],
     ])}\n\n## Today’s assignments\n${table(['Artist', 'Assignment'], assignmentRows)}\n\n` +
     `## Latest share\n${table(['Field', 'Value'], [['Last Share', row['Last Share']?.hyperlink ? link(row['Last Share'].display, row['Last Share'].hyperlink) : val(row, 'Last Share')], ['Status', val(row, 'Quick Status')], ['Next Milestone', val(row, 'Next Share')]])}\n\n` +
-    `## Asset folders\n${table(['Asset', 'Link'], ['Dropbox','Frame.io','Figma','Script','Boords','Client Visual Reference','Music Reference','ElevenLabs'].map((k) => [k, link(k, links[k])]))}`
+    `## Asset folders\n${table(['Asset', 'Link'], assetTypes.map((k) => [k, link(k, links.get(typeKey(k)))]))}`
 }
 
 export function renderReferenceView(row: NormalizedRow, extra: ProjectSupplement): string {
