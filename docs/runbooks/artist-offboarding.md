@@ -12,7 +12,8 @@ The feature requires an active producer/admin identity on every action. Cards be
 ## Removed versus retained
 
 - Removes verified direct project membership/invitations from Slack, Dropbox and Frame.io, and the project-specific Kit dashboard grant.
-- Slack Connect, public channels, inherited group/workspace access, missing identities, provider outages and ambiguous invitations require manual review. Kit never removes organization-wide access or disconnects an external Slack organization.
+- Slack Connect members are removed individually from the verified, studio-hosted project channel. Kit matches the exact email, removes only that channel/user membership, and verifies absence. It never disconnects an external organization or removes someone from other channels or DMs.
+- Non-hosted Slack Connect channels, public-channel access for internal members, inherited group/workspace access, missing identities, provider outages and ambiguous invitations require manual review. Kit never removes organization-wide access.
 - Preserves the global People/staff record, other projects, files, comments, messages, NDA history, credits and all time records. Harvest's shared Freelancers bucket is intentionally retained.
 - Past Daily Assignments remain unchanged. Today/future or undated assignments appear **Unassigned — Needs reassignment** in the generated canvas. Source rows remain intact for history. The sheet Add row form excludes the person only for the offboarded project.
 - Existing shared links and downloaded copies cannot be recalled by membership removal. Review those separately; Kit does not revoke a link used by other people.

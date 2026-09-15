@@ -26,34 +26,59 @@ export async function removeSlackArtist(slack: SlackApi, snapshot: OffboardSnaps
   if (!info.ok) throw new Error('Slack channel unavailable')
   const conversation = object(info.channel)
   if (conversation.is_general) return review('General channel retained. Project offboarding cannot remove studio-wide access.')
-  if (conversation.is_ext_shared || conversation.is_pending_ext_shared) return review('Slack Connect: remove only this external artist or cancel their pending invitation in Slack. Kit will not disconnect their entire organization.')
+  // Slack Connect is not an organization-wide removal: kick targets one channel/user.
+  const connected = Boolean(conversation.is_ext_shared || conversation.is_pending_ext_shared)
+  let localTeam = ''
+  if (connected) {
+    const auth = object(await slack.apiCall('auth.test',{}))
+    localTeam = String(auth.team_id || '')
+    if (!auth.ok || !localTeam || conversation.conversation_host_id !== localTeam) return review('Slack Connect channel is not verified as hosted by this workspace. Remove only the artist from this channel manually; do not disconnect their organization.')
+  }
+  async function members(): Promise<string[]> {
+    let cursor = ''; const ids: string[] = []
+    for (let page=0;page<20;page++) {
+      const result = object(await slack.apiCall('conversations.members',{channel,limit:200,...(cursor?{cursor}:{})}))
+      if (!result.ok || !Array.isArray(result.members)) throw new Error('Slack membership unavailable')
+      ids.push(...result.members.map(String))
+      cursor = String(object(result.response_metadata).next_cursor || '')
+      if (!cursor) return ids
+    }
+    throw new Error('Slack pagination incomplete')
+  }
   let user = snapshot.engagement.artist_slack_id || snapshot.engagement.grants.slack?.subject
   if (!user) {
-    const found = object(await slack.apiCall('users.lookupByEmail',{email:snapshot.engagement.artist_email}))
-    if (!found.ok) return review('Slack identity or pending invitation could not be verified. Resolve it in Slack.')
+    let found: ObjectData
+    try { found = object(await slack.apiCall('users.lookupByEmail',{email:snapshot.engagement.artist_email})) }
+    catch (error) {
+      if (object(object(error).data).error !== 'users_not_found') throw error
+      found = {ok:false,error:'users_not_found'}
+    }
+    if (!found.ok && found.error !== 'users_not_found') throw new Error('Slack identity lookup unavailable')
     user = String(object(found.user).id || '')
+    if (!user && connected) {
+      // External people may not be in lookupByEmail. Never infer identity from names.
+      const roster = await members(); const matches: string[] = []
+      if (roster.length>200) return review('External Slack identity requires manual review in this large channel.')
+      for (const id of roster) {
+        const result = object(await slack.apiCall('users.info',{user:id}))
+        if (!result.ok) throw new Error('Slack identity unavailable')
+        if (identityEmail(String(object(object(result.user).profile).email || ''))===snapshot.engagement.artist_email) matches.push(id)
+      }
+      if (matches.length===1) user=matches[0]
+    }
+    if (!user) return review('Slack identity or pending invitation could not be verified. Resolve it in Slack.')
   }
   if (!/^[UW][A-Z0-9]+$/.test(user)) return review('Slack identity is ambiguous; no access changed.')
   const userInfo = object(await slack.apiCall('users.info',{user}))
   if (!userInfo.ok || identityEmail(String(object(object(userInfo.user).profile).email || '')) !== snapshot.engagement.artist_email) return review('Slack identity changed or email is unavailable; no access changed.')
-  async function isMember() {
-    let cursor = ''
-    for (let page=0;page<20;page++) {
-      const result = object(await slack.apiCall('conversations.members',{channel,limit:200,...(cursor?{cursor}:{})}))
-      if (!result.ok || !Array.isArray(result.members)) throw new Error('Slack membership unavailable')
-      if (result.members.includes(user)) return true
-      cursor = String(object(result.response_metadata).next_cursor || '')
-      if (!cursor) return false
-    }
-    throw new Error('Slack pagination incomplete')
-  }
-  if (await isMember()) {
+  const externalArtist = connected && Boolean(object(userInfo.user).team_id) && object(userInfo.user).team_id !== localTeam
+  if ((await members()).includes(user)) {
     await beforeWrite()
     const response = object(await slack.apiCall('conversations.kick',{channel,user}))
     if (!response.ok && response.error !== 'not_in_channel') throw new Error('Slack removal failed')
   }
-  if (await isMember()) return review('Artist is still a channel member.')
-  if (!conversation.is_private) return review('Channel membership removed, but this is a public channel. The artist may still browse or rejoin it; an admin must review channel privacy.')
+  if ((await members()).includes(user)) return review('Artist is still a channel member.')
+  if (!conversation.is_private && !externalArtist) return review('Channel membership removed, but this is a public channel. The artist may still browse or rejoin it; an admin must review channel privacy.')
   return removed('Project channel membership removed and verified. Direct canvas shares, saved history and public links are not recalled.')
 }
 
