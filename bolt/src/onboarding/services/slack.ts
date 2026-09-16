@@ -11,6 +11,18 @@ import type { ServiceResult } from '../types'
 
 const SLACK_API = 'https://slack.com/api'
 
+interface SlackGuestUser {
+  id: string
+  team_id?: string
+  is_restricted?: boolean
+  is_ultra_restricted?: boolean
+  deleted?: boolean
+  is_bot?: boolean
+  is_admin?: boolean
+  is_owner?: boolean
+  is_invited_user?: boolean
+}
+
 function botToken(): string {
   return process.env.SLACK_BOT_TOKEN!
 }
@@ -41,7 +53,7 @@ async function slackGet(method: string, params: Record<string, string>): Promise
 /**
  * Look up a Slack user id by email. Returns null if not found.
  */
-async function lookupByEmail(email: string): Promise<any | null> {
+async function lookupByEmail(email: string): Promise<SlackGuestUser | null> {
   const r = await slackGet('users.lookupByEmail', { email })
   if (!r.ok) {
     if (r.error === 'users_not_found') return null
@@ -96,7 +108,7 @@ export async function inviteArtistToSlack(opts: {
 
     const auth = await slackGet('auth.test', {})
     if (!auth.ok || !auth.team_id) throw new Error('Cannot verify the Ranger & Fox workspace')
-    const isGuest = (u: any) => u?.id === user.id && u.team_id === auth.team_id &&
+    const isGuest = (u: SlackGuestUser | undefined) => u?.id === user.id && u.team_id === auth.team_id &&
       u.is_restricted === true && typeof u.is_ultra_restricted === 'boolean' &&
       !u.deleted && !u.is_bot && !u.is_admin && !u.is_owner && !u.is_invited_user
     if (!isGuest(user)) {
