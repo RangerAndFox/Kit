@@ -21,6 +21,12 @@ export interface OutboxPorts {
   finish(status: 'sent' | 'retry' | 'review', error?: string, ts?: string): Promise<void>
 }
 
+export async function requirePriorAlertAcknowledged(row: OutboxRow, readStatus: (id: string, projectId: string) => Promise<string | null>): Promise<void> {
+  if (row.payload.priorAlertId && await readStatus(row.payload.priorAlertId, row.project_id) !== 'sent') {
+    throw new Error('Failure notification not yet acknowledged')
+  }
+}
+
 /** After an ambiguous send (including a crash), reconcile before any repost. */
 export async function deliverOutbox(row: OutboxRow, ports: OutboxPorts): Promise<void> {
   try {
@@ -56,7 +62,7 @@ export async function deliverOutbox(row: OutboxRow, ports: OutboxPorts): Promise
 }
 
 export async function enqueueSyncAlert(projectId: string, key: string, text: string): Promise<void> {
-  const channel = process.env.KIT_PROJECT_CONTROL_ALERT_CHANNEL_ID || process.env.KIT_HEALTH_CHANNEL_ID
+  const channel = process.env.KIT_PROJECT_CONTROL_ALERT_CHANNEL_ID
   const { error } = await outboxDb().rpc('enqueue_project_sync_alert', {
     p_project_id: projectId, p_key: key, p_channel: channel || '', p_text: text,
   })
