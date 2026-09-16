@@ -39,7 +39,7 @@ export interface ServiceResult {
   /**
    * A URL the artist must visit to complete onboarding for this service
    * (e.g. Frame.io self-signup). Surfaced in the welcome message so the
-   * freelancer sees it when they accept the Connect invite.
+   * freelancer sees it after their guest access is verified.
    */
   actionUrl?: string
   /** Short label for the action ("Sign up for Frame.io", etc.) */
