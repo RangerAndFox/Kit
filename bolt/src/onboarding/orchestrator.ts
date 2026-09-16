@@ -179,7 +179,7 @@ async function runTrackedOnboarding(opts: {
   // Make the producer-confirmed name immediately selectable in the Project
   // Control Daily Assignments form. This deliberately happens after the user
   // presses Onboard (never while the inferred-name review card is still open).
-  // It does not require a Slack id, so Slack Connect invitees are available to
+  // It does not require a Slack id, so artists awaiting guest invitations are available to
   // schedule before they accept the invite.
   let peopleR: ServiceResult = { status: 'skipped', message: 'Project Control is not configured.' }
   const workbook = workbookConfigFromEnv()
@@ -246,15 +246,12 @@ async function runTrackedOnboarding(opts: {
   const frameioR = asResult(settled[2], 'frameio')
   const harvestR = asResult(settled[3], 'harvest')
 
-  // Send welcome message. Two paths:
-  //  - Slack user known → open DM and post privately
-  //  - Connect invite pending → post into the project channel so the
-  //    freelancer sees it as channel history when they accept
+  // Welcome privately only after the guest role and channel access are verified.
   let welcomeR: ServiceResult = {
     status: 'skipped',
     message: 'Slack invite did not succeed; no welcome sent.',
   }
-  const slackInvite: any = slackR
+  const slackInvite = slackR
   if (slackR.status === 'ok') {
     const canvasMarkdown = await fetchWelcomeCanvas()
     // Collect any actionable follow-ups from per-service results
@@ -274,32 +271,11 @@ async function runTrackedOnboarding(opts: {
     })
 
     if (slackInvite.slackUserId) {
-      // Path A: existing workspace member → private DM.
+      // Verified local guest → private DM.
       welcomeR = await sendWelcomeDm({
         artistSlackUserId: slackInvite.slackUserId,
         text: welcomeText,
       })
-    } else if (slackInvite.connectPending && projectChannelId) {
-      // Path B: Connect invite pending → post into channel so they
-      // see it when they accept and land in the channel.
-      try {
-        await app.client.chat.postMessage({
-          channel: projectChannelId,
-          text: `Welcome ${input.artistName} (joining as a freelancer)`,
-          blocks: [
-            {
-              type: 'section',
-              text: { type: 'mrkdwn', text: welcomeText },
-            },
-          ],
-        })
-        welcomeR = {
-          status: 'ok',
-          message: `Welcome posted in <#${projectChannelId}>; visible to ${input.artistName} when they accept the Connect invite.`,
-        }
-      } catch (err: any) {
-        welcomeR = { status: 'failed', message: err.message || String(err) }
-      }
     }
   }
 
@@ -318,10 +294,8 @@ async function runTrackedOnboarding(opts: {
   })
 
   // Upsert artist into staff so future paths know who they are.
-  // Connect-invited freelancers don't have a Slack user id yet — we'll
-  // backfill on their first message via the staff sync script, or
-  // event-driven if we add a connect-acceptance handler later.
-  if (slackR.slackUserId) {
+  // Artists awaiting an admin guest invitation are recorded on a verified retry.
+  if (slackR.status === 'ok' && slackR.slackUserId) {
     await sb.from('staff').upsert(
       {
         slack_user_id: slackR.slackUserId,

@@ -1,25 +1,27 @@
 /**
  * Onboarding — Slack service
  *
- * Three flows depending on whether the artist already exists in the workspace:
- *
- *   A. Artist is already a workspace member
- *      → conversations.invite to the project channel (immediate access)
- *      → welcome DM via conversations.open (private message)
- *
- *   B. Artist is NOT a workspace member
- *      → conversations.inviteShared (Slack Connect invite) to the project channel
- *      → channel becomes a Connect channel when they accept
- *      → no immediate Slack user ID; welcome message is posted into the
- *        channel so they see it when they accept the invite
- *
- * Connect uses the bot's existing conversations.connect:write scope — no
- * admin scopes required, works on Business+ plans.
+ * Guest-only, fail-closed onboarding. New guests require an admin invitation
+ * on Business+ (Slack's supported admin invitation API is Enterprise-only).
+ * Existing local guests are verified before and after project access changes.
+ * Never create full members, send Connect invites, or silently change roles.
  */
 
 import type { ServiceResult } from '../types'
 
 const SLACK_API = 'https://slack.com/api'
+
+interface SlackGuestUser {
+  id: string
+  team_id?: string
+  is_restricted?: boolean
+  is_ultra_restricted?: boolean
+  deleted?: boolean
+  is_bot?: boolean
+  is_admin?: boolean
+  is_owner?: boolean
+  is_invited_user?: boolean
+}
 
 function botToken(): string {
   return process.env.SLACK_BOT_TOKEN!
@@ -51,41 +53,14 @@ async function slackGet(method: string, params: Record<string, string>): Promise
 /**
  * Look up a Slack user id by email. Returns null if not found.
  */
-async function lookupByEmail(email: string): Promise<string | null> {
+async function lookupByEmail(email: string): Promise<SlackGuestUser | null> {
   const r = await slackGet('users.lookupByEmail', { email })
   if (!r.ok) {
     if (r.error === 'users_not_found') return null
     throw new Error(`users.lookupByEmail: ${r.error}`)
   }
-  return r.user?.id || null
-}
-
-/**
- * Send a Slack Connect invite for a channel. The recipient gets an email
- * from Slack; when they accept, the channel becomes a Connect channel
- * shared with their workspace.
- *
- * Returns the invite id. The recipient is NOT yet a member of our
- * workspace — they won't have a Slack user id until acceptance.
- */
-async function connectInvite(opts: {
-  channelId: string
-  email: string
-}): Promise<string> {
-  const r = await slackPostJson(
-    'conversations.inviteShared',
-    {
-      channel: opts.channelId,
-      emails: [opts.email],
-      // false = full Connect (can see history, post, etc.); true = view-only-style.
-      external_limited: false,
-    },
-    botToken(),
-  )
-  if (!r.ok) {
-    throw new Error(`conversations.inviteShared: ${r.error}`)
-  }
-  return r.invite_id || r.invite?.id || 'unknown'
+  if (!r.user?.id) throw new Error('Slack returned no verifiable user identity')
+  return r.user
 }
 
 /**
@@ -103,15 +78,10 @@ async function inviteToChannel(channelId: string, userId: string): Promise<void>
   }
 }
 
-export interface SlackInviteResult extends ServiceResult {
-  /** True if a Slack Connect invite was sent and is awaiting acceptance. */
-  connectPending?: boolean
-}
-
 /**
  * Top-level entry: get the artist access to the project channel.
- *  - Existing workspace member → conversations.invite (immediate)
- *  - Non-member               → conversations.inviteShared (Slack Connect, pending)
+ *  - Existing local guest → verify role, project membership, then welcome DM.
+ *  - Missing/non-guest account → actionable admin step, never a fallback invite.
  *
  * `projectChannelId` should come from `project.external_links.slack_id`
  * (the channel id the Kit provisioner stored at project creation).
@@ -120,8 +90,9 @@ export async function inviteArtistToSlack(opts: {
   email: string
   fullName: string
   projectChannelId: string | null
-}): Promise<SlackInviteResult> {
+}): Promise<ServiceResult> {
   const { email, projectChannelId } = opts
+  let verifiedGuestId: string | undefined
 
   if (!projectChannelId) {
     return {
@@ -131,28 +102,49 @@ export async function inviteArtistToSlack(opts: {
   }
 
   try {
-    const userId = await lookupByEmail(email)
+    const user = await lookupByEmail(email.trim().toLowerCase())
+    const adminStep = `Admin action required: invite ${email} to Ranger & Fox as a single-channel guest for <#${projectChannelId}>. For an existing guest who needs multiple projects, select multi-channel guest and explicitly assign only their project channels. Then rerun onboarding to verify access. Kit will not send a full-member or Slack Connect invitation.`
+    if (!user) return { status: 'failed', message: adminStep }
 
-    if (userId) {
-      // Already in the workspace — straight channel invite.
-      await inviteToChannel(projectChannelId, userId)
-      return {
-        status: 'ok',
-        message: `Invited <@${userId}> to <#${projectChannelId}>`,
-        slackUserId: userId,
-      }
+    const auth = await slackGet('auth.test', {})
+    if (!auth.ok || !auth.team_id) throw new Error('Cannot verify the Ranger & Fox workspace')
+    const isGuest = (u: SlackGuestUser | undefined) => u?.id === user.id && u.team_id === auth.team_id &&
+      u.is_restricted === true && typeof u.is_ultra_restricted === 'boolean' &&
+      !u.deleted && !u.is_bot && !u.is_admin && !u.is_owner && !u.is_invited_user
+    if (!isGuest(user)) {
+      return { status: 'failed', message: `Guest access not verified for <@${user.id}>. No channel invitation sent. An admin must review the existing account and its role. ${adminStep}` }
     }
+    verifiedGuestId = user.id
 
-    // Not in the workspace — send a Slack Connect invite to the channel.
-    const inviteId = await connectInvite({ channelId: projectChannelId, email })
+    // Single-channel guests must not be moved from a different project implicitly.
+    const membership = async () => {
+      let cursor = ''
+      for (let page = 0; page < 100; page++) {
+        const r = await slackGet('conversations.members', { channel: projectChannelId, limit: '200', ...(cursor ? { cursor } : {}) })
+        if (!r.ok || !Array.isArray(r.members)) throw new Error('Cannot verify project-channel membership')
+        if (r.members.includes(user.id)) return true
+        cursor = r.response_metadata?.next_cursor || ''
+        if (!cursor) return false
+      }
+      throw new Error('Project-channel membership verification exceeded page limit')
+    }
+    if (!await membership()) {
+      if (user.is_ultra_restricted === true) {
+        return { status: 'failed', message: `Single-channel guest <@${user.id}> is not assigned to <#${projectChannelId}>. ${adminStep}` }
+      }
+      await inviteToChannel(projectChannelId, user.id)
+    }
+    const verified = await slackGet('users.info', { user: user.id })
+    if (!verified.ok || !isGuest(verified.user) || !await membership()) {
+      throw new Error('Guest role or channel access could not be verified after onboarding; admin review required. Do not assume access is complete.')
+    }
     return {
       status: 'ok',
-      message: `Sent Slack Connect invite for <#${projectChannelId}> to ${email} (pending acceptance)`,
-      externalId: inviteId,
-      connectPending: true,
+      message: `Verified ${verified.user.is_ultra_restricted ? 'single-channel' : 'multi-channel'} guest <@${user.id}> with access to <#${projectChannelId}>.`,
+      slackUserId: user.id,
     }
   } catch (err: any) {
-    return { status: 'failed', message: err.message || String(err) }
+    return { status: 'failed', message: err.message || String(err), ...(verifiedGuestId ? { slackUserId: verifiedGuestId } : {}) }
   }
 }
 
