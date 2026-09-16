@@ -22,7 +22,7 @@ export async function loadControlCenterProject(workspaceId: string, projectId: s
     if (result.error) throw new Error(result.error.message)
     return result.data || []
   }
-  const [milestones, canvases, bindings, shares, creations, updates, archives, behance] = await Promise.all([
+  const [milestones, canvases, bindings, shares, creations, updates, archives, behance, syncIncidents] = await Promise.all([
     rows(db.from('milestones').select('*').eq('project_id', projectId).order('due_date')),
     rows(db.from('project_control_canvases').select('*').eq('project_id', projectId).order('canvas_type')),
     rows(db.from('project_control_bindings').select('*').eq('project_id', projectId).limit(1)),
@@ -31,8 +31,10 @@ export async function loadControlCenterProject(workspaceId: string, projectId: s
     rows(db.from('project_update_requests').select('*').eq('workspace_id', workspaceId).eq('project_id', projectId).order('created_at', { ascending: false }).limit(8)),
     rows(db.from('archive_jobs').select('*').eq('workspace_id', workspaceId).eq('project_id', projectId).order('created_at', { ascending: false }).limit(5)),
     rows(db.from('behance_draft_jobs').select('*').eq('workspace_id', workspaceId).eq('project_id', projectId).order('created_at', { ascending: false }).limit(5)),
+    rows(db.from('project_sync_incidents').select('*').eq('project_id', projectId).order('first_failed_at', { ascending: false }).limit(8)),
   ])
   const operations = [
+    ...syncIncidents.map((row) => ({ id: `sync:${row.id}`, type: 'Sheet → Slack sync', status: row.resolved_at ? 'recovered' : 'retrying', detail: `${row.reason}; ${row.failure_count} failed attempts. First failure: ${row.first_failed_at}. ${row.resolved_at ? `Recovered: ${row.resolved_at}.` : 'Kit is retrying.'}`, at: row.resolved_at || row.last_failed_at })),
     ...creations.map((row) => ({ id: `creation:${row.id}`, type: 'Provisioning', status: row.status, detail: row.error || 'Project creation workflow', at: row.updated_at || row.created_at })),
     ...updates.map((row) => ({ id: `update:${row.id}`, type: 'Project update', status: row.status, detail: row.error || 'Cross-system update', at: row.updated_at || row.created_at })),
     ...archives.map((row) => ({ id: `archive:${row.id}`, type: 'Archive', status: row.status, detail: row.error || 'Archive publishing workflow', at: row.updated_at || row.created_at })),

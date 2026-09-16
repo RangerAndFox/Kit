@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { inngest } from './client'
-import { deliverOutbox, outboxDb, type OutboxRow } from '../control-center/outbox'
+import { deliverOutbox, outboxDb, requirePriorAlertAcknowledged, type OutboxRow } from '../control-center/outbox'
 import { runProjectControlSync, requireCompletedSync } from './project-control-sync'
 import { queueBehanceDraft } from '../archive/behance-store'
 
@@ -75,6 +75,13 @@ export async function drainControlOutbox(): Promise<{ processed: number }> {
     if (!row) continue
     await deliverOutbox(row, {
       async markStarted(started) {
+        // Check before marking send_started: a deferred recovery has not been
+        // posted and must not enter ambiguous-delivery reconciliation.
+        if (started) await requirePriorAlertAcknowledged(row, async (id, projectId) => {
+          const prior = await db.from('kit_control_outbox').select('status').eq('id', id).eq('project_id', projectId).single()
+          if (prior.error) throw new Error('Failure notification lookup unavailable')
+          return prior.data?.status || null
+        })
         const { data: saved, error: markError } = await db.from('kit_control_outbox').update({ send_started: started }).eq('id', row.id).eq('lease_token', token).gt('lease_until', new Date().toISOString()).select('id').single()
         if (markError || !saved) throw new Error('Delivery checkpoint lost')
       },

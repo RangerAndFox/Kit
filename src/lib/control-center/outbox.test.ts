@@ -1,6 +1,6 @@
 import { it } from 'node:test'
 import assert from 'node:assert/strict'
-import { deliverOutbox, type OutboxPorts, type OutboxRow } from './outbox'
+import { deliverOutbox, requirePriorAlertAcknowledged, type OutboxPorts, type OutboxRow } from './outbox'
 import { retryIncompleteSync, requireCompletedSync, type SyncSummary } from '../inngest/project-control-sync'
 
 const row: OutboxRow = { id: 'id', project_id: 'project', kind: 'sync_alert', payload: {}, attempts: 1, send_started: false, created_at: '2026-09-11T00:00:00Z' }
@@ -20,6 +20,18 @@ it('persists a checkpoint before sending and marks sent only after acknowledgeme
   const { ports, events } = fake()
   await deliverOutbox(row, ports)
   assert.deepEqual(events, ['checkpoint', 'post', 'sent'])
+})
+it('holds a recovery until its failure alert is acknowledged without marking a send', async () => {
+  const recovery = { ...row, payload: { priorAlertId: 'failure' } }
+  for (const status of ['pending', 'retry', 'processing', 'review', null]) {
+    const { ports, events } = fake({ markStarted: async () => requirePriorAlertAcknowledged(recovery, async (id, projectId) => {
+      assert.equal(id, 'failure'); assert.equal(projectId, 'project'); return status
+    }) })
+    await deliverOutbox(recovery, ports)
+    assert.deepEqual(events, ['retry'])
+  }
+  await requirePriorAlertAcknowledged(recovery, async () => 'sent')
+  await assert.rejects(requirePriorAlertAcknowledged(recovery, async () => { throw new Error('database unavailable') }))
 })
 it('does not send when its checkpoint fails', async () => {
   const { ports, events } = fake({ markStarted: async () => { throw new Error('database unavailable') } })
