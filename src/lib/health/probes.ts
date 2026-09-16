@@ -14,29 +14,7 @@ import { createAdminClient } from '../supabase/admin'
 import { outboxDb } from '../control-center/outbox'
 import { listTranscriptFiles, driveTranscriptsFolderId } from '../integrations/drive-transcripts'
 import type { CheckResult, Status } from './diff'
-
-const PROBE_TIMEOUT_MS = 10_000
-
-/** Wrap a probe fn: time it, catch anything, produce a CheckResult. */
-async function probe(
-  key: string,
-  label: string,
-  fn: () => Promise<string | void>,
-): Promise<CheckResult> {
-  const started = Date.now()
-  try {
-    const detail = await Promise.race([
-      fn(),
-      new Promise<never>((_, rej) =>
-        setTimeout(() => rej(new Error(`timed out after ${PROBE_TIMEOUT_MS}ms`)), PROBE_TIMEOUT_MS),
-      ),
-    ])
-    const ms = Date.now() - started
-    return { key, label, ok: true, detail: detail || `${ms}ms` }
-  } catch (err: any) {
-    return { key, label, ok: false, detail: String(err?.message || err).slice(0, 300) }
-  }
-}
+import { runHealthProbe as probe } from './probe'
 
 /**
  * Run every integration probe concurrently. Google is only probed when a
@@ -45,9 +23,9 @@ async function probe(
  */
 export async function runIntegrationProbes(): Promise<CheckResult[]> {
   const probes: Array<Promise<CheckResult>> = [
-    probe('control-outbox', 'Control requests and alerts', async () => {
+    probe('control-outbox', 'Control requests and alerts', async (signal) => {
       const { data, error } = await outboxDb().from('kit_control_outbox').select('id,status,created_at')
-        .neq('status', 'sent').order('created_at').limit(20)
+        .neq('status', 'sent').order('created_at').limit(20).abortSignal(signal)
       if (error) throw new Error('Control outbox could not be inspected')
       const stuck = data?.find(row => row.status === 'review' || Date.now() - Date.parse(row.created_at) > 15 * 60_000)
       if (stuck) throw new Error(`Request ${stuck.id} ${stuck.status === 'review' ? 'needs manual review' : 'is overdue'}`)
@@ -58,14 +36,14 @@ export async function runIntegrationProbes(): Promise<CheckResult[]> {
       const res = await dropboxRpc('/check/user', { query: 'kit-health' })
       if (res?.result !== 'kit-health') throw new Error('unexpected check/user response')
     }),
-    probe('frameio', 'Frame.io', async () => {
+    probe('frameio', 'Frame.io', async (signal) => {
       const res = await fetch('https://api.frame.io/v4/me', {
         headers: await frameioHeaders(),
-        signal: AbortSignal.timeout(8_000),
+        signal: AbortSignal.any([signal, AbortSignal.timeout(8_000)]),
       })
       if (!res.ok) throw new Error(`GET /v4/me ${res.status}: ${(await res.text()).slice(0, 120)}`)
     }),
-    probe('harvest', 'Harvest', async () => {
+    probe('harvest', 'Harvest', async (signal) => {
       const token = process.env.HARVEST_ACCESS_TOKEN
       const account = process.env.HARVEST_ACCOUNT_ID
       if (!token || !account) throw new Error('HARVEST_ACCESS_TOKEN / HARVEST_ACCOUNT_ID not set')
@@ -75,20 +53,21 @@ export async function runIntegrationProbes(): Promise<CheckResult[]> {
           'Harvest-Account-Id': account,
           'User-Agent': 'Kit Health (steve@rangerandfox.tv)',
         },
-        signal: AbortSignal.timeout(8_000),
+        signal: AbortSignal.any([signal, AbortSignal.timeout(8_000)]),
       })
       if (!res.ok) throw new Error(`GET /v2/company ${res.status}`)
     }),
-    probe('supabase', 'Supabase', async () => {
-      const { error } = await createAdminClient().from('projects').select('id').limit(1)
+    probe('supabase', 'Supabase', async (signal) => {
+      const { error } = await createAdminClient().from('projects').select('id').limit(1).abortSignal(signal)
       if (error) throw new Error(error.message)
     }),
-    probe('dropbox-inbox', 'Dropbox delivery queue', async () => {
+    probe('dropbox-inbox', 'Dropbox delivery queue', async (signal) => {
       const { data, error } = await createAdminClient()
         .from('dropbox_event_inbox')
         .select('id, event_type, last_error')
         .eq('status', 'dead_letter')
         .limit(1)
+        .abortSignal(signal)
       if (error) throw new Error(error.message)
       if (data?.length) {
         const event = data[0]
