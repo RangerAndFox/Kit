@@ -48,6 +48,10 @@ fact.
   `/production/<year>/<project>/09_Outgoing/{01_Client Progress,02_Delivery}/...`
   are mirrored to Frame.io. Share creation uses the V4 project-scoped `shares`
   contract. This is not the delivery/transcode queue below.
+  Outgoing file handling resolves an existing project by authenticated Slack
+  workspace + exact project number; it must not create projects through folder
+  discovery. Folder notifications resolve the bound Sheet Producer to an active
+  producer/admin and remain pending on routing failure (no channel fallback).
 
 ## Vercel — Next.js app + Inngest functions
 

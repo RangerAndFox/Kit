@@ -73,7 +73,19 @@ export async function runIntegrationProbes(): Promise<CheckResult[]> {
         const event = data[0]
         throw new Error(`${event.event_type} requires manual review: ${event.last_error || event.id}`)
       }
-      return 'no dead-lettered events'
+      // Upload completion is not notification completion. A routing/Google/
+      // Slack failure can leave a ready upload with an unsent durable outbox.
+      const { data: pendingShares, error: shareError } = await createAdminClient()
+        .from('project_share_events')
+        .select('id,project_id')
+        .eq('status', 'pending')
+        .is('slack_message_ts', null)
+        .lt('created_at', new Date(Date.now() - 15 * 60_000).toISOString())
+        .limit(1)
+        .abortSignal(signal)
+      if (shareError) throw new Error(shareError.message)
+      if (pendingShares?.length) throw new Error(`Frame.io folder notification awaiting recovery for project ${pendingShares[0].project_id}`)
+      return 'no dead-lettered uploads or overdue folder notifications'
     }),
   ]
 
