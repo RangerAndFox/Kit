@@ -4,7 +4,7 @@
  * On a Dropbox webhook hit, we pull the cursor delta over /production
  * (recursive), filter for files dropped into any project's
  * `09_Outgoing/{01_Client Progress | 02_Delivery}` folder, then:
- *   1. Look up the project by `external_ids->>dropbox_safe_name`
+ *   1. Resolve exactly one existing project by workspace + project number
  *   2. Find the Frame.io `03_Outgoing/{same subfolder}` destination
  *   3. Get a Dropbox temporary download link
  *   4. Hand it to Frame.io remote_upload (no buffering through this server)
@@ -28,7 +28,9 @@ import {
   syncProjectShareEvent,
   type RegisteredProjectShare,
 } from '../../../src/lib/project-control/share-progress'
-import { readLatestShare, recordLatestShare } from '../../../src/lib/project-control/sheets'
+import { readLatestShare, recordLatestShare, readRow, searchRowMetadata } from '../../../src/lib/project-control/sheets'
+import { MASTER_HEADERS, normalizeCell } from '../../../src/lib/project-control/render'
+import { selectDeliveryProject, selectDeliveryProducer } from '../../../src/lib/projects/delivery-routing'
 import { requestProjectControlSync } from '../../../src/lib/project-control/sync-request'
 import { workbookConfigFromEnv } from '../../../src/lib/project-control/types'
 import type { Json } from '../../../src/types/supabase'
@@ -466,7 +468,7 @@ type DeliveryProject = {
   external_ids?: JsonRecord | null
 }
 
-async function notifyProjectShare(
+export async function notifyProjectShare(
   app: App,
   input: {
     project: DeliveryProject
@@ -488,14 +490,16 @@ async function notifyProjectShare(
       `• Folder: \`${subfolderLine}\`\n` +
       `• ${linkLine}`
 
-  const pmId = project.project_manager_slack_id || undefined
-  const channelId = project.external_links?.slack_id as string | undefined
-  const fallbackPm = process.env.KIT_FALLBACK_PM_SLACK_ID
-  const target = pmId || channelId || fallbackPm
-  if (!target) {
-    console.warn(`[dropbox-watcher] project ${project.id} has no notification target`)
-    return
+  // A private producer prompt must never silently fall back to an artist
+  // channel. Re-read the authoritative Sheet assignment (including changes
+  // made after provisioning); a routing failure leaves the outbox retryable.
+  if (progression?.eventId) {
+    const { data: current, error } = await createAdminClient().from('project_share_events')
+      .select('status,slack_message_ts').eq('id', progression.eventId).single()
+    if (error) throw new Error(`share notification state read failed: ${error.message}`)
+    if (current.status !== 'pending' || current.slack_message_ts) return
   }
+  const target = await resolveDeliveryProducer(project)
 
   const blocks: any[] = [{ type: 'section', text: { type: 'mrkdwn', text } }]
   if (progression?.eventId) {
@@ -513,6 +517,7 @@ async function notifyProjectShare(
     text: `${input.recovered ? '♻️' : '📦'} ${copy.heading} for *${project.name}*`,
     blocks,
   })
+  if (!posted.ok || !posted.ts) throw new Error('Slack did not acknowledge the folder notification')
   if (progression?.eventId && posted.ts) {
     const sb = createAdminClient()
     const { error } = await sb.from('project_share_events')
@@ -526,7 +531,34 @@ async function notifyProjectShare(
       .eq('share_url', reviewUrl)
     if (folderError) throw new Error(`folder notification checkpoint failed: ${folderError.message}`)
   }
-  console.log(`[dropbox-watcher] notified ${pmId ? `PM ${pmId}` : channelId ? `channel ${channelId}` : `fallback ${fallbackPm}`}`)
+  console.log(`[dropbox-watcher] notified producer ${target}`)
+}
+
+async function resolveDeliveryProducer(project: DeliveryProject): Promise<string> {
+  const sb = createAdminClient()
+  const { data: binding, error: bindingError } = await sb.from('project_control_bindings')
+    .select('spreadsheet_id,sheet_id').eq('project_id', project.id).maybeSingle()
+  if (bindingError) throw new Error(`producer binding lookup failed: ${bindingError.message}`)
+  let label = project.project_manager_slack_id || ''
+  if (binding) {
+    const config = workbookConfigFromEnv()
+    if (!config || config.spreadsheetId !== binding.spreadsheet_id || config.sheetId !== binding.sheet_id) {
+      throw new Error('Producer binding does not match the authoritative workbook')
+    }
+    const bound = await searchRowMetadata(config.spreadsheetId, project.id, config.sheetId)
+    if (!bound) throw new Error('Producer Sheet row binding is missing')
+    const row = await readRow(config, bound.rowIndex)
+    label = normalizeCell(row[MASTER_HEADERS.indexOf('Producer')]).display.trim()
+  }
+  const { data: staff, error: staffError } = await sb.from('staff')
+    .select('full_name,slack_user_id,role,is_active').eq('is_active', true).in('role', ['admin', 'producer'])
+  if (staffError) throw new Error(`producer directory lookup failed: ${staffError.message}`)
+  const target = selectDeliveryProducer(label, staff || [])
+  if (target !== project.project_manager_slack_id) {
+    const { error } = await sb.from('projects').update({ project_manager_slack_id: target, updated_at: new Date().toISOString() }).eq('id', project.id)
+    if (error) throw new Error(`producer routing checkpoint failed: ${error.message}`)
+  }
+  return target
 }
 
 /**
@@ -830,34 +862,30 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
     return
   }
 
-  // ── Lookup project (or discover from Frame.io) ──────────
+  // ── Resolve the existing project by stable number, never folder label ──
   const sb = createAdminClient()
-  const { data: existing, error } = await sb
+  const identity = await app.client.auth.test()
+  if (!identity.ok || !identity.team_id) throw new Error('Delivery workspace identity is unavailable')
+  const { data: workspace, error: workspaceError } = await sb.from('workspaces')
+    .select('id').eq('slack_team_id', identity.team_id).single()
+  if (workspaceError || !workspace) throw new Error('Delivery workspace binding is missing or ambiguous')
+  const projectNumber = extractProjectNumber(d.safeName)
+  if (!projectNumber) throw new Error('Delivery folder has no project number')
+  const { data: candidates, error } = await sb
     .from('projects')
     .select(
       'id, name, client, project_code, project_manager_slack_id, external_links, external_ids',
     )
-    .filter('external_ids->>dropbox_safe_name', 'eq', d.safeName)
-    .maybeSingle()
+    .eq('workspace_id', workspace.id)
+    .or(`project_code.ilike.${projectNumber},project_code.ilike.${projectNumber}-%,external_ids->>project_number.ilike.${projectNumber}`)
 
   if (error) throw new Error(`project lookup failed: ${error.message}`)
 
-  let project = existing ? {
+  const existing = selectDeliveryProject((candidates || []).map(row => ({ ...row, external_ids: asJsonRecord(row.external_ids) })), d.safeName)
+  const project = {
     ...existing,
     external_links: asJsonRecord(existing.external_links),
     external_ids: asJsonRecord(existing.external_ids),
-  } : null
-  if (!project) {
-    project = await discoverAndBackfillProject(d.safeName)
-    if (!project) {
-      console.warn(
-        `[dropbox-watcher] no project (Supabase OR Frame.io) matches safeName=${d.safeName}`,
-      )
-      return
-    }
-    console.log(
-      `[dropbox-watcher] auto-backfilled project ${project.id} for safeName=${d.safeName}`,
-    )
   }
 
   // ── Respect the per-project Frame.io upload toggle ──────
@@ -1281,90 +1309,6 @@ export async function resolveFrameioIdForProject(
   return found.id
 }
 
-/**
- * Best-effort parse of an existing project label into the three fields
- * NOT NULL on `projects`: name, client, project_code. Used only when
- * inserting a discovered Frame.io project into Supabase.
- */
-function deriveProjectFields(safeName: string, frameioName: string): {
-  projectNumber: string
-  client: string
-  name: string
-} {
-  // Prefer the Frame.io project name as source of truth; fall back to safeName.
-  const source = frameioName || safeName
-  const parts = source.split('_').map((s) => s.trim()).filter(Boolean)
-  const projectNumber = (extractProjectNumber(source) || parts[0] || '').trim()
-  const client = (parts[1] || 'Unknown').trim()
-  const name = parts.slice(2).join(' ').trim() || client
-  return { projectNumber, client, name }
-}
-
-async function discoverAndBackfillProject(safeName: string): Promise<any | null> {
-  const projectNumber = extractProjectNumber(safeName)
-  if (!projectNumber) {
-    console.warn(`[dropbox-watcher] could not extract project number from "${safeName}"`)
-    return null
-  }
-
-  const acct = process.env.FRAMEIO_ACCOUNT_ID
-  const ws = process.env.FRAMEIO_WORKSPACE_ID
-  if (!acct || !ws) {
-    console.warn('[dropbox-watcher] FRAMEIO_ACCOUNT_ID/WORKSPACE_ID missing; cannot discover')
-    return null
-  }
-
-  const found = await findFrameioProjectByNumber(acct, ws, projectNumber)
-  if (!found) {
-    console.warn(
-      `[dropbox-watcher] no Frame.io project starts with "${projectNumber}_" in workspace`,
-    )
-    return null
-  }
-  console.log(
-    `[dropbox-watcher] discovery: ${safeName} → Frame.io project ${found.id} "${found.name}"`,
-  )
-
-  // Reuse the default Supabase workspace (single-tenant for this studio).
-  const sb = createAdminClient()
-  const { data: anyRow } = await sb
-    .from('projects')
-    .select('workspace_id')
-    .limit(1)
-    .maybeSingle()
-  const workspaceId = anyRow?.workspace_id
-  if (!workspaceId) {
-    console.warn('[dropbox-watcher] no existing workspace_id in projects table; cannot backfill')
-    return null
-  }
-
-  const fields = deriveProjectFields(safeName, found.name)
-  const projectCode = `${fields.projectNumber}-${fields.client.replace(/\s+/g, '')}`
-
-  // Insert a row capturing what we know. Future file drops for this
-  // project will hit the Supabase lookup and skip discovery.
-  const { data: inserted, error: insertErr } = await sb
-    .from('projects')
-    .insert({
-      workspace_id: workspaceId,
-      name: fields.name,
-      client: fields.client,
-      project_code: projectCode,
-      status: 'active',
-      external_ids: { dropbox_safe_name: safeName },
-      external_links: { frameio_id: found.id, frameio: frameioProjectUrl(found.id) },
-    })
-    .select(
-      'id, name, client, project_code, project_manager_slack_id, external_links, external_ids',
-    )
-    .single()
-
-  if (insertErr) {
-    console.error(`[dropbox-watcher] backfill insert failed: ${insertErr.message}`)
-    return null
-  }
-  return inserted
-}
 
 async function findFrameioProjectByNumber(
   acct: string,
