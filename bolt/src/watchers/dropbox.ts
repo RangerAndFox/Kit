@@ -32,6 +32,7 @@ import { readLatestShare, recordLatestShare } from '../../../src/lib/project-con
 import { requestProjectControlSync } from '../../../src/lib/project-control/sync-request'
 import { workbookConfigFromEnv } from '../../../src/lib/project-control/types'
 import type { Json } from '../../../src/types/supabase'
+import { provesReadyReplacement } from './replacement-proof'
 
 type JsonRecord = { [key: string]: Json | undefined }
 
@@ -416,6 +417,26 @@ export async function drainDropboxInbox(
         if (!completed) throw new Error('completion lease was lost')
         result.completed++
       } catch (error: any) {
+        // A deleted/recreated source can finish as a new event while this event
+        // keeps polling the vanished upload. Reconcile only with live proof;
+        // do not replay delivery, share, notification, or celebration effects.
+        const resolution = await findVerifiedReplacement(event, error).catch((recoveryError) => {
+          console.warn(`[dropbox-inbox] replacement verification unavailable for ${event.id}: ${recoveryError?.message || recoveryError}`)
+          return null
+        })
+        if (resolution) {
+          const { data: audited, error: auditError } = await sb.from('dropbox_event_inbox')
+            .update({ payload: { ...asJsonRecord(event.payload as Json), automatic_resolution: resolution } })
+            .eq('id', event.id).eq('status', 'processing').eq('claim_token', event.claim_token)
+            .select('id').maybeSingle()
+          if (auditError || !audited) throw new Error('replacement audit checkpoint failed or lease lost')
+          const { data: completed, error: completeError } = await sb.rpc('complete_dropbox_event', {
+            p_event_id: event.id, p_claim_token: event.claim_token,
+          })
+          if (completeError || !completed) throw new Error('replacement completion checkpoint failed or lease lost')
+          result.completed++
+          continue
+        }
         if (error instanceof DropboxEventDeferred) {
           const { data: deferred, error: deferError } = await sb.rpc('defer_dropbox_event', {
             p_event_id: event.id,
@@ -443,6 +464,68 @@ export async function drainDropboxInbox(
     }
   }
   return result
+}
+
+/** Only entity-specific missing-file responses count as deletion evidence. */
+async function readReplacementDropboxMetadata(path: string): Promise<any | null> {
+  const response = await fetch(`${DROPBOX_API}/files/get_metadata`, {
+    method: 'POST', headers: await dropboxHeaders(), body: JSON.stringify({ path }),
+    signal: AbortSignal.timeout(15_000),
+  })
+  const body = await response.json()
+  if (response.status === 409 && body?.error?.['.tag'] === 'path' && body.error.path?.['.tag'] === 'not_found') return null
+  if (!response.ok) throw new Error(`replacement Dropbox metadata check failed (${response.status})`)
+  return body
+}
+
+export async function findVerifiedReplacement(event: ClaimedDropboxEvent, error: Error): Promise<JsonRecord | null> {
+  if (event.event_type !== 'frameio_delivery' ||
+    error?.message !== 'Frame.io upload status is not visible yet (404); exceeded 24-hour processing window') return null
+  const payload = asJsonRecord(event.payload as Json)
+  const { path, dropboxId, rev } = payload
+  const account = process.env.FRAMEIO_ACCOUNT_ID
+  if (typeof path !== 'string' || typeof dropboxId !== 'string' || typeof rev !== 'string' || !account) return null
+  const sb = createAdminClient()
+  const { data: original, error: originalError } = await sb.from('frameio_delivery_transfers')
+    .select('*').eq('dropbox_file_id', dropboxId).eq('dropbox_rev', rev).maybeSingle()
+  if (originalError) throw originalError
+  if (!original) return null
+  // Read current identity first. This rules out unrelated same-name files and
+  // chooses one exact revision even if several replacements have completed.
+  const source = await readReplacementDropboxMetadata(path)
+  if (!source?.id || !source.rev || source.id === dropboxId) return null
+  const { data: events, error: eventsError } = await sb.from('dropbox_event_inbox')
+    .select('id').eq('event_type', 'frameio_delivery').eq('status', 'complete')
+    .contains('payload', { path, dropboxId: source.id, rev: source.rev })
+    .gt('created_at', original.created_at).limit(2)
+  if (eventsError) throw eventsError
+  if (events?.length !== 1) return null
+  const { data: replacement, error: replacementError } = await sb.from('frameio_delivery_transfers')
+    .select('*').eq('dropbox_file_id', source.id).eq('dropbox_rev', source.rev).maybeSingle()
+  if (replacementError) throw replacementError
+  if (!replacement || replacement.state !== 'ready' || replacement.project_id !== original.project_id ||
+    replacement.frameio_folder_id !== original.frameio_folder_id) return null
+  if (await readReplacementDropboxMetadata(dropboxId) !== null) return null
+  try {
+    await frameioGet(`/accounts/${account}/files/${original.frameio_file_id}`)
+    return null
+  } catch (missing) {
+    if (!(missing instanceof FrameioApiError) || missing.status !== 404) throw missing
+    const body = JSON.parse(missing.responseBody)
+    if (!body?.errors?.some((entry: { detail?: string }) =>
+      entry.detail === `Entity with ID ${original.frameio_file_id} not found.`)) return null
+  }
+  const fileResponse = await frameioGet(`/accounts/${account}/files/${replacement.frameio_file_id}`)
+  const file = fileResponse?.data
+  if (!file || !provesReadyReplacement({ original, replacement, sourceId: dropboxId,
+    replacementSourceId: source.id, replacementRev: source.rev, currentSource: source,
+    originalSourceMissing: true, originalFrameMissing: true, replacementFile: file })) return null
+  return {
+    outcome: 'superseded_by_verified_replacement', resolved_at: new Date().toISOString(),
+    replacement_event_id: events[0].id, replacement_transfer_id: replacement.id,
+    replacement_frameio_file_id: replacement.frameio_file_id, previous_error: error.message,
+    reason: 'Original source and upload absent; current source revision has a completed event and a verified ready replacement in the same project folder. No effects replayed.',
+  }
 }
 
 // ─── Per-file pipeline ──────────────────────────────────────
