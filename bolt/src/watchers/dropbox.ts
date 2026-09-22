@@ -33,6 +33,7 @@ import { requestProjectControlSync } from '../../../src/lib/project-control/sync
 import { workbookConfigFromEnv } from '../../../src/lib/project-control/types'
 import type { Json } from '../../../src/types/supabase'
 import { provesReadyReplacement } from './replacement-proof'
+import { assertExactSource, frameFileReadiness, sourceReadiness, verifySourceLink } from './upload-integrity'
 
 type JsonRecord = { [key: string]: Json | undefined }
 
@@ -267,6 +268,7 @@ export function classifyDropboxEntry(entry: DropEntry): DropboxInboxEvent | null
       year,
       dropboxId: entry.id || entry.path_lower,
       rev: entry.rev || '',
+      ...(entry.size !== undefined ? { sizeBytes: entry.size } : {}),
     },
   }
 }
@@ -348,6 +350,7 @@ type ClaimedDropboxEvent = DropboxInboxEvent & {
   id: string
   claim_token: string
   attempt_count: number
+  created_at?: string
 }
 
 const FRAMEIO_PROCESSING_POLL_SECONDS = 300
@@ -363,6 +366,10 @@ export class DropboxEventDeferred extends Error {
   }
 }
 
+class DropboxEventSuperseded extends Error {
+  constructor(readonly resolution: JsonRecord) { super('Source revision superseded before upload') }
+}
+
 async function dispatchDropboxEvent(app: App, event: ClaimedDropboxEvent): Promise<void> {
   const payload = event.payload as any
   if (event.event_type === 'accessibility_srt') {
@@ -373,7 +380,7 @@ async function dispatchDropboxEvent(app: App, event: ClaimedDropboxEvent): Promi
     await handleAeRenderFarmDrop(app, payload)
     return
   }
-  await handleNewDelivery(app, payload)
+  await handleNewDelivery(app, payload, event)
   if (/02_Delivery/i.test(payload.subfolder || '')) {
     const safeName = String(payload.safeName || '')
     const projectName = safeName.replace(/^\d+[A-Za-z]?[_-]/, '').replace(/[_-]+/g, ' ').trim() || safeName
@@ -420,7 +427,7 @@ export async function drainDropboxInbox(
         // A deleted/recreated source can finish as a new event while this event
         // keeps polling the vanished upload. Reconcile only with live proof;
         // do not replay delivery, share, notification, or celebration effects.
-        const resolution = await findVerifiedReplacement(event, error).catch((recoveryError) => {
+        const resolution = error instanceof DropboxEventSuperseded ? error.resolution : await findVerifiedReplacement(event, error).catch((recoveryError) => {
           console.warn(`[dropbox-inbox] replacement verification unavailable for ${event.id}: ${recoveryError?.message || recoveryError}`)
           return null
         })
@@ -538,6 +545,7 @@ interface Delivery {
   year: string
   dropboxId: string
   rev: string
+  sizeBytes?: number
 }
 
 type DeliveryProject = {
@@ -905,7 +913,7 @@ async function hasRecentFolderNotification(
   return Boolean(data)
 }
 
-async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
+export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDropboxEvent): Promise<void> {
   // Defend the worker as well as intake: an artifact queued by an older
   // deployment must not be uploaded after this filter ships.
   if (isDropboxConflictArtifact(d.name)) {
@@ -1058,11 +1066,41 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
   let transfer = priorTransfer as any
   let file: any
   if (!transfer) {
+    const current = await dbxPost('/files/get_metadata', { path: d.dropboxId })
+    const sourceState = sourceReadiness({ ...d, firstSeenAt: event.created_at }, current)
+    if (sourceState === 'superseded') {
+      // Hand off only to an already durable event for the newer revision. An
+      // intermediate export is not a delivery; its successor owns all effects.
+      const { data: successors, error: successorError } = await sb.from('dropbox_event_inbox')
+        .select('id').eq('event_type', 'frameio_delivery').neq('id', event.id)
+        .contains('payload', { path: d.path, dropboxId: d.dropboxId, rev: current.rev }).limit(2)
+      if (successorError) throw successorError
+      if (successors?.length === 1) throw new DropboxEventSuperseded({
+        outcome: 'superseded_before_upload', successor_event_id: successors[0].id,
+        successor_rev: current.rev, resolved_at: new Date().toISOString(),
+        reason: 'Source changed before upload. A durable successor event owns the newer revision; no upload, share, notification or celebration performed for this revision.',
+      })
+      deferFrameioProcessing(event.created_at, 'Dropbox source changed; waiting for its durable successor event; inbox will retry')
+    }
+    if (sourceState !== 'ready') {
+      deferFrameioProcessing(event.created_at, 'Dropbox source is empty or has not been stable for 60 seconds; inbox will retry')
+    }
     // A new remote upload needs a short-lived Dropbox source URL. A resumed
     // transfer does not: Frame.io already owns its copy at that point.
-    const tempLinkResp = await dbxPost('/files/get_temporary_link', { path: d.path })
+    const tempLinkResp = await dbxPost('/files/get_temporary_link', { path: `rev:${d.rev}` })
+    const sourceSize = assertExactSource(d, tempLinkResp.metadata)
     const sourceUrl: string = tempLinkResp.link
     if (!sourceUrl) throw new Error('Dropbox did not return a temporary link')
+    await verifySourceLink(sourceUrl, fileName, sourceSize)
+    // Keep source evidence durable before the external write, including legacy
+    // inbox rows created before source sizes were captured at ingestion.
+    const checkpointPayload = { ...asJsonRecord(event.payload as Json), sizeBytes: sourceSize }
+    const { data: checkpoint, error: checkpointError } = await sb.from('dropbox_event_inbox')
+      .update({ payload: checkpointPayload }).eq('id', event.id)
+      .eq('status', 'processing').eq('claim_token', event.claim_token).select('id').maybeSingle()
+    if (checkpointError || !checkpoint) throw new Error('Source evidence checkpoint failed or lease lost')
+    event.payload = checkpointPayload
+    d.sizeBytes = sourceSize
 
     const createResp = await frameioPost(
       `/accounts/${acct}/folders/${targetFolderId}/files/remote_upload`,
@@ -1100,8 +1138,7 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
     }
   }
 
-  // Remote upload is asynchronous. Never announce or create a review share
-  // until Frame.io's documented status endpoint reports a terminal ready state.
+  // Transfer completion is necessary, but is not proof of playable media.
   if (transfer.state !== 'ready') {
     let statusResp: unknown
     try {
@@ -1120,7 +1157,7 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
     }
     const { readiness, providerStatus } = classifyFrameioUploadStatusResponse(statusResp)
     const { error: stateError } = await sb.from('frameio_delivery_transfers').update({
-      state: readiness,
+      state: readiness === 'ready' ? 'processing' : readiness,
       last_provider_status: providerStatus || null,
       last_error: readiness === 'failed' ? `Frame.io upload ended in ${providerStatus || 'unknown failure'}` : null,
       updated_at: new Date().toISOString(),
@@ -1133,7 +1170,33 @@ async function handleNewDelivery(app: App, d: Delivery): Promise<void> {
         `Frame.io upload is still processing (${providerStatus || 'pending'}); inbox will retry`,
       )
     }
-    transfer.state = 'ready'
+  }
+  // Also verify formerly-ready transfers when resuming notification retries.
+  // Never trust a historic upload_complete checkpoint to certify media bytes.
+  try {
+    const expectedSize = d.sizeBytes ?? assertExactSource(d,
+      await dbxPost('/files/get_metadata', { path: `rev:${d.rev}` }))
+    const actual = await frameioGet(`/accounts/${acct}/files/${transfer.frameio_file_id}`)
+    const mediaState = frameFileReadiness(actual.data || actual, {
+      id: transfer.frameio_file_id, folderId: transfer.frameio_folder_id,
+      projectId: transfer.frameio_project_id, name: fileName, size: expectedSize,
+    })
+    if (mediaState !== 'ready') {
+      deferFrameioProcessing(transfer.created_at, 'Frame.io media is still transcoding; inbox will retry')
+    }
+    const { error: verifiedError } = await sb.from('frameio_delivery_transfers').update({
+      state: 'ready', last_provider_status: String((actual.data || actual).status), last_error: null,
+      updated_at: new Date().toISOString(),
+    }).eq('id', transfer.id)
+    if (verifiedError) throw verifiedError
+  } catch (integrityError) {
+    if (integrityError instanceof DropboxEventDeferred) throw integrityError
+    const message = integrityError instanceof Error ? integrityError.message : String(integrityError)
+    const { error: checkpointError } = await sb.from('frameio_delivery_transfers').update({
+      state: 'failed', last_error: message, updated_at: new Date().toISOString(),
+    }).eq('id', transfer.id)
+    if (checkpointError) throw new Error(`Upload integrity checkpoint failed: ${checkpointError.message}`)
+    throw integrityError
   }
   const breadcrumb =
     traversedNames.length > 0
