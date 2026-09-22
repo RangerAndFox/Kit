@@ -480,7 +480,7 @@ async function readReplacementDropboxMetadata(path: string): Promise<any | null>
 
 export async function findVerifiedReplacement(event: ClaimedDropboxEvent, error: Error): Promise<JsonRecord | null> {
   if (event.event_type !== 'frameio_delivery' ||
-    !error?.message?.startsWith('Frame.io upload status is not visible yet (404);')) return null
+    error?.message !== 'Frame.io upload status is not visible yet (404); exceeded 24-hour processing window') return null
   const payload = asJsonRecord(event.payload as Json)
   const { path, dropboxId, rev } = payload
   const account = process.env.FRAMEIO_ACCOUNT_ID

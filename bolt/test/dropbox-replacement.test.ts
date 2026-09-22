@@ -11,7 +11,7 @@ const replacement = { ...old, id: 'new', frameio_file_id: 'new-file', state: 're
 const event = { id: 'old-event', event_type: 'frameio_delivery', event_key: 'key', claim_token: 'lease', attempt_count: 1,
   payload: { path: '/project/09_Outgoing/cut.mp4', dropboxId: 'id:old', rev: 'old-rev' } }
 const missing = new Error('Frame.io upload status is not visible yet (404); exceeded 24-hour processing window')
-let rows: any[]
+let rows: unknown[]
 function response(body: unknown, status = 200) { return new Response(JSON.stringify(body), { status }) }
 beforeEach(() => {
   vi.clearAllMocks()
@@ -20,12 +20,15 @@ beforeEach(() => {
   rows = [old, [{ id: 'replacement-event' }], replacement]
   mocks.from.mockImplementation(() => {
     const result = { data: rows.shift(), error: null }
-    const query: any = { then: (resolve: any) => Promise.resolve(result).then(resolve) }
-    for (const name of ['select', 'eq', 'contains', 'gt', 'limit', 'maybeSingle']) query[name] = vi.fn(() => query)
+    const query = {
+      then: <T>(resolve: (value: typeof result) => T) => Promise.resolve(result).then(resolve),
+      select: vi.fn(), eq: vi.fn(), contains: vi.fn(), gt: vi.fn(), limit: vi.fn(), maybeSingle: vi.fn(),
+    }
+    for (const name of ['select', 'eq', 'contains', 'gt', 'limit', 'maybeSingle'] as const) query[name].mockReturnValue(query)
     return query
   })
-  mocks.fetch.mockImplementation(async (url: string, options: any) => {
-    if (url.includes('get_metadata')) return JSON.parse(options.body).path === 'id:old'
+  mocks.fetch.mockImplementation(async (url: string, options: RequestInit) => {
+    if (url.includes('get_metadata')) return JSON.parse(String(options.body)).path === 'id:old'
       ? response({ error: { '.tag': 'path', path: { '.tag': 'not_found' } } }, 409)
       : response({ id: 'id:new', rev: 'new-rev', size: 123 })
     if (url.endsWith('/old-file')) return response({ errors: [{ detail: 'Entity with ID old-file not found.' }] }, 404)
@@ -50,6 +53,11 @@ describe('replacement recovery provider checks', () => {
   })
   it('ignores unrelated errors without any provider calls', async () => {
     expect(await findVerifiedReplacement(event, new Error('upload failed'))).toBeNull()
+    expect(mocks.fetch).not.toHaveBeenCalled()
+  })
+  it('does not run replacement checks during normal eventual consistency', async () => {
+    expect(await findVerifiedReplacement(event, new Error('Frame.io upload status is not visible yet (404); inbox will retry'))).toBeNull()
+    expect(mocks.from).not.toHaveBeenCalled()
     expect(mocks.fetch).not.toHaveBeenCalled()
   })
   it.each([[], [{ id: 'one' }, { id: 'two' }]])('rejects missing or ambiguous completed events', async (events) => {
