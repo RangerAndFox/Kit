@@ -23,6 +23,7 @@ import type { TablesUpdate, Json } from '../../../src/types/supabase'
 import { projectNumberFromCode, projectNumberKey } from '../../../src/lib/studio-knowledge/project-sync'
 import { buildNewProjectModal, buildUpdateProjectModal } from '../../../src/lib/provisioner/modal'
 import { deriveProjectCode, deriveDropboxSafeName } from '../../../src/lib/provisioner/identifiers'
+import { renamedDropboxIdentity } from '../../../src/lib/dropbox/project-identity'
 import { computeUpdatePlan } from '../../../src/lib/provisioner/update-diff'
 import { runProjectUpdate } from '../../../src/lib/provisioner/update'
 import {
@@ -2012,7 +2013,7 @@ export function registerInteractionHandlers(app: App) {
           // on the write below. Throw so the step is retryable — fail closed.
           const { data, error: readErr } = await supabase.from('projects').select('external_ids, external_links').eq('id', pid).maybeSingle()
           if (readErr) throw new Error(`persistDropboxMove read: ${readErr.message}`)
-          const external_ids = { ...((data as any)?.external_ids || {}), dropbox_safe_name: o.safeName }
+          const external_ids = renamedDropboxIdentity((data as any)?.external_ids || {}, o.safeName)
           const external_links = { ...((data as any)?.external_links || {}), dropbox_id: o.path, ...(o.url ? { dropbox: o.url } : {}) }
           // supabase-js resolves (never throws) on a write failure — THROW on error
           // so the dropbox step is marked 'failed' (retryable), never memoized

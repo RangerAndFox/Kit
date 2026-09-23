@@ -767,13 +767,25 @@ async function handleAeRenderFarmDrop(
   }
 }
 
-async function resolveProjectChannelBySafeName(safeName: string): Promise<string | null> {
+/** A rename must not orphan already-queued work or trigger duplicate discovery. */
+export async function lookupDropboxProject(safeName: string) {
   const sb = createAdminClient()
-  const { data } = await sb
+  const columns = 'id, name, client, project_code, project_manager_slack_id, external_links, external_ids'
+  const { data, error } = await sb
     .from('projects')
-    .select('external_links')
+    .select(columns)
     .filter('external_ids->>dropbox_safe_name', 'eq', safeName)
     .maybeSingle()
+  if (error) throw new Error(`project lookup failed: ${error.message}`)
+  if (data) return data
+  const { data: alias, error: aliasError } = await sb.from('projects').select(columns)
+    .contains('external_ids', { dropbox_safe_name_aliases: [safeName] }).maybeSingle()
+  if (aliasError) throw new Error(`project alias lookup failed: ${aliasError.message}`)
+  return alias
+}
+
+async function resolveProjectChannelBySafeName(safeName: string): Promise<string | null> {
+  const data = await lookupDropboxProject(safeName)
   const links = asJsonRecord(data?.external_links)
   return typeof links.slack_id === 'string'
     ? links.slack_id
@@ -923,15 +935,7 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
 
   // ── Lookup project (or discover from Frame.io) ──────────
   const sb = createAdminClient()
-  const { data: existing, error } = await sb
-    .from('projects')
-    .select(
-      'id, name, client, project_code, project_manager_slack_id, external_links, external_ids',
-    )
-    .filter('external_ids->>dropbox_safe_name', 'eq', d.safeName)
-    .maybeSingle()
-
-  if (error) throw new Error(`project lookup failed: ${error.message}`)
+  const existing = await lookupDropboxProject(d.safeName)
 
   let project = existing ? {
     ...existing,
