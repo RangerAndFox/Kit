@@ -108,6 +108,7 @@ export async function offerNaturalCommand(context: NaturalCommandContext, input:
       ], unfurl_links: false, unfurl_media: false,
     })
     if (!result.ok) throw new Error('Card delivery failed')
+    if (channelId === dm) return 'The review card is here in this Kit DM' + (record.thread_ts ? ' thread' : '') + '. Click Continue above; nothing has run yet.'
     return 'I sent the command review card to your private Kit DM. Review it and click Continue; nothing has run yet.'
   } catch {
     // No raw provider error or input values enter a shared reply/model context.

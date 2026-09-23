@@ -44,6 +44,13 @@ async function click(action = 'kit_command_continue', changes: Record<string, un
 }
 
 describe('private natural command confirmations', () => {
+  it('tells producers the card is in this DM thread, not a different DM', async () => {
+    resolveUser.mockResolvedValue({ workspaceId: 'w1', tier: 'producer' })
+    const summary = await offerNaturalCommand({ ...context(), channelId: 'D_ACTOR' }, { command: 'onboard', args: '<@U123ABC> to 2636-microsoft-ccai' })
+    expect(summary).toContain('here in this Kit DM thread')
+    expect(client.chat.postMessage.mock.calls[0][0]).toMatchObject({ channel: 'D_ACTOR', thread_ts: '1.0' })
+    expect(dispatch).not.toHaveBeenCalled()
+  })
   it('a guidance start button only creates a private review card under the real clicker identity', async () => {
     await click('kit_guidance_start', { channel: { id: 'C_SHARED' }, message: { ts: '3.0', thread_ts: '1.0' }, actions: [{ value: 'onboard' }] })
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ command: 'onboard', args: '', user_id: 'U1', team_id: 'T1', source_channel: 'C_SHARED', dm_channel: 'D_ACTOR' }))
