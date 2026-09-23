@@ -14,8 +14,8 @@ export const COMMAND_GUIDES: Record<KitCommandName, Guide> = {
     next:'Want me to open the private offboarding review now?',start:{command:'offboard',args:''},
   },
   onboard: {
-    title: 'Onboard an artist',
-    steps: ['Choose the project in the private onboarding form.', 'Enter the artist’s correct full name and email; add their legal/entity name if needed. Review and correct the details before selecting Onboard.', 'Kit attempts the configured project invitations, including Slack, Dropbox and Frame.io, and adds the artist to the Daily Assignments people list when Project Control is configured. Check the per-service result for anything needing attention.'],
+    title: 'Add an artist to a project',
+    steps: ['Producers and admins can say “Add @Rachel to project 2636”. Kit reuses an existing Slack profile; ambiguous names require an exact mention or email.', 'Review the artist and project, then select Add to project, Edit or Cancel. For a new artist, supply their correct full name and email in the onboarding form.', 'Kit attempts the configured project invitations, including Slack, Dropbox and Frame.io, and adds the artist to the Daily Assignments people list when Project Control is configured. Existing accounts are reused. Check the per-service result for anything needing attention.'],
     next: 'Want me to open the onboarding setup now?', start: { command: 'onboard', args: '' },
   },
   newproject: { title: 'Create a project', steps: ['Open the private New Project form and enter the project identity, ownership, dates and service choices.', 'Review the information before submitting. Keep financial details and client contacts in the private form.', 'Kit provisions the selected services and project-control records. Review the proposed workback with the producer and check any incomplete service steps.'], next: 'Want me to open the new-project setup now?', start: { command: 'newproject', args: '' } },

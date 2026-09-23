@@ -66,6 +66,7 @@ export function parseFastCommand(text: string): KitCommandRequest | null {
     [/^(?:archive|publish|prepare)(?: the)? project(?:\s+(.+))?$/i, 'archive'],
     [/^(?:delete|remove)(?: the)? project(?:\s+.+)?$/i, 'delete', 'project'],
     [/^(?:onboard|add|invite)(?: a| an| the| new)* (?:freelancer|artist|contractor)(?:\s+(.+))?$/i, 'onboard'],
+    [/^(?:add|invite|assign)\s+(.+?\s+to\s+(?:(?:the\s+)?project\s+.+|\d{4}[A-Za-z]?(?:[-_\s].*)?))$/i, 'onboard'],
     [/^(?:show|check|get)(?: me)?(?: the)? (?:status|health)(?: of| for)?(?: project)?\s+(.+)$/i, 'status'],
     [/^status\s+(.+)$/i, 'status'],
     [/^(?:make|create|start)(?: a| the| new)* storyboard$/i, 'storyboard'],
@@ -103,6 +104,6 @@ export function parseFastCommand(text: string): KitCommandRequest | null {
 export function isCommandRequest(text: string): boolean {
   if (parseFastCommand(text)) return true
   const value = normalizeCommandRequest(text)
-  return /^(?:show|open|list|check|create|make|start|update|edit|archive|delete|onboard|offboard|invite|sync|preview|run|set|give|convert|render|resume|save)\b/i.test(value)
+  return /^(?:show|open|list|check|create|make|start|update|edit|archive|delete|onboard|offboard|add|assign|invite|sync|preview|run|set|give|convert|render|resume|save)\b/i.test(value)
     && /\b(?:project|dashboard|profile|worker|render|caption|srt|brain|role|freelancer|artist|staff|meme|birthday|pilot|storyboard|note|accessibility)\b/i.test(value)
 }

@@ -19,6 +19,7 @@ import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { anthropic, SPECIALIST_MODEL } from '../llm/client'
 import { canOnboard } from './permissions'
+import { resolveExistingArtist } from './existing-artist'
 import {
   getPendingOnboarding,
   setPendingOnboarding,
@@ -122,6 +123,17 @@ async function resolveProject(query: string): Promise<
 > {
   const sb = createAdminClient()
   const q = query.trim()
+  // Slack project-channel names carry the stable code before their suffix.
+  const code = q.match(/^#?(\d{4}[A-Za-z]?)(?:[-_]|$)/)?.[1]
+  if (code) {
+    const { data, error } = await sb.from('projects')
+      .select('id, name, client, project_code')
+      .or(`project_code.eq.${code},project_code.ilike.${code}-%,external_ids->>project_number.eq.${code}`).limit(2)
+    if (error) throw error
+    if (data?.length === 1) return { kind: 'matched', project: data[0] }
+    if (data && data.length > 1) return { kind: 'ambiguous', candidates: data }
+    return { kind: 'unmatched' }
+  }
   // Match name OR client OR project_code (case-insensitive contains).
   const { data } = await sb
     .from('projects')
@@ -158,14 +170,14 @@ export function buildConfirmCard(opts: {
     ...(artistLegalName ? { l: artistLegalName } : {}),
   })
   return {
-    text: `Onboard ${artistName} to ${project.name}?`,
+    text: `Add ${artistName} to ${project.name}?`,
     blocks: [
       {
         type: 'section',
         text: {
           type: 'mrkdwn',
           text:
-            `*Onboard a freelancer*\n\n` +
+            `*Add artist to project*\n\n` +
             `• *Artist:* ${artistName}\n` +
             `• *Email:* ${artistEmail}\n` +
             `• *Project:* ${[project.project_code, project.client, project.name].filter(Boolean).join(' · ')}`,
@@ -176,7 +188,7 @@ export function buildConfirmCard(opts: {
         elements: [
           {
             type: 'button',
-            text: { type: 'plain_text', text: ':white_check_mark: Onboard' },
+            text: { type: 'plain_text', text: 'Add to project' },
             style: 'primary',
             action_id: 'kit_onboard_confirm',
             value,
@@ -240,7 +252,7 @@ export async function handleOnboardKeyword(opts: {
   // unrelated question mid-flow falls through to the orchestrator (pending
   // state survives for their next real answer).
   const contributesToPending =
-    !!prior && (!!intent.artistEmail || !!intent.projectQuery || !!intent.artistName)
+    !!prior && (!!intent.artistEmail || !!intent.projectQuery || !!intent.artistName || /^\s*(?:<@[UW][A-Z0-9]+(?:\|[^>]+)?>|@[UW][A-Z0-9]+)\s*$/.test(text))
 
   // Merge with any pending state from a prior turn so the user can
   // supply missing pieces in follow-up messages without restating.
@@ -270,6 +282,28 @@ export async function handleOnboardKeyword(opts: {
     return true
   }
 
+  // Look up existing Slack identities before asking producers to re-enter them.
+  const artist = await resolveExistingArtist(app.client, text, merged.artistName, merged.artistEmail)
+  if (artist.kind === 'matched') {
+    merged.artistName = artist.name
+    merged.artistEmail = artist.email
+  } else if (artist.kind === 'ambiguous' || artist.kind === 'conflict') {
+    setPendingOnboarding(channelId, userId, {
+      artistName: null, artistEmail: null, projectQuery: merged.projectQuery,
+    })
+    await app.client.chat.postMessage({ channel: channelId, thread_ts: threadTs,
+      text: artist.kind === 'ambiguous'
+        ? 'Please @mention the one artist you want to add, or give their exact email. I won’t guess between people.'
+        : 'That Slack mention and email identify different people. Please send the correct @mention or email. Nothing has been added.',
+    })
+    return true
+  }
+  if (artist.kind !== 'matched' && /(?:<@[UW][A-Z0-9]+|@[UW][A-Z0-9]+\b)/.test(text)) {
+    // A failed explicit identity lookup must not fall back to model-invented details.
+    merged.artistEmail = null
+    merged.artistName = null
+  }
+
   // Ask for missing pieces if any
   const missing: string[] = []
   if (!merged.artistEmail) missing.push('artist email')
@@ -284,7 +318,7 @@ export async function handleOnboardKeyword(opts: {
       channel: channelId,
       thread_ts: threadTs,
       text:
-        `Happy to onboard them — can you tell me the ${missing.join(' and ')}? E.g. _"Alice Smith alice@studio.com to Rayfin"_.`,
+        `I can add them to the project — can you tell me the ${missing.join(' and ')}? You can @mention an existing artist, or provide their full name and email.`,
     })
     return true
   }
