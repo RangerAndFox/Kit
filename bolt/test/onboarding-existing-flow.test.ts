@@ -14,9 +14,9 @@ beforeEach(() => {
   mocks.allowed.mockResolvedValue(true)
   mocks.parse.mockResolvedValue({ content: [{ type: 'text', text: JSON.stringify({ isOnboardingIntent: true, artistName: null, artistEmail: null, projectQuery: '2636-microsoft-ccai' }) }] })
   info.mockResolvedValue({ ok: true, user: { id: 'U123ABC', real_name: 'Rachel DeMeyer', profile: { email: 'rachel@example.com' } } })
-  const q = { select: vi.fn(), eq: vi.fn(), limit: vi.fn() }
-  q.select.mockReturnValue(q); q.eq.mockReturnValue(q)
-  q.limit.mockResolvedValue({ data: [{ id: 'p1', name: 'CCAI', client: 'Microsoft', project_code: '2636' }], error: null })
+  const q = { select: vi.fn(), or: vi.fn(), limit: vi.fn() }
+  q.select.mockReturnValue(q); q.or.mockReturnValue(q)
+  q.limit.mockResolvedValue({ data: [{ id: 'p1', name: 'CCAI', client: 'Microsoft', project_code: '2636-Microsoft' }], error: null })
   mocks.from.mockReturnValue(q)
 })
 describe('existing artist onboarding conversation', () => {
@@ -27,6 +27,7 @@ describe('existing artist onboarding conversation', () => {
     expect(card.blocks[1].elements.map((e: { text: { text: string } }) => e.text.text)).toEqual(['Add to project', 'Edit', 'Cancel'])
     expect(JSON.parse(card.blocks[1].elements[0].value)).toMatchObject({ p: 'p1', e: 'rachel@example.com' })
     expect(mocks.from).toHaveBeenCalledExactlyOnceWith('projects')
+    expect(mocks.from.mock.results[0].value.or).toHaveBeenCalledWith('project_code.eq.2636,project_code.ilike.2636-%,external_ids->>project_number.eq.2636')
   })
   it('denies an unauthorized actor before profile lookup or project access', async () => {
     mocks.allowed.mockResolvedValue(false)

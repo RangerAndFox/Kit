@@ -127,7 +127,8 @@ async function resolveProject(query: string): Promise<
   const code = q.match(/^#?(\d{4}[A-Za-z]?)(?:[-_]|$)/)?.[1]
   if (code) {
     const { data, error } = await sb.from('projects')
-      .select('id, name, client, project_code').eq('project_code', code).limit(2)
+      .select('id, name, client, project_code')
+      .or(`project_code.eq.${code},project_code.ilike.${code}-%,external_ids->>project_number.eq.${code}`).limit(2)
     if (error) throw error
     if (data?.length === 1) return { kind: 'matched', project: data[0] }
     if (data && data.length > 1) return { kind: 'ambiguous', candidates: data }
