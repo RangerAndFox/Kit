@@ -68,6 +68,28 @@ describe('ensureDailyAssignmentPerson', () => {
     assignmentsSheetId: 958596238,
   }
 
+  for (const committed of [true, false]) {
+    it(`reconciles a timed-out roster write (${committed ? 'committed' : 'not committed'}) without replaying it`, async () => {
+      let writes = 0
+      __setSheetsTransportForTests(async <T>(method: string, url: string, body?: unknown): Promise<T> => {
+        if (method === 'GET') return { sheets: [
+          { properties: { sheetId: 7, title: 'Lists' } },
+          { properties: { sheetId: config.assignmentsSheetId, title: 'Daily Assignments', gridProperties: { rowCount: 996 } } },
+        ] } as T
+        if (url.includes(':getByDataFilter')) return { sheets: [{ properties: { sheetId: 7 }, data: [{ rowData:
+          writes && committed ? [{ values: [{ formattedValue: 'Rachel DeMeyer' }] }] : [],
+        }] }] } as T
+        writes++
+        const requests = (body as { requests: Array<{ setDataValidation?: { range: { endRowIndex: number } } }> }).requests
+        assert.equal(requests[1].setDataValidation?.range.endRowIndex, 996)
+        throw new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+      })
+      if (committed) assert.deepEqual(await ensureDailyAssignmentPerson(config, 'Rachel DeMeyer'), { added: true, row: 5 })
+      else await assert.rejects(ensureDailyAssignmentPerson(config, 'Rachel DeMeyer'), /timeout/)
+      assert.equal(writes, 1)
+    })
+  }
+
   it('adds the corrected display name to Lists and expands assignment validation', async () => {
     type Request = {
       updateCells?: {
@@ -890,6 +912,16 @@ describe('readColumn — targets the CONFIGURED sheetId (not tab order)', () => 
 })
 
 describe('transient Google read recovery', () => {
+  it('recovers from the reported timeout on a safe read', async () => {
+    let attempts = 0
+    __setSheetsTransportForTests(async <T>(): Promise<T> => {
+      if (++attempts === 1) throw new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+      return { sheets: [{ properties: { sheetId: CONFIG.sheetId }, data: [{ rowData: [{ values: [{ formattedValue: 'Rachel' }] }] }] }] } as T
+    })
+    assert.equal((await readRow(CONFIG, 4))[0].formattedValue, 'Rachel')
+    assert.equal(attempts, 2)
+  })
+
   it('retries a temporary 503 from getByDataFilter and returns the requested row', async () => {
     let attempts = 0
     __setSheetsTransportForTests(async <T>(_method: string, url: string): Promise<T> => {

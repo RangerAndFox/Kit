@@ -1,20 +1,9 @@
 /**
  * Onboarding — Slack service
  *
- * Three flows depending on whether the artist already exists in the workspace:
- *
- *   A. Artist is already a workspace member
- *      → conversations.invite to the project channel (immediate access)
- *      → welcome DM via conversations.open (private message)
- *
- *   B. Artist is NOT a workspace member
- *      → conversations.inviteShared (Slack Connect invite) to the project channel
- *      → channel becomes a Connect channel when they accept
- *      → no immediate Slack user ID; welcome message is posted into the
- *        channel so they see it when they accept the invite
- *
- * Connect uses the bot's existing conversations.connect:write scope — no
- * admin scopes required, works on Business+ plans.
+ * Existing users are invited without changing their role. Guest restrictions
+ * require Slack's admin-managed channel controls. New artists must be invited
+ * as guests by an admin; Slack Connect is not a substitute for a guest account.
  */
 
 import type { ServiceResult } from '../types'
@@ -51,41 +40,39 @@ async function slackGet(method: string, params: Record<string, string>): Promise
 /**
  * Look up a Slack user id by email. Returns null if not found.
  */
-async function lookupByEmail(email: string): Promise<string | null> {
+async function lookupByEmail(email: string): Promise<{ id: string; is_restricted?: boolean; is_ultra_restricted?: boolean; deleted?: boolean } | null> {
   const r = await slackGet('users.lookupByEmail', { email })
   if (!r.ok) {
     if (r.error === 'users_not_found') return null
     throw new Error(`users.lookupByEmail: ${r.error}`)
   }
-  return r.user?.id || null
+  return r.user?.id ? r.user : null
 }
 
-/**
- * Send a Slack Connect invite for a channel. The recipient gets an email
- * from Slack; when they accept, the channel becomes a Connect channel
- * shared with their workspace.
- *
- * Returns the invite id. The recipient is NOT yet a member of our
- * workspace — they won't have a Slack user id until acceptance.
- */
-async function connectInvite(opts: {
-  channelId: string
-  email: string
-}): Promise<string> {
-  const r = await slackPostJson(
-    'conversations.inviteShared',
-    {
-      channel: opts.channelId,
-      emails: [opts.email],
-      // false = full Connect (can see history, post, etc.); true = view-only-style.
-      external_limited: false,
-    },
-    botToken(),
-  )
-  if (!r.ok) {
-    throw new Error(`conversations.inviteShared: ${r.error}`)
+/** Verify access, including guests who were added manually by an admin. */
+async function isChannelMember(channelId: string, userId: string): Promise<boolean> {
+  let cursor = ''
+  const seen = new Set<string>()
+  do {
+    const r = await slackGet('conversations.members', { channel: channelId, limit: '200', ...(cursor ? { cursor } : {}) })
+    if (!r.ok) throw new Error(`conversations.members: ${r.error}`)
+    if (r.members?.includes(userId)) return true
+    cursor = r.response_metadata?.next_cursor?.trim() || ''
+    if (cursor && seen.has(cursor)) throw new Error('Slack membership pagination did not advance')
+    seen.add(cursor)
+  } while (cursor)
+  return false
+}
+
+function guestAccessRequired(userId: string, channelId: string, singleChannel: boolean): SlackInviteResult {
+  return {
+    status: 'failed',
+    slackUserId: userId,
+    message: `Slack requires a workspace admin to add this ${singleChannel ? 'single-channel' : 'multi-channel'} guest to <#${channelId}>. ` +
+      `In Slack: Manage members → <@${userId}> → Edit channels → add only this project channel. ` +
+      (singleChannel ? 'A single-channel guest cannot join a second channel without an admin-approved role change. ' : '') +
+      'Kit has not changed their role or other channels. After the admin saves, retry onboarding to verify access.',
   }
-  return r.invite_id || r.invite?.id || 'unknown'
 }
 
 /**
@@ -111,7 +98,7 @@ export interface SlackInviteResult extends ServiceResult {
 /**
  * Top-level entry: get the artist access to the project channel.
  *  - Existing workspace member → conversations.invite (immediate)
- *  - Non-member               → conversations.inviteShared (Slack Connect, pending)
+ *  - Non-member               → explicit admin guest-invitation handoff
  *
  * `projectChannelId` should come from `project.external_links.slack_id`
  * (the channel id the Kit provisioner stored at project creation).
@@ -122,6 +109,7 @@ export async function inviteArtistToSlack(opts: {
   projectChannelId: string | null
 }): Promise<SlackInviteResult> {
   const { email, projectChannelId } = opts
+  let knownUserId: string | undefined
 
   if (!projectChannelId) {
     return {
@@ -131,11 +119,29 @@ export async function inviteArtistToSlack(opts: {
   }
 
   try {
-    const userId = await lookupByEmail(email)
+    const user = await lookupByEmail(email)
+    const userId = user?.id
+    knownUserId = userId
 
     if (userId) {
+      if (user.deleted) return { status: 'failed', slackUserId: userId, message: 'Slack account is deactivated. An admin must review it; Kit will not reactivate or change its role.' }
+      if (await isChannelMember(projectChannelId, userId)) {
+        return { status: 'ok', message: `<@${userId}> already has access to <#${projectChannelId}> (verified).`, slackUserId: userId }
+      }
       // Already in the workspace — straight channel invite.
-      await inviteToChannel(projectChannelId, userId)
+      try {
+        await inviteToChannel(projectChannelId, userId)
+      } catch (err) {
+        // Do not convert a guest, replace their channels, or fall back to
+        // Slack Connect. An uncertain invitation is reconciled by reading.
+        if (await isChannelMember(projectChannelId, userId)) {
+          return { status: 'ok', message: `Access to <#${projectChannelId}> verified for <@${userId}>.`, slackUserId: userId }
+        }
+        if (err instanceof Error && /user_is_restricted|ura_max_channels/.test(err.message)) {
+          return guestAccessRequired(userId, projectChannelId, !!user.is_ultra_restricted)
+        }
+        throw err
+      }
       return {
         status: 'ok',
         message: `Invited <@${userId}> to <#${projectChannelId}>`,
@@ -143,16 +149,15 @@ export async function inviteArtistToSlack(opts: {
       }
     }
 
-    // Not in the workspace — send a Slack Connect invite to the channel.
-    const inviteId = await connectInvite({ channelId: projectChannelId, email })
+    // Business+ bot tokens cannot create workspace guests. Never silently
+    // substitute a full member or Slack Connect organization invitation.
     return {
-      status: 'ok',
-      message: `Sent Slack Connect invite for <#${projectChannelId}> to ${email} (pending acceptance)`,
-      externalId: inviteId,
-      connectPending: true,
+      status: 'failed',
+      message: `A Slack workspace admin must invite ${email} as a guest to <#${projectChannelId}>. ` +
+        'Do not use a regular-member or Slack Connect invitation. Once the guest is available, retry onboarding to verify access and send the welcome DM.',
     }
   } catch (err: any) {
-    return { status: 'failed', message: err.message || String(err) }
+    return { status: 'failed', message: err.message || String(err), ...(knownUserId ? { slackUserId: knownUserId } : {}) }
   }
 }
 

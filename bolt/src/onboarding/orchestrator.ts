@@ -172,9 +172,7 @@ async function runTrackedOnboarding(opts: {
     .select('id')
     .single()
   const onboardingId = created?.id || null
-  if (createErr) {
-    console.warn(`[onboarding] tracking row insert failed: ${createErr.message}`)
-  }
+  if (createErr || !onboardingId) throw new Error('Onboarding tracking is unavailable. No invitations were sent; administrator reconciliation is required before retrying.')
 
   // Make the producer-confirmed name immediately selectable in the Project
   // Control Daily Assignments form. This deliberately happens after the user
@@ -321,7 +319,7 @@ async function runTrackedOnboarding(opts: {
   // Connect-invited freelancers don't have a Slack user id yet — we'll
   // backfill on their first message via the staff sync script, or
   // event-driven if we add a connect-acceptance handler later.
-  if (slackR.slackUserId) {
+  if (slackR.status === 'ok' && slackR.slackUserId) {
     await sb.from('staff').upsert(
       {
         slack_user_id: slackR.slackUserId,
@@ -339,7 +337,7 @@ async function runTrackedOnboarding(opts: {
 
   // Update tracking row with per-service results.
   if (onboardingId) {
-    await sb
+    const { error: saveError } = await sb
       .from('freelancer_onboardings')
       .update({
         artist_slack_user_id: slackR.slackUserId || null,
@@ -360,6 +358,7 @@ async function runTrackedOnboarding(opts: {
         updated_at: new Date().toISOString(),
       })
       .eq('id', onboardingId)
+    if (saveError) throw new Error('Onboarding results could not be saved. Do not repeat invitations; ask an administrator to reconcile the existing access.')
   }
 
   return {

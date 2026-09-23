@@ -31,8 +31,7 @@ export async function getPaperwork(email: string): Promise<PaperworkRecord | nul
     .eq('email', normalizeEmail(email))
     .maybeSingle()
   if (error) {
-    console.warn(`[nda] getPaperwork failed: ${error.message}`)
-    return null
+    throw new Error('Paperwork records are unavailable; review is required before sending another NDA.')
   }
   return (data as PaperworkRecord) || null
 }
