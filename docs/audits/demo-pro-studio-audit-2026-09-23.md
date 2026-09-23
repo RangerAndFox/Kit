@@ -272,7 +272,7 @@ Run in this session against the clone at `d6398174` (Node 22.22.2, npm 10.9.7, L
 | `npm ci` | **Pass** (exit 0; postinstall mediabunny patch applied; deprecation warnings only) |
 | `npm run lint` | **Pass** (0 errors, 17 warnings: `<img>` usage in editor components, three unused `_` params in a billing test) |
 | `npm run typecheck` (`next typegen` + `tsc --noEmit`) | **Pass** (exit 0) |
-| `npm run test:unit` (Playwright unit tier, 2,524 tests) | **Partial**: started in the sandbox; at the 10-minute session budget roughly 250 of 2,524 tests had run with no failures reported. The tier runs single-worker under Chromium here and is too slow to complete inside the session; the reported 2,527-test count is consistent with the discovered 2,524. Treat as *not independently completed*. |
+| `npm run test:unit` (Playwright unit tier) | **Pass**: 2,524 passed, 0 failed, 0 flaky, 6.3 min (exit 0). Includes the PGlite migration tests. The brief's 2,527 count differs by three; the discovered set at this commit is 2,524. |
 | `npm run gate` | Not run: requires ffmpeg and the macOS-only visual/e2e tiers |
 | `npm run test:rls` | Not run: requires Docker and the Supabase CLI |
 | Swift tests | Not run: requires macOS |
