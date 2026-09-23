@@ -47,7 +47,7 @@ beforeEach(() => {
     return query
   })
   mocks.fetch.mockImplementation(async (url: string, options: RequestInit = {}) => {
-    if (options.method === 'HEAD') return new Response(null, { headers: { 'content-type': 'video/mp4', 'content-length': '123' } })
+    if (url === 'https://uc123.dl.dropboxusercontent.com/file' && options.method === 'GET') return new Response(new Uint8Array(123), { headers: { 'content-type': 'video/mp4', 'content-length': '123' } })
     const metadata = { id: delivery.dropboxId, rev: sourceRev, size: 123, server_modified: '2026-09-22T19:00:00Z' }
     if (url.endsWith('/files/get_metadata')) return json(metadata)
     if (url.endsWith('/files/get_temporary_link')) return json({ metadata, link: 'https://uc123.dl.dropboxusercontent.com/file' })

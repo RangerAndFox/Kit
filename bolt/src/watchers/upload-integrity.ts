@@ -52,26 +52,55 @@ export function assertSourceContentType(name: string, contentType: string): void
   }
 }
 
-/** Probe only Dropbox's generated URL, never an arbitrary stored URL. */
+/** Check the GET representation Frame.io will download, not CDN HEAD metadata.
+ * Read at most a 1 KiB prefix; always cancel the stream, even if Range is ignored.
+ * The transfer's exact byte count and playable state are checked again at Frame.io.
+ */
 export async function verifySourceLink(url: string, name: string, size: number): Promise<void> {
+  if (!Number.isSafeInteger(size) || size <= 0) throw new Error('Invalid Dropbox source size')
   let current = url
   let response: Response | undefined
+  const prefixSize = Math.min(size, 1024)
+  const signal = AbortSignal.timeout(15_000)
   for (let redirects = 0; redirects <= 3; redirects++) {
     const parsed = new URL(current)
     if (parsed.protocol !== 'https:' || parsed.username || parsed.password ||
       (parsed.port && parsed.port !== '443') || !parsed.hostname.endsWith('.dropboxusercontent.com')) {
       throw new Error('Unexpected Dropbox download host')
     }
-    response = await fetch(current, { method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(15_000) })
+    response = await fetch(current, {
+      method: 'GET', redirect: 'manual', signal,
+      headers: { Range: `bytes=0-${prefixSize - 1}`, 'Accept-Encoding': 'identity' },
+    })
     if (![301, 302, 303, 307, 308].includes(response.status)) break
+    await response.body?.cancel()
     const location = response.headers.get('location')
     if (!location) throw new Error('Dropbox download redirect has no destination')
     current = new URL(location, current).toString()
   }
-  if (!response?.ok) throw new Error(`Dropbox download preflight failed (${response?.status})`)
-  assertSourceContentType(name, response.headers.get('content-type') || '')
-  const length = response.headers.get('content-length')
-  if (length !== null && Number(length) !== size) throw new Error('Dropbox download preflight size mismatch')
+  const reader = response?.body?.getReader()
+  try {
+    if (!response || ![200, 206].includes(response.status)) throw new Error(`Dropbox download preflight failed (${response?.status})`)
+    assertSourceContentType(name, response.headers.get('content-type') || '')
+    const encoding = response.headers.get('content-encoding')
+    if (encoding && encoding !== 'identity') throw new Error('Unexpected Dropbox download encoding')
+    const length = response.headers.get('content-length')
+    if (response.status === 206) {
+      if (response.headers.get('content-range') !== `bytes 0-${prefixSize - 1}/${size}` ||
+        (length !== null && Number(length) !== prefixSize)) throw new Error('Dropbox download preflight range/size mismatch')
+    } else if (length !== null && Number(length) !== size) {
+      throw new Error('Dropbox download preflight size mismatch')
+    }
+    if (!reader) throw new Error('Dropbox download preflight has no media body')
+    let received = 0
+    while (received < prefixSize) {
+      const chunk = await reader.read()
+      if (chunk.done) throw new Error('Dropbox download preflight truncated media body')
+      received += chunk.value.byteLength
+    }
+  } finally {
+    await reader?.cancel()
+  }
 }
 
 export function frameFileReadiness(file: Record<string, unknown>, expected: {

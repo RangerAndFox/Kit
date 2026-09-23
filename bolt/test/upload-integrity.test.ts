@@ -44,11 +44,15 @@ describe('download preflight', () => {
     expect(() => assertSourceContentType('video.mp4', 'application/octet-stream')).not.toThrow()
     expect(() => assertSourceContentType('captions.vtt', 'text/plain')).not.toThrow()
   })
-  it('makes only a bounded HEAD request to the generated Dropbox URL', async () => {
-    const fetch = vi.fn().mockResolvedValue(new Response(null, { headers: { 'content-type': 'video/mp4', 'content-length': String(source.size) } }))
+  it('checks the bounded GET representation even when HEAD would return JSON', async () => {
+    const fetch = vi.fn().mockImplementation((_url, options) => options.method === 'HEAD'
+      ? new Response(null, { headers: { 'content-type': 'application/json' } })
+      : new Response(new Uint8Array(1024), { status: 206, headers: {
+        'content-type': 'video/mp4', 'content-length': '1024', 'content-range': `bytes 0-1023/${source.size}`,
+      } }))
     vi.stubGlobal('fetch', fetch)
     await verifySourceLink('https://uc123.dl.dropboxusercontent.com/file', 'video.mp4', source.size)
-    expect(fetch).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ method: 'HEAD', redirect: 'manual', signal: expect.any(AbortSignal) }))
+    expect(fetch).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ method: 'GET', headers: { Range: 'bytes=0-1023', 'Accept-Encoding': 'identity' }, redirect: 'manual', signal: expect.any(AbortSignal) }))
   })
   it('rejects arbitrary hosts before any request', async () => {
     const fetch = vi.fn(); vi.stubGlobal('fetch', fetch)
@@ -57,7 +61,7 @@ describe('download preflight', () => {
   })
   it('allows bounded Dropbox CDN redirects but never redirects to another host', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: 'https://uc456.dl.dropboxusercontent.com/file' } }))
-      .mockResolvedValueOnce(new Response(null, { headers: { 'content-type': 'video/mp4' } }))
+      .mockResolvedValueOnce(new Response(new Uint8Array(123), { headers: { 'content-type': 'video/mp4' } }))
     vi.stubGlobal('fetch', fetch)
     await verifySourceLink('https://uc123.dl.dropboxusercontent.com/file', 'video.mp4', 123)
     expect(fetch).toHaveBeenCalledTimes(2)
@@ -71,6 +75,27 @@ describe('download preflight', () => {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response))
       await expect(verifySourceLink('https://uc123.dl.dropboxusercontent.com/file', 'video.mp4', source.size)).rejects.toThrow()
     }
+  })
+  it('cancels rather than downloads the whole video when Range is ignored', async () => {
+    const cancel = vi.fn()
+    const body = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(1024)) }, cancel })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { headers: { 'content-type': 'video/mp4', 'content-length': String(source.size) } })))
+    await verifySourceLink('https://uc123.dl.dropboxusercontent.com/file', 'video.mp4', source.size)
+    expect(cancel).toHaveBeenCalledOnce()
+  })
+  it.each(['bytes 1-1024/12345', 'bytes 0-1023/*', 'bytes 0-512/12345', 'bytes 0-1023/12346'])('rejects invalid range evidence %s', async (range) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(new Uint8Array(1024), { status: 206, headers: { 'content-type': 'video/mp4', 'content-range': range } })))
+    await expect(verifySourceLink('https://uc123.dl.dropboxusercontent.com/file', 'video.mp4', 12345)).rejects.toThrow(/range\/size/)
+  })
+  it('rejects an empty or truncated body despite valid headers', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(new Uint8Array(10), { headers: { 'content-type': 'video/mp4' } })))
+    await expect(verifySourceLink('https://uc123.dl.dropboxusercontent.com/file', 'video.mp4', 123)).rejects.toThrow(/truncated/)
+  })
+  it('cancels error bodies without reading them', async () => {
+    const cancel = vi.fn()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(new ReadableStream({ cancel }), { headers: { 'content-type': 'application/json' } })))
+    await expect(verifySourceLink('https://uc123.dl.dropboxusercontent.com/file', 'video.mp4', 123)).rejects.toThrow(/application\/json/)
+    expect(cancel).toHaveBeenCalledOnce()
   })
 })
 
