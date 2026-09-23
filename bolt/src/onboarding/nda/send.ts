@@ -69,7 +69,7 @@ export async function postNdaCardIfFirstTimer(opts: {
   if (!ndaEnabled()) {
     return {
       status: 'skipped',
-      message: 'NDA paperwork disabled (FREELANCER_PAPERWORK_ENABLED not set).',
+      message: 'Automatic NDA sending is disabled. No paperwork was sent or verified as signed. An admin must configure a verified sender before enabling the review-and-send flow.',
     }
   }
   if (!process.env.ONBOARDING_FROM_EMAIL) {

@@ -144,6 +144,12 @@ let transport: Transport = httpTransport
 const RETRYABLE_GOOGLE_STATUS_RE = /failed \((?:429|500|502|503|504)\)/
 const GOOGLE_READ_RETRY_DELAYS_MS = [250, 1_000]
 
+function isTransientGoogleError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  return RETRYABLE_GOOGLE_STATUS_RE.test(err.message) || err.name === 'TimeoutError' ||
+    err.name === 'AbortError' || (err instanceof TypeError && err.message === 'fetch failed')
+}
+
 /** Test seam: swap the HTTP transport for a fake. Pass null to restore. */
 export function __setSheetsTransportForTests(t: Transport | null): void {
   transport = t || httpTransport
@@ -159,9 +165,8 @@ async function api<T>(method: string, url: string, body?: unknown): Promise<T> {
     try {
       return await transport<T>(method, url, body)
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
       const delay = GOOGLE_READ_RETRY_DELAYS_MS[attempt]
-      if (!retrySafe || delay == null || !RETRYABLE_GOOGLE_STATUS_RE.test(message)) throw err
+      if (!retrySafe || delay == null || !isTransientGoogleError(err)) throw err
       console.warn(`[project-control] transient Google read failure; retrying in ${delay}ms (${attempt + 1}/${GOOGLE_READ_RETRY_DELAYS_MS.length})`)
       await new Promise((resolve) => setTimeout(resolve, delay))
     }
@@ -257,7 +262,7 @@ export async function ensureDailyAssignmentPerson(
         range: {
           sheetId: config.assignmentsSheetId,
           startRowIndex: config.headerRow,
-          endRowIndex: 1000,
+          endRowIndex: Math.min(1000, metadata.sheets?.find(sheet => sheet.properties?.sheetId === config.assignmentsSheetId)?.properties?.gridProperties?.rowCount ?? 1000),
           startColumnIndex: 2,
           endColumnIndex: 3,
         },
@@ -271,7 +276,18 @@ export async function ensureDailyAssignmentPerson(
       },
     })
   }
-  await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests })
+  try {
+    await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests })
+  } catch (err) {
+    if (!isTransientGoogleError(err)) throw err
+    // A timeout is an unknown write outcome. Reconcile the exact target, never
+    // replay the write into a slot another producer may now be using.
+    const verified = await getGridData(config,
+      { startRowIndex: openRowIndex, endRowIndex: openRowIndex + 1, startColumnIndex: 3, endColumnIndex: 4 },
+      'formattedValue,effectiveValue', lists.sheetId)
+    const saved = normalizeCell(verified[0]?.values?.[0]).display.trim().replace(/\s+/g, ' ')
+    if (saved.toLocaleLowerCase('en-US') !== key) throw err
+  }
   return { added: true, row: openRowIndex + 1 }
 }
 interface BatchUpdateResponse {

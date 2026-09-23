@@ -45,14 +45,14 @@ export async function inviteArtistToHarvest(opts: {
     return {
       status: 'skipped',
       message:
-        'HARVEST_FREELANCER_USER_ID not set — configure the shared freelancers user in Railway to enable Harvest assignment.',
+        'Not configured: no shared freelancer Harvest account is selected. No seat was created and no hours were logged. An admin must choose an existing dedicated freelancer account before enabling this step.',
     }
   }
   const bucketUserId = Number(bucketUserIdRaw)
-  if (Number.isNaN(bucketUserId)) {
+  if (!Number.isSafeInteger(bucketUserId) || bucketUserId <= 0) {
     return {
       status: 'skipped',
-      message: `HARVEST_FREELANCER_USER_ID is not numeric: ${bucketUserIdRaw}`,
+      message: 'The configured freelancer Harvest account ID is invalid. An admin must correct it; no assignment was attempted.',
     }
   }
 
