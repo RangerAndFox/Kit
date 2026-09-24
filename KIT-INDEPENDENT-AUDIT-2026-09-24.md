@@ -349,4 +349,52 @@ Bottom line: fix the AI cost, the two "duplicate" bugs, and the onboarding messa
 
 ---
 
-*Prepared as an independent, read-only assessment. No production systems, records, credentials, or external content were modified. No fixes were implemented — this is the assessment and plan.*
+## 9. Addendum — live production verification (2026-09-24, read-only)
+
+After the initial report, two coverage gaps flagged as central to the studio's actual pain — the **live Railway bot** and the **Google Sheet / Apps Script** — were partially closed using read-only production access (Supabase `system_health`/`cron_heartbeats`/ledger tables via MCP, and the Drive connector for the workbook). Findings below are **authoritative live data**, timestamped ~13:10–13:15 UTC on 2026-09-24. Railway's HTTP `/health` remained proxy-blocked from the audit environment, so Railway process liveness is inferred, not directly probed.
+
+### 9.1 Live health snapshot (from `public.system_health`, watchdog ran ~3 min before capture)
+- **All external providers UP right now:** Dropbox 142 ms, Frame.io 80 ms, Harvest 67 ms, Google 279 ms, Supabase 1892 ms (slow but up), `control-outbox` clear ("no overdue or unconfirmed control requests").
+- **All 5 Vercel/Inngest crons fresh** (`cron_heartbeats`): delivery-dropbox-scan & delivery-specs-scan <1 min, plaud 8 min, pre-meeting 14 min, drive-transcript 14 min. **The Vercel/Inngest plane is healthy.**
+- **Production scale reconfirmed:** 259 projects, 32 project-control bindings, **0 open sync incidents**.
+
+### 9.2 New confirmed findings
+
+#### LIVE‑1 — No liveness telemetry for any Railway cron (observability blind spot) · **Medium–High · Confirmed**
+- **Evidence:** `recordCronSuccess(...)` is called by exactly 5 ids, **all Vercel/Inngest** (`delivery-dropbox-scan`, `delivery-specs-scan`, `drive-transcript-scan`, `plaud-transcript-scan`, `pre-meeting-scan`); `grep` for `recordCronSuccess`/`cron_heartbeats` in `bolt/src` returns **nothing**. So none of Railway's node-cron jobs — 09:00 pending-check-in nudges, missing-time scan, hourly delivery, hourly brain-approval, every-minute AE completion notifier, 5-minute project create/update recovery sweep, Friday timesheet meme, daily celebrations — writes a heartbeat or a `system_health` row.
+- **Impact:** the `/status` dashboard and the health watchdog cannot tell you if a Railway scheduled job has silently stalled. Given the studio's problems center on the always-on Slack bot, **the one runtime most likely to hurt you is the one with no monitoring.** A stalled recovery sweep (stranded provisioning) or missing-time scan would be invisible until a human noticed the missing behavior.
+- **Smallest durable fix:** have each Railway node-cron call the existing `recordCronSuccess(<id>)` on success; add `cron:<railway-id>` staleness rows to the watchdog with per-cron expected-interval thresholds.
+- **Why this matters most:** it is the direct remedy for "we can't tell when the bot breaks."
+
+#### LIVE‑2 — A real delivery has been stuck in "manual review" ~40 h (integrity guard working; no operator resolution) · **Medium · Confirmed (live)**
+- **Evidence:** `system_health.dropbox-inbox` = **DOWN since 2026-09-22 22:00 UTC**, detail: *"frameio_delivery requires manual review: Upload integrity: `01_East_Landscape_JK_Tonight_2016(w) x 678(h)_083126.mov` was served as application/json, not the expected media."*
+- **Interpretation:** this is PR #192's `verifySourceLink`/`frameFileReadiness` guard **working exactly as designed** — it detected that Dropbox served a JSON (error/HTML) body instead of media and **refused to upload garbage to Frame.io**. That is the correct, safe outcome and validates the recent hardening. **But** the delivery has now sat unresolved for ~40 h, surfacing only as a persistent aggregate health "down" with no per-item operator action path.
+- **Impact:** a genuine client deliverable is stuck, and the only signal is a red dot on `/status` that a human must notice and manually chase; it also keeps `dropbox-inbox` red, desensitizing the team to that indicator.
+- **Smallest durable fix:** turn "manual review" items into an actionable, addressable queue (Slack DM to the producer / a `/kit delivery review` list) with the file, the reason, and a retry/skip control — rather than a single rolled-up health status.
+
+#### LIVE‑3 — 56 Frame.io delivery transfers orphaned in `processing`, far past the 24 h timeout · **Medium · Suspected (live data + mechanism)**
+- **Evidence:** `frameio_delivery_transfers` states — `ready` 100, **`processing` 56 (oldest ≈ 569 h / 23.7 days)**, `failed` 16. The table's only states are `processing`/`ready`/`failed` (migration `20260831024500`); `ready` is the terminal success state. A 24 h guard exists (`FRAMEIO_PROCESSING_TIMEOUT_MS`, `shouldTimeoutFrameioProcessing`, `dropbox.ts:1710-1721`) that throws "exceeded 24-hour processing window" — **but only when the inbox re-drives that transfer.** Rows whose owning inbox event is no longer being retried are never re-evaluated, so they sit in `processing` indefinitely.
+- **Why Suspected not Confirmed:** some of the 56 may be **intentionally-abandoned superseded revisions** (`deferFrameioProcessing`, "Dropbox source changed; waiting for its durable successor") rather than true orphans; disambiguating needs per-row triage I did not perform (read-only, no mutation).
+- **Impact:** a tail of deliveries that may never complete or fail — silent stuck work, invisible except in aggregate. Directly matches the audit's "what can silently fail while Kit reports success" question.
+- **Smallest durable fix:** add a stale-`processing` sweep (there is already a partial index `where state = 'processing'`) that applies the 24 h timeout independent of inbox retries — moving genuinely stale rows to `failed` with a reason, and explicitly closing superseded ones. Then alert on `failed` count deltas.
+
+### 9.3 Railway process liveness — best-effort conclusion
+- **Positive signals:** `control-outbox` health is UP with no overdue/unconfirmed requests (Railway drains this outbox; nothing is stuck — 14 rows, all `sent`); `daily_hours_checkins` shows a scheduled write ~13 h ago (last night); no open sync incidents. The Slack-connectivity `/health` endpoint that Railway serves is the watchdog's basis and nothing indicates a Slack outage.
+- **Limits:** I could **not** directly confirm Railway is up *at capture time* — its `/health` is proxy-blocked here, its crons emit no heartbeat (LIVE‑1), and its DB writes are event-driven and sparse, so a multi-hour Railway outage during a quiet window would not necessarily show in the data. **Conclusion: Railway was demonstrably doing scheduled work last night and shows no stuck-work symptoms, but there is no positive proof it is running right now — which is itself the point of LIVE‑1.**
+
+### 9.4 Google Sheet / Apps Script — what was and wasn't verified
+- **Verified (live, via Drive connector):** the authoritative workbook `1qF690…AXeGyo` ("R&F Production Control Center") is owned by `steve@rangerandfox.tv`, was **modified 2026-09-24**, and its **Control Center** and **Projects** tabs match the code's model (Projects = one authoritative row per project; canvases described in-sheet as "generated views"). Project identity in the sheet (e.g. 2642 CS Teams, 2636 CCAI, 2637, 2633, 2639, 2625, 2631) is current and consistent with the Supabase project set. The sheet embeds **OneDrive/SharePoint links** (scripts, folders) — a Microsoft-365 surface worth confirming Kit handles or ignores deliberately. **Deprecated workbook `1K‑P4yCU…` is not referenced** in the live sheet's visible content.
+- **Sync coverage:** only **32 of 259 projects** carry a project-control binding (Sheet row ↔ Slack Canvas). This is consistent with binding being scoped to active projects, but confirm that is intentional — 227 projects have no managed Canvas.
+- **Could NOT verify (tooling gap, not a clean bill):** the bound **Apps Script** project — its source, triggers, and the exact payload/HMAC it posts to `/api/webhooks/project-control/sheet-edited` — is **not readable through any connector available in this session** (the Drive connector exposes the spreadsheet, not its bound script; there is no Apps Script API tool). The sheet-edit webhook's *receiver* is verified (fail-closed HMAC, replay window), but the *sender* (Apps Script) remains unverified. Validation lists, cell-level protections, and hidden filters were likewise not enumerated this pass. **This is the largest remaining genuine gap** and should be closed by opening the Apps Script editor directly (Extensions → Apps Script) and reviewing its triggers + the secret it signs with.
+
+### 9.5 Updated coverage — what still can't be verified
+- Railway **process** liveness in real time and its per-cron execution (blocked: proxy + no telemetry → see LIVE‑1).
+- Apps Script source/triggers and the Sheet's validation/protection layer (no tool access this session).
+- Live Frame.io v4 folder-share contract (REL‑4) and real per-message AI spend (no mutation / no billing access).
+- Per-row triage of the 56 `processing` transfers (LIVE‑3) to separate true orphans from superseded revisions.
+
+**Net for the reader:** the initial verdict stands and is reinforced — Kit's Vercel plane and integrations are healthy and its recent integrity hardening demonstrably works in production (LIVE‑2). The additions here are: a concrete **observability gap on the exact runtime you've been burned by** (LIVE‑1), a **live stuck delivery** and a **tail of orphaned transfers** to clear (LIVE‑2/3), and an honest marker that **Apps Script remains the one piece I could not open**. Treat LIVE‑1 as the highest-leverage fix for "we can't tell when the bot breaks."
+
+---
+
+*Prepared as an independent, read-only assessment. No production systems, records, credentials, or external content were modified — all production access was read-only (Supabase SELECTs, Drive read, Vercel/Supabase advisories). No fixes were implemented — this is the assessment and plan.*
