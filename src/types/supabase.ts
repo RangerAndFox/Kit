@@ -1459,15 +1459,18 @@ export type Database = {
       cron_heartbeats: {
         Row: {
           cron_id: string
-          last_success_at: string
+          last_attempt_at: string | null
+          last_success_at: string | null
         }
         Insert: {
           cron_id: string
-          last_success_at?: string
+          last_attempt_at?: string | null
+          last_success_at?: string | null
         }
         Update: {
           cron_id?: string
-          last_success_at?: string
+          last_attempt_at?: string | null
+          last_success_at?: string | null
         }
         Relationships: []
       }

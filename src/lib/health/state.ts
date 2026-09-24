@@ -55,24 +55,50 @@ export async function saveHealthState(
   if (error) throw new Error(`saveHealthState: ${error.message}`)
 }
 
-/** Newest success timestamp per cron id (ISO), for checkCronFreshness. */
-export async function loadHeartbeats(): Promise<Record<string, string>> {
+export interface HeartbeatState {
+  /** Newest successful completion (ISO), or null if it has attempted but never succeeded. */
+  success: string | null
+  /** Newest tick start (ISO), or null. Distinguishes "failing" from "not running". */
+  attempt: string | null
+}
+
+/** Newest attempt + success timestamp per cron id, for checkCronFreshness. */
+export async function loadHeartbeats(): Promise<Record<string, HeartbeatState>> {
   const { data, error } = await createAdminClient()
     .from('cron_heartbeats')
-    .select('cron_id, last_success_at')
+    .select('cron_id, last_success_at, last_attempt_at')
   if (error) throw new Error(`loadHeartbeats: ${error.message}`)
-  const out: Record<string, string> = {}
-  for (const row of data || []) out[row.cron_id] = row.last_success_at
+  const out: Record<string, HeartbeatState> = {}
+  for (const row of data || []) {
+    out[row.cron_id] = {
+      success: row.last_success_at ?? null,
+      attempt: row.last_attempt_at ?? null,
+    }
+  }
   return out
 }
 
 /**
- * Stamp a cron's successful completion. Best-effort: a heartbeat write must
- * never fail the cron that called it, so callers swallow errors.
+ * Stamp that a cron TICK STARTED (an attempt), independent of outcome. Records
+ * only `last_attempt_at`; a brand-new row's `last_success_at` stays null so an
+ * attempt is never mistaken for a success. Best-effort — callers swallow errors.
  */
-export async function recordCronSuccess(cronId: string, now: Date = new Date()): Promise<void> {
+export async function recordCronAttempt(cronId: string, now: Date = new Date()): Promise<void> {
   const { error } = await createAdminClient()
     .from('cron_heartbeats')
-    .upsert({ cron_id: cronId, last_success_at: now.toISOString() }, { onConflict: 'cron_id' })
+    .upsert({ cron_id: cronId, last_attempt_at: now.toISOString() }, { onConflict: 'cron_id' })
+  if (error) throw new Error(`recordCronAttempt(${cronId}): ${error.message}`)
+}
+
+/**
+ * Stamp a cron's successful completion. A success is also an attempt, so both
+ * timestamps advance. Best-effort: a heartbeat write must never fail the cron
+ * that called it, so callers swallow errors.
+ */
+export async function recordCronSuccess(cronId: string, now: Date = new Date()): Promise<void> {
+  const iso = now.toISOString()
+  const { error } = await createAdminClient()
+    .from('cron_heartbeats')
+    .upsert({ cron_id: cronId, last_success_at: iso, last_attempt_at: iso }, { onConflict: 'cron_id' })
   if (error) throw new Error(`recordCronSuccess(${cronId}): ${error.message}`)
 }

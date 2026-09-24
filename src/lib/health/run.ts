@@ -8,10 +8,14 @@ import { runIntegrationProbes, checkCronFreshness } from './probes'
 import { loadHeartbeats } from './state'
 import type { CheckResult } from './diff'
 
+// Watchdog process start — anchors the startup grace so a cold start / fresh
+// deploy doesn't red a cron that simply hasn't stamped its first heartbeat yet.
+const BOOT_AT = new Date()
+
 export async function runAllChecks(): Promise<CheckResult[]> {
   const [integrations, heartbeats] = await Promise.all([
     runIntegrationProbes(),
     loadHeartbeats().catch(() => ({})), // freshness is best-effort
   ])
-  return [...integrations, ...checkCronFreshness(heartbeats)]
+  return [...integrations, ...checkCronFreshness(heartbeats, new Date(), process.env, BOOT_AT)]
 }

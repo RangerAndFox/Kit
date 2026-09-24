@@ -2,25 +2,39 @@
  * Railway cron liveness telemetry.
  *
  * The health watchdog (Vercel) reads `cron_heartbeats` and flags any tracked
- * cron whose newest success is older than its `CRON_MAX_AGE_MIN` allows. Until
- * now only the five Inngest/Vercel crons stamped a heartbeat, so a Railway
- * node-cron that silently stopped firing (the exact failure class that hid the
- * Dropbox outage for months) was invisible on `/status`.
+ * cron whose success is stale for its schedule (the failure class that hid the
+ * Dropbox outage for months). Railway crons now stamp two signals:
  *
- * `stampCron` lets a Railway cron record a successful tick. It is best-effort by
- * contract: a heartbeat write must NEVER fail, delay, or throw into the cron
- * that called it, so every error is swallowed here. The id passed must match an
- * entry in `src/lib/health/probes.ts` (`CRON_MAX_AGE_MIN` + `CRON_LABELS`) for
- * the watchdog to surface its staleness.
+ *   stampCronAttempt(id) — the tick STARTED, whatever its outcome.
+ *   stampCronSuccess(id) — the pass COMPLETED successfully.
+ *
+ * The split lets the watchdog distinguish "running but failing" (fresh attempt,
+ * stale success) from "not running at all". Both are best-effort by contract: a
+ * heartbeat write must NEVER throw into, fail, or delay the job it observes, so
+ * errors are swallowed here.
+ *
+ * TRUTHFULNESS RULE: only call stampCronSuccess where the job's own work has
+ * actually completed — never after a wrapper (an inner `.catch`, `allSettled`)
+ * that would resolve even when the pass threw. Per-item failures the job
+ * deliberately swallows and tallies are not cron failures; an infra-level throw
+ * (a failed initial query, etc.) rejects the job's promise and must skip the
+ * success stamp. Ids must match `CRON_SPECS` in `src/lib/health/probes.ts`.
  */
 
-import { recordCronSuccess } from '../../src/lib/health/state'
+import { recordCronAttempt, recordCronSuccess } from '../../src/lib/health/state'
 
-export async function stampCron(cronId: string): Promise<void> {
+export async function stampCronAttempt(cronId: string): Promise<void> {
+  try {
+    await recordCronAttempt(cronId)
+  } catch (err) {
+    console.error(`[cron-heartbeat] ${cronId} attempt stamp failed:`, (err as Error)?.message)
+  }
+}
+
+export async function stampCronSuccess(cronId: string): Promise<void> {
   try {
     await recordCronSuccess(cronId)
   } catch (err) {
-    // Never let telemetry break the job it is only observing.
-    console.error(`[cron-heartbeat] ${cronId} stamp failed:`, (err as Error)?.message)
+    console.error(`[cron-heartbeat] ${cronId} success stamp failed:`, (err as Error)?.message)
   }
 }
