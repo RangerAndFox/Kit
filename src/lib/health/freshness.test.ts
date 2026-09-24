@@ -35,6 +35,17 @@ describe('checkCronFreshness', () => {
     assert.strictEqual(out[0].detail, 'no successful heartbeat recorded')
   })
 
+  it('tracks Railway node-cron liveness (previously unmonitored)', () => {
+    // A silently-stalled Railway cron must now surface on /status.
+    const stale = checkCronFreshness({ 'dropbox-inbox-sweep': minsAgo(30) }, NOW)
+    const drain = stale.find((c) => c.key === 'cron:dropbox-inbox-sweep')!
+    assert.strictEqual(drain.ok, false)
+    assert.match(String(drain.detail), /no success in 30m/)
+
+    const fresh = checkCronFreshness({ 'project-control-recovery': minsAgo(5) }, NOW)
+    assert.strictEqual(fresh.find((c) => c.key === 'cron:project-control-recovery')!.ok, true)
+  })
+
   it('does not report a disabled transcript source as stale after cutover', () => {
     const out = checkCronFreshness(
       {

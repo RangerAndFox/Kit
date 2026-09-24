@@ -393,6 +393,28 @@ After the initial report, two coverage gaps flagged as central to the studio's a
 - Live Frame.io v4 folder-share contract (REL‑4) and real per-message AI spend (no mutation / no billing access).
 - Per-row triage of the 56 `processing` transfers (LIVE‑3) to separate true orphans from superseded revisions.
 
+### 9.6 Follow-up work done on this branch (post-audit, at maintainer's request)
+
+Two of the above were taken further than assessment. Both are on the audit branch only — **not merged, not deployed.**
+
+**LIVE‑1 heartbeat wiring — drafted + tested.** Railway's frequent node-cron jobs now stamp `cron_heartbeats` on success so the existing Vercel watchdog surfaces them on `/status`:
+- New helper `bolt/src/cron-heartbeat.ts` (`stampCron(id)`, best-effort, never throws into the cron).
+- `stampCron` wired into: `dropbox-inbox-sweep`, `project-share-recovery`, `project-control-recovery`, `missed-checkin-reply-recovery`, `ae-render-notify`, `behance-elevenlabs-sync`, `frameio-project-link-reconcile`, `daily-hours-reminder` (all in `bolt/src/app.ts`).
+- Registered in `src/lib/health/probes.ts` (`CRON_MAX_AGE_MIN` + `CRON_LABELS`) with per-cron staleness thresholds; a new `freshness.test.ts` case asserts a stalled `dropbox-inbox-sweep` goes red.
+- **Validated:** root + bolt `tsc` clean; bolt vitest **961 pass**; cron-freshness suite **5 pass**.
+- **Deliberately left for a follow-up:** the weekday/daily 9am crons (pending-checkin nudge, missing-time scan, celebrations, timesheet meme, Last-Share backfill) are *not* auto-checked, because a naive max-age false-reds on weekends — they need schedule-aware freshness. They can adopt the same one-line `stampCron` once that lands.
+- **Rollout note:** deploy the Railway (Bolt) change **before or with** the `probes.ts` change; the watchdog marks a registered cron red until its first heartbeat, so enabling the checks before Railway ships would show a transient red.
+
+**LIVE‑3 triage data (read-only, for whoever clears the queue).** The 56 `processing` rows break down as:
+
+| Provider status | Count | Stale >7 days | Meaning |
+|---|---|---|---|
+| `created` | 31 | 31 | Frame.io asset created, upload never advanced |
+| `pending` | 22 | 8 | Remote upload initiated, ~13 genuinely in-flight/recent |
+| (none) | 3 | 3 | Never got a provider status |
+
+Concentrated in a burst ~23 days ago in two now-closed projects — **2639 (Jimmy Kimmel pitch): 28 stuck; 2637 (Microsoft): 11; 2625 (Azure): 3; 2629: 1.** These projects have since wrapped/delivered, so the rows are almost certainly reconcilable ledger orphans rather than un-shared client media — but they should be triaged individually (a per-row check of `frameio_file_id` + the actual Frame.io asset state) before the recommended stale-`processing` sweep is enabled, so a genuinely-incomplete delivery isn't silently marked `failed`.
+
 **Net for the reader:** the initial verdict stands and is reinforced — Kit's Vercel plane and integrations are healthy and its recent integrity hardening demonstrably works in production (LIVE‑2). The additions here are: a concrete **observability gap on the exact runtime you've been burned by** (LIVE‑1), a **live stuck delivery** and a **tail of orphaned transfers** to clear (LIVE‑2/3), and an honest marker that **Apps Script remains the one piece I could not open**. Treat LIVE‑1 as the highest-leverage fix for "we can't tell when the bot breaks."
 
 ---

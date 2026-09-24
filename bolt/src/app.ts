@@ -29,6 +29,7 @@ import {
   reconcilePendingProjectShares,
 } from './watchers/dropbox'
 import cron from 'node-cron'
+import { stampCron } from './cron-heartbeat'
 import { sweepDailyReminders } from './checkins/reminder-delivery'
 import { nudgePendingCheckins } from './checkins/daily-hours'
 import { recoverMissedCheckinReplies } from './checkins/reply-recovery'
@@ -135,8 +136,10 @@ registerOffboardingHandlers(app)
 // Reconcile studio-machine Behance draft results back into the private
 // producer DM. The worker never needs a Slack token.
 cron.schedule('* * * * *', () => {
-  void reconcileBehanceDraftSlack(app.client).catch((error) => console.error('[behance-sync]', error.message))
-  void reconcileElevenLabsDraftSlack(app.client).catch((error) => console.error('[elevenlabs-sync]', error.message))
+  void Promise.allSettled([
+    reconcileBehanceDraftSlack(app.client).catch((error) => console.error('[behance-sync]', error.message)),
+    reconcileElevenLabsDraftSlack(app.client).catch((error) => console.error('[elevenlabs-sync]', error.message)),
+  ]).then(() => stampCron('behance-elevenlabs-sync'))
 })
 
 // Imported/synced projects can have Dropbox + Slack links before their
@@ -148,9 +151,9 @@ setTimeout(() => {
   )
 }, 5_000)
 cron.schedule('23 * * * *', () => {
-  reconcileMissingFrameioProjectLinks().catch((err) =>
-    console.error('[cron] Frame.io project-link reconcile failed:', err),
-  )
+  reconcileMissingFrameioProjectLinks()
+    .then(() => stampCron('frameio-project-link-reconcile'))
+    .catch((err) => console.error('[cron] Frame.io project-link reconcile failed:', err))
 })
 
 // Existing projects may already contain Frame.io shares from before the
@@ -177,6 +180,7 @@ const runProjectShareRecovery = () => {
   reconcilePendingProjectShares(app)
     .then((result) => {
       if (result.scanned || result.failed) console.log('[project-share-recovery]', result)
+      return stampCron('project-share-recovery')
     })
     .catch((err) => console.error('[project-share-recovery] sweep failed:', err))
     .finally(() => { projectShareRecoveryRunning = false })
@@ -195,6 +199,7 @@ const runDropboxInboxSweep = () => {
     .then(() => drainDropboxInbox(app))
     .then((result) => {
       if (result.claimed || result.failed) console.log('[dropbox-inbox-sweep]', result)
+      return stampCron('dropbox-inbox-sweep')
     })
     .catch((err) => console.error('[dropbox-inbox-sweep] failed:', err))
     .finally(() => { dropboxInboxSweepRunning = false })
@@ -410,9 +415,9 @@ const CHECKIN_TZ = process.env.CHECKIN_TIMEZONE || 'America/Los_Angeles'
 cron.schedule(
   '0 * * * *',
   () => {
-    sweepDailyReminders(app).catch((err) =>
-      console.error('[cron] daily-hours-reminder sweep failed:', err),
-    )
+    sweepDailyReminders(app)
+      .then(() => stampCron('daily-hours-reminder'))
+      .catch((err) => console.error('[cron] daily-hours-reminder sweep failed:', err))
   },
   { timezone: 'UTC' },
 )
@@ -423,9 +428,9 @@ cron.schedule(
 // path. One-minute cadence keeps the fallback responsive without broad channel
 // scanning; concurrent live delivery is safe because only one claim can win.
 cron.schedule('* * * * *', () => {
-  recoverMissedCheckinReplies(app).catch((err) =>
-    console.error('[cron] missed hours reply recovery failed:', err),
-  )
+  recoverMissedCheckinReplies(app)
+    .then(() => stampCron('missed-checkin-reply-recovery'))
+    .catch((err) => console.error('[cron] missed hours reply recovery failed:', err))
 })
 
 // ─── Cron: pending check-in reminder ───────────────────────
@@ -496,6 +501,7 @@ cron.schedule(
       .then(({ notifyAeRenderCompletions }) => notifyAeRenderCompletions(app.client))
       .then((res) => {
         if (res.announced > 0) console.log('[cron] ae-render-notify:', res)
+        return stampCron('ae-render-notify')
       })
       .catch((err) => console.error('[cron] ae-render-notify failed:', err))
   },
@@ -545,6 +551,7 @@ cron.schedule(
       .then((res) => {
         const r = res as any
         if (r && (r.ran !== false || r.updatesRecovered)) console.log('[cron] project-control-recovery:', res)
+        return stampCron('project-control-recovery')
       })
       .catch((err) => console.error('[cron] project-control-recovery failed:', err))
       .finally(() => { recoverySweepRunning = false })

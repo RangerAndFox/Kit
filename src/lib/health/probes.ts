@@ -96,11 +96,26 @@ export async function runIntegrationProbes(): Promise<CheckResult[]> {
 
 /** cronId → how old (minutes) its last success may be before we call it stale. */
 export const CRON_MAX_AGE_MIN: Record<string, number> = {
+  // Vercel / Inngest crons.
   'delivery-dropbox-scan': 15, // runs ~every minute
   'delivery-specs-scan': 15,
   'drive-transcript-scan': 45, // runs every 15 min
   'plaud-transcript-scan': 45, // runs every 15 min when enabled
   'pre-meeting-scan': 45, // runs every 15 min
+  // Railway (Bolt) node-cron jobs. Previously unmonitored — a silent stall in
+  // any of these was invisible on /status. Only the FREQUENT ones are tracked
+  // here; weekday/daily Railway crons (pending-checkin nudge, missing-time scan,
+  // celebrations, timesheet meme, Last-Share backfill) stamp heartbeats too but
+  // need schedule-aware freshness (a naive max-age false-reds on weekends), so
+  // they are intentionally not auto-checked yet.
+  'daily-hours-reminder': 90, // runs hourly
+  'dropbox-inbox-sweep': 15, // runs ~every minute (delivery mirror drain)
+  'project-share-recovery': 15, // runs every 2 min
+  'project-control-recovery': 20, // runs every 5 min
+  'missed-checkin-reply-recovery': 15, // runs ~every minute
+  'ae-render-notify': 15, // runs ~every minute
+  'behance-elevenlabs-sync': 15, // runs ~every minute
+  'frameio-project-link-reconcile': 90, // runs hourly
 }
 
 export const CRON_LABELS: Record<string, string> = {
@@ -109,6 +124,14 @@ export const CRON_LABELS: Record<string, string> = {
   'drive-transcript-scan': 'Transcript ingest',
   'plaud-transcript-scan': 'Direct Plaud ingest',
   'pre-meeting-scan': 'Meeting briefings scan',
+  'daily-hours-reminder': 'Daily hours reminder sweep (Railway)',
+  'dropbox-inbox-sweep': 'Dropbox inbox drain (Railway)',
+  'project-share-recovery': 'Project share recovery (Railway)',
+  'project-control-recovery': 'Project control recovery (Railway)',
+  'missed-checkin-reply-recovery': 'Hours reply recovery (Railway)',
+  'ae-render-notify': 'AE render notifier (Railway)',
+  'behance-elevenlabs-sync': 'Behance/ElevenLabs draft sync (Railway)',
+  'frameio-project-link-reconcile': 'Frame.io project link reconcile (Railway)',
 }
 
 /**
