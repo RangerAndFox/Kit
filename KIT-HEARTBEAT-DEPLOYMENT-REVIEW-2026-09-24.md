@@ -105,6 +105,15 @@ Expect both timestamps advancing (< ~2 min for the every-minute crons). Grep Rai
 
 Rollback is safe at any stage and in any order **after** the code tiers are reverted; the migration need not be reverted at all.
 
+## 6a. Round-2 hardening (review-branch)
+
+Four correctness items were addressed after the first draft; all covered by the health suite (53 tests) and both typechecks:
+
+- **Startup grace can't reset per cold start.** Grace now anchors to a **persistent** epoch — a reserved `cron_heartbeats` row `__monitor_epoch__`, insert-once from the first-ever watchdog run (`getOrInitMonitorEpoch`) — instead of a per-invocation `new Date()`. A Vercel cold start re-reads the same epoch, so an already-stale Railway worker (which has heartbeats) is evaluated normally and a never-seen cron reds once the epoch's 30-min grace elapses. On a read error the epoch is `null` → **no** grace (fail toward actionable), never a fresh window. Test: `persistent startup-grace epoch` (old epoch ⇒ never-seen cron is red). No migration needed — reuses the table; `loadHeartbeats` skips `__`-prefixed reserved rows.
+- **Config mismatch can't silently suppress monitoring.** A feature-gated cron is skipped only when it is disabled in the watchdog's env **and** has never stamped. If a heartbeat exists, the worker is running it (regardless of the watchdog's local flag) so it is still checked. Test: `still monitors a disabled cron that IS stamping`. This closes the case where Railway has `KIT_TEAM_CHANNEL_ID` (celebrations running) but the Vercel watchdog doesn't.
+- **Nullable heartbeat compatibility (old + new).** New: an attempt-only row (`last_success_at` NULL) classifies as "attempting but not succeeding" / "not running" without crashing (test `classifies an attempt-only row`). Old code: old `loadHeartbeats` selects only `last_success_at`; a NULL there reads as "never seen" → a graceful red, no crash; old `recordCronSuccess` still writes `last_success_at` explicitly. The migration is additive + nullable, so **both app versions run against the migrated table** (see §3).
+- **Schedule/feature config verified against the worker.** The daily specs (`pending-checkin-nudge`, `missing-time-scan` = 09:00 weekdays; `daily-celebrations` = 09:00 daily, gated on `KIT_TEAM_CHANNEL_ID`) match the Bolt cron expressions (`0 9 * * 1-5` / `0 9 * * *`, tz `CHECKIN_TZ`). The interval specs match their `* * * * *` / hourly schedules. **Verification step:** diff `CRON_SPECS` in `src/lib/health/probes.ts` against the `cron.schedule(...)` calls in `bolt/src/app.ts` and confirm `CHECKIN_TIMEZONE` is identical (or unset) on both Railway and Vercel.
+
 ## 7. Surfaces still requiring manual, in-console verification (not accessible here)
 
 These were **not** verified and must not be treated as green:

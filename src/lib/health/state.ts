@@ -70,12 +70,55 @@ export async function loadHeartbeats(): Promise<Record<string, HeartbeatState>> 
   if (error) throw new Error(`loadHeartbeats: ${error.message}`)
   const out: Record<string, HeartbeatState> = {}
   for (const row of data || []) {
+    if (row.cron_id.startsWith('__')) continue // reserved rows (e.g. the monitor epoch) are not crons
     out[row.cron_id] = {
       success: row.last_success_at ?? null,
       attempt: row.last_attempt_at ?? null,
     }
   }
   return out
+}
+
+/**
+ * Reserved heartbeat id holding the PERSISTENT monitoring epoch — the first
+ * time the watchdog ever ran. Startup grace is measured from this, NOT from a
+ * per-process boot time, so a Vercel cold start cannot reset the grace window
+ * and mask a Railway worker that has been stale the whole time. Insert-once
+ * (ON CONFLICT DO NOTHING); its timestamp never moves after the first write.
+ */
+export const MONITOR_EPOCH_ID = '__monitor_epoch__'
+
+/**
+ * Return the persistent monitoring epoch, initializing it once if absent.
+ * Best-effort: on any error returns null, and the caller then applies NO
+ * startup grace (fails toward actionable) rather than a fresh, resettable one.
+ */
+export async function getOrInitMonitorEpoch(now: Date = new Date()): Promise<Date | null> {
+  const sb = createAdminClient()
+  const existing = await sb
+    .from('cron_heartbeats')
+    .select('last_success_at')
+    .eq('cron_id', MONITOR_EPOCH_ID)
+    .maybeSingle()
+  if (existing.error) throw new Error(`getOrInitMonitorEpoch read: ${existing.error.message}`)
+  if (existing.data?.last_success_at) return new Date(existing.data.last_success_at)
+  // Absent → set it once. ignoreDuplicates makes a concurrent init a no-op.
+  const iso = now.toISOString()
+  const inserted = await sb
+    .from('cron_heartbeats')
+    .upsert({ cron_id: MONITOR_EPOCH_ID, last_success_at: iso }, { onConflict: 'cron_id', ignoreDuplicates: true })
+    .select('last_success_at')
+    .maybeSingle()
+  if (inserted.error) throw new Error(`getOrInitMonitorEpoch init: ${inserted.error.message}`)
+  // If a racing writer won, re-read to get the persisted value.
+  if (inserted.data?.last_success_at) return new Date(inserted.data.last_success_at)
+  const reread = await sb
+    .from('cron_heartbeats')
+    .select('last_success_at')
+    .eq('cron_id', MONITOR_EPOCH_ID)
+    .maybeSingle()
+  if (reread.error) throw new Error(`getOrInitMonitorEpoch reread: ${reread.error.message}`)
+  return reread.data?.last_success_at ? new Date(reread.data.last_success_at) : new Date(iso)
 }
 
 /**

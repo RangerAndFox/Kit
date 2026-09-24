@@ -181,12 +181,17 @@ export function checkCronFreshness(
 ): CheckResult[] {
   const out: CheckResult[] = []
   for (const [cronId, spec] of Object.entries(CRON_SPECS)) {
-    if (spec.enabled && !spec.enabled(env)) continue
     const key = `cron:${cronId}`
     const label = spec.label
     const hb = normalizeHeartbeat(heartbeats[cronId])
     const success = hb.success ? Date.parse(hb.success) : null
     const attempt = hb.attempt ? Date.parse(hb.attempt) : null
+    // A feature-gated cron is skipped ONLY when it is disabled here AND has never
+    // stamped. If a heartbeat exists, the worker is running it regardless of the
+    // watchdog's local flag — so a missing/mismatched watchdog env must NOT
+    // silently suppress monitoring of a live cron.
+    const disabledByConfig = spec.enabled ? !spec.enabled(env) : false
+    if (disabledByConfig && success === null && attempt === null) continue
     if ((hb.success && Number.isNaN(success!)) || (hb.attempt && Number.isNaN(attempt!))) {
       out.push({ key, label, ok: false, detail: 'invalid heartbeat timestamp' })
       continue

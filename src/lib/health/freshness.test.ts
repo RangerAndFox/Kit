@@ -75,6 +75,43 @@ describe('checkCronFreshness — disabled features', () => {
     const on = checkCronFreshness({}, NOW, { KIT_TEAM_CHANNEL_ID: 'C123' }, NOW)
     assert.equal(on.some((c) => c.key === 'cron:daily-celebrations'), true)
   })
+
+  it('still monitors a disabled cron that IS stamping (config mismatch must not suppress)', () => {
+    // Watchdog env lacks KIT_TEAM_CHANNEL_ID, but the worker is clearly running
+    // celebrations (a heartbeat exists) → it must be checked, not skipped.
+    const out = checkCronFreshness(
+      { 'daily-celebrations': { success: '2026-07-15T16:05:00Z', attempt: '2026-07-15T16:05:00Z' } },
+      NOW, {}, // celebrations "disabled" here
+    )
+    assert.equal(out.some((c) => c.key === 'cron:daily-celebrations'), true)
+  })
+})
+
+describe('checkCronFreshness — nullable / attempt-only heartbeat compatibility', () => {
+  it('classifies an attempt-only row (last_success_at NULL) without crashing', () => {
+    // New Railway may write an attempt with no success yet (nullable column).
+    const failing = checkCronFreshness(
+      { 'dropbox-inbox-sweep': { success: null, attempt: minsAgo(2) } }, NOW, {},
+    )
+    const f = find(failing, 'cron:dropbox-inbox-sweep')
+    assert.equal(f.ok, false)
+    assert.match(String(f.detail), /attempting but not succeeding/)
+
+    const stale = checkCronFreshness(
+      { 'dropbox-inbox-sweep': { success: null, attempt: minsAgo(120) } }, NOW, {},
+    )
+    assert.match(String(find(stale, 'cron:dropbox-inbox-sweep').detail), /not running/)
+  })
+})
+
+describe('checkCronFreshness — persistent startup-grace epoch', () => {
+  it('does NOT mask a never-seen cron when the epoch is old (cold start cannot reset it)', () => {
+    // Epoch 45m in the past (persisted from first-ever run) → grace long elapsed.
+    const oldEpoch = new Date(NOW.getTime() - 45 * 60_000)
+    const c = find(checkCronFreshness({}, NOW, {}, oldEpoch), 'cron:delivery-dropbox-scan')
+    assert.equal(c.ok, false)
+    assert.equal(c.detail, 'no heartbeat recorded')
+  })
 })
 
 describe('checkCronFreshness — schedule-aware weekday crons', () => {
