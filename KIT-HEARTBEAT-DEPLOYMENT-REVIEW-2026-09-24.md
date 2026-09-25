@@ -31,6 +31,10 @@ Telemetry writes have two-second deadlines and are best effort for workers. A fa
 
 ## Rollout
 
+Production migration IDs assigned by Supabase are 20260925005342 (cron_heartbeat_attempts)
+and 20260925005401 (frameio_transfer_retirement). Repository filenames match these
+applied versions; SQL contents are unchanged from the tested drafts.
+
 1. Run Node 22 tests, root/Bolt/tools typechecks, actual migration tests, migration integrity, lint ratchet and production build.
 2. Apply additive heartbeat and retirement migrations before code deploy. Existing code remains compatible. No queue rows are retired by schema deployment.
 3. Pass release gates and merge. Confirm Railway and Vercel deploy the same merged SHA; prefer Railway writers before watchdog. Persistent first-enrollment grace covers rollout overlap without resetting on future cold starts.

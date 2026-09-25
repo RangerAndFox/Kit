@@ -23,7 +23,7 @@ test('atomic retirement, exact revisions, worker fencing and immutable audit', a
         claimed_at timestamptz, attempt_count int default 0, claim_token uuid, claimed_by text,
         updated_at timestamptz default now());
     `)
-    await db.exec(await readFile(new URL('../supabase/migrations/20260924160000_frameio_transfer_retirement.sql', import.meta.url), 'utf8'))
+    await db.exec(await readFile(new URL('../supabase/migrations/20260925005401_frameio_transfer_retirement.sql', import.meta.url), 'utf8'))
     await db.query('insert into frameio_delivery_transfers values($1,$2,$3,$4,$5,$6)',
       [transfer, project, 'id:file', 'rev-old', 'processing', version])
     await db.query(`insert into dropbox_event_inbox(id,event_type,payload,status) values
@@ -83,7 +83,7 @@ test('heartbeat migration preserves success and enrollment across restarts and a
     await db.exec(`create role anon; create role authenticated; create role service_role bypassrls;
       alter default privileges in schema public grant all on tables to service_role;
       create table cron_heartbeats(cron_id text primary key,last_success_at timestamptz not null default now());`)
-    await db.exec(await readFile(new URL('../supabase/migrations/20260924150000_cron_heartbeat_attempts.sql', import.meta.url), 'utf8'))
+    await db.exec(await readFile(new URL('../supabase/migrations/20260925005342_cron_heartbeat_attempts.sql', import.meta.url), 'utf8'))
     await db.exec('set role service_role')
     const stamp = (kind: string|null, enabled = true) => db.query('select record_kit_cron($1,$2,$3,$4,$5)',
       ['dropbox-inbox-sweep', 'railway', enabled, {kind:'interval',label:'Inbox',maxAgeMin:15}, kind])

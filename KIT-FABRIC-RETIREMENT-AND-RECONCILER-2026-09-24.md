@@ -10,7 +10,7 @@ All 11 historical Fabric processing rows remain unverified as delivered. The thr
 
 ## Atomic operator-only retirement
 
-Migration 20260924160000 adds:
+Migration 20260925005401 (the production-assigned version, formerly draft 20260924160000) adds:
 - Nullable retirement markers on transfer and inbox records.
 - An immutable audit snapshot with no cascading foreign key; service_role has SELECT only.
 - Service-only retire_frameio_transfer RPC: exact transfer/project/file/revision/version and sorted event-ID manifest, row locks, and refusal of every processing claim (including expired leases).
