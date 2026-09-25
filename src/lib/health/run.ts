@@ -16,12 +16,19 @@ export async function runAllChecks(io = dependencies): Promise<CheckResult[]> {
   // per-invocation timestamp — so a Vercel cold start cannot reset the grace and
   // hide an already-stale Railway worker. On error, epoch is null → no grace
   // (fail toward actionable), never a fresh resettable window.
-  const report = (stage: string) => { console.error('[health-monitor]', { stage, outcome: 'unavailable' }) }
+  const started = Date.now()
+  const report = (stage: string, error: unknown) => {
+    const message = error instanceof Error ? error.message : ''
+    // No raw provider messages, credentials, URLs or payloads in diagnostics.
+    const category = /abort|timeout|timed out/i.test(message) ? 'timeout'
+      : /fetch|network|connect/i.test(message) ? 'network' : 'database_or_configuration'
+    console.error('[health-monitor]', { stage, outcome: 'unavailable', category, elapsed_ms: Date.now() - started })
+  }
   const [integrations, heartbeats, epoch, registered] = await Promise.all([
     io.runIntegrationProbes(),
-    io.loadHeartbeats().catch(() => { report('heartbeat_read'); return null }),
-    io.getOrInitMonitorEpoch().catch(() => { report('epoch_read'); return null }),
-    io.registerCronSchedules('vercel').then(() => true).catch(() => { report('configuration_write'); return false }),
+    io.loadHeartbeats().catch(error => { report('heartbeat_read', error); return null }),
+    io.getOrInitMonitorEpoch().catch(error => { report('epoch_read', error); return null }),
+    io.registerCronSchedules('vercel').then(() => true).catch(error => { report('configuration_write', error); return false }),
   ])
   // Always emit both check keys, including explicit recovery. A failed write
   // cannot prevent reading existing outcomes, and unknown is never healthy.

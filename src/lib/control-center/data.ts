@@ -208,6 +208,7 @@ export async function loadControlCenterData(args: {
   // Include heartbeats that are recorded but not yet part of the probe registry.
   const knownCronKeys = new Set(automations.map((check) => check.key.replace(/^cron:/, '')))
   for (const heartbeat of cronHeartbeats) {
+    if (heartbeat.cron_id.startsWith('__')) continue // monitor epoch is not a scheduled job
     if (knownCronKeys.has(heartbeat.cron_id)) continue
     automations.push({
       key: `cron:${heartbeat.cron_id}`,

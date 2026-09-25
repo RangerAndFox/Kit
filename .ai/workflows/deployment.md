@@ -9,8 +9,8 @@ Passing the first does not imply the second.
 See `.ai/runtime.md`. In short:
 
 - **Railway** builds `bolt/Dockerfile` (context = repo root) and runs the
-  persistent Bolt service. *(Build config Verified; deployed branch Needs
-  verification.)*
+  persistent Bolt service. *(Main branch verified 2026-09-25; recheck the actual
+  deployed SHA on every release.)*
 - **Vercel** builds and runs the Next.js app + the Inngest functions
   registered in `src/app/api/inngest/route.ts`. *(Registry Verified; deployed
   branch and Inngest sync Needs verification.)*
@@ -21,7 +21,8 @@ Per `.ai/validation.md`:
 
 - Type-check the affected package(s).
 - Run the relevant tests (`bolt/`'s `npm test` for Bolt changes).
-- `npm run lint` and `npm run build` (root) for Vercel-bound changes.
+- `npm run lint:ratchet`, `npm run test:app`, `npm run typecheck` and
+  `npm run build` (root) for Vercel-bound changes. Raw lint retains documented debt.
 - Confirm any schema change ships as a migration.
 
 This proves the code compiles and tests pass. It proves **nothing** about the
@@ -53,6 +54,13 @@ the repo:
 - Report repo validation run and its results, separately from any platform
   verification (and clearly mark platform steps you could not perform).
 - Never claim a deploy succeeded from repo checks alone.
+
+## Kit release policy (owner-approved 2026-09-25)
+
+Use a pull request and all eleven required automated checks with an up-to-date
+branch. Kit no longer requires a separate human/independent approval. This
+Kit-only exception does not relax test, migration, security, no-force-push or
+no-deletion protections, and does not change rules for other repositories.
 
 ## Prohibited shortcuts
 
