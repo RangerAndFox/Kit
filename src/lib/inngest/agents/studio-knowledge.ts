@@ -16,6 +16,7 @@ async function handle(action: string, payload: Record<string, unknown>): Promise
         const query = String(payload.query || '').trim()
         if (!query) return { agent: 'studio_knowledge', action, success: false, error: 'query is empty' }
         const workspaceId = (payload.workspaceId as string) || process.env.KIT_DEFAULT_WORKSPACE_ID || null
+        if (!workspaceId) return { agent: 'studio_knowledge', action, success: false, error: 'A workspace is required' }
         const projectId = (payload.projectId as string) || null
         const channelId = (payload.channelId as string) || null
         const limit = Number(payload.limit) || 10

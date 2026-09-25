@@ -90,10 +90,7 @@ async function inviteToChannel(channelId: string, userId: string): Promise<void>
   }
 }
 
-export interface SlackInviteResult extends ServiceResult {
-  /** True if a Slack Connect invite was sent and is awaiting acceptance. */
-  connectPending?: boolean
-}
+export type SlackInviteResult = ServiceResult
 
 /**
  * Top-level entry: get the artist access to the project channel.

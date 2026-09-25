@@ -13,6 +13,7 @@
 
 import { frameioHeaders } from './auth'
 import { normalizeFrameioNextLink, FRAMEIO_API_BASE } from './url'
+import { fetchFrameioPublicUrl, frameioPublicUrl } from './safe-fetch'
 
 const BASE_URL = FRAMEIO_API_BASE
 
@@ -207,10 +208,28 @@ export async function getFrameAtTimecode(
  */
 export async function downloadImage(url: string): Promise<Buffer | null> {
   try {
-    const res = await fetch(url)
-    if (!res.ok) return null
-    const arrayBuffer = await res.arrayBuffer()
-    return Buffer.from(arrayBuffer)
+    const { response: res } = await fetchFrameioPublicUrl(url)
+    const maxBytes = 10 * 1024 * 1024
+    if (!res.ok || !res.headers.get('content-type')?.startsWith('image/') || Number(res.headers.get('content-length') || 0) > maxBytes) {
+      await res.body?.cancel()
+      return null
+    }
+    if (!res.body) return null
+    const reader = res.body.getReader()
+    const chunks: Uint8Array[] = []
+    let bytes = 0
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        bytes += value.byteLength
+        if (bytes > maxBytes) return null
+        chunks.push(value)
+      }
+      return Buffer.concat(chunks)
+    } finally {
+      await reader.cancel()
+    }
   } catch {
     return null
   }
@@ -254,6 +273,7 @@ export function detectFrameIoLink(text: string): {
   if (!urlMatch) return null
 
   const url = urlMatch[1]
+  try { frameioPublicUrl(url) } catch { return null }
 
   const reviewId = parseReviewUrl(url)
   if (reviewId) return { type: 'review', id: reviewId, url }
@@ -276,10 +296,9 @@ export async function resolveShortLink(shortUrl: string): Promise<{
   url: string
 } | null> {
   try {
-    const res = await fetch(shortUrl, { redirect: 'follow' })
-    const finalUrl = res.url
-
-    console.log('[FrameIO] Short link resolved:', shortUrl, '->', finalUrl)
+    const { response, url: finalUrl } = await fetchFrameioPublicUrl(shortUrl)
+    await response.body?.cancel()
+    if (!response.ok) return null
 
     const reviewId = parseReviewUrl(finalUrl)
     if (reviewId) return { type: 'review', id: reviewId, url: finalUrl }
@@ -296,7 +315,7 @@ export async function resolveShortLink(shortUrl: string): Promise<{
     const uuidMatch = finalUrl.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i)
     if (uuidMatch) return { type: 'review', id: uuidMatch[1], url: finalUrl }
 
-    console.warn('[FrameIO] Could not parse resolved URL:', finalUrl)
+    console.warn('[FrameIO] Could not parse resolved link')
     return null
   } catch (err: any) {
     console.error('[FrameIO] Short link resolution failed:', err?.message)

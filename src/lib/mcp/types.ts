@@ -8,6 +8,7 @@
  */
 
 import type { z } from 'zod'
+import type { McpPrincipal } from './auth'
 
 // ─── JSON-RPC 2.0 ────────────────────────────────────────────
 
@@ -70,5 +71,5 @@ export interface KitTool<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {
     destructiveHint?: boolean
     idempotentHint?: boolean
   }
-  handler: (input: z.infer<TSchema>) => Promise<ToolCallResult>
+  handler: (input: z.infer<TSchema>, principal?: McpPrincipal) => Promise<ToolCallResult>
 }

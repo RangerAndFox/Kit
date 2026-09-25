@@ -21,7 +21,7 @@ export interface SearchResult {
 }
 
 export interface SearchOptions {
-  workspaceId?: string | null
+  workspaceId: string
   projectId?: string | null
   limit?: number
   visibilityTiers?: KnowledgeVisibilityTier[]
@@ -37,7 +37,8 @@ export function visibilityTiersForRequester(tier: unknown): KnowledgeVisibilityT
   return tier === 'admin' ? ['team', 'founder'] : ['team']
 }
 
-export async function searchDocuments(query: string, opts: SearchOptions = {}): Promise<SearchResult[]> {
+export async function searchDocuments(query: string, opts: SearchOptions): Promise<SearchResult[]> {
+  if (!opts?.workspaceId?.trim()) throw new Error('searchDocuments requires a workspace')
   if (!query || query.trim().length === 0) return []
   if (!opts.visibilityTiers?.length) {
     throw new Error('searchDocuments requires an explicit requester visibility classification')
@@ -46,12 +47,11 @@ export async function searchDocuments(query: string, opts: SearchOptions = {}): 
 
   const embedding = await generateEmbedding(query)
   const sb = createAdminClient()
-  // The SQL function defaults both filters to null, so omitting an arg
-  // (undefined) is equivalent to passing null explicitly.
+  // Workspace is mandatory even for studio-wide (non-project) retrieval.
   const { data, error } = await sb.rpc('match_documents', {
     query_embedding: asVectorParam(embedding),
     match_count: limit,
-    filter_workspace_id: opts.workspaceId ?? undefined,
+    filter_workspace_id: opts.workspaceId,
     filter_project_id: opts.projectId ?? undefined,
     filter_visibility_tiers: opts.visibilityTiers,
   })

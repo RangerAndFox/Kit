@@ -33,20 +33,20 @@ import type { KitTool } from '../types'
 export const listAgents: KitTool = {
   name: 'kit_list_agents',
   description:
-    'List all available Kit agents and their capabilities. Call this at the start of a conversation to know which experts are online and what they can do. Each agent is a domain expert in a specific external service. Optionally pass slack_user_id and workspace_id to get a tier-filtered view showing only what this user can access.',
+    'List Kit agents and capabilities permitted for the acting user bound into your signed credential. Supply workspace_id; caller-supplied user identities cannot change permissions.',
   schema: z.object({
     workspace_id: z.string().uuid().describe('Workspace ID to check access tiers'),
-    slack_user_id: z.string().min(1).describe('Slack user ID to resolve access tier'),
   }),
   annotations: { readOnlyHint: true },
-  handler: async ({ workspace_id, slack_user_id }) => {
+  handler: async ({ workspace_id }, principal) => {
+    if (!principal?.slackUserId || principal.workspaceId !== workspace_id) return fail('A signed acting identity in this workspace is required.')
     const manifest = getCapabilitiesManifest()
     const available = manifest.filter((a) => a.available)
     const offline = manifest.filter((a) => !a.available)
 
     // If we have user context, annotate which actions they can access
     let user: UserContext | null = null
-    user = await resolveUserContext(workspace_id, slack_user_id)
+    user = await resolveUserContext(principal.workspaceId, principal.slackUserId)
     if (!user) return fail('The requesting Slack user is not authorized in this workspace.')
 
     return ok({
@@ -82,19 +82,19 @@ export const listAgents: KitTool = {
 export const askAgent: KitTool = {
   name: 'kit_ask_agent',
   description:
-    'Dispatch an action to a specific agent. Use kit_list_agents first to know which agents and actions are available. Each agent is an expert in its domain — Harvest knows time/money, Dropbox knows files, Frame.io knows reviews, Slack knows communication. Pass the agent ID, action name, and a payload with the required fields. Include workspace_id and slack_user_id for access control — some actions and data are restricted by tier.',
+    'Dispatch an action to a specific agent. Use kit_list_agents first. Pass agent ID, action, payload and workspace_id. The signed acting identity determines access; user IDs and tiers supplied in arguments cannot elevate permissions.',
   schema: z.object({
     agent_id: z.string().describe('The agent to call (e.g., "harvest", "dropbox", "frameio", "slack")'),
     action: z.string().describe('The action to perform (e.g., "log_time", "search", "get_comments", "send_message")'),
     payload: z.record(z.any()).optional().default({}).describe('Action-specific parameters. Check the agent\'s capability descriptions for what each action expects.'),
     workspace_id: z.string().uuid().describe('Workspace ID for access control'),
-    slack_user_id: z.string().min(1).describe('Slack user ID of the person making the request'),
   }),
   annotations: { readOnlyHint: false },
-  handler: async ({ agent_id, action, payload, workspace_id, slack_user_id }) => {
+  handler: async ({ agent_id, action, payload, workspace_id }, principal) => {
+    if (!principal?.slackUserId || principal.workspaceId !== workspace_id) return fail('A signed acting identity in this workspace is required.')
     // ── Resolve user context for access control ─────────────
     let user: UserContext | null = null
-    user = await resolveUserContext(workspace_id, slack_user_id)
+    user = await resolveUserContext(principal.workspaceId, principal.slackUserId)
     if (!user) return fail('The requesting Slack user is not authorized in this workspace.')
 
     // ── Gateway check (Kit level) ───────────────────────────
@@ -109,6 +109,10 @@ export const askAgent: KitTool = {
     // fail closed to the lowest tier; resolved admins may retrieve founder docs.
     const dispatchPayload = {
       ...payload,
+      workspaceId: principal.workspaceId,
+      workspace_id: principal.workspaceId,
+      slackUserId: principal.slackUserId,
+      slack_user_id: principal.slackUserId,
       requesterTier: user.tier,
     }
     const result = await dispatch(agent_id, action, dispatchPayload)

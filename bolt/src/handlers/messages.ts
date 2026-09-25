@@ -1116,22 +1116,14 @@ async function resolveWorkspaceId(teamId: string): Promise<string> {
   if (hit && Date.now() - hit.at < WORKSPACE_CACHE_TTL_MS) return hit.id
   try {
     const supabase = createAdminClient()
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('workspaces')
       .select('id, slack_team_id')
       .eq('slack_team_id', teamId)
-      .limit(1)
-      .single()
+      .maybeSingle()
 
-    let id = data?.id || ''
-    if (!id) {
-      const { data: first } = await supabase
-        .from('workspaces')
-        .select('id')
-        .limit(1)
-        .single()
-      id = first?.id || ''
-    }
+    // Unknown, ambiguous, or unavailable team mapping must never borrow a tenant.
+    const id = error ? '' : data?.id || ''
     if (id) workspaceCache.set(teamId, { id, at: Date.now() })
     return id
   } catch {
