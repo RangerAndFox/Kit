@@ -18,9 +18,8 @@ const DEFAULTS: ProjectSettings = {
 }
 
 /**
- * Read a project's settings, falling back to defaults when there's no row (or
- * on a read error — we never want a settings hiccup to silently change
- * delivery behavior, so the default is the safe "enabled" state).
+ * A missing row uses defaults. A failed read must not re-enable a disabled
+ * project's uploads; leave the event retryable until settings are available.
  */
 export async function getProjectSettings(projectId: string): Promise<ProjectSettings> {
   if (!projectId) return { ...DEFAULTS }
@@ -32,8 +31,7 @@ export async function getProjectSettings(projectId: string): Promise<ProjectSett
     .maybeSingle()
 
   if (error) {
-    console.warn(`[project-settings] read failed for ${projectId}: ${error.message}`)
-    return { ...DEFAULTS }
+    throw new Error('Project upload settings unavailable')
   }
   if (!data) return { ...DEFAULTS }
   return {
