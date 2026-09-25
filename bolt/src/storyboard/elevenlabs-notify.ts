@@ -29,12 +29,16 @@ export async function resolveElevenLabsDestination(client: App['client'], job: {
   return opened.channel.id
 }
 
-async function findReceipt(client: App['client'], channel: string, thread: string | null, jobId: string): Promise<boolean> {
+async function findReceipt(client: App['client'], channel: string, thread: string | null, jobId: string, createdAt?: string): Promise<boolean> {
   let cursor: string | undefined
+  // A receipt cannot predate its durable job. Bound history to this job's
+  // lifetime so a new notification does not scan years of channel activity.
+  const created = Date.parse(createdAt || '')
+  const oldest = Number.isFinite(created) ? String(Math.max(0, created / 1000 - 60)) : undefined
   for (let page = 0; page < 10; page++) {
     const response = thread
-      ? await client.conversations.replies({ channel, ts: thread, cursor, limit: 100, include_all_metadata: true } as any)
-      : await client.conversations.history({ channel, cursor, limit: 100, include_all_metadata: true } as any)
+      ? await client.conversations.replies({ channel, ts: thread, cursor, oldest, limit: 100, include_all_metadata: true } as any)
+      : await client.conversations.history({ channel, cursor, oldest, limit: 100, include_all_metadata: true } as any)
     if (!response.ok) throw new Error('ElevenLabs notification history unavailable')
     if (alreadyPosted(response.messages || [], jobId)) return true
     cursor = response.response_metadata?.next_cursor
@@ -84,7 +88,7 @@ export async function reconcileElevenLabsDraftSlack(client: App['client']): Prom
         }
       }
       stage = 'reconcile_receipt'
-      const posted = await findReceipt(client, channel, job.slack_thread_ts, job.id)
+      const posted = await findReceipt(client, channel, job.slack_thread_ts, job.id, job.created_at)
       // Persist the resolved destination and renew ownership immediately before
       // posting. A held job or a stale worker that lost its token cannot post.
       stage = 'renew_ownership'

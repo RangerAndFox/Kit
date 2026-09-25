@@ -36,6 +36,7 @@ function setup(jobs: Job[], failAck = false, loseLease = false) {
 }
 function job(id: string, extra: Job = {}): Job {
   return { id, status: 'failed', project_name: id, requested_by_slack_user_id: 'U123',
+    created_at: '2026-09-25T13:00:00Z',
     slack_notified_at: null, slack_notification_disposition: 'pending', ...extra }
 }
 function slack() {
@@ -54,6 +55,7 @@ describe('ElevenLabs notification routing and retry safety', () => {
     expect(await reconcileElevenLabsDraftSlack(s.api)).toEqual({ scanned: 1, notified: 1 })
     expect(s.client.conversations.open).toHaveBeenCalledWith({ users: 'U123' })
     expect(s.client.conversations.history.mock.calls[0][0].channel).toBe('D123')
+    expect(s.client.conversations.history.mock.calls[0][0].oldest).toBe(String(Date.parse('2026-09-25T12:59:00Z') / 1000))
     expect(rows[0].slack_channel_id).toBe('D123')
     expect(rows[0].slack_notified_at).toBeTruthy()
   })
