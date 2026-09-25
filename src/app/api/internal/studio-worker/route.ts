@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { isStudioWorkerAuthorized } from './auth'
+import { isSingleStudio, isStudioWorkerAuthorized } from './auth'
 
 export const maxDuration = 30
 const now = () => new Date().toISOString()
@@ -33,6 +33,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: 'invalid request' }, { status: 400 })
   }
   const sb = createAdminClient() as any
+  // No global worker capability may silently cross a newly added tenant.
+  // A multi-studio deployment requires workspace-scoped worker credentials
+  // and job tables before this guard can be relaxed.
+  const { data: studios, error: studioError } = await sb.from('workspaces').select('id').limit(2)
+  if (studioError || !isSingleStudio(studios)) {
+    return NextResponse.json({ ok: false, error: 'studio_scope_unavailable' }, { status: 503 })
+  }
   const workerId = String(body.workerId).slice(0, 200)
   const displayName = String(body.displayName || workerId).slice(0, 200)
 

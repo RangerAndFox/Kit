@@ -75,3 +75,23 @@ The 24 remaining records for 2631/2633/2636 have not been declared delivered by 
 - Validation before final additions: 926 app tests, 1001 Bolt tests, all typechecks, lint ratchet 1233 errors/86 warnings (debt reduced, not zero). Focused render acknowledgment tests add two passing cases.
 - PERF-1 live model comparison is permission-blocked: the checker requires explicit approval to send Kit's existing internal prompt/tool schemas to its Anthropic account. No requests ran; model remains unchanged. User approval requested in this task.
 - DB advisor findings inspected: 26 unindexed FKs, tables generally tiny (largest estimated 130 rows); statistics reset 2026-03-30. No unused index was dropped solely from a zero counter.
+
+## Phase 4 — runtime verification and monitoring hardening
+
+- Cron registration now uses one bounded batch RPC instead of a parallel request per cron. Existing successes/enrollment remain unchanged; actual SQL tests verify this. Failure logs contain only stage, sanitized category and elapsed time. The intermittent configuration failure was observed again at 16:40; batching removes request amplification, but sustained production verification is still required before calling its cause resolved.
+- Control Center no longer displays the persistent monitor epoch as a failing unknown cron.
+- Removed automatic legacy migration from Railway startup. Redacted live configuration confirms old cutover variable names remain configured; values cannot be independently read through the connector. A stale flag can no longer trigger old-workbook adoption on a restart.
+- SEC-5: studio-wide worker credential is now explicitly single-studio-only, fail-closed on database error or a second workspace. Dedicated secret remains required. Fixed a same-character-length/multibyte-token exception in timing-safe comparison. Live database has one workspace; render, Behance, ElevenLabs and Frame.io workers all have fresh heartbeats (16:46 UTC).
+- REL-4: three live existing shares were inspected using the published GET shares/assets contract. All three enabled public shares contain the exact expected folder (plus an existing file); no link, media, access setting or notification was changed. Public links intentionally remain bearer-access client review links; authenticated-only sharing would be a separate policy change. [Provider schema](https://api.frame.io/v4/openapi.json).
+- Workbook inspection via the Google Sheets connector confirmed the exact R&F Production Control Center ID and tab structure. All 28 bindings to that workbook have zero sync errors. Four other historical bindings belong to obvious legacy/test-named records in a different workbook; they were not deleted without exact disposition approval. Old projects below 2625 remain archived in Kit (their historical rows remain in the workbook). No workbook cells changed.
+- Bound Apps Script remains unverified: the connected browser requires Google reauthentication. Connector reads do not expose installed triggers or script properties. Never print signing secrets.
+- DB-1/2 disposition: do not perform speculative index churn. 110 zero-use nonunique public indexes total only 1.16 MiB, largest 16 KiB; sampled scoped transcript/brain plans already use workspace indexes, and affected FK tables are tiny. Preserve constraints, authorization-provider indexes, and growth-ready indexes. Revisit covering indexes with measured slow-query evidence rather than adding/dropping 100+ indexes to silence INFO advisors. [Advisor guidance](https://supabase.com/docs/guides/database/database-linter?lint=0001_unindexed_foreign_keys).
+- Security advisors: zero WARN/ERROR; fourteen INFO notices are intentionally service-role-only deny-all tables, including the new receipt/cursor/billing ledgers. [RLS guidance](https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy).
+
+## Remaining decisions / follow-ups (not silently completed)
+
+1. Explicit permission for the live synthetic model comparison (PERF-1). No model change or test request made after the permission rejection.
+2. Google reauthentication to inspect bound Apps Script triggers and webhook-signing setup.
+3. The 24 unresolved upload attempts on 2631/2633/2636 still need exact delivered-replacement evidence or owner confirmation before retirement. Fabric/Jimmy retirement remains intact.
+4. Postgres engine maintenance: deployed 17.6 versus newer provider security releases warrants a scheduled upgrade check/backup validation, not an unannounced database restart during production.
+5. Optional product additions (delivery-link dashboard, richer AI-cost panel) are backlog suggestions, separate from correcting the audited defects. No fabricated cost or worker data is displayed.

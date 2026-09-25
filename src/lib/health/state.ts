@@ -147,8 +147,14 @@ export async function registerCronSchedules(owner: 'railway' | 'vercel'): Promis
   // Preview dashboards may share a production database; they must not publish
   // their environment's flags over the production watchdog registration.
   if (owner === 'vercel' && process.env.VERCEL_ENV && process.env.VERCEL_ENV !== 'production') return
-  await Promise.all(Object.keys(getCronSpecs()).filter(id => cronDefinition(id)?.owner === owner)
-    .map(id => writeCron(id, 'register')))
+  const registrations = Object.keys(getCronSpecs()).flatMap(id => {
+    const definition = cronDefinition(id)
+    return definition?.owner === owner ? [{ id, enabled: definition.enabled, schedule: definition.schedule }] : []
+  })
+  const sb = createAdminClient() as unknown as import('@supabase/supabase-js').SupabaseClient
+  const { error } = await sb.rpc('register_kit_crons', { p_runtime: owner, p_crons: registrations })
+    .abortSignal(AbortSignal.timeout(5000))
+  if (error) throw new Error('Cron registration unavailable: ' + error.message)
 }
 export async function recordCronAttempt(cronId: string): Promise<void> {
   await writeCron(cronId, 'attempt')

@@ -84,6 +84,7 @@ test('heartbeat migration preserves success and enrollment across restarts and a
       alter default privileges in schema public grant all on tables to service_role;
       create table cron_heartbeats(cron_id text primary key,last_success_at timestamptz not null default now());`)
     await db.exec(await readFile(new URL('../supabase/migrations/20260925005342_cron_heartbeat_attempts.sql', import.meta.url), 'utf8'))
+    await db.exec(await readFile(new URL('../supabase/migrations/20260925164550_batched_cron_registration.sql', import.meta.url), 'utf8'))
     await db.exec('set role service_role')
     const stamp = (kind: string|null, enabled = true) => db.query('select record_kit_cron($1,$2,$3,$4,$5)',
       ['dropbox-inbox-sweep', 'railway', enabled, {kind:'interval',label:'Inbox',maxAgeMin:15}, kind])
@@ -94,6 +95,9 @@ test('heartbeat migration preserves success and enrollment across restarts and a
     assert.equal((await read()).last_success_at, null)
     await stamp('success')
     const success = (await read()).last_success_at
+    await db.query('select register_kit_crons($1,$2)', ['railway', [{ id: 'dropbox-inbox-sweep', enabled: true, schedule: {kind:'interval',label:'Inbox',maxAgeMin:15} }]])
+    assert.deepEqual((await read()).last_success_at, success)
+    await assert.rejects(db.query('select register_kit_crons($1,$2)', ['other', []]), /Invalid cron registration batch/)
     await stamp('register'); await stamp('attempt')
     assert.deepEqual((await read()).enrolled_at, enrolled)
     assert.deepEqual((await read()).last_success_at, success)
@@ -104,5 +108,6 @@ test('heartbeat migration preserves success and enrollment across restarts and a
     await assert.rejects(stamp(null), /invalid cron registration/)
     await db.exec('reset role; set role anon')
     await assert.rejects(stamp('success'), /permission denied/)
+    await assert.rejects(db.query('select register_kit_crons($1,$2)', ['railway', []]), /permission denied/)
   } finally { await db.close() }
 })
