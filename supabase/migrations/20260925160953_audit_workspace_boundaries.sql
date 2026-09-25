@@ -1,4 +1,5 @@
 -- Audit SEC-2/SEC-4. Never broaden retrieval on a missing workspace.
+-- Filename aligned to the verified production migration ledger.
 create or replace function public.match_documents(query_embedding vector, match_count integer default 10, filter_workspace_id uuid default null, filter_project_id uuid default null, filter_visibility_tiers text[] default array['team']::text[])
 returns table(id uuid, title text, content text, doc_type text, source_url text, project_id uuid, workspace_id uuid, metadata jsonb, similarity double precision)
 language plpgsql security definer set search_path = public

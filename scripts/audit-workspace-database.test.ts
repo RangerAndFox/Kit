@@ -17,7 +17,7 @@ test('actual audit migration rejects unscoped retrieval and cross-workspace memb
       create table project_access(workspace_id uuid not null, team_member_id uuid not null);
       create table project_documents(id uuid primary key, title text, content text, doc_type text,
         source_url text, project_id uuid, workspace_id uuid, metadata jsonb, visibility_tier text, embedding vector(3));`)
-    await db.exec(await readFile(new URL('../supabase/migrations/20260925155214_audit_workspace_boundaries.sql', import.meta.url), 'utf8'))
+    await db.exec(await readFile(new URL('../supabase/migrations/20260925160953_audit_workspace_boundaries.sql', import.meta.url), 'utf8'))
     await db.query('insert into team_members values($1,$2)', [member, a])
     await db.query("insert into project_documents(id,title,workspace_id,visibility_tier,embedding) values ($1,'A',$1,'team','[1,0,0]'),($2,'B',$2,'team','[1,0,0]')", [a,b])
     await db.exec('set role service_role')

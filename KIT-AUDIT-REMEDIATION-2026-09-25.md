@@ -52,3 +52,4 @@ The 24 remaining records for 2631/2633/2636 have not been declared delivered by 
 - Production build succeeds. Lint ratchet improves to 1253 errors / 87 warnings (stock debt, not a clean lint result).
 - Production read at 16:00 UTC: Behance/ElevenLabs succeeds, monitoring configuration recovered; only historical Dropbox inbox alert remains. No retirement or successful-upload claim was made for the 24 unresolved records.
 - No changes from this branch have been deployed yet.
+- Phase 1 migration applied at 16:09 UTC (production version 20260925160953); member constraint validated, zero mismatches, anon function execution denied. Local filename aligned to the actual production ledger. App rollout still pending final PR checks.
