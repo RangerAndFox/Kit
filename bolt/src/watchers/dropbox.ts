@@ -1093,17 +1093,34 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
     const current = await dbxPost('/files/get_metadata', { path: d.dropboxId })
     const sourceState = sourceReadiness({ ...d, firstSeenAt: event.created_at }, current)
     if (sourceState === 'superseded') {
-      // Hand off only to an already durable event for the newer revision. An
-      // intermediate export is not a delivery; its successor owns all effects.
+      // Identity survives a rename; the old path must not hide a durable newer
+      // revision. Still require one live successor at the current eligible path
+      // in this same project, not a retired event or a move to another project.
       const { data: successors, error: successorError } = await sb.from('dropbox_event_inbox')
-        .select('id').eq('event_type', 'frameio_delivery').neq('id', event.id)
-        .contains('payload', { path: d.path, dropboxId: d.dropboxId, rev: current.rev }).limit(2)
+        .select('id, payload').eq('event_type', 'frameio_delivery').neq('id', event.id)
+        .is('retired_at', null)
+        .contains('payload', { dropboxId: d.dropboxId, rev: current.rev }).limit(2)
       if (successorError) throw successorError
-      if (successors?.length === 1) throw new DropboxEventSuperseded({
-        outcome: 'superseded_before_upload', successor_event_id: successors[0].id,
-        successor_rev: current.rev, resolved_at: new Date().toISOString(),
-        reason: 'Source changed before upload. A durable successor event owns the newer revision; no upload, share, notification or celebration performed for this revision.',
-      })
+      const currentRoute = typeof current.path_display === 'string' &&
+        typeof current.rev === 'string' && /^[0-9a-f]{9,}$/.test(current.rev) &&
+        Number.isSafeInteger(current.size) && current.size > 0
+        ? classifyDropboxEntry({
+          path_display: current.path_display, path_lower: current.path_display.toLowerCase(),
+          name: current.name, tag: current['.tag'], id: current.id, rev: current.rev, size: current.size,
+        }) : null
+      if (successors?.length === 1 && currentRoute?.event_type === 'frameio_delivery') {
+        const successor = asJsonRecord(successors[0].payload)
+        const routeMatches = ['path', 'name', 'safeName', 'subfolder', 'year', 'dropboxId', 'rev']
+          .every(key => successor[key] === currentRoute.payload[key]) &&
+          (successor.sizeBytes === undefined || successor.sizeBytes === current.size)
+        const currentProject = routeMatches
+          ? await lookupDropboxProject(String(currentRoute.payload.safeName)) : null
+        if (currentProject?.id === project.id) throw new DropboxEventSuperseded({
+          outcome: 'superseded_before_upload', successor_event_id: successors[0].id,
+          successor_rev: current.rev, resolved_at: new Date().toISOString(),
+          reason: 'Source changed before upload. A durable successor event owns the newer revision; no upload, share, notification or celebration performed for this revision.',
+        })
+      }
       deferFrameioProcessing(event.created_at, 'Dropbox source changed; waiting for its durable successor event; inbox will retry')
     }
     if (sourceState !== 'ready') {

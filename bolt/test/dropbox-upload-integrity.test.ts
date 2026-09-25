@@ -22,6 +22,11 @@ let actualFile: Record<string, unknown>
 let leaseValid: boolean
 let retiredRevision: string | null
 let retirementReadError: boolean
+let sourcePath: string
+let successorRows: Array<{ id: string; payload: Record<string, unknown>; retired_at: string | null }> | null
+let successorReadError: boolean
+let currentProjectId: string | null
+let currentProjectAliasOnly: boolean
 const writes: Array<{ table: string; value: Record<string, unknown> }> = []
 const queries: Array<{ table: string; filters: unknown[][] }> = []
 function json(body: unknown) { return new Response(JSON.stringify(body)) }
@@ -31,30 +36,45 @@ beforeEach(() => {
   vi.stubEnv('FRAMEIO_ACCOUNT_ID', 'account'); vi.stubGlobal('fetch', mocks.fetch)
   prior = { ...transfer }; sourceRev = delivery.rev; uploadComplete = true; leaseValid = true
   retiredRevision = null; retirementReadError = false
+  sourcePath = delivery.path; successorRows = null; successorReadError = false; currentProjectId = 'project'
+  currentProjectAliasOnly = false
   actualFile = { id: 'file', parent_id: 'folder', project_id: 'frame-project', file_size: 123, media_type: 'video/mp4', status: 'transcoding' }
   mocks.from.mockImplementation((table: string) => {
     let mutation = false
     const filters: unknown[][] = []; queries.push({ table, filters })
     const retirementQuery = () => filters.some(f => f[0] === 'not' && f[1] === 'retired_at')
-    const result = () => ({ error: retirementQuery() && retirementReadError ? { message: 'unavailable' } : null, data: mutation ? (leaseValid ? { ...transfer, id: table === 'dropbox_event_inbox' ? 'event' : 'transfer' } : null)
-      : table === 'projects' ? { id: 'project', name: 'MRA', external_links: { frameio_id: 'frame-project' }, external_ids: {} }
+    const projectResult = () => {
+      const safeNameFilter = filters.find(f => f[0] === 'filter' && f[1] === 'external_ids->>dropbox_safe_name')
+      if (currentProjectAliasOnly && safeNameFilter && safeNameFilter[3] !== delivery.safeName) return null
+      const id = safeNameFilter?.[3] === delivery.safeName ? 'project' : currentProjectId
+      return id ? { id, name: 'MRA', external_links: { frameio_id: 'frame-project' }, external_ids: {} } : null
+    }
+    const successors = () => (successorRows ?? [{ id: 'successor', retired_at: null, payload: {
+      ...delivery, path: sourcePath, name: sourcePath.split('/01_Client Progress/')[1], rev: sourceRev,
+    } }]).filter(row => filters.every(([op, key, value]) => {
+      if (op === 'contains' && key === 'payload') return Object.entries(value as Record<string, unknown>).every(([k, v]) => row.payload[k] === v)
+      if (op === 'is' && key === 'retired_at') return row.retired_at === value
+      return true
+    }))
+    const result = () => ({ error: (retirementQuery() && retirementReadError) || (table === 'dropbox_event_inbox' && !mutation && successorReadError) ? { message: 'unavailable' } : null, data: mutation ? (leaseValid ? { ...transfer, id: table === 'dropbox_event_inbox' ? 'event' : 'transfer' } : null)
+      : table === 'projects' ? projectResult()
         : table === 'frameio_delivery_transfers' ? retirementQuery()
           ? (retiredRevision && filters.some(f => f[0] === 'eq' && f[1] === 'dropbox_rev' && f[2] === retiredRevision) ? { id: 'retired' } : null)
-          : prior : [{ id: 'successor' }] })
+          : prior : successors() })
     const query = {
       then: <T>(resolve: (value: ReturnType<typeof result>) => T) => Promise.resolve(result()).then(resolve),
-      select: vi.fn(), eq: vi.fn(), neq: vi.fn(), not: vi.fn(), filter: vi.fn(), contains: vi.fn(), limit: vi.fn(), maybeSingle: vi.fn(), single: vi.fn(),
+      select: vi.fn(), eq: vi.fn(), neq: vi.fn(), is: vi.fn(), not: vi.fn(), filter: vi.fn(), contains: vi.fn(), limit: vi.fn(), maybeSingle: vi.fn(), single: vi.fn(),
       update: vi.fn((value: Record<string, unknown>) => { mutation = true; writes.push({ table, value }); return query }),
       insert: vi.fn((value: Record<string, unknown>) => { mutation = true; writes.push({ table, value }); return query }),
     }
-    for (const name of ['select', 'eq', 'neq', 'not', 'filter', 'contains', 'limit', 'maybeSingle', 'single'] as const) {
+    for (const name of ['select', 'eq', 'neq', 'is', 'not', 'filter', 'contains', 'limit', 'maybeSingle', 'single'] as const) {
       query[name].mockImplementation((...args: unknown[]) => { filters.push([name, ...args]); return query })
     }
     return query
   })
   mocks.fetch.mockImplementation(async (url: string, options: RequestInit = {}) => {
     if (url === 'https://uc123.dl.dropboxusercontent.com/file' && options.method === 'GET') return new Response(new Uint8Array(123), { headers: { 'content-type': 'video/mp4', 'content-length': '123' } })
-    const metadata = { id: delivery.dropboxId, rev: sourceRev, size: 123, server_modified: '2026-09-22T19:00:00Z' }
+    const metadata = { '.tag': 'file', id: delivery.dropboxId, rev: sourceRev, size: 123, path_display: sourcePath, server_modified: '2026-09-22T19:00:00Z' }
     if (url.endsWith('/files/get_metadata')) return json(metadata)
     if (url.endsWith('/files/get_temporary_link')) return json({ metadata, link: 'https://uc123.dl.dropboxusercontent.com/file' })
     if (url.endsWith('/projects/frame-project')) return json({ data: { root_folder_id: 'root' } })
@@ -69,6 +89,71 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.unstubAllEnvs() })
 
 describe('upload pipeline integrity boundary', () => {
+  it('hands a renamed revision to its durable successor without uploading or notifying', async () => {
+    prior = null; sourceRev = 'abcdef99999'; sourcePath = delivery.path.replace('video.mp4', 'renamed.mp4')
+    mocks.rpc.mockImplementation(async (name: string) => ({ error: null, data: name === 'claim_dropbox_events' ? [{ ...event }] : true }))
+    expect(await drainDropboxInbox(app, { maxBatches: 1 })).toMatchObject({ completed: 1, deferred: 0, failed: 0 })
+    expect(writes[0]).toMatchObject({ value: { payload: { automatic_resolution: { successor_event_id: 'successor' } } } })
+    expect(mocks.fetch.mock.calls.some(([url]) => url.endsWith('/remote_upload'))).toBe(false)
+    expect(mocks.message).not.toHaveBeenCalled()
+    expect(queries.find(q => q.table === 'dropbox_event_inbox')?.filters).toContainEqual(['is', 'retired_at', null])
+  })
+  it('accepts a renamed project alias and a legacy successor without size evidence', async () => {
+    prior = null; sourceRev = 'abcdef99999'; currentProjectAliasOnly = true
+    sourcePath = delivery.path.replace(delivery.safeName, '2629_Microsoft_MRA_Renamed')
+    const legacy: Record<string, unknown> = { ...delivery }
+    delete legacy.sizeBytes
+    successorRows = [{ id: 'successor', retired_at: null, payload: {
+      ...legacy, rev: sourceRev, path: sourcePath, safeName: '2629_Microsoft_MRA_Renamed',
+    } }]
+    mocks.rpc.mockImplementation(async (name: string) => ({ error: null, data: name === 'claim_dropbox_events' ? [{ ...event }] : true }))
+    expect(await drainDropboxInbox(app, { maxBatches: 1 })).toMatchObject({ completed: 1, deferred: 0 })
+    expect(queries.some(q => q.table === 'projects' && q.filters.some(f => f[0] === 'contains'))).toBe(true)
+    expect(mocks.message).not.toHaveBeenCalled()
+    expect(mocks.fetch.mock.calls.some(([url]) => url.endsWith('/remote_upload'))).toBe(false)
+  })
+  it.each(['missing', 'ambiguous', 'retired', 'moved out', 'wrong revision', 'stale path', 'cross project',
+    'unknown project', 'wrong size', 'wrong route', 'missing current path', 'denied file'])('does not consume an unproven successor: %s', async (kind) => {
+    prior = null; sourceRev = 'abcdef99999'
+    const candidate = { id: 'successor', payload: { ...delivery, rev: sourceRev }, retired_at: null as string | null }
+    successorRows = [candidate]
+    if (kind === 'missing') successorRows = []
+    if (kind === 'ambiguous') successorRows.push({ ...candidate, id: 'second' })
+    if (kind === 'retired') candidate.retired_at = '2026-09-22T19:00:00Z'
+    if (kind === 'moved out') sourcePath = delivery.path.replace('09_Outgoing/01_Client Progress', '07_AE')
+    if (kind === 'wrong revision') candidate.payload.rev = 'other'
+    if (kind === 'stale path') sourcePath = delivery.path.replace('video.mp4', 'elsewhere.mp4')
+    if (kind === 'cross project' || kind === 'unknown project') {
+      sourcePath = delivery.path.replace(delivery.safeName, '2636_Microsoft_CCAI')
+      currentProjectId = kind === 'cross project' ? 'other-project' : null
+      candidate.payload.path = sourcePath; candidate.payload.safeName = '2636_Microsoft_CCAI'
+    }
+    if (kind === 'wrong size') candidate.payload.sizeBytes = 456
+    if (kind === 'wrong route') candidate.payload.subfolder = '02_Delivery'
+    if (kind === 'missing current path') sourcePath = ''
+    if (kind === 'denied file') {
+      sourcePath = delivery.path.replace('video.mp4', 'audio.aac')
+      candidate.payload.path = sourcePath; candidate.payload.name = 'audio.aac'
+    }
+    await expect(handleNewDelivery(app, { ...delivery }, { ...event })).rejects.toBeInstanceOf(DropboxEventDeferred)
+    expect(writes).toEqual([])
+    expect(mocks.message).not.toHaveBeenCalled()
+    expect(mocks.fetch.mock.calls.some(([url]) => url.endsWith('/remote_upload'))).toBe(false)
+  })
+  it('propagates successor lookup errors without completing or uploading', async () => {
+    prior = null; sourceRev = 'abcdef99999'; successorReadError = true
+    await expect(handleNewDelivery(app, { ...delivery }, { ...event })).rejects.toMatchObject({ message: 'unavailable' })
+    expect(writes).toEqual([])
+    expect(mocks.message).not.toHaveBeenCalled()
+  })
+  it('does not complete a superseded event after losing the audit checkpoint lease', async () => {
+    prior = null; sourceRev = 'abcdef99999'; leaseValid = false
+    mocks.rpc.mockImplementation(async (name: string) => ({ error: null, data: name === 'claim_dropbox_events' ? [{ ...event }] : true }))
+    await expect(drainDropboxInbox(app, { maxBatches: 1 })).rejects.toThrow(/audit checkpoint failed or lease lost/)
+    expect(mocks.rpc).not.toHaveBeenCalledWith('complete_dropbox_event', expect.anything())
+    expect(mocks.message).not.toHaveBeenCalled()
+    expect(mocks.fetch.mock.calls.some(([url]) => url.endsWith('/remote_upload'))).toBe(false)
+  })
   it('fences an exact retired revision before any provider call or notification', async () => {
     retiredRevision = delivery.rev
     mocks.rpc.mockImplementation(async (name: string) => ({ error: null, data: name === 'claim_dropbox_events' ? [{ ...event }] : true }))
