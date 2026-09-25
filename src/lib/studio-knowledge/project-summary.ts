@@ -69,15 +69,36 @@ export function composeProjectSummaryText(p: ProjectSummaryInput): { title: stri
  * Upsert a single project's summary doc into project_documents.
  */
 import { upsertDocument } from '../rag/ingest'
+import type { IngestOptions } from '../rag/ingest'
+
+/** A deterministic allowlist, not an LLM asked to redact financial source text. */
+export function teamProjectSummary(p: ProjectSummaryInput): IngestOptions {
+  const title = `Project ${p.project_code || '—'} · ${p.client || '—'} · ${p.name || '(untitled project)'}`
+  const fields = [
+    ['Status', p.status], ['Type', p.project_type], ['Started', p.start_date],
+    ['Target delivery', p.target_delivery], ['Producer (Slack user)', p.project_manager_slack_id],
+  ]
+  return {
+    workspaceId: p.workspace_id, projectId: p.id,
+    docType: 'project_summary_safe', visibilityTier: 'team', title,
+    content: [`# ${title}`, ...fields.filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`)].join('\n'),
+    metadata: { client: p.client, project_code: p.project_code, status: p.status, generator: 'structured-team-safe-v1' },
+  }
+}
+
+export async function embedTeamProjectSummary(p: ProjectSummaryInput): Promise<{ documentId: string }> {
+  return upsertDocument(teamProjectSummary(p))
+}
+
 export async function embedProjectSummary(p: ProjectSummaryInput): Promise<{ documentId: string }> {
   const { title, content } = composeProjectSummaryText(p)
-  return upsertDocument({
+  const result = await upsertDocument({
     workspaceId: p.workspace_id,
     projectId: p.id,
     docType: 'project_summary',
     title,
     content,
-    visibilityTier: 'team',
+    visibilityTier: 'founder',
     metadata: {
       client: p.client,
       project_code: p.project_code,
@@ -87,6 +108,8 @@ export async function embedProjectSummary(p: ProjectSummaryInput): Promise<{ doc
       project_manager_slack_id: p.project_manager_slack_id,
     },
   })
+  await embedTeamProjectSummary(p)
+  return result
 }
 
 /**
@@ -105,10 +128,10 @@ export async function embedAllProjects(workspaceId: string): Promise<{ embedded:
   let failed = 0
   for (const p of projects || []) {
     try {
-      await embedProjectSummary(p as any)
+      await embedProjectSummary(p as ProjectSummaryInput)
       embedded++
-    } catch (err: any) {
-      console.error(`[studio-knowledge] embed failed for project ${p.id}: ${err.message}`)
+    } catch (err) {
+      console.error(`[studio-knowledge] embed failed for project ${p.id}: ${err instanceof Error ? err.message : 'unknown error'}`)
       failed++
     }
   }

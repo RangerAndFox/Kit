@@ -6,7 +6,7 @@ Owner: Codex implementation. User authorized the complete independent-audit reme
 
 Kit retains pull requests, eleven required automated checks, up-to-date branches, no force-push, and no branch deletion. The owner-approved Kit-only exception removes mandatory human/independent-review approval; other repositories are unchanged. Never remove the automated checks to ship a fix.
 
-## In progress on `codex/full-audit-remediation`
+## Phase 1 — live via PR #196 / 6fab091
 
 | Audit item | Work / remaining verification |
 | --- | --- |
@@ -51,6 +51,16 @@ The 24 remaining records for 2631/2633/2636 have not been declared delivered by 
 - Full initial suites: 996 Bolt / 910 app tests. Actual SQL migration executed in isolated PGlite with vector extension: NULL scope, cross-workspace insert, parent workspace reassignment, anon access all rejected; valid scoped retrieval and grant succeed.
 - Production build succeeds. Lint ratchet improves to 1253 errors / 87 warnings (stock debt, not a clean lint result).
 - Production read at 16:00 UTC: Behance/ElevenLabs succeeds, monitoring configuration recovered; only historical Dropbox inbox alert remains. No retirement or successful-upload claim was made for the 24 unresolved records.
-- No changes from this branch have been deployed yet.
+- Phase 1 deployed to Railway and Vercel at 16:20 UTC, both verified SHA 6fab091. Railway SUCCESS, Vercel READY; live bot health confirms Socket Mode connected with zero consecutive failures.
 - Phase 1 migration applied at 16:09 UTC (production version 20260925160953); member constraint validated, zero mismatches, anon function execution denied. Local filename aligned to the actual production ledger. App rollout still pending final PR checks.
 - Live retrieval verification caught pgvector operator resolution: production hosts the extension in `extensions`, not `public`. Follow-up migration 20260925161111 fixes the pinned search path. Test fixture now uses the real extension schema. Live NULL-workspace rejection and empty-scope query both verified after repair; no records changed.
+
+## Phase 2 — billing integrity and newly discovered summary privacy
+
+- PRD-6: stable staff-scoped ad-hoc intents, durable database ownership, pre-POST paginated Harvest reconciliation, and explicit already-logged receipts. Ambiguous writes retain a hold: no automatic resend. Scheduled markers remain compatible with pre-deploy cards. Content-only reconciliation requires a unique staff/Harvest mapping; shared freelancer buckets use exact per-artist intent markers only. Identical additional sessions need distinguishing notes.
+- Additional security finding: both summary generators exposed budgets/SOW/private prose as team-visible knowledge. Production contained 271 originals, 70 with financial indicators. Migration 20260925161544 restricts all originals to founder and enforces the restriction for old writers. Verified 271 protected / zero unrestricted originals; no content deleted. Authorized admin/producer status-budget tools remain available. New team-safe derivatives use only structured operational fields, never freeform source text or financial metadata.
+- PERF-8: nightly metadata queries scoped to the bounded current workspace/project batch, explicitly paginated and fail closed at 10,000 rows instead of silently truncating. Missing safe derivative forces regeneration.
+- PERF-4/5/10: corrected typecheck claims, stale migration/watcher findings, runner coverage, and dependency prerequisites. Historical architecture audit preserved with a dated resolution addendum.
+- Billing migration 20260925162518 applied and verified empty, RLS enabled, anon execution denied. No real hours written during tests.
+- Validation: 1,000 Bolt tests; 921 app tests; root/Bolt/tools typechecks pass. Actual SQL fixtures cover claim ownership, conflicting receipts, rejection recovery, role denial, historical restriction and old-writer containment.
+- Remaining full-audit items above are still open unless explicitly marked implemented; a successful batch is not a claim that the full audit is finished.
