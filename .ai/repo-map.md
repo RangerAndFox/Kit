@@ -36,9 +36,9 @@ Confidence: **V** = Verified in repo, **?** = Needs verification.
 - **Two package roots.** Root `package.json` (`kit-app`, Next.js) and
   `bolt/package.json` (`kit-bolt`, ESM, `tsx`) have separate dependency trees
   and different TypeScript targets (ES2017 vs ES2022). *(Verified.)*
-- **Migration numbering collides.** Several prefixes are reused
-  (`032`, `033`, `034`, `035` each appear on two files). Confirm ordering by
-  reading filenames before adding a migration. *(Verified — see
-  `.ai/audits/architecture.md`.)*
+- **Migration history is timestamp ordered.** The squashed production baseline,
+  immutable historical markers, and integrity ledger are checked by
+  `npm run check:migrations`. The former 032–035 collision finding is resolved
+  (verified 2026-09-25); do not renumber historical migrations.
 - **Top-level `agents/`, `docs/`, `scripts/`, `public/`** exist but were not
   inspected this sprint. *(Needs verification before relying on them.)*

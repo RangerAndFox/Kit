@@ -34,8 +34,9 @@ mechanism in code before assuming full compliance.
 6. **One canonical owner per runtime responsibility.** Each externally
    observable job (a scan, a notification, a webhook reaction) has exactly one
    authoritative producer. Multiple observers of the same source is a defect.
-   *(Currently violated candidate: Dropbox `/production` — Decision required,
-   see `.ai/audits/architecture.md`.)*
+   *(Verified 2026-09-25: Railway watches production outgoing/render inputs;
+   Vercel specs watches specs; Delivery-Queue uses a separate root. Filters and
+   cursor ownership are disjoint. Multiple watchers alone do not imply overlap.)*
 7. **Recurring work is proportional to new activity, not total history.**
    Scans, sweeps, and cron jobs must bound their work to what changed since the
    last cursor, never re-process all history each run.
@@ -102,8 +103,9 @@ mechanism in code before assuming full compliance.
     write; release is holder-qualified; workflow external calls are timeout-
     bounded. *(Partially verified — migration 056 (durability folded in) + the
     `src/lib/project-control/*` + agent reconcilers are unit-tested; the Bolt
-    wiring in `bolt/src/handlers/interactions.ts` is `@ts-nocheck` and its live
-    Slack/Supabase paths are NOT exercised by tests. Do not mark fully Verified
+    wiring in `bolt/src/handlers/interactions.ts` type-checks, but its live
+    Slack/Supabase paths are NOT exercised by tests. The separate
+    `src/lib/delivery/spec-intake-store.ts` still uses `@ts-nocheck`. Do not mark fully Verified
     until the Bolt orchestration boundary has production-path coverage.)*
 
 16. **Experimental evidence has one structured owner; rendered artifacts are

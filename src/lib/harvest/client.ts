@@ -8,6 +8,13 @@
 
 import { rankProjects } from './search'
 import { studioToday } from '../time/studio-date'
+import { guardedTimeWrite, timeIntentStore, type TimeIntentStore } from './time-intents'
+
+class HarvestPostError extends Error {
+  constructor(readonly status: number, path: string, body: string) {
+    super(`Harvest POST ${path}: ${status} ${body}`)
+  }
+}
 
 const BASE_URL = 'https://api.harvestapp.com/v2'
 
@@ -73,7 +80,7 @@ async function harvestPost(path: string, body: Record<string, unknown>): Promise
   })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
-    throw new Error(`Harvest POST ${path}: ${res.status} ${text}`)
+    throw new HarvestPostError(res.status, path, text)
   }
   return res.json()
 }
@@ -153,6 +160,8 @@ export interface HarvestUser {
 }
 
 export interface HarvestTimeEntry {
+  /** Provider receipt reused; no additional billable entry was created. */
+  reused?: boolean
   id: number
   project: { id: number; name: string }
   task: { id: number; name: string }
@@ -513,8 +522,11 @@ export async function createTimeEntry(opts: {
   userId?: number // if attributing to a specific user
   /** Stable caller intent. Added to notes and reconciled after ambiguous POSTs. */
   idempotencyKey?: string
-}): Promise<HarvestTimeEntry> {
+  /** Ad-hoc resend guard, including legacy markers/manual entries. */
+  dedupeContent?: boolean
+}, dependencies?: { intentStore: TimeIntentStore }): Promise<HarvestTimeEntry> {
   const marker = opts.idempotencyKey ? `[Kit:${opts.idempotencyKey}]` : ''
+  if (marker && !opts.userId) throw new Error('Idempotent time entries require an attributed Harvest user')
   const body: Record<string, unknown> = {
     project_id: opts.projectId,
     task_id: opts.taskId,
@@ -535,43 +547,62 @@ export async function createTimeEntry(opts: {
     notes: data.notes || '',
   })
 
-  const reconcile = async (): Promise<HarvestTimeEntry | null> => {
+  const reconcile = async (attempts: number): Promise<HarvestTimeEntry | null> => {
     if (!marker || !opts.userId) return null
     const spentDate = String(body.spent_date)
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const data = await harvestGet('/time_entries', {
-        user_id: String(opts.userId), from: spentDate, to: spentDate, per_page: '100',
-      })
-      const match = (data.time_entries || []).find((entry: any) => String(entry.notes || '').includes(marker))
-      if (match) return mapEntry(match)
-      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)))
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      let page = 1
+      const visited = new Set<number>()
+      const matches: HarvestTimeEntry[] = []
+      while (page) {
+        if (visited.has(page) || visited.size >= 20) throw new Error('Harvest reconciliation pagination incomplete; no write permitted')
+        visited.add(page)
+        const data = await harvestGet('/time_entries', {
+          user_id: String(opts.userId), from: spentDate, to: spentDate, per_page: '100', page: String(page),
+        })
+        if (!Array.isArray(data.time_entries)) throw new Error('Harvest reconciliation response was invalid')
+        for (const entry of data.time_entries) {
+          const sameFields = entry.user?.id === opts.userId && entry.project?.id === opts.projectId && entry.task?.id === opts.taskId && entry.spent_date === spentDate && Number(entry.hours) === opts.hours
+          const notes = (value: string) => value.replace(/\[Kit:[^\]]+\]/g, '').trim().replace(/\s+/g, ' ')
+          const matchesMarker = String(entry.notes || '').includes(marker)
+          const matchesContent = opts.dedupeContent && sameFields && notes(String(entry.notes || '')) === notes(opts.notes || '')
+          if (!matchesMarker && !matchesContent) continue
+          if (!sameFields) {
+            throw new Error('Harvest entry was modified after logging; review it before adding hours')
+          }
+          matches.push(mapEntry(entry))
+        }
+        page = data.next_page == null ? 0 : Number(data.next_page)
+        if (!Number.isSafeInteger(page) || page < 0) throw new Error('Invalid Harvest next page')
+      }
+      if (matches.length > 1) throw new Error('Multiple Harvest receipts match this entry; admin review required')
+      if (matches.length === 1) return matches[0]
+      if (attempt < attempts - 1) await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)))
     }
     return null
   }
 
-  try {
-    return mapEntry(await harvestPost('/time_entries', body))
-  } catch (err: any) {
-    // The POST may have committed even when the response timed out. Reconcile
-    // the stable intent marker before any retry so billable time is never
-    // duplicated by an unknown provider outcome.
-    const committed = await reconcile().catch(() => null)
-    if (committed) return committed
+  const post = async (): Promise<HarvestTimeEntry> => {
+    try {
+      return mapEntry(await harvestPost('/time_entries', body))
+    } catch (err) {
     // Harvest rejects entries for users not assigned to the project.
     // Self-heal: assign and retry once, so time logging never has
     // assignment friction (studio policy: everyone on every project).
-    if (!/assign/i.test(err?.message || '')) throw err
-    const userId = opts.userId ?? (await harvestGet('/users/me'))?.id
-    if (!userId) throw err
-    await assignUserToProject({ projectId: opts.projectId, userId })
-    try {
+      if (!(err instanceof HarvestPostError) || err.status !== 422 || !/assign/i.test(err.message)) throw err
+      const userId = opts.userId ?? (await harvestGet('/users/me'))?.id
+      if (!userId) throw err
+      await assignUserToProject({ projectId: opts.projectId, userId })
       return mapEntry(await harvestPost('/time_entries', body))
-    } catch (retryError) {
-      const retriedCommit = await reconcile().catch(() => null)
-      if (retriedCommit) return retriedCommit
-      throw retryError
     }
   }
+  if (!opts.idempotencyKey) return post()
+  return guardedTimeWrite({
+    store: dependencies?.intentStore ?? timeIntentStore(process.env.HARVEST_ACCOUNT_ID || '', opts.idempotencyKey),
+    lookup: reconcile,
+    post,
+    definitelyRejected: error => error instanceof HarvestPostError && [400, 401, 403, 404, 422, 429].includes(error.status),
+  })
 }
 
 /**

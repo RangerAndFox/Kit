@@ -7,7 +7,7 @@
  */
 
 import type { App } from '@slack/bolt'
-import { createHash } from 'node:crypto'
+import { checkinIntentKey } from './intent'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import {
   createTimeEntry,
@@ -177,6 +177,16 @@ export async function handleCheckinConfirm(opts: {
     return
   }
   const logged: HarvestTimeEntry[] = []
+  // Shared freelancer Harvest buckets must never dedupe one artist against
+  // another artist's same-sized session. Exact signed intent markers still
+  // reconcile safely; legacy/content matching requires a unique staff mapping.
+  let canMatchLegacyContent = false
+  if (checkin.origin === 'adhoc') {
+    const { data: mappedStaff, error: mappingError } = await sb.from('staff')
+      .select('id').eq('harvest_user_id', staff.harvest_user_id).limit(2)
+    canMatchLegacyContent = !mappingError && mappedStaff?.length === 1 && mappedStaff[0].id === checkin.staff_id
+      && String(staff.harvest_user_id) !== process.env.HARVEST_FREELANCER_USER_ID
+  }
   const failures: string[] = []
   const failedEntries: any[] = []
 
@@ -201,13 +211,15 @@ export async function handleCheckinConfirm(opts: {
         spentDate: entry.spentDate || checkin.check_in_date,
         notes: entry.notes || undefined,
         userId: staff.harvest_user_id,
-        idempotencyKey: `${checkin.id}:${createHash('sha256').update(JSON.stringify({
+        dedupeContent: canMatchLegacyContent,
+        idempotencyKey: checkinIntentKey({
+          checkinId: checkin.id, origin: checkin.origin, staffId: checkin.staff_id, harvestUserId: staff.harvest_user_id,
           project: entry.harvest_project_id,
           task: task.id,
           date: entry.spentDate || checkin.check_in_date,
           hours: entry.hours,
           notes: entry.notes || '',
-        })).digest('hex').slice(0, 16)}`,
+        }),
       })
       logged.push(te)
     } catch (err: any) {
@@ -264,11 +276,13 @@ export async function handleCheckinConfirm(opts: {
   // Reply with the result — cite the Harvest entry id per line so the write
   // is verifiable in Harvest (heads off "did it actually log?" re-entry).
   const summary = logged
-    .map((e) => `• *${e.hours}h* — ${e.project.name} (${e.task.name}) — Harvest #${e.id}`)
+    .map((e) => `• ${e.spent_date} — *${e.hours}h* — ${e.project.name} (${e.task.name}) — Harvest #${e.id}${e.reused ? ' — already logged; not added again' : ''}`)
     .join('\n')
   let text: string
   if (failures.length === 0) {
-    text = `:white_check_mark: *Logged to Harvest* — you're all set, no need to enter these manually.\n${summary}`
+    text = logged.every(e => e.reused)
+      ? `:white_check_mark: *Already logged in Harvest* — nothing was added again.\n${summary}`
+      : `:white_check_mark: *Logged to Harvest* — you're all set, no need to enter these manually.\n${summary}`
   } else if (logged.length === 0 && !allEntryIds.length) {
     text = `:x: Couldn't log any entries:\n• ${failures.join('\n• ')}`
   } else if (logged.length === 0) {
@@ -278,6 +292,7 @@ export async function handleCheckinConfirm(opts: {
   } else {
     text = `:large_yellow_circle: Partially logged.\n*Logged:*\n${summary}\n\n*Skipped:*\n• ${failures.join('\n• ')}`
   }
+  if (logged.some(e => e.reused)) text += '\nFor a genuinely separate work session, send a new entry with a distinguishing note (for example, “additional afternoon session”).'
   if (failures.length && allEntryIds.length) {
     await app.client.chat.postMessage({
       channel: checkin.dm_channel_id || '',

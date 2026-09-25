@@ -65,7 +65,16 @@ files. Subsystem internals were not read.
 - **Confidence:** **Verified**. Whether real breakage exists is **Needs
   verification**.
 
-## Open questions
+## 2026-09-25 verification addendum
+
+The historical findings above describe the original audit, not current state.
+Items 1 and 2 are closed: Dropbox observers have disjoint production/specs/
+Delivery-Queue filters and independently owned cursors; migrations now use a
+squashed, integrity-checked baseline and unique timestamps. `check:migrations`
+passes. Railway and Vercel both deploy main; revision parity was verified at
+6fab091 on 2026-09-25. Worker presence still needs independent runtime evidence.
+
+## Original open questions (see addendum for dispositions)
 
 - Canonical owner of Dropbox `/production` observation. *(Decision required.)*
 - Migration ordering authority and the collision-resolution convention.
