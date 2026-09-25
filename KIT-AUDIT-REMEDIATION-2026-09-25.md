@@ -53,3 +53,4 @@ The 24 remaining records for 2631/2633/2636 have not been declared delivered by 
 - Production read at 16:00 UTC: Behance/ElevenLabs succeeds, monitoring configuration recovered; only historical Dropbox inbox alert remains. No retirement or successful-upload claim was made for the 24 unresolved records.
 - No changes from this branch have been deployed yet.
 - Phase 1 migration applied at 16:09 UTC (production version 20260925160953); member constraint validated, zero mismatches, anon function execution denied. Local filename aligned to the actual production ledger. App rollout still pending final PR checks.
+- Live retrieval verification caught pgvector operator resolution: production hosts the extension in `extensions`, not `public`. Follow-up migration 20260925161111 fixes the pinned search path. Test fixture now uses the real extension schema. Live NULL-workspace rejection and empty-scope query both verified after repair; no records changed.

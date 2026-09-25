@@ -10,14 +10,17 @@ test('actual audit migration rejects unscoped retrieval and cross-workspace memb
   const b = '22222222-2222-4222-8222-222222222222'
   const member = '33333333-3333-4333-8333-333333333333'
   try {
-    await db.exec(`create extension vector;
+    await db.exec(`create schema extensions; create extension vector with schema extensions;
+      set search_path=public,extensions;
       create role anon; create role authenticated; create role service_role bypassrls;
+      grant usage on schema extensions to service_role,anon,authenticated;
       alter default privileges in schema public grant all on tables to service_role;
       create table team_members(id uuid primary key, workspace_id uuid not null);
       create table project_access(workspace_id uuid not null, team_member_id uuid not null);
       create table project_documents(id uuid primary key, title text, content text, doc_type text,
         source_url text, project_id uuid, workspace_id uuid, metadata jsonb, visibility_tier text, embedding vector(3));`)
     await db.exec(await readFile(new URL('../supabase/migrations/20260925160953_audit_workspace_boundaries.sql', import.meta.url), 'utf8'))
+    await db.exec(await readFile(new URL('../supabase/migrations/20260925161111_audit_vector_operator_scope.sql', import.meta.url), 'utf8'))
     await db.query('insert into team_members values($1,$2)', [member, a])
     await db.query("insert into project_documents(id,title,workspace_id,visibility_tier,embedding) values ($1,'A',$1,'team','[1,0,0]'),($2,'B',$2,'team','[1,0,0]')", [a,b])
     await db.exec('set role service_role')
