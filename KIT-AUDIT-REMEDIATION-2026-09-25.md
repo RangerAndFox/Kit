@@ -64,3 +64,14 @@ The 24 remaining records for 2631/2633/2636 have not been declared delivered by 
 - Billing migration 20260925162518 applied and verified empty, RLS enabled, anon execution denied. No real hours written during tests.
 - Validation: 1,000 Bolt tests; 921 app tests; root/Bolt/tools typechecks pass. Actual SQL fixtures cover claim ownership, conflicting receipts, rejection recovery, role denial, historical restriction and old-writer containment.
 - Remaining full-audit items above are still open unless explicitly marked implemented; a successful batch is not a claim that the full audit is finished.
+
+## Phase 3 — delivery durability and bounded discovery
+
+- REL-1/2/PERF-7: common delivery receipt ledger, atomic unique ownership, authenticated-bot metadata reconciliation, and checked render-job acknowledgment writes. Ambiguous posts never auto-repost; an unconfirmed receipt older than five minutes is visible in health. Terminal acknowledged render jobs are filtered in SQL before the limit; active candidates rotate oldest-first.
+- Caption notices now acknowledge the input only after the Slack receipt. Transient provider failures remain retryable; invalid input gets one acknowledged failure notice. Output generation remains overwrite-idempotent.
+- PERF-2: persisted, leased Delivery-Queue delta cursor, two discovery pages per tick, twenty pending stability checks with four-way provider concurrency. Discovery commits before the cursor checkpoint; initial backlog preserved. Size stability requires two polls. Missing files are retained as missing, never falsely marked notified. The other Dropbox observers/cursors are unchanged.
+- PERF-9: delivery notifications and updates share a bounded Slack transport; domain authorization and retry ownership remain with callers. Additional briefing bug: a five-page history cap no longer reports false absence and authorizes a duplicate send.
+- Actual SQL fixtures verify claim uniqueness, expired-worker fencing, receipt consistency, and anon denial. Production migrations 20260925163858/859 applied; both new ledgers verified pristine. No notifications or uploads were sent by verification.
+- Validation before final additions: 926 app tests, 1001 Bolt tests, all typechecks, lint ratchet 1233 errors/86 warnings (debt reduced, not zero). Focused render acknowledgment tests add two passing cases.
+- PERF-1 live model comparison is permission-blocked: the checker requires explicit approval to send Kit's existing internal prompt/tool schemas to its Anthropic account. No requests ran; model remains unchanged. User approval requested in this task.
+- DB advisor findings inspected: 26 unindexed FKs, tables generally tiny (largest estimated 130 rows); statistics reset 2026-03-30. No unused index was dropped solely from a zero counter.

@@ -11,70 +11,7 @@
  */
 
 import { createAdminClient } from '../supabase/admin'
-import { dropboxRpc } from '../dropbox/client'
-import { getSeenRowsByIds, insertFirstSightings } from './seen-files'
-
-const WATCH_PATH = '/Delivery-Queue'
-
-interface DropboxFileMetadata {
-  id: string
-  name: string
-  path_lower: string
-  path_display: string
-  size: number
-  '.tag': 'file' | 'folder' | 'deleted'
-  is_downloadable?: boolean
-}
-
-
-/**
- * Recursively list all files under WATCH_PATH. Returns only `.tag === 'file'`
- * entries, with `/delivery/` and `/output/` subfolders filtered out.
- */
-async function listDeliveryQueueFiles(): Promise<DropboxFileMetadata[]> {
-  const out: DropboxFileMetadata[] = []
-  let cursor: string | undefined
-  let response: any
-
-  // Initial call
-  try {
-    response = await dropboxRpc('/files/list_folder', {
-      path: WATCH_PATH,
-      recursive: true,
-      include_deleted: false,
-      include_non_downloadable_files: false,
-    })
-  } catch (err: any) {
-    // The queue folder may not exist yet (e.g. no render worker installed to
-    // create it). A missing watch folder means "nothing to scan" — return
-    // empty instead of throwing a path/not_found every cycle.
-    if (/not_found/i.test(String(err?.message))) return []
-    throw err
-  }
-  collectEntries(response, out)
-  cursor = response.has_more ? response.cursor : undefined
-
-  // Pagination
-  while (cursor) {
-    response = await dropboxRpc('/files/list_folder/continue', { cursor })
-    collectEntries(response, out)
-    cursor = response.has_more ? response.cursor : undefined
-  }
-
-  return out
-}
-
-function collectEntries(response: any, out: DropboxFileMetadata[]): void {
-  for (const entry of response.entries || []) {
-    if (entry['.tag'] !== 'file') continue
-    if (!entry.path_lower) continue
-    // Filter outputs (anything under /delivery/ or /output/ subfolders)
-    if (/\/(delivery|output)\//i.test(entry.path_lower)) continue
-    // Filter scratch / temp files
-    if (/\.tmp$|\.part$|\.crdownload$|~\$/i.test(entry.name)) continue
-    out.push(entry)
-  }
-}
+import { queueScanIO, runQueueScan } from './queue-scan'
 
 export interface NewFileNotification {
   dropbox_id: string
@@ -82,54 +19,9 @@ export interface NewFileNotification {
   size_bytes: number
 }
 
-/**
- * One scan tick. Returns the list of newly-stable files that should be
- * notified about. Caller is responsible for posting Slack messages and
- * updating notified_at after a successful post.
- */
+/** Persisted delta discovery with a bounded, fairly rotated stability backlog. */
 export async function scanDeliveryQueue(): Promise<NewFileNotification[]> {
-  const sb = createAdminClient()
-  const liveFiles = await listDeliveryQueueFiles()
-  if (liveFiles.length === 0) return []
-
-  // Seen rows scoped to this scan's ids (the old select('*') walked the
-  // whole ever-growing table every minute), first sightings batched.
-  const seenById = await getSeenRowsByIds(liveFiles.map((f: any) => f.id))
-  await insertFirstSightings(
-    liveFiles
-      .filter((f: any) => !seenById[f.id])
-      .map((f: any) => ({ dropbox_id: f.id, path: f.path_display, size_bytes: f.size })),
-  )
-
-  const ready: NewFileNotification[] = []
-
-  for (const f of liveFiles) {
-    const prev = seenById[f.id]
-    if (!prev) continue // first sighting recorded above; stability check next tick
-
-    if (prev.notified_at) continue // already notified
-
-    if (prev.size_bytes === f.size) {
-      const newCount = (prev.stable_check_count || 0) + 1
-      if (newCount >= 2) {
-        // Stable — caller should notify, then mark
-        ready.push({ dropbox_id: f.id, path: f.path_display, size_bytes: f.size })
-      } else {
-        await sb
-          .from('seen_dropbox_files')
-          .update({ stable_check_count: newCount })
-          .eq('dropbox_id', f.id)
-      }
-    } else {
-      // Size changed — reset stability counter
-      await sb
-        .from('seen_dropbox_files')
-        .update({ size_bytes: f.size, stable_check_count: 1 })
-        .eq('dropbox_id', f.id)
-    }
-  }
-
-  return ready
+  return runQueueScan(queueScanIO())
 }
 
 /** Lowercase, letters+digits only — folder names vs project names/safe names. */

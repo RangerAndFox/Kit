@@ -12,6 +12,7 @@ import { dropboxRpc } from '../dropbox/client'
 import { frameioHeaders } from '../frameio/auth'
 import { createAdminClient } from '../supabase/admin'
 import { outboxDb } from '../control-center/outbox'
+import { assertNoStalledDeliveryReceipts } from '../slack/durable-delivery'
 import { listTranscriptFiles, driveTranscriptsFolderId } from '../integrations/drive-transcripts'
 import type { CheckResult, Status } from './diff'
 import { runHealthProbe as probe } from './probe'
@@ -25,6 +26,7 @@ import { getCronSpecs, RAILWAY_CRON_IDS, type CronRegistration } from './cron-sp
  */
 export async function runIntegrationProbes(): Promise<CheckResult[]> {
   const probes: Array<Promise<CheckResult>> = [
+    probe('delivery-notifications', 'Delivery notification receipts', assertNoStalledDeliveryReceipts),
     probe('control-outbox', 'Control requests and alerts', async (signal) => {
       const { data, error } = await outboxDb().from('kit_control_outbox').select('id,status,created_at')
         .neq('status', 'sent').order('created_at').limit(20).abortSignal(signal)

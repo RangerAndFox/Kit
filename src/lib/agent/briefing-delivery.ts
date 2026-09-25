@@ -190,6 +190,7 @@ async function reconcileDelivery(opts: {
       cursor = json.response_metadata?.next_cursor || ''
       if (!cursor) break
     }
+    if (cursor) return { outcome: 'unavailable', error: 'History reconciliation exceeded page budget' }
     return { outcome: 'absent' }
   } catch (e: any) {
     // Timeout / network — we did not complete the search.
