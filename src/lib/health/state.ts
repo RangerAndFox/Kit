@@ -8,6 +8,8 @@
 
 import { createAdminClient } from '../supabase/admin'
 import type { CheckResult, Status } from './diff'
+import { cronDefinition, getCronSpecs, parseRegistration, type CronRegistration } from './cron-specs'
+import type { Json } from '../../types/supabase'
 
 export interface HealthRow {
   key: string
@@ -56,6 +58,7 @@ export async function saveHealthState(
 }
 
 export interface HeartbeatState {
+  registration?: CronRegistration
   /** Newest successful completion (ISO), or null if it has attempted but never succeeded. */
   success: string | null
   /** Newest tick start (ISO), or null. Distinguishes "failing" from "not running". */
@@ -66,7 +69,8 @@ export interface HeartbeatState {
 export async function loadHeartbeats(): Promise<Record<string, HeartbeatState>> {
   const { data, error } = await createAdminClient()
     .from('cron_heartbeats')
-    .select('cron_id, last_success_at, last_attempt_at')
+    .select('cron_id, last_success_at, last_attempt_at, owner_runtime, enabled, schedule, enrolled_at')
+    .abortSignal(AbortSignal.timeout(3000))
   if (error) throw new Error(`loadHeartbeats: ${error.message}`)
   const out: Record<string, HeartbeatState> = {}
   for (const row of data || []) {
@@ -74,6 +78,7 @@ export async function loadHeartbeats(): Promise<Record<string, HeartbeatState>> 
     out[row.cron_id] = {
       success: row.last_success_at ?? null,
       attempt: row.last_attempt_at ?? null,
+      registration: parseRegistration(row.cron_id, row),
     }
   }
   return out
@@ -99,6 +104,7 @@ export async function getOrInitMonitorEpoch(now: Date = new Date()): Promise<Dat
     .from('cron_heartbeats')
     .select('last_success_at')
     .eq('cron_id', MONITOR_EPOCH_ID)
+    .abortSignal(AbortSignal.timeout(2000))
     .maybeSingle()
   if (existing.error) throw new Error(`getOrInitMonitorEpoch read: ${existing.error.message}`)
   if (existing.data?.last_success_at) return new Date(existing.data.last_success_at)
@@ -108,6 +114,7 @@ export async function getOrInitMonitorEpoch(now: Date = new Date()): Promise<Dat
     .from('cron_heartbeats')
     .upsert({ cron_id: MONITOR_EPOCH_ID, last_success_at: iso }, { onConflict: 'cron_id', ignoreDuplicates: true })
     .select('last_success_at')
+    .abortSignal(AbortSignal.timeout(2000))
     .maybeSingle()
   if (inserted.error) throw new Error(`getOrInitMonitorEpoch init: ${inserted.error.message}`)
   // If a racing writer won, re-read to get the persisted value.
@@ -116,9 +123,10 @@ export async function getOrInitMonitorEpoch(now: Date = new Date()): Promise<Dat
     .from('cron_heartbeats')
     .select('last_success_at')
     .eq('cron_id', MONITOR_EPOCH_ID)
+    .abortSignal(AbortSignal.timeout(2000))
     .maybeSingle()
   if (reread.error) throw new Error(`getOrInitMonitorEpoch reread: ${reread.error.message}`)
-  return reread.data?.last_success_at ? new Date(reread.data.last_success_at) : new Date(iso)
+  return reread.data?.last_success_at ? new Date(reread.data.last_success_at) : null
 }
 
 /**
@@ -126,22 +134,25 @@ export async function getOrInitMonitorEpoch(now: Date = new Date()): Promise<Dat
  * only `last_attempt_at`; a brand-new row's `last_success_at` stays null so an
  * attempt is never mistaken for a success. Best-effort — callers swallow errors.
  */
-export async function recordCronAttempt(cronId: string, now: Date = new Date()): Promise<void> {
-  const { error } = await createAdminClient()
-    .from('cron_heartbeats')
-    .upsert({ cron_id: cronId, last_attempt_at: now.toISOString() }, { onConflict: 'cron_id' })
-  if (error) throw new Error(`recordCronAttempt(${cronId}): ${error.message}`)
+async function writeCron(cronId: string, kind: 'register' | 'attempt' | 'success'): Promise<void> {
+  const definition = cronDefinition(cronId)
+  if (!definition) throw new Error('Unknown cron id')
+  const { error } = await createAdminClient().rpc('record_kit_cron', {
+    p_cron_id: cronId, p_runtime: definition.owner, p_enabled: definition.enabled,
+    p_schedule: definition.schedule as Json, p_kind: kind,
+  }).abortSignal(AbortSignal.timeout(2000))
+  if (error) throw new Error('Cron telemetry unavailable: ' + error.message)
 }
-
-/**
- * Stamp a cron's successful completion. A success is also an attempt, so both
- * timestamps advance. Best-effort: a heartbeat write must never fail the cron
- * that called it, so callers swallow errors.
- */
-export async function recordCronSuccess(cronId: string, now: Date = new Date()): Promise<void> {
-  const iso = now.toISOString()
-  const { error } = await createAdminClient()
-    .from('cron_heartbeats')
-    .upsert({ cron_id: cronId, last_success_at: iso, last_attempt_at: iso }, { onConflict: 'cron_id' })
-  if (error) throw new Error(`recordCronSuccess(${cronId}): ${error.message}`)
+export async function registerCronSchedules(owner: 'railway' | 'vercel'): Promise<void> {
+  // Preview dashboards may share a production database; they must not publish
+  // their environment's flags over the production watchdog registration.
+  if (owner === 'vercel' && process.env.VERCEL_ENV && process.env.VERCEL_ENV !== 'production') return
+  await Promise.all(Object.keys(getCronSpecs()).filter(id => cronDefinition(id)?.owner === owner)
+    .map(id => writeCron(id, 'register')))
+}
+export async function recordCronAttempt(cronId: string): Promise<void> {
+  await writeCron(cronId, 'attempt')
+}
+export async function recordCronSuccess(cronId: string): Promise<void> {
+  await writeCron(cronId, 'success')
 }

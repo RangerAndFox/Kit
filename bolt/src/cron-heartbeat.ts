@@ -10,18 +10,23 @@
  *
  * The split lets the watchdog distinguish "running but failing" (fresh attempt,
  * stale success) from "not running at all". Both are best-effort by contract: a
- * heartbeat write must NEVER throw into, fail, or delay the job it observes, so
- * errors are swallowed here.
+ * heartbeat write must NEVER throw into or fail the job it observes; each write
+ * has a two-second deadline and errors are swallowed here.
  *
  * TRUTHFULNESS RULE: only call stampCronSuccess where the job's own work has
  * actually completed — never after a wrapper (an inner `.catch`, `allSettled`)
  * that would resolve even when the pass threw. Per-item failures the job
  * deliberately swallows and tallies are not cron failures; an infra-level throw
  * (a failed initial query, etc.) rejects the job's promise and must skip the
- * success stamp. Ids must match `CRON_SPECS` in `src/lib/health/probes.ts`.
+ * success stamp. Ids must match `getCronSpecs` in `src/lib/health/cron-specs.ts`.
  */
 
-import { recordCronAttempt, recordCronSuccess } from '../../src/lib/health/state'
+import { recordCronAttempt, recordCronSuccess, registerCronSchedules } from '../../src/lib/health/state'
+
+export async function registerRailwayCronSchedules(): Promise<void> {
+  try { await registerCronSchedules('railway') }
+  catch { console.error('[cron-heartbeat] Railway schedule registration failed') }
+}
 
 export async function stampCronAttempt(cronId: string): Promise<void> {
   try {

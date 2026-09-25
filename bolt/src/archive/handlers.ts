@@ -10,7 +10,8 @@ import { findDeliveryVideos } from '../../../src/lib/archive/dropbox'
 import { claimArchiveJob, createArchiveJob, getArchiveJob, requeueArchiveJob, saveArchiveSlackMessage, updateArchiveJob } from '../../../src/lib/archive/store'
 import { runArchiveJob } from '../../../src/lib/archive/workflow'
 import type { ArchiveProjectSnapshot } from '../../../src/lib/archive/types'
-import { listUnsyncedBehanceDrafts, queueBehanceDraft, syncBehanceResultToArchive } from '../../../src/lib/archive/behance-store'
+import { acknowledgeBehanceSlack, listUnsyncedBehanceDrafts, queueBehanceDraft, syncBehanceResultToArchive } from '../../../src/lib/archive/behance-store'
+import { deliverBehanceUpdate } from '../../../src/lib/archive/behance-sync'
 
 const db = () => createAdminClient() as any
 
@@ -241,10 +242,14 @@ export async function reconcileBehanceDraftSlack(client: any): Promise<number> {
   let updatedCount = 0
   for (const row of pending) {
     try {
-      const archive = await syncBehanceResultToArchive(row)
-      if (archive?.slack_channel_id && archive?.slack_message_ts) {
-        await client.chat.update({ channel: archive.slack_channel_id, ts: archive.slack_message_ts, ...buildArchiveProgressCard(archive) })
-      }
+      await deliverBehanceUpdate({
+        prepare: () => syncBehanceResultToArchive(row),
+        deliver: async (archive) => {
+          if (!archive?.slack_channel_id || !archive?.slack_message_ts) throw new Error('Behance Slack destination missing')
+          await client.chat.update({ channel: archive.slack_channel_id, ts: archive.slack_message_ts, ...buildArchiveProgressCard(archive) })
+        },
+        acknowledge: () => acknowledgeBehanceSlack(row),
+      })
       updatedCount++
     } catch (error: any) {
       console.error(`[behance-sync] ${row.id}:`, error.message)

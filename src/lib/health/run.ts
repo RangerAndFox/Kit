@@ -5,7 +5,7 @@
  */
 
 import { runIntegrationProbes, checkCronFreshness } from './probes'
-import { loadHeartbeats, getOrInitMonitorEpoch } from './state'
+import { loadHeartbeats, getOrInitMonitorEpoch, registerCronSchedules } from './state'
 import type { CheckResult } from './diff'
 
 export async function runAllChecks(): Promise<CheckResult[]> {
@@ -15,8 +15,9 @@ export async function runAllChecks(): Promise<CheckResult[]> {
   // (fail toward actionable), never a fresh resettable window.
   const [integrations, heartbeats, epoch] = await Promise.all([
     runIntegrationProbes(),
-    loadHeartbeats().catch(() => ({})), // freshness is best-effort
+    registerCronSchedules('vercel').then(() => loadHeartbeats()).catch(() => null),
     getOrInitMonitorEpoch().catch(() => null),
   ])
+  if (!heartbeats) return [...integrations, { key: 'cron:telemetry', label: 'Cron monitoring', ok: false, detail: 'Heartbeat/configuration data unavailable; job outcomes unknown' }]
   return [...integrations, ...checkCronFreshness(heartbeats, new Date(), process.env, epoch ?? undefined)]
 }

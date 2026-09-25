@@ -20,6 +20,8 @@ let sourceRev: string
 let uploadComplete: boolean
 let actualFile: Record<string, unknown>
 let leaseValid: boolean
+let retiredRevision: string | null
+let retirementReadError: boolean
 const writes: Array<{ table: string; value: Record<string, unknown> }> = []
 const queries: Array<{ table: string; filters: unknown[][] }> = []
 function json(body: unknown) { return new Response(JSON.stringify(body)) }
@@ -28,20 +30,24 @@ beforeEach(() => {
   vi.setSystemTime(new Date('2026-09-22T19:10:00Z'))
   vi.stubEnv('FRAMEIO_ACCOUNT_ID', 'account'); vi.stubGlobal('fetch', mocks.fetch)
   prior = { ...transfer }; sourceRev = delivery.rev; uploadComplete = true; leaseValid = true
+  retiredRevision = null; retirementReadError = false
   actualFile = { id: 'file', parent_id: 'folder', project_id: 'frame-project', file_size: 123, media_type: 'video/mp4', status: 'transcoding' }
   mocks.from.mockImplementation((table: string) => {
     let mutation = false
     const filters: unknown[][] = []; queries.push({ table, filters })
-    const result = () => ({ error: null, data: mutation ? (leaseValid ? { ...transfer, id: table === 'dropbox_event_inbox' ? 'event' : 'transfer' } : null)
+    const retirementQuery = () => filters.some(f => f[0] === 'not' && f[1] === 'retired_at')
+    const result = () => ({ error: retirementQuery() && retirementReadError ? { message: 'unavailable' } : null, data: mutation ? (leaseValid ? { ...transfer, id: table === 'dropbox_event_inbox' ? 'event' : 'transfer' } : null)
       : table === 'projects' ? { id: 'project', name: 'MRA', external_links: { frameio_id: 'frame-project' }, external_ids: {} }
-        : table === 'frameio_delivery_transfers' ? prior : [{ id: 'successor' }] })
+        : table === 'frameio_delivery_transfers' ? retirementQuery()
+          ? (retiredRevision && filters.some(f => f[0] === 'eq' && f[1] === 'dropbox_rev' && f[2] === retiredRevision) ? { id: 'retired' } : null)
+          : prior : [{ id: 'successor' }] })
     const query = {
       then: <T>(resolve: (value: ReturnType<typeof result>) => T) => Promise.resolve(result()).then(resolve),
-      select: vi.fn(), eq: vi.fn(), neq: vi.fn(), filter: vi.fn(), contains: vi.fn(), limit: vi.fn(), maybeSingle: vi.fn(), single: vi.fn(),
+      select: vi.fn(), eq: vi.fn(), neq: vi.fn(), not: vi.fn(), filter: vi.fn(), contains: vi.fn(), limit: vi.fn(), maybeSingle: vi.fn(), single: vi.fn(),
       update: vi.fn((value: Record<string, unknown>) => { mutation = true; writes.push({ table, value }); return query }),
       insert: vi.fn((value: Record<string, unknown>) => { mutation = true; writes.push({ table, value }); return query }),
     }
-    for (const name of ['select', 'eq', 'neq', 'filter', 'contains', 'limit', 'maybeSingle', 'single'] as const) {
+    for (const name of ['select', 'eq', 'neq', 'not', 'filter', 'contains', 'limit', 'maybeSingle', 'single'] as const) {
       query[name].mockImplementation((...args: unknown[]) => { filters.push([name, ...args]); return query })
     }
     return query
@@ -63,6 +69,22 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.unstubAllEnvs() })
 
 describe('upload pipeline integrity boundary', () => {
+  it('fences an exact retired revision before any provider call or notification', async () => {
+    retiredRevision = delivery.rev
+    mocks.rpc.mockImplementation(async (name: string) => ({ error: null, data: name === 'claim_dropbox_events' ? [{ ...event }] : true }))
+    expect(await drainDropboxInbox(app, { maxBatches: 1 })).toMatchObject({ completed: 0, failed: 0 })
+    expect(writes[0]).toMatchObject({ table: 'dropbox_event_inbox', value: { retired_reason: 'Exact transfer revision was retired' } })
+    expect(mocks.rpc).not.toHaveBeenCalledWith('complete_dropbox_event', expect.anything())
+    expect(mocks.fetch).not.toHaveBeenCalled()
+    expect(mocks.message).not.toHaveBeenCalled()
+  })
+  it('keeps a later revision live and fails closed if the retirement lookup is unavailable', async () => {
+    retiredRevision = 'old-revision'
+    await expect(handleNewDelivery(app, { ...delivery }, { ...event })).rejects.toBeInstanceOf(DropboxEventDeferred)
+    mocks.fetch.mockClear(); retirementReadError = true
+    await expect(handleNewDelivery(app, { ...delivery }, { ...event })).rejects.toThrow(/retirement guard unavailable/)
+    expect(mocks.fetch).not.toHaveBeenCalled()
+  })
   it('never creates shares or sends messages for the observed empty JSON placeholder', async () => {
     actualFile = { ...actualFile, file_size: 0, media_type: 'application/json', status: 'transcoded' }
     await expect(handleNewDelivery(app, { ...delivery }, { ...event })).rejects.toThrow(/file size/)

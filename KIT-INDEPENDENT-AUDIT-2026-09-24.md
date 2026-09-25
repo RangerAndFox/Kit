@@ -1,5 +1,13 @@
 # Kit — Independent Code, Security & Production Setup Audit
 
+> Historical independent analysis, not a current release attestation. The later
+> heartbeat/transfer addendum contained claims corrected during Codex review:
+> ready siblings do not prove another revision delivered; Behance previously
+> acknowledged before Slack success; retirement required atomic transactions
+> and stronger grants. Use KIT-HEARTBEAT-DEPLOYMENT-REVIEW-2026-09-24.md and
+> KIT-DELIVERY-TRANSFER-RECONCILIATION-2026-09-24.md for the corrected release scope
+> and evidence. Unrelated original audit findings remain separate backlog work.
+
 **Date:** 2026-09-24
 **Auditor:** Independent senior engineering review (read-only)
 **Audited commit:** `871e0d5` — *"Preserve Dropbox rename aliases and verify actual media downloads (#192)"*

@@ -29,7 +29,7 @@ import {
   reconcilePendingProjectShares,
 } from './watchers/dropbox'
 import cron from 'node-cron'
-import { stampCronAttempt, stampCronSuccess } from './cron-heartbeat'
+import { stampCronAttempt, stampCronSuccess, registerRailwayCronSchedules } from './cron-heartbeat'
 import { sweepDailyReminders } from './checkins/reminder-delivery'
 import { nudgePendingCheckins } from './checkins/daily-hours'
 import { recoverMissedCheckinReplies } from './checkins/reply-recovery'
@@ -132,6 +132,9 @@ registerBrainApprovalHandlers(app)
 registerArchiveHandlers(app)
 registerProjectDeletionHandlers(app)
 registerOffboardingHandlers(app)
+// Publish actual runtime flags/timezone once at startup; timestamp enrollment is
+// persistent. Each subsequent attempt/success repairs a missed registration.
+void registerRailwayCronSchedules()
 
 // Reconcile studio-machine Behance draft results back into the private
 // producer DM. The worker never needs a Slack token.

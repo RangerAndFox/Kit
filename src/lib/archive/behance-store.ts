@@ -81,9 +81,13 @@ export async function syncBehanceResultToArchive(row: any): Promise<any> {
     },
   }
   const updated = await updateArchiveJob(archive.id, { results } as any)
-  const { error } = await db().from('behance_draft_jobs')
-    .update({ slack_synced_at: now(), updated_at: row.updated_at })
-    .eq('id', row.id)
-  if (error) throw new Error(`Behance sync mark failed: ${error.message}`)
   return updated
+}
+
+export async function acknowledgeBehanceSlack(row: { id: string; updated_at: string }): Promise<void> {
+  const { data, error } = await db().from('behance_draft_jobs')
+    .update({ slack_synced_at: row.updated_at })
+    .eq('id', row.id).eq('updated_at', row.updated_at).select('id').maybeSingle()
+  if (error) throw new Error(`Behance sync mark failed: ${error.message}`)
+  if (!data) throw new Error('Behance draft changed during Slack synchronization; retry latest version')
 }

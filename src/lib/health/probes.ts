@@ -15,7 +15,8 @@ import { outboxDb } from '../control-center/outbox'
 import { listTranscriptFiles, driveTranscriptsFolderId } from '../integrations/drive-transcripts'
 import type { CheckResult, Status } from './diff'
 import { runHealthProbe as probe } from './probe'
-import { type CronSpec, mostRecentScheduledFire } from './cron-schedule'
+import { mostRecentScheduledFire } from './cron-schedule'
+import { getCronSpecs, RAILWAY_CRON_IDS, type CronRegistration } from './cron-specs'
 
 /**
  * Run every integration probe concurrently. Google is only probed when a
@@ -67,6 +68,7 @@ export async function runIntegrationProbes(): Promise<CheckResult[]> {
         .from('dropbox_event_inbox')
         .select('id, event_type, last_error')
         .eq('status', 'dead_letter')
+        .is('retired_at', null)
         .limit(1)
         .abortSignal(signal)
       if (error) throw new Error(error.message)
@@ -98,64 +100,20 @@ export async function runIntegrationProbes(): Promise<CheckResult[]> {
 // on a wall-clock schedule (weekday 09:00 etc.) are evaluated against their
 // next expected fire, DST- and weekend-correct, not a naive max-age.
 
-/** Grace after a process/deploy starts before a never-seen cron is called red. */
+/** One-time persistent monitor-enrollment grace for never-seen crons. */
 export const STARTUP_GRACE_MIN = 30
 
-// Studio wall-clock timezone for scheduled Railway crons. Must match the Bolt
-// service's CHECKIN_TIMEZONE (default below); if that env override changes, the
-// watchdog needs the same value to reason about weekday 09:00 fires.
-const STUDIO_TZ = process.env.CHECKIN_TIMEZONE || 'America/Los_Angeles'
-const WEEKDAYS = [1, 2, 3, 4, 5]
+// Railway publishes its actual timezone and enablement; Vercel consumes those
+// values rather than guessing from its own environment.
+export { getCronSpecs } from './cron-specs'
 
-/** Every monitored cron and how to judge its freshness. */
-export const CRON_SPECS: Record<string, CronSpec> = {
-  // ── Vercel / Inngest crons (interval) ──
-  'delivery-dropbox-scan': { kind: 'interval', label: 'Delivery queue scan', maxAgeMin: 15 },
-  'delivery-specs-scan': { kind: 'interval', label: 'Delivery specs scan', maxAgeMin: 15 },
-  'drive-transcript-scan': {
-    kind: 'interval', label: 'Transcript ingest', maxAgeMin: 45,
-    enabled: (env) => env.DRIVE_TRANSCRIPTS_ENABLED === 'true',
-  },
-  'plaud-transcript-scan': {
-    kind: 'interval', label: 'Direct Plaud ingest', maxAgeMin: 45,
-    enabled: (env) => env.PLAUD_INGEST_ENABLED === 'true',
-  },
-  'pre-meeting-scan': { kind: 'interval', label: 'Meeting briefings scan', maxAgeMin: 45 },
-
-  // ── Railway (Bolt) interval crons ──
-  'daily-hours-reminder': { kind: 'interval', label: 'Daily hours reminder sweep (Railway)', maxAgeMin: 90 },
-  'dropbox-inbox-sweep': { kind: 'interval', label: 'Dropbox inbox drain (Railway)', maxAgeMin: 15 },
-  'project-share-recovery': { kind: 'interval', label: 'Project share recovery (Railway)', maxAgeMin: 15 },
-  'project-control-recovery': { kind: 'interval', label: 'Project control recovery (Railway)', maxAgeMin: 20 },
-  'missed-checkin-reply-recovery': { kind: 'interval', label: 'Hours reply recovery (Railway)', maxAgeMin: 15 },
-  'ae-render-notify': { kind: 'interval', label: 'AE render notifier (Railway)', maxAgeMin: 15 },
-  'behance-elevenlabs-sync': { kind: 'interval', label: 'Behance/ElevenLabs draft sync (Railway)', maxAgeMin: 15 },
-  'frameio-project-link-reconcile': { kind: 'interval', label: 'Frame.io project link reconcile (Railway)', maxAgeMin: 90 },
-
-  // ── Railway (Bolt) schedule-aware crons (weekday/daily wall-clock) ──
-  'pending-checkin-nudge': {
-    kind: 'daily', label: 'Pending check-in nudge (Railway)',
-    hour: 9, minute: 0, tz: STUDIO_TZ, days: WEEKDAYS, graceMin: 120,
-  },
-  'missing-time-scan': {
-    kind: 'daily', label: 'Missing-time monitor (Railway)',
-    hour: 9, minute: 0, tz: STUDIO_TZ, days: WEEKDAYS, graceMin: 120,
-  },
-  'daily-celebrations': {
-    kind: 'daily', label: 'Daily celebrations (Railway)',
-    hour: 9, minute: 0, tz: STUDIO_TZ, graceMin: 120,
-    // No-ops (but still stamps) without a team channel — only checked when set.
-    enabled: (env) => !!env.KIT_TEAM_CHANNEL_ID,
-  },
-}
-
-interface HeartbeatState { success: string | null; attempt: string | null }
+interface HeartbeatState { success: string | null; attempt: string | null; registration?: CronRegistration }
 
 /** Legacy string heartbeats are treated as success-only. */
 function normalizeHeartbeat(hb: HeartbeatState | string | null | undefined): HeartbeatState {
   if (hb == null) return { success: null, attempt: null }
   if (typeof hb === 'string') return { success: hb, attempt: null }
-  return { success: hb.success ?? null, attempt: hb.attempt ?? null }
+  return { success: hb.success ?? null, attempt: hb.attempt ?? null, registration: hb.registration }
 }
 
 function fmtAgo(now: Date, ms: number): string {
@@ -170,8 +128,7 @@ function fmtAgo(now: Date, ms: number): string {
  *             or not yet due (within grace), or inside startup grace.
  *   red     — "attempting but not succeeding" (fresh attempt, stale success) vs
  *             "not running" (no recent attempt at all).
- * `bootAt` (the watchdog's process start) suppresses never-seen crons for a
- * short startup grace so a fresh deploy doesn't alarm before the first tick.
+ * `bootAt` is the persistent monitor epoch, NOT a process/cold-start timestamp.
  */
 export function checkCronFreshness(
   heartbeats: Record<string, HeartbeatState | string | null | undefined>,
@@ -180,32 +137,41 @@ export function checkCronFreshness(
   bootAt?: Date,
 ): CheckResult[] {
   const out: CheckResult[] = []
-  for (const [cronId, spec] of Object.entries(CRON_SPECS)) {
+  for (const [cronId, configuredSpec] of Object.entries(getCronSpecs(env))) {
+    const registered = normalizeHeartbeat(heartbeats[cronId]).registration
+    const spec = registered?.spec ?? configuredSpec
     const key = `cron:${cronId}`
     const label = spec.label
     const hb = normalizeHeartbeat(heartbeats[cronId])
     const success = hb.success ? Date.parse(hb.success) : null
     const attempt = hb.attempt ? Date.parse(hb.attempt) : null
-    // A feature-gated cron is skipped ONLY when it is disabled here AND has never
-    // stamped. If a heartbeat exists, the worker is running it regardless of the
-    // watchdog's local flag — so a missing/mismatched watchdog env must NOT
-    // silently suppress monitoring of a live cron.
-    const disabledByConfig = spec.enabled ? !spec.enabled(env) : false
-    if (disabledByConfig && success === null && attempt === null) continue
-    if ((hb.success && Number.isNaN(success!)) || (hb.attempt && Number.isNaN(attempt!))) {
+    // Explicit current owner configuration wins over old heartbeat history.
+    // Railway jobs are never disabled by unrelated Vercel-local flags.
+    const remote = RAILWAY_CRON_IDS.has(cronId)
+    const disabledByConfig = registered ? !registered.enabled
+      : !remote && configuredSpec.enabled ? !configuredSpec.enabled(env) : false
+    if (disabledByConfig) continue
+    if ((hb.success && (Number.isNaN(success!) || success! > now.getTime() + 60_000)) ||
+      (hb.attempt && (Number.isNaN(attempt!) || attempt! > now.getTime() + 60_000))) {
       out.push({ key, label, ok: false, detail: 'invalid heartbeat timestamp' })
       continue
     }
 
+    const enrolledMs = registered?.enrolledAt ? Date.parse(registered.enrolledAt) : null
     const fire = spec.kind === 'daily' ? mostRecentScheduledFire(spec, now) : null
     const graceMs = spec.kind === 'daily' ? spec.graceMin * 60_000 : 0
     const notYetDue = spec.kind === 'daily' && (!fire || now.getTime() < fire.getTime() + graceMs)
+    const requiredFire = spec.kind === 'daily' && fire && notYetDue
+      ? mostRecentScheduledFire(spec, new Date(fire.getTime() - 1)) : fire
+    const enrolledAfterRequired = enrolledMs !== null && requiredFire !== null && enrolledMs > requiredFire.getTime()
 
     // Never observed: hold green through startup grace / until first fire is due.
     if (success === null && attempt === null) {
-      if (bootAt && now.getTime() - bootAt.getTime() < STARTUP_GRACE_MIN * 60_000) {
+      const enrollmentGrace = enrolledMs !== null && (spec.kind === 'daily'
+        ? enrolledAfterRequired : now.getTime() - enrolledMs < spec.maxAgeMin * 60_000)
+      if (enrollmentGrace || (bootAt && now.getTime() - bootAt.getTime() < STARTUP_GRACE_MIN * 60_000)) {
         out.push({ key, label, ok: true, detail: 'awaiting first run (startup grace)' })
-      } else if (notYetDue) {
+      } else if (spec.kind === 'daily' && requiredFire === null) {
         out.push({ key, label, ok: true, detail: 'awaiting first scheduled run' })
       } else {
         out.push({ key, label, ok: false, detail: 'no heartbeat recorded' })
@@ -218,7 +184,7 @@ export function checkCronFreshness(
     if (spec.kind === 'interval') {
       fresh = success !== null && now.getTime() - success <= spec.maxAgeMin * 60_000
     } else {
-      fresh = notYetDue || (success !== null && fire !== null && success >= fire.getTime())
+      fresh = enrolledAfterRequired || (success !== null && requiredFire !== null && success >= requiredFire.getTime())
     }
     if (fresh) {
       out.push({

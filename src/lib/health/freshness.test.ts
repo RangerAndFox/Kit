@@ -7,11 +7,42 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { checkCronFreshness } from './probes'
+import { getCronSpecs, parseRegistration, type CronRegistration } from './cron-specs'
 
 const NOW = new Date('2026-07-15T20:00:00Z') // Wednesday, 13:00 PDT
 const iso = (ms: number) => new Date(NOW.getTime() - ms).toISOString()
 const minsAgo = (m: number) => iso(m * 60_000)
 const find = (out: ReturnType<typeof checkCronFreshness>, key: string) => out.find((c) => c.key === key)!
+
+it('rejects invalid or cross-runtime configuration instead of silently trusting it', () => {
+  const row={owner_runtime:'railway',enabled:true,enrolled_at:'2026-07-01T00:00:00Z',
+    schedule:{kind:'interval',label:'Inbox',maxAgeMin:15}}
+  assert.equal(parseRegistration('dropbox-inbox-sweep',row)?.owner,'railway')
+  assert.throws(()=>parseRegistration('delivery-dropbox-scan',row),/owner/)
+  assert.throws(()=>parseRegistration('dropbox-inbox-sweep',{...row,schedule:{...row.schedule,maxAgeMin:-1}}))
+  assert.equal(parseRegistration('dropbox-inbox-sweep',{owner_runtime:null,enabled:null,enrolled_at:null,schedule:null}),undefined)
+})
+it('does not treat a future timestamp as successful execution', () => {
+  const out=checkCronFreshness({'dropbox-inbox-sweep':'2099-01-01T00:00:00Z'},NOW,{})
+  assert.equal(find(out,'cron:dropbox-inbox-sweep').ok,false)
+})
+
+it('does not resurrect an intentionally disabled transcript cron from historical success', () => {
+  const out = checkCronFreshness({ 'drive-transcript-scan': minsAgo(99999) }, NOW, { DRIVE_TRANSCRIPTS_ENABLED:'false' })
+  assert.equal(out.some(c=>c.key==='cron:drive-transcript-scan'),false)
+})
+it('does not announce recovery during daily grace if the preceding run was missed', () => {
+  const hb = { 'missing-time-scan': {success:'2026-07-13T16:05:00Z',attempt:null} }
+  for (const time of ['2026-07-15T15:59:00Z','2026-07-15T16:30:00Z','2026-07-15T20:00:00Z']) {
+    assert.equal(find(checkCronFreshness(hb,new Date(time),{}),'cron:missing-time-scan').ok,false)
+  }
+})
+it('uses the registered worker timezone when the watchdog timezone differs', () => {
+  const registration: CronRegistration={owner:'railway',enabled:true,enrolledAt:'2026-01-01T00:00:00Z',
+    spec:getCronSpecs({CHECKIN_TIMEZONE:'America/New_York'})['missing-time-scan']}
+  const out=checkCronFreshness({'missing-time-scan':{success:'2026-07-15T13:05:00Z',attempt:null,registration}},NOW,{CHECKIN_TIMEZONE:'America/Los_Angeles'})
+  assert.equal(find(out,'cron:missing-time-scan').ok,true)
+})
 
 describe('checkCronFreshness — interval crons', () => {
   it('is healthy when a cron succeeded within its window', () => {
@@ -69,8 +100,10 @@ describe('checkCronFreshness — disabled features', () => {
     assert.equal(find(out, 'cron:plaud-transcript-scan').ok, true)
   })
 
-  it('does not check celebrations without a team channel', () => {
-    const off = checkCronFreshness({}, NOW, {}, NOW)
+  it('uses Railway enablement, never the unrelated Vercel channel setting', () => {
+    const registration: CronRegistration = { owner: 'railway', enabled: false,
+      spec: getCronSpecs()['daily-celebrations'], enrolledAt: NOW.toISOString() }
+    const off = checkCronFreshness({ 'daily-celebrations': { success: minsAgo(9999), attempt: null, registration } }, NOW, {}, NOW)
     assert.equal(off.some((c) => c.key === 'cron:daily-celebrations'), false)
     const on = checkCronFreshness({}, NOW, { KIT_TEAM_CHANNEL_ID: 'C123' }, NOW)
     assert.equal(on.some((c) => c.key === 'cron:daily-celebrations'), true)
@@ -147,16 +180,19 @@ describe('checkCronFreshness — schedule-aware weekday crons', () => {
     assert.equal(find(out, 'cron:pending-checkin-nudge').ok, true)
   })
 
-  it('holds a never-seen weekday cron green while within grace of its fire', () => {
+  it('holds a newly enrolled weekday cron green until its first run is due', () => {
     // 09:30 PDT (16:30Z): today's fire was 30m ago, inside the 120m grace, and
     // nothing has stamped yet → "awaiting first scheduled run", not red.
     const withinGrace = new Date('2026-07-15T16:30:00Z')
-    const green = find(checkCronFreshness({}, withinGrace, {}), 'cron:pending-checkin-nudge')
+    const registration: CronRegistration = { owner: 'railway', enabled: true,
+      spec: getCronSpecs()['pending-checkin-nudge'], enrolledAt: '2026-07-15T15:30:00Z' }
+    const hb = { 'pending-checkin-nudge': { success: null, attempt: null, registration } }
+    const green = find(checkCronFreshness(hb, withinGrace, {}), 'cron:pending-checkin-nudge')
     assert.equal(green.ok, true)
-    assert.match(String(green.detail), /awaiting first scheduled run/)
+    assert.match(String(green.detail), /awaiting first run/)
 
     // 13:00 PDT: same never-seen cron is now hours past fire+grace → flagged.
-    const overdue = find(checkCronFreshness({}, NOW, {}), 'cron:pending-checkin-nudge')
+    const overdue = find(checkCronFreshness(hb, NOW, {}), 'cron:pending-checkin-nudge')
     assert.equal(overdue.ok, false)
     assert.equal(overdue.detail, 'no heartbeat recorded')
   })
