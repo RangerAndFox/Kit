@@ -161,7 +161,7 @@ async function callTool(params: unknown, principal: McpPrincipal): Promise<ToolC
   }
 
   try {
-    return await tool.handler(input.value)
+    return await tool.handler(input.value, principal)
   } catch (err) {
     console.error('[MCP] Tool execution failed', {
       subject: principal.subject,

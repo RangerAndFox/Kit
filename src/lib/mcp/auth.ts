@@ -3,6 +3,8 @@ import crypto from 'node:crypto'
 export interface McpPrincipal {
   subject: string
   workspaceId: string
+  /** Acting human, signed by the issuer; never supplied by a tool argument. */
+  slackUserId?: string
   tools: string[]
   expiresAt?: number
   tokenId?: string
@@ -12,6 +14,7 @@ interface TokenPayload {
   v: 1
   sub: string
   workspace_id: string
+  slack_user_id?: string
   tools: string[]
   exp?: number
   iat?: number
@@ -38,6 +41,7 @@ export function createMcpToken(principal: McpPrincipal, secret = signingSecret()
   if (!principal.subject || !principal.workspaceId || principal.tools.length === 0) {
     throw new Error('MCP tokens require a subject, workspace, and at least one tool')
   }
+  if (principal.slackUserId !== undefined && !/^U[A-Z0-9]+$/.test(principal.slackUserId)) throw new Error('Invalid signed Slack actor')
   const issuedAt = Math.floor(Date.now() / 1000)
   const expiresAt = principal.expiresAt ?? issuedAt + DEFAULT_TOKEN_SECONDS
   if (!Number.isSafeInteger(expiresAt) || expiresAt <= issuedAt || expiresAt > issuedAt + MAX_TOKEN_SECONDS) {
@@ -47,6 +51,7 @@ export function createMcpToken(principal: McpPrincipal, secret = signingSecret()
     v: 1,
     sub: principal.subject,
     workspace_id: principal.workspaceId,
+    ...(principal.slackUserId ? { slack_user_id: principal.slackUserId } : {}),
     tools: [...new Set(principal.tools)].sort(),
     exp: expiresAt,
     iat: issuedAt,
@@ -73,6 +78,7 @@ export function verifyMcpToken(token: string, secret = signingSecret()): McpPrin
       payload.v !== 1 ||
       typeof payload.sub !== 'string' || !payload.sub ||
       typeof payload.workspace_id !== 'string' || !payload.workspace_id ||
+      (payload.slack_user_id !== undefined && (typeof payload.slack_user_id !== 'string' || !/^U[A-Z0-9]+$/.test(payload.slack_user_id))) ||
       !Array.isArray(payload.tools) || payload.tools.length === 0 ||
       payload.tools.some((tool) => typeof tool !== 'string' || !tool)
     ) return null
@@ -84,6 +90,7 @@ export function verifyMcpToken(token: string, secret = signingSecret()): McpPrin
     return {
       subject: payload.sub,
       workspaceId: payload.workspace_id,
+      ...(payload.slack_user_id ? { slackUserId: payload.slack_user_id } : {}),
       tools: payload.tools,
       ...(payload.exp ? { expiresAt: payload.exp } : {}),
       ...(payload.jti ? { tokenId: payload.jti } : {}),

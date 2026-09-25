@@ -646,7 +646,8 @@ export async function retrieveInternalHistory(opts: {
     const query = [opts.attendee.displayName, opts.company, email, opts.event.summary]
       .filter(Boolean)
       .join(' ')
-    const results = await search(query, { workspaceId: opts.workspaceId ?? undefined, limit: 4 })
+    if (!opts.workspaceId) throw new Error('Knowledge lookup requires a workspace')
+    const results = await search(query, { workspaceId: opts.workspaceId, limit: 4, visibilityTiers: ['team'] })
     for (const r of results.slice(0, 3)) {
       out.knowledge.push({ title: r.title, ref: r.sourceUrl || `doc:${r.documentId}` })
     }

@@ -119,7 +119,7 @@ export async function inviteArtistToFrameIo(opts: {
       return {
         status: 'failed',
         message:
-          `${artistEmail} isn't in our Frame.io account yet. Self-signup link sent to them in the project channel; once they accept and sign up, re-run \`@Kit onboard\` to grant project access.`,
+          `${artistEmail} isn't in our Frame.io account yet. Share the signup link below with them; once they sign up, re-run \`@Kit onboard\` to grant project access. No project access has been granted yet.`,
         actionUrl: signupUrl,
         actionLabel: 'Sign up for Frame.io',
       }

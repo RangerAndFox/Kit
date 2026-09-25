@@ -3,7 +3,7 @@
  *
  *   get             load a brain by id or by slack_channel
  *   seed            build (or fetch) the initial brain for a channel
- *   why             stub for provenance lookup (Phase 2 will wire this fully)
+ *   why             retrieve source-backed provenance from channel knowledge
  *   refresh_canvas  no-op here; the Bolt /kit brain command does the Slack
  *                   side. This action exists so the registry surfaces the
  *                   capability for routing.
@@ -24,7 +24,7 @@ async function handle(action: string, payload: Record<string, unknown>): Promise
         const workspaceId = (payload.workspaceId as string) || process.env.KIT_DEFAULT_WORKSPACE_ID || ''
         if (brainId) {
           const loaded = await getBrainById(brainId)
-          if (!loaded) return { agent: 'brain', action, success: false, error: `brain ${brainId} not found` }
+          if (!workspaceId || !loaded || loaded.row.workspace_id !== workspaceId) return { agent: 'brain', action, success: false, error: 'Brain not found in this workspace' }
           return { agent: 'brain', action, success: true, data: { row: loaded.row, brain: loaded.brain } }
         }
         if (channelId && workspaceId) {
@@ -108,8 +108,8 @@ async function handle(action: string, payload: Record<string, unknown>): Promise
         return {
           agent: 'brain',
           action,
-          success: true,
-          message: 'Canvas refresh is performed by the /kit brain Slack command.',
+          success: false,
+          error: 'No canvas was refreshed. Run /kit brain in the project Slack channel to refresh it.',
         }
       }
 
@@ -143,7 +143,7 @@ export const brainAgent: AgentDefinition = {
     },
     {
       action: 'why',
-      description: '[Phase 1 stub] Return the provenance source(s) for a claim. In Phase 1 this returns a placeholder pointing at the canvas; full provenance lookup ships in Phase 3.',
+      description: 'Find source-backed provenance for a claim in this channel. Explicitly reports when no source can be traced.',
       inputDescription: 'claim (string)',
       mutates: false,
     },

@@ -47,8 +47,14 @@ export const assignProjectAccess: KitTool = {
     deliverables: z.array(z.string().uuid()).optional().describe('Specific deliverables they own'),
     can_see_financials: z.boolean().optional().default(false),
   }),
-  handler: async (input) => {
+  handler: async (input, principal) => {
+    if (!principal || principal.workspaceId !== input.workspace_id) return fail('A signed workspace identity is required.')
     const db = createAdminClient()
+    const [project, member] = await Promise.all([
+      db.from('projects').select('id').eq('id', input.project_id).eq('workspace_id', principal.workspaceId).maybeSingle(),
+      db.from('team_members').select('id').eq('id', input.team_member_id).eq('workspace_id', principal.workspaceId).maybeSingle(),
+    ])
+    if (project.error || member.error || !project.data || !member.data) return fail('Project and team member must belong to the signed workspace.')
     const { data, error } = await db
 .from('project_access')
       .insert(input)

@@ -620,8 +620,7 @@ cron.schedule('* * * * *', async () => {
   await app.start()
   socketStarted = true
   console.log('⚡ Kit is online (Socket Mode)')
-  console.log(`   Bot token: ...${process.env.SLACK_BOT_TOKEN?.slice(-6)}`)
-  console.log(`   App token: ...${process.env.SLACK_APP_TOKEN?.slice(-6)}`)
+  console.log('   Slack credentials configured:', Boolean(process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN))
   console.log(`   Anthropic key: ${process.env.ANTHROPIC_API_KEY ? 'set' : 'MISSING'}`)
   console.log(`   Cron timezone: ${CHECKIN_TZ}`)
 

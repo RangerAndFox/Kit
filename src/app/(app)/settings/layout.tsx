@@ -5,13 +5,8 @@ import Link from 'next/link'
 import { cn } from '@/lib/utils'
 
 const settingsTabs = [
-  { label: 'Workspace', href: '/settings/workspace' },
   { label: 'Team', href: '/settings/team' },
-  { label: 'Integrations', href: '/settings/integrations' },
-  { label: 'Defaults', href: '/settings/defaults' },
-  { label: 'Personality', href: '/settings/personality' },
-  { label: 'Notifications', href: '/settings/notifications' },
-  { label: 'Security', href: '/settings/security' },
+  { label: 'Integration health', href: '/control-center' },
 ]
 
 export default function SettingsLayout({
@@ -27,7 +22,7 @@ export default function SettingsLayout({
         <div className="max-w-7xl">
           <div className="mb-8">
             <h1 className="text-3xl font-bold text-white mb-2">Settings</h1>
-            <p className="text-[#9ca3af]">Manage your Kit workspace and preferences</p>
+            <p className="text-[#9ca3af]">Verified workspace information. Manage access through Kit in Slack.</p>
           </div>
 
           {/* Tabs */}

@@ -244,10 +244,8 @@ async function runTrackedOnboarding(opts: {
   const frameioR = asResult(settled[2], 'frameio')
   const harvestR = asResult(settled[3], 'harvest')
 
-  // Send welcome message. Two paths:
-  //  - Slack user known → open DM and post privately
-  //  - Connect invite pending → post into the project channel so the
-  //    freelancer sees it as channel history when they accept
+  // Welcome only a verified Slack user with successful project access.
+  // Pending guest invitations require human handoff in the requester summary.
   let welcomeR: ServiceResult = {
     status: 'skipped',
     message: 'Slack invite did not succeed; no welcome sent.',
@@ -277,27 +275,6 @@ async function runTrackedOnboarding(opts: {
         artistSlackUserId: slackInvite.slackUserId,
         text: welcomeText,
       })
-    } else if (slackInvite.connectPending && projectChannelId) {
-      // Path B: Connect invite pending → post into channel so they
-      // see it when they accept and land in the channel.
-      try {
-        await app.client.chat.postMessage({
-          channel: projectChannelId,
-          text: `Welcome ${input.artistName} (joining as a freelancer)`,
-          blocks: [
-            {
-              type: 'section',
-              text: { type: 'mrkdwn', text: welcomeText },
-            },
-          ],
-        })
-        welcomeR = {
-          status: 'ok',
-          message: `Welcome posted in <#${projectChannelId}>; visible to ${input.artistName} when they accept the Connect invite.`,
-        }
-      } catch (err: any) {
-        welcomeR = { status: 'failed', message: err.message || String(err) }
-      }
     }
   }
 
@@ -375,34 +352,4 @@ async function runTrackedOnboarding(opts: {
   }
 }
 
-/**
- * Build a summary message for the requester after one onboarding run.
- */
-export function buildRequesterSummary(opts: {
-  artistName: string
-  artistEmail: string
-  projectName: string
-  results: Record<string, ServiceResult>
-}): string {
-  const { artistName, artistEmail, projectName, results } = opts
-  const icon = (s: string) =>
-    s === 'ok' ? ':white_check_mark:' : s === 'skipped' ? ':white_circle:' : ':x:'
-  const order: [string, string][] = [
-    ['people', 'Daily Assignments'],
-    ['slack', 'Slack'],
-    ['dropbox', 'Dropbox'],
-    ['frameio', 'Frame.io'],
-    ['harvest', 'Harvest'],
-    ['welcomeDm', 'Welcome DM'],
-    ['nda', 'NDA'],
-  ]
-  const lines = order
-    .filter(([key]) => results[key])
-    .map(([key, label]) => {
-      const r = results[key]
-      return `${icon(r.status)} *${label}* — ${r.message}`
-    })
-  return [`*Onboarding: ${artistName}* (${artistEmail}) → *${projectName}*`, '', ...lines].join(
-    '\n',
-  )
-}
+export { buildRequesterSummary } from './summary'

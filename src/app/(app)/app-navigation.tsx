@@ -3,16 +3,13 @@
 import Image from 'next/image'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Activity, FolderKanban, Gauge, LockKeyhole, MessageSquareText, Settings, Smile, Zap } from 'lucide-react'
+import { FolderKanban, Gauge, LockKeyhole, Settings, Smile } from 'lucide-react'
 import styles from './app-shell.module.css'
 
 const links = [
   { href: '/control-center', label: 'Control Center', icon: Gauge },
   { href: '/culture-center', label: 'Culture Center', icon: Smile },
   { href: '/projects', label: 'Projects', icon: FolderKanban },
-  { href: '/actions', label: 'Actions', icon: Zap },
-  { href: '/ask', label: 'Ask Kit', icon: MessageSquareText },
-  { href: '/studio-ops/farm', label: 'Render Farm', icon: Activity },
   { href: '/settings', label: 'Settings', icon: Settings },
 ]
 export function AppNavigation() {

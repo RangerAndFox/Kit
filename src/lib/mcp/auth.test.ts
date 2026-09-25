@@ -10,10 +10,12 @@ describe('MCP scoped credentials', () => {
     const token = createMcpToken({
       subject: 'managed-agent:test',
       workspaceId: 'workspace-a',
+      slackUserId: 'UARTIST123',
       tools: ['kit_get_project', 'kit_list_projects'],
     }, secret)
     const principal = verifyMcpToken(token, secret)
     assert.equal(principal?.workspaceId, 'workspace-a')
+    assert.equal(principal?.slackUserId, 'UARTIST123')
     assert.equal(principal?.subject, 'managed-agent:test')
     assert.deepEqual(principal?.tools, ['kit_get_project', 'kit_list_projects'])
     assert.ok(principal?.tokenId)

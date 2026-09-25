@@ -43,7 +43,7 @@ export interface BrainFirstResult {
 export interface RetrieveOpts {
   query: string
   channelId?: string | null
-  workspaceId?: string | null
+  workspaceId: string
   /** Override brain selection (skip the channel lookup). */
   brainId?: string | null
   /** Total results to return after re-ranking. Default 10. */
@@ -72,12 +72,13 @@ async function resolveBrainForChannel(workspaceId: string, channelId: string): P
   return (data as BrainRow) || null
 }
 
-async function getBrainRow(brainId: string): Promise<BrainRow | null> {
+async function getBrainRow(brainId: string, workspaceId: string): Promise<BrainRow | null> {
   const sb = createAdminClient()
   const { data } = await sb
     .from('brains')
     .select('id, project_id, workspace_id, markdown')
     .eq('id', brainId)
+    .eq('workspace_id', workspaceId)
     .maybeSingle()
   return (data as BrainRow) || null
 }
@@ -96,13 +97,14 @@ async function getBrainRow(brainId: string): Promise<BrainRow | null> {
  * When no brain is found, falls back to a plain searchDocuments call.
  */
 export async function brainFirstRetrieve(opts: RetrieveOpts): Promise<BrainFirstResult> {
+  if (!opts.workspaceId?.trim()) throw new Error('Brain retrieval requires a workspace')
   const limit = Math.max(1, Math.min(50, opts.limit ?? 10))
   const candidates = Math.max(limit, opts.candidatePool ?? limit * 2)
 
   // Step 1: resolve brain (if any)
   let brain: BrainRow | null = null
   if (opts.brainId) {
-    brain = await getBrainRow(opts.brainId)
+    brain = await getBrainRow(opts.brainId, opts.workspaceId)
   } else if (opts.channelId && opts.workspaceId) {
     brain = await resolveBrainForChannel(opts.workspaceId, opts.channelId)
   }
@@ -114,7 +116,7 @@ export async function brainFirstRetrieve(opts: RetrieveOpts): Promise<BrainFirst
   // explicit filter is set.
   const projectId = brain?.project_id ?? null
   const rawResults = await searchDocuments(opts.query, {
-    workspaceId: opts.workspaceId ?? null,
+    workspaceId: opts.workspaceId,
     projectId,
     limit: candidates,
     visibilityTiers: opts.visibilityTiers,

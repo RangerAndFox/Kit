@@ -1,11 +1,11 @@
 /**
  * Delivery pipeline cron jobs.
  *
- *   deliveryDropboxScan   — every 30s, polls /Delivery-Queue/ for new files,
+ *   deliveryDropboxScan   — every minute, polls /Delivery-Queue/ for new files,
  *                           posts a Slack notification with a "Pick Profile"
  *                           prompt for each newly-stable file.
  *
- *   deliveryJobNotifier   — every 30s, finds render_jobs that transitioned to
+ *   deliveryJobNotifier   — every minute, finds render_jobs that transitioned to
  *                           complete/failed since the last poll and posts a
  *                           Slack notification (or edits the prior one).
  *
@@ -23,7 +23,7 @@ import { processSrtFile } from '../delivery/subtitle-watcher'
 import { runSpecsScanTick } from '../delivery/specs-watcher'
 import { progressBar } from '../delivery/progress-bar'
 import { resetStaleJobs } from '../delivery/storage'
-import { recordCronSuccess } from '../health/state'
+import { recordCronAttempt, recordCronSuccess } from '../health/state'
 
 const SLACK_API = 'https://slack.com/api'
 const DEFAULT_NOTIFY_CHANNEL = process.env.DELIVERY_NOTIFY_CHANNEL_ID || ''
@@ -94,11 +94,12 @@ export const deliveryDropboxScan = inngest.createFunction(
     id: 'delivery-dropbox-scan',
     name: 'Delivery — Dropbox /Delivery-Queue/ scan',
     retries: 1,
+    concurrency: { limit: 1 },
     triggers: [{ cron: '*/1 * * * *' }], // every minute (Inngest min granularity)
   },
   async ({ step, logger }) => {
     await step.run('heartbeat', async () => {
-      try { await recordCronSuccess('delivery-dropbox-scan') } catch {}
+      try { await recordCronAttempt('delivery-dropbox-scan') } catch {}
       return true
     })
     if (!process.env.DROPBOX_ACCESS_TOKEN && !process.env.DROPBOX_REFRESH_TOKEN) {
@@ -106,7 +107,6 @@ export const deliveryDropboxScan = inngest.createFunction(
     }
 
     const newFiles = await step.run('scan', () => scanDeliveryQueue())
-    if (newFiles.length === 0) return { scanned: 0 }
 
     let notified = 0
     let converted = 0
@@ -116,14 +116,14 @@ export const deliveryDropboxScan = inngest.createFunction(
       // Deliveries are per-project (operator direction): the folder under
       // /Delivery-Queue/ maps to the project's own Slack channel.
       // DELIVERY_NOTIFY_CHANNEL_ID is an optional catch-all fallback.
-      const resolved = await resolveDeliveryChannel(f.path)
+      const resolved = await step.run(`resolve-${f.dropbox_id}`, () => resolveDeliveryChannel(f.path))
       const channel = resolved.channelId || DEFAULT_NOTIFY_CHANNEL
 
       // Generated caption siblings (.ttml/.vtt/.txt) — ours or hand-dropped.
       // Consume silently: a "pick a profile" prompt for a caption file is
       // noise, and our own uploads must never re-trigger the scanner.
       if (/\.(ttml|vtt|txt)$/i.test(name)) {
-        await markFileNotified(f.dropbox_id)
+        await step.run(`consume-caption-${f.dropbox_id}`, () => markFileNotified(f.dropbox_id))
         continue
       }
 
@@ -145,7 +145,7 @@ export const deliveryDropboxScan = inngest.createFunction(
           const siblings = result.generated
             .map((p: string) => `\`${p.split(/[\\/]/).pop()}\``)
             .join(', ')
-          await slackPost(
+          await step.run(`notify-caption-${f.dropbox_id}`, () => slackPost(
             channel,
             `Captions generated from ${name}`,
             [
@@ -159,9 +159,9 @@ export const deliveryDropboxScan = inngest.createFunction(
                 },
               },
             ],
-          )
+          ))
         } else {
-          await slackPost(
+          await step.run(`notify-caption-error-${f.dropbox_id}`, () => slackPost(
             channel,
             `Caption conversion failed: ${name}`,
             [
@@ -173,7 +173,7 @@ export const deliveryDropboxScan = inngest.createFunction(
                 },
               },
             ],
-          )
+          ))
         }
         continue
       }
@@ -199,15 +199,16 @@ export const deliveryDropboxScan = inngest.createFunction(
           },
         },
       ]
-      const delivered = await completeDeliveryFileNotification({
+      const delivered = await step.run(`notify-file-${f.dropbox_id}`, () => completeDeliveryFileNotification({
         dropboxId: f.dropbox_id,
         post: () => slackPost(channel, `New file: ${name}`, blocks),
         mark: markFileNotified,
-      })
+      }))
       if (delivered) notified++
       else logger.warn(`[delivery-scan] Slack notification failed for ${f.path}; leaving eligible for retry`)
     }
 
+    await step.run('heartbeat-success', () => recordCronSuccess('delivery-dropbox-scan'))
     return { notified, converted }
   },
 )
@@ -223,7 +224,7 @@ export const deliverySpecsScan = inngest.createFunction(
   },
   async ({ step }) => {
     await step.run('heartbeat', async () => {
-      try { await recordCronSuccess('delivery-specs-scan') } catch {}
+      try { await recordCronAttempt('delivery-specs-scan') } catch {}
       return true
     })
     if (!process.env.DROPBOX_ACCESS_TOKEN && !process.env.DROPBOX_REFRESH_TOKEN) {
@@ -235,7 +236,9 @@ export const deliverySpecsScan = inngest.createFunction(
     // firing re-lists only projects with pending drops. Work is proportional to
     // NEW activity, never the whole /production tree — the fix for the every-
     // minute "operation was aborted due to timeout". See specs-watcher.ts.
-    return step.run('scan-specs-tick', () => runSpecsScanTick())
+    const result = await step.run('scan-specs-tick', () => runSpecsScanTick())
+    await step.run('heartbeat-success', () => recordCronSuccess('delivery-specs-scan'))
+    return result
   },
 )
 
