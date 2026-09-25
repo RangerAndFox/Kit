@@ -23,29 +23,15 @@ import { processSrtFile } from '../delivery/subtitle-watcher'
 import { runSpecsScanTick } from '../delivery/specs-watcher'
 import { progressBar } from '../delivery/progress-bar'
 import { resetStaleJobs } from '../delivery/storage'
+import { deliverSlackOnce } from '../slack/durable-delivery'
+import { slackCall } from '../slack/transport'
 import { recordCronAttempt, recordCronSuccess } from '../health/state'
 
-const SLACK_API = 'https://slack.com/api'
 const DEFAULT_NOTIFY_CHANNEL = process.env.DELIVERY_NOTIFY_CHANNEL_ID || ''
 
-async function slackPost(channel: string, text: string, blocks?: any[], threadTs?: string): Promise<string | null> {
-  const token = process.env.SLACK_BOT_TOKEN
-  if (!token || !channel) return null
-  const body: any = { channel, text, mrkdwn: true }
-  if (blocks) body.blocks = blocks
-  if (threadTs) body.thread_ts = threadTs
-  const res = await fetch(`${SLACK_API}/chat.postMessage`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json; charset=utf-8',
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(8_000),
-  }).catch(() => null)
-  if (!res) return null
-  const json = await res.json().catch(() => ({}))
-  return json.ok ? json.ts : null
+async function slackPost(channel: string, text: string, blocks?: unknown[], threadTs?: string, key?: string): Promise<string> {
+  if (!key) throw new Error('Delivery notifications require a durable key')
+  return deliverSlackOnce({ key, channel, text, blocks, threadTs })
 }
 
 /** Post first, then mark. A failed Slack request must leave the Dropbox file
@@ -61,23 +47,10 @@ export async function completeDeliveryFileNotification(opts: {
   return true
 }
 
-async function slackUpdate(channel: string, ts: string, text: string, blocks?: any[]): Promise<boolean> {
-  const token = process.env.SLACK_BOT_TOKEN
-  if (!token || !channel || !ts) return false
-  const body: any = { channel, ts, text, mrkdwn: true }
-  if (blocks) body.blocks = blocks
-  const res = await fetch(`${SLACK_API}/chat.update`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json; charset=utf-8',
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(8_000),
-  }).catch(() => null)
-  if (!res) return false
-  const json = await res.json().catch(() => ({}))
-  return !!json.ok
+async function slackUpdate(channel: string, ts: string, text: string, blocks?: unknown[]): Promise<boolean> {
+  const result = await slackCall('chat.update', { channel, ts, text, mrkdwn: true, ...(blocks ? { blocks } : {}) })
+  if (!result.ok) throw new Error(`Slack update rejected (${result.error || 'unknown'})`)
+  return true
 }
 
 function fmtBytes(n: number): string {
@@ -132,11 +105,13 @@ export const deliveryDropboxScan = inngest.createFunction(
       // regardless of whether a channel resolved — the files ARE the point.
       if (isSrtFile(name)) {
         const result = await step.run(`convert-srt-${f.dropbox_id}`, async () => {
-          await markFileNotified(f.dropbox_id) // never retry-loop a bad SRT
           try {
             const r = await processSrtFile({ path: f.path, sizeBytes: f.size_bytes })
             return { ok: true as const, generated: r.generated, cueCount: r.cueCount }
           } catch (err: any) {
+            // Bad input gets one acknowledged notice. Provider/network failures
+            // remain retryable and cannot consume the SRT event.
+            if (!/^(no parseable cues in SRT|SRT too large)/.test(String(err.message))) throw err
             return { ok: false as const, error: err.message }
           }
         })
@@ -158,7 +133,7 @@ export const deliveryDropboxScan = inngest.createFunction(
                     `${siblings} dropped in the same folder.`,
                 },
               },
-            ],
+            ], undefined, `caption-${f.dropbox_id}`,
           ))
         } else {
           await step.run(`notify-caption-error-${f.dropbox_id}`, () => slackPost(
@@ -172,9 +147,10 @@ export const deliveryDropboxScan = inngest.createFunction(
                   text: `:warning: Couldn't convert \`${f.path}\` — ${result.error}`,
                 },
               },
-            ],
+            ], undefined, `caption-error-${f.dropbox_id}`,
           ))
         }
+        await step.run(`ack-caption-${f.dropbox_id}`, () => markFileNotified(f.dropbox_id))
         continue
       }
 
@@ -201,7 +177,7 @@ export const deliveryDropboxScan = inngest.createFunction(
       ]
       const delivered = await step.run(`notify-file-${f.dropbox_id}`, () => completeDeliveryFileNotification({
         dropboxId: f.dropbox_id,
-        post: () => slackPost(channel, `New file: ${name}`, blocks),
+        post: () => slackPost(channel, `New file: ${name}`, blocks, undefined, `delivery-file-${f.dropbox_id}`),
         mark: markFileNotified,
       }))
       if (delivered) notified++
@@ -249,55 +225,38 @@ export const deliveryJobNotifier = inngest.createFunction(
     id: 'delivery-job-notifier',
     name: 'Delivery — Notify Slack on job state changes',
     retries: 1,
+    concurrency: { limit: 1 },
     triggers: [{ cron: '*/1 * * * *' }],
   },
   async ({ step }) => {
     const sb = createAdminClient()
-
-    // Jobs that are queued/claimed/processing/complete/failed AND haven't been
-    // notified yet at the current status. Idempotency via slack_notified_status.
-    const { data: rows } = await sb
-      .from('render_jobs')
-      .select(
-        'id, status, slack_channel, slack_thread_ts, slack_message_ts, slack_notified_status, source_files, naming_fields, profile_snapshot, claimed_by, output_filename, output_size_bytes, duration_seconds, error_message, qc_checklist_status, progress_percent, progress_message',
-      )
+    // Filter acknowledged terminal states BEFORE limiting, so old completions
+    // cannot starve new jobs. Oldest candidates get serviced first.
+    const { data: rows, error } = await sb.from('render_jobs').select('id')
       .in('status', ['claimed', 'processing', 'complete', 'failed'])
-      .order('updated_at', { ascending: false })
-      .limit(50)
+      .or('status.in.(claimed,processing),slack_notified_status.is.null,and(status.eq.complete,slack_notified_status.neq.complete),and(status.eq.failed,slack_notified_status.neq.failed)')
+      .not('slack_channel', 'is', null).order('updated_at', { ascending: true }).limit(50)
+    if (error) throw new Error('Render notification candidates unavailable')
 
     let posted = 0
-    for (const job of rows || []) {
-      if (!job.slack_channel) continue
-
-      // Terminal states announce once. 'processing' keeps updating in place so
-      // the progress bar advances; 'claimed' refreshes to processing too.
-      const terminal = job.status === 'complete' || job.status === 'failed'
-      if (terminal && job.slack_notified_status === job.status) continue
-
-      const text = renderJobMessage(job)
-
-      if (!job.slack_message_ts) {
-        // First message for this job — post it and remember its ts.
-        const ts = await slackPost(job.slack_channel, text, undefined, job.slack_thread_ts || undefined)
-        if (!ts) continue
-        await sb
-          .from('render_jobs')
-          .update({
-            slack_message_ts: ts,
-            slack_notified_status: job.status,
-            slack_notified_at: new Date().toISOString(),
-          })
-          .eq('id', job.id)
-      } else {
-        // Update the same message in place (live progress bar).
-        const ok = await slackUpdate(job.slack_channel, job.slack_message_ts, text)
-        if (!ok) continue
-        await sb
-          .from('render_jobs')
-          .update({ slack_notified_status: job.status, slack_notified_at: new Date().toISOString() })
-          .eq('id', job.id)
-      }
-      posted++
+    for (const candidate of rows || []) {
+      const delivered = await step.run(`notify-job-${candidate.id}`, async () => {
+        // Read current state inside the durable step, not an obsolete cron snapshot.
+        const { data: job, error: readError } = await sb.from('render_jobs').select('*').eq('id', candidate.id).single()
+        if (readError || !job) throw new Error('Render notification state unavailable')
+        if (!job.slack_channel || !['claimed','processing','complete','failed'].includes(job.status)) return false
+        if (['complete','failed'].includes(job.status) && job.slack_notified_status === job.status) return false
+        const text = renderJobMessage(job)
+        const ts = job.slack_message_ts || await slackPost(job.slack_channel, text, undefined, job.slack_thread_ts || undefined, `render-job-${job.id}`)
+        // A recovered first-post receipt may contain an older job state.
+        await slackUpdate(job.slack_channel, ts, text)
+        const { error: saveError } = await sb.from('render_jobs').update({
+          slack_message_ts: ts, slack_notified_status: job.status, slack_notified_at: new Date().toISOString(),
+        }).eq('id', job.id).eq('status', job.status)
+        if (saveError) throw new Error('Render notification acknowledgment could not be saved')
+        return true
+      })
+      if (delivered) posted++
     }
 
     return { posted }

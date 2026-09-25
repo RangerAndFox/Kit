@@ -172,10 +172,11 @@ mechanism in code before assuming full compliance.
       path. **Do not reintroduce a Slack HTTP route** without first disabling
       Socket Mode and re-establishing a verified-caller + workspace-binding
       owner for it.
-    - **MCP shared-secret owners (pre-existing, unchanged):**
-      `src/lib/mcp/auth.ts` (bearer header) and the path-key check in
-      `src/app/api/mcp/[key]/route.ts`; the path form exists only because
-      Anthropic's Managed Agents MCP config cannot send headers.
+    - **MCP:** `src/lib/mcp/auth.ts` verifies the bearer signature, workspace,
+      tool scope, expiry and signed acting identity. Agent tools cannot select
+      their actor from arguments. The legacy path-key route is a hard reject;
+      managed-agent registration is structurally disabled until a verified
+      caller and complete invocation path exist.
     - **Structurally disabled:** `src/app/api/toolkit/{dispatch,sow,workback,script}`
       have no authorized caller and return a fixed 404. Each disable is
       structural, not configuration-gated: the route imports only
