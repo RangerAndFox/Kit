@@ -370,6 +370,8 @@ class DropboxEventSuperseded extends Error {
   constructor(readonly resolution: JsonRecord) { super('Source revision superseded before upload') }
 }
 
+class DropboxEventRetired extends Error {}
+
 async function dispatchDropboxEvent(app: App, event: ClaimedDropboxEvent): Promise<void> {
   const payload = event.payload as any
   if (event.event_type === 'accessibility_srt') {
@@ -424,6 +426,16 @@ export async function drainDropboxInbox(
         if (!completed) throw new Error('completion lease was lost')
         result.completed++
       } catch (error: any) {
+        if (error instanceof DropboxEventRetired) {
+          // Keep retirement distinct from delivered/complete. This also fences
+          // a newly ingested event for the same historical revision.
+          const { data: retired, error: retirementError } = await sb.from('dropbox_event_inbox')
+            .update({ retired_at: new Date().toISOString(), retired_reason: 'Exact transfer revision was retired' })
+            .eq('id', event.id).eq('status', 'processing').eq('claim_token', event.claim_token)
+            .select('id').maybeSingle()
+          if (retirementError || !retired) throw new Error('Retirement event checkpoint failed or lease lost')
+          continue
+        }
         // A deleted/recreated source can finish as a new event while this event
         // keeps polling the vanished upload. Reconcile only with live proof;
         // do not replay delivery, share, notification, or celebration effects.
@@ -956,6 +968,14 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
   }
 
   // ── Respect the per-project Frame.io upload toggle ──────
+  // Check before any provider mutation. The retirement transaction refuses ALL
+  // processing claims, so it cannot retire this revision beneath a live worker.
+  const { data: retiredTransfer, error: retiredReadError } = await sb.from('frameio_delivery_transfers')
+    .select('id').eq('project_id', project.id).eq('dropbox_file_id', d.dropboxId)
+    .eq('dropbox_rev', d.rev).not('retired_at', 'is', null).maybeSingle()
+  if (retiredReadError) throw new Error('Transfer retirement guard unavailable')
+  if (retiredTransfer) throw new DropboxEventRetired('Historical transfer revision retired')
+
   // A producer can disable Frame.io mirroring for projects that don't use
   // Frame.io for review ("@Kit turn off frame upload"). The delivery file stays
   // in Dropbox; we just don't mirror it. The check is before upload starts, so

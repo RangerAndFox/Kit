@@ -1458,16 +1458,31 @@ export type Database = {
       }
       cron_heartbeats: {
         Row: {
+          owner_runtime: string | null
+          enabled: boolean | null
+          schedule: Json | null
+          enrolled_at: string | null
           cron_id: string
-          last_success_at: string
+          last_attempt_at: string | null
+          last_success_at: string | null
         }
         Insert: {
+          owner_runtime?: string | null
+          enabled?: boolean | null
+          schedule?: Json | null
+          enrolled_at?: string | null
           cron_id: string
-          last_success_at?: string
+          last_attempt_at?: string | null
+          last_success_at?: string | null
         }
         Update: {
+          owner_runtime?: string | null
+          enabled?: boolean | null
+          schedule?: Json | null
+          enrolled_at?: string | null
           cron_id?: string
-          last_success_at?: string
+          last_attempt_at?: string | null
+          last_success_at?: string | null
         }
         Relationships: []
       }
@@ -1992,6 +2007,8 @@ export type Database = {
       }
       dropbox_event_inbox: {
         Row: {
+          retired_at: string | null
+          retired_reason: string | null
           attempt_count: number
           claim_token: string | null
           claimed_at: string | null
@@ -2010,6 +2027,8 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          retired_at?: string | null
+          retired_reason?: string | null
           attempt_count?: number
           claim_token?: string | null
           claimed_at?: string | null
@@ -2028,6 +2047,8 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          retired_at?: string | null
+          retired_reason?: string | null
           attempt_count?: number
           claim_token?: string | null
           claimed_at?: string | null
@@ -2509,6 +2530,9 @@ export type Database = {
       }
       frameio_delivery_transfers: {
         Row: {
+          retired_at: string | null
+          retired_reason: string | null
+          retired_by: string | null
           created_at: string
           dropbox_file_id: string
           dropbox_rev: string
@@ -2526,6 +2550,9 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          retired_at?: string | null
+          retired_reason?: string | null
+          retired_by?: string | null
           created_at?: string
           dropbox_file_id: string
           dropbox_rev: string
@@ -2543,6 +2570,9 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          retired_at?: string | null
+          retired_reason?: string | null
+          retired_by?: string | null
           created_at?: string
           dropbox_file_id?: string
           dropbox_rev?: string
@@ -6292,6 +6322,14 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      record_kit_cron: {
+        Args: { p_cron_id: string; p_runtime: string; p_enabled: boolean; p_schedule: Json; p_kind: string }
+        Returns: undefined
+      }
+      retire_frameio_transfer: {
+        Args: { p_transfer_id: string; p_project_id: string; p_dropbox_file_id: string; p_dropbox_rev: string; p_expected_updated_at: string; p_expected_event_ids: string[]; p_reason: string; p_actor: string; p_dry_run?: boolean }
+        Returns: Json
+      }
       begin_culture_send: {
         Args: { p_owner: string; p_post: string }
         Returns: boolean

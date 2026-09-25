@@ -29,6 +29,7 @@ import {
   reconcilePendingProjectShares,
 } from './watchers/dropbox'
 import cron from 'node-cron'
+import { stampCronAttempt, stampCronSuccess, registerRailwayCronSchedules } from './cron-heartbeat'
 import { sweepDailyReminders } from './checkins/reminder-delivery'
 import { nudgePendingCheckins } from './checkins/daily-hours'
 import { recoverMissedCheckinReplies } from './checkins/reply-recovery'
@@ -131,12 +132,22 @@ registerBrainApprovalHandlers(app)
 registerArchiveHandlers(app)
 registerProjectDeletionHandlers(app)
 registerOffboardingHandlers(app)
+// Publish actual runtime flags/timezone once at startup; timestamp enrollment is
+// persistent. Each subsequent attempt/success repairs a missed registration.
+void registerRailwayCronSchedules()
 
 // Reconcile studio-machine Behance draft results back into the private
 // producer DM. The worker never needs a Slack token.
 cron.schedule('* * * * *', () => {
-  void reconcileBehanceDraftSlack(app.client).catch((error) => console.error('[behance-sync]', error.message))
-  void reconcileElevenLabsDraftSlack(app.client).catch((error) => console.error('[elevenlabs-sync]', error.message))
+  void stampCronAttempt('behance-elevenlabs-sync')
+  // Promise.all (no inner catch): a real infra failure in either reconcile
+  // rejects here and skips the success stamp, so the heartbeat can't lie.
+  Promise.all([
+    reconcileBehanceDraftSlack(app.client),
+    reconcileElevenLabsDraftSlack(app.client),
+  ])
+    .then(() => stampCronSuccess('behance-elevenlabs-sync'))
+    .catch((error) => console.error('[behance/elevenlabs-sync]', error?.message))
 })
 
 // Imported/synced projects can have Dropbox + Slack links before their
@@ -148,9 +159,10 @@ setTimeout(() => {
   )
 }, 5_000)
 cron.schedule('23 * * * *', () => {
-  reconcileMissingFrameioProjectLinks().catch((err) =>
-    console.error('[cron] Frame.io project-link reconcile failed:', err),
-  )
+  void stampCronAttempt('frameio-project-link-reconcile')
+  reconcileMissingFrameioProjectLinks()
+    .then(() => stampCronSuccess('frameio-project-link-reconcile'))
+    .catch((err) => console.error('[cron] Frame.io project-link reconcile failed:', err))
 })
 
 // Existing projects may already contain Frame.io shares from before the
@@ -174,9 +186,11 @@ let projectShareRecoveryRunning = false
 const runProjectShareRecovery = () => {
   if (projectShareRecoveryRunning) return
   projectShareRecoveryRunning = true
+  void stampCronAttempt('project-share-recovery')
   reconcilePendingProjectShares(app)
     .then((result) => {
       if (result.scanned || result.failed) console.log('[project-share-recovery]', result)
+      return stampCronSuccess('project-share-recovery')
     })
     .catch((err) => console.error('[project-share-recovery] sweep failed:', err))
     .finally(() => { projectShareRecoveryRunning = false })
@@ -191,10 +205,12 @@ let dropboxInboxSweepRunning = false
 const runDropboxInboxSweep = () => {
   if (dropboxInboxSweepRunning) return
   dropboxInboxSweepRunning = true
+  void stampCronAttempt('dropbox-inbox-sweep')
   processDropboxNotification(app)
     .then(() => drainDropboxInbox(app))
     .then((result) => {
       if (result.claimed || result.failed) console.log('[dropbox-inbox-sweep]', result)
+      return stampCronSuccess('dropbox-inbox-sweep')
     })
     .catch((err) => console.error('[dropbox-inbox-sweep] failed:', err))
     .finally(() => { dropboxInboxSweepRunning = false })
@@ -410,9 +426,10 @@ const CHECKIN_TZ = process.env.CHECKIN_TIMEZONE || 'America/Los_Angeles'
 cron.schedule(
   '0 * * * *',
   () => {
-    sweepDailyReminders(app).catch((err) =>
-      console.error('[cron] daily-hours-reminder sweep failed:', err),
-    )
+    void stampCronAttempt('daily-hours-reminder')
+    sweepDailyReminders(app)
+      .then(() => stampCronSuccess('daily-hours-reminder'))
+      .catch((err) => console.error('[cron] daily-hours-reminder sweep failed:', err))
   },
   { timezone: 'UTC' },
 )
@@ -423,9 +440,10 @@ cron.schedule(
 // path. One-minute cadence keeps the fallback responsive without broad channel
 // scanning; concurrent live delivery is safe because only one claim can win.
 cron.schedule('* * * * *', () => {
-  recoverMissedCheckinReplies(app).catch((err) =>
-    console.error('[cron] missed hours reply recovery failed:', err),
-  )
+  void stampCronAttempt('missed-checkin-reply-recovery')
+  recoverMissedCheckinReplies(app)
+    .then(() => stampCronSuccess('missed-checkin-reply-recovery'))
+    .catch((err) => console.error('[cron] missed hours reply recovery failed:', err))
 })
 
 // ─── Cron: pending check-in reminder ───────────────────────
@@ -440,9 +458,10 @@ cron.schedule('* * * * *', () => {
 cron.schedule(
   '0 9 * * 1-5',
   () => {
-    nudgePendingCheckins(app).catch((err) =>
-      console.error('[cron] pending-checkin nudge failed:', err),
-    )
+    void stampCronAttempt('pending-checkin-nudge')
+    nudgePendingCheckins(app)
+      .then(() => stampCronSuccess('pending-checkin-nudge'))
+      .catch((err) => console.error('[cron] pending-checkin nudge failed:', err))
   },
   { timezone: CHECKIN_TZ },
 )
@@ -456,9 +475,10 @@ cron.schedule(
 cron.schedule(
   '0 9 * * 1-5',
   () => {
-    scanMissingTime(app).catch((err) =>
-      console.error('[cron] missing-time scan failed:', err),
-    )
+    void stampCronAttempt('missing-time-scan')
+    scanMissingTime(app)
+      .then(() => stampCronSuccess('missing-time-scan'))
+      .catch((err) => console.error('[cron] missing-time scan failed:', err))
   },
   { timezone: CHECKIN_TZ },
 )
@@ -492,10 +512,12 @@ cron.schedule(
 cron.schedule(
   '* * * * *',
   () => {
+    void stampCronAttempt('ae-render-notify')
     import('../../src/lib/delivery/ae-notify')
       .then(({ notifyAeRenderCompletions }) => notifyAeRenderCompletions(app.client))
       .then((res) => {
         if (res.announced > 0) console.log('[cron] ae-render-notify:', res)
+        return stampCronSuccess('ae-render-notify')
       })
       .catch((err) => console.error('[cron] ae-render-notify failed:', err))
   },
@@ -541,10 +563,12 @@ cron.schedule(
     // config after doing update recovery.
     if (recoverySweepRunning) return
     recoverySweepRunning = true
+    void stampCronAttempt('project-control-recovery')
     Promise.resolve(runProjectControlRecoverySweep())
       .then((res) => {
         const r = res as any
         if (r && (r.ran !== false || r.updatesRecovered)) console.log('[cron] project-control-recovery:', res)
+        return stampCronSuccess('project-control-recovery')
       })
       .catch((err) => console.error('[cron] project-control-recovery failed:', err))
       .finally(() => { recoverySweepRunning = false })
@@ -561,9 +585,13 @@ cron.schedule(
   '0 9 * * *',
   () => {
     if (!process.env.KIT_TEAM_CHANNEL_ID) return
+    void stampCronAttempt('daily-celebrations')
     import('./celebrations/celebrations')
       .then(({ runDailyCelebrations }) => runDailyCelebrations(app))
-      .then((res) => console.log('[cron] celebrations:', res))
+      .then((res) => {
+        console.log('[cron] celebrations:', res)
+        return stampCronSuccess('daily-celebrations')
+      })
       .catch((err) => console.error('[cron] celebrations failed:', err))
   },
   { timezone: CHECKIN_TZ },
