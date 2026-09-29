@@ -34,6 +34,7 @@ import { workbookConfigFromEnv } from '../../../src/lib/project-control/types'
 import type { Json } from '../../../src/types/supabase'
 import { provesReadyReplacement } from './replacement-proof'
 import { assertExactSource, frameFileReadiness, sourceReadiness, verifySourceLink } from './upload-integrity'
+import { processingPollSeconds, renderReadiness } from './render-readiness'
 
 type JsonRecord = { [key: string]: Json | undefined }
 
@@ -1121,10 +1122,10 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
           reason: 'Source changed before upload. A durable successor event owns the newer revision; no upload, share, notification or celebration performed for this revision.',
         })
       }
-      deferFrameioProcessing(event.created_at, 'Dropbox source changed; waiting for its durable successor event; inbox will retry')
+      deferFrameioProcessing(event.created_at, 'Dropbox source changed; waiting for its durable successor event; inbox will retry', 60)
     }
     if (sourceState !== 'ready') {
-      deferFrameioProcessing(event.created_at, 'Dropbox source is empty or has not been stable for 60 seconds; inbox will retry')
+      deferFrameioProcessing(event.created_at, 'Dropbox source is empty or has not been stable for 60 seconds; inbox will retry', 60)
     }
     // A new remote upload needs a short-lived Dropbox source URL. A resumed
     // transfer does not: Frame.io already owns its copy at that point.
@@ -1133,6 +1134,16 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
     const sourceUrl: string = tempLinkResp.link
     if (!sourceUrl) throw new Error('Dropbox did not return a temporary link')
     await verifySourceLink(sourceUrl, fileName, sourceSize)
+    const render = await renderReadiness(sourceUrl, fileName, sourceSize)
+    if (!render.ready) {
+      deferFrameioProcessing(event.created_at, `Dropbox render not finalized: ${render.reason}; inbox will retry`, 60)
+    }
+    // A render may advance while headers are inspected. Keep the pinned old
+    // revision out of Frame.io; the next sweep reconciles its durable successor.
+    const latest = await dbxPost('/files/get_metadata', { path: d.dropboxId })
+    if (sourceReadiness({ ...d, firstSeenAt: event.created_at }, latest) !== 'ready') {
+      deferFrameioProcessing(event.created_at, 'Dropbox source changed during verification; inbox will retry', 60)
+    }
     // Keep source evidence durable before the external write, including legacy
     // inbox rows created before source sizes were captured at ingestion.
     const checkpointPayload = { ...asJsonRecord(event.payload as Json), sizeBytes: sourceSize }
@@ -1752,11 +1763,12 @@ export function shouldTimeoutFrameioProcessing(
   return Number.isFinite(createdMs) && nowMs - createdMs >= FRAMEIO_PROCESSING_TIMEOUT_MS
 }
 
-function deferFrameioProcessing(createdAt: string | null | undefined, message: string): never {
+function deferFrameioProcessing(createdAt: string | null | undefined, message: string,
+  delaySeconds = processingPollSeconds(createdAt)): never {
   if (shouldTimeoutFrameioProcessing(createdAt)) {
     throw new Error(`${message.replace(/; inbox will retry$/, '')}; exceeded 24-hour processing window`)
   }
-  throw new DropboxEventDeferred(message)
+  throw new DropboxEventDeferred(message, delaySeconds)
 }
 
 async function frameioGet(path: string): Promise<any> {

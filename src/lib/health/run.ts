@@ -10,6 +10,17 @@ import type { CheckResult } from './diff'
 
 const dependencies = { runIntegrationProbes, checkCronFreshness, loadHeartbeats, getOrInitMonitorEpoch, registerCronSchedules }
 
+/** Confirm a transient read failure with a fresh, independently bounded read.
+ * Never substitute cached successes: two failures still mean unknown. */
+export async function readHeartbeatsWithRetry<T>(read: () => Promise<T>,
+  pause: () => Promise<void> = () => new Promise(resolve => setTimeout(resolve, 250))): Promise<T> {
+  try { return await read() } catch {
+    console.warn('[health-monitor] heartbeat read unavailable; confirming with one fresh read')
+    await pause()
+    return read()
+  }
+}
+
 // Injected for failure-path tests; production always uses the same shared owners.
 export async function runAllChecks(io = dependencies): Promise<CheckResult[]> {
   // Startup grace anchors to a PERSISTENT epoch (first-ever watchdog run), not a
@@ -26,7 +37,7 @@ export async function runAllChecks(io = dependencies): Promise<CheckResult[]> {
   }
   const [integrations, heartbeats, epoch, registered] = await Promise.all([
     io.runIntegrationProbes(),
-    io.loadHeartbeats().catch(error => { report('heartbeat_read', error); return null }),
+    readHeartbeatsWithRetry(io.loadHeartbeats).catch(error => { report('heartbeat_read', error); return null }),
     io.getOrInitMonitorEpoch().catch(error => { report('epoch_read', error); return null }),
     io.registerCronSchedules('vercel').then(() => true).catch(error => { report('configuration_write', error); return false }),
   ])

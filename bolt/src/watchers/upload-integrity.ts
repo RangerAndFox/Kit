@@ -57,11 +57,18 @@ export function assertSourceContentType(name: string, contentType: string): void
  * The transfer's exact byte count and playable state are checked again at Frame.io.
  */
 export async function verifySourceLink(url: string, name: string, size: number): Promise<void> {
+  await readSourceRange(url, name, size, 0, Math.min(size, 1024))
+}
+
+/** Bounded reads for container headers, never the whole render. Nonzero ranges
+ * must be honored: a full-file response cannot certify an atom at that offset. */
+export async function readSourceRange(url: string, name: string, size: number, offset: number,
+  count: number, signal = AbortSignal.timeout(15_000)): Promise<Uint8Array> {
   if (!Number.isSafeInteger(size) || size <= 0) throw new Error('Invalid Dropbox source size')
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(count) ||
+    count < 1 || count > 1024 || offset + count > size) throw new Error('Invalid Dropbox source range')
   let current = url
   let response: Response | undefined
-  const prefixSize = Math.min(size, 1024)
-  const signal = AbortSignal.timeout(15_000)
   for (let redirects = 0; redirects <= 3; redirects++) {
     const parsed = new URL(current)
     if (parsed.protocol !== 'https:' || parsed.username || parsed.password ||
@@ -70,7 +77,7 @@ export async function verifySourceLink(url: string, name: string, size: number):
     }
     response = await fetch(current, {
       method: 'GET', redirect: 'manual', signal,
-      headers: { Range: `bytes=0-${prefixSize - 1}`, 'Accept-Encoding': 'identity' },
+      headers: { Range: `bytes=${offset}-${offset + count - 1}`, 'Accept-Encoding': 'identity' },
     })
     if (![301, 302, 303, 307, 308].includes(response.status)) break
     await response.body?.cancel()
@@ -86,18 +93,24 @@ export async function verifySourceLink(url: string, name: string, size: number):
     if (encoding && encoding !== 'identity') throw new Error('Unexpected Dropbox download encoding')
     const length = response.headers.get('content-length')
     if (response.status === 206) {
-      if (response.headers.get('content-range') !== `bytes 0-${prefixSize - 1}/${size}` ||
-        (length !== null && Number(length) !== prefixSize)) throw new Error('Dropbox download preflight range/size mismatch')
+      if (response.headers.get('content-range') !== `bytes ${offset}-${offset + count - 1}/${size}` ||
+        (length !== null && Number(length) !== count)) throw new Error('Dropbox download preflight range/size mismatch')
+    } else if (offset !== 0) {
+      throw new Error('Dropbox download ignored required nonzero range')
     } else if (length !== null && Number(length) !== size) {
       throw new Error('Dropbox download preflight size mismatch')
     }
     if (!reader) throw new Error('Dropbox download preflight has no media body')
+    const bytes = new Uint8Array(count)
     let received = 0
-    while (received < prefixSize) {
+    while (received < count) {
       const chunk = await reader.read()
       if (chunk.done) throw new Error('Dropbox download preflight truncated media body')
-      received += chunk.value.byteLength
+      const take = Math.min(chunk.value.byteLength, count - received)
+      bytes.set(chunk.value.subarray(0, take), received)
+      received += take
     }
+    return bytes
   } finally {
     await reader?.cancel()
   }
