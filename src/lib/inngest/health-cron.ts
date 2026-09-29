@@ -16,6 +16,7 @@ import { runAllChecks } from '../health/run'
 import { loadHealthRows, statusMap, saveHealthState } from '../health/state'
 import { diffHealth } from '../health/diff'
 import { postSlackAsKit } from '../health/notify'
+import { healthAlertText } from '../health/alert-text'
 
 export const healthWatchdog = inngest.createFunction(
   {
@@ -34,15 +35,7 @@ export const healthWatchdog = inngest.createFunction(
       await step.run('alert', async () => {
         const channel = process.env.KIT_HEALTH_CHANNEL_ID
         if (!channel) throw new Error('KIT_HEALTH_CHANNEL_ID is not configured')
-        const lines: string[] = []
-        if (diff.downed.length) {
-          lines.push(':rotating_light: *Kit health — something went down*')
-          for (const d of diff.downed) lines.push(`:red_circle: *${d.label}* — ${d.detail || 'failing'}`)
-        }
-        if (diff.recovered.length) {
-          for (const r of diff.recovered) lines.push(`:large_green_circle: *${r.label}* recovered`)
-        }
-        const delivered = await postSlackAsKit(channel, lines.join('\n'))
+        const delivered = await postSlackAsKit(channel, healthAlertText(diff))
         if (!delivered) throw new Error('Kit health alert delivery failed')
       })
     }

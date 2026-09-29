@@ -9,7 +9,7 @@ import { drainDropboxInbox, DropboxEventDeferred, handleNewDelivery } from '../s
 
 const delivery = { path: '/production/2026/2629_Microsoft_MRA/09_Outgoing/01_Client Progress/video.mp4',
   name: 'video.mp4', safeName: '2629_Microsoft_MRA', subfolder: '01_Client Progress', year: '2026',
-  dropboxId: 'id:video', rev: 'abcdef12345', sizeBytes: 123 }
+  dropboxId: 'id:video', rev: 'abcdef12345', sizeBytes: 256 }
 const event = { id: 'event', claim_token: 'lease', attempt_count: 1, created_at: '2026-09-22T19:00:00Z',
   event_key: 'key', event_type: 'frameio_delivery' as const, payload: { ...delivery } }
 const app = { client: { chat: { postMessage: mocks.message } } } as unknown as App
@@ -27,6 +27,8 @@ let successorRows: Array<{ id: string; payload: Record<string, unknown>; retired
 let successorReadError: boolean
 let currentProjectId: string | null
 let currentProjectAliasOnly: boolean
+let sourceBytes: Buffer
+let changeAfterInspection: boolean
 const writes: Array<{ table: string; value: Record<string, unknown> }> = []
 const queries: Array<{ table: string; filters: unknown[][] }> = []
 function json(body: unknown) { return new Response(JSON.stringify(body)) }
@@ -38,7 +40,14 @@ beforeEach(() => {
   retiredRevision = null; retirementReadError = false
   sourcePath = delivery.path; successorRows = null; successorReadError = false; currentProjectId = 'project'
   currentProjectAliasOnly = false
-  actualFile = { id: 'file', parent_id: 'folder', project_id: 'frame-project', file_size: 123, media_type: 'video/mp4', status: 'transcoding' }
+  sourceBytes = Buffer.alloc(256)
+  sourceBytes.writeUInt32BE(128); sourceBytes.write('moov', 4)
+  sourceBytes.writeUInt32BE(108, 8); sourceBytes.write('mvhd', 12)
+  sourceBytes.writeUInt32BE(1000, 28); sourceBytes.writeUInt32BE(1000, 32)
+  sourceBytes.writeUInt32BE(12, 116); sourceBytes.write('trak', 120)
+  sourceBytes.writeUInt32BE(128, 128); sourceBytes.write('mdat', 132)
+  changeAfterInspection = false
+  actualFile = { id: 'file', parent_id: 'folder', project_id: 'frame-project', file_size: 256, media_type: 'video/mp4', status: 'transcoding' }
   mocks.from.mockImplementation((table: string) => {
     let mutation = false
     const filters: unknown[][] = []; queries.push({ table, filters })
@@ -73,8 +82,11 @@ beforeEach(() => {
     return query
   })
   mocks.fetch.mockImplementation(async (url: string, options: RequestInit = {}) => {
-    if (url === 'https://uc123.dl.dropboxusercontent.com/file' && options.method === 'GET') return new Response(new Uint8Array(123), { headers: { 'content-type': 'video/mp4', 'content-length': '123' } })
-    const metadata = { '.tag': 'file', id: delivery.dropboxId, rev: sourceRev, size: 123, path_display: sourcePath, server_modified: '2026-09-22T19:00:00Z' }
+    if (url === 'https://uc123.dl.dropboxusercontent.com/file' && options.method === 'GET') {
+      if (changeAfterInspection) sourceRev = 'abcdef99999'
+      return new Response(sourceBytes, { headers: { 'content-type': 'video/mp4', 'content-length': '256' } })
+    }
+    const metadata = { '.tag': 'file', id: delivery.dropboxId, rev: sourceRev, size: 256, path_display: sourcePath, server_modified: '2026-09-22T19:00:00Z' }
     if (url.endsWith('/files/get_metadata')) return json(metadata)
     if (url.endsWith('/files/get_temporary_link')) return json({ metadata, link: 'https://uc123.dl.dropboxusercontent.com/file' })
     if (url.endsWith('/projects/frame-project')) return json({ data: { root_folder_id: 'root' } })
@@ -89,6 +101,32 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.unstubAllEnvs() })
 
 describe('upload pipeline integrity boundary', () => {
+  it('holds a quiet but unfinished render without uploading or notifying, at a one-minute cadence', async () => {
+    prior = null; sourceBytes.fill(0)
+    await expect(handleNewDelivery(app, { ...delivery }, { ...event })).rejects.toMatchObject({
+      delaySeconds: 60, message: expect.stringMatching(/not finalized/),
+    })
+    expect(writes).toEqual([])
+    expect(mocks.fetch.mock.calls.some(([url]) => url.endsWith('/remote_upload'))).toBe(false)
+    expect(mocks.message).not.toHaveBeenCalled()
+  })
+  it('defers a newer revision arriving during container verification without starting an obsolete upload', async () => {
+    prior = null; changeAfterInspection = true
+    await expect(handleNewDelivery(app, { ...delivery }, { ...event })).rejects.toMatchObject({
+      delaySeconds: 60, message: expect.stringMatching(/changed during verification/),
+    })
+    expect(writes).toEqual([])
+    expect(mocks.fetch.mock.calls.some(([url]) => url.endsWith('/remote_upload'))).toBe(false)
+  })
+  it('defers a fresh source for one minute without consuming its retry budget', async () => {
+    prior = null
+    mocks.rpc.mockImplementation(async (name: string) => ({ error: null, data: name === 'claim_dropbox_events'
+      ? [{ ...event, created_at: new Date().toISOString() }] : true }))
+    expect(await drainDropboxInbox(app, { maxBatches: 1 })).toMatchObject({ deferred: 1, failed: 0 })
+    expect(mocks.rpc).toHaveBeenCalledWith('defer_dropbox_event', expect.objectContaining({ p_delay_seconds: 60 }))
+    expect(mocks.rpc).not.toHaveBeenCalledWith('fail_dropbox_event', expect.anything())
+    expect(mocks.message).not.toHaveBeenCalled()
+  })
   it('hands a renamed revision to its durable successor without uploading or notifying', async () => {
     prior = null; sourceRev = 'abcdef99999'; sourcePath = delivery.path.replace('video.mp4', 'renamed.mp4')
     mocks.rpc.mockImplementation(async (name: string) => ({ error: null, data: name === 'claim_dropbox_events' ? [{ ...event }] : true }))
@@ -193,7 +231,7 @@ describe('upload pipeline integrity boundary', () => {
     await expect(handleNewDelivery(app, { ...delivery }, { ...event })).rejects.toBeInstanceOf(DropboxEventDeferred)
     const call = mocks.fetch.mock.calls.find(([url]) => url.endsWith('/get_temporary_link'))
     expect(JSON.parse(call?.[1].body)).toEqual({ path: `rev:${delivery.rev}` })
-    expect(writes[0]).toMatchObject({ table: 'dropbox_event_inbox', value: { payload: { sizeBytes: 123 } } })
+    expect(writes[0]).toMatchObject({ table: 'dropbox_event_inbox', value: { payload: { sizeBytes: 256 } } })
     expect(queries.find(q => q.table === 'dropbox_event_inbox')?.filters).toContainEqual(['eq', 'claim_token', 'lease'])
   })
   it('never starts an upload after losing the source checkpoint lease', async () => {
