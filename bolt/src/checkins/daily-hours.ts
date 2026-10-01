@@ -17,6 +17,7 @@ import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { CHECKIN_STALE_AFTER_DAYS, checkinToday, ymdAddDays } from './date'
 import type { ActiveChannel } from './slack-activity'
+import { checkinActionIsCurrent } from './reply-ownership'
 
 interface CandidateProject {
   harvest_project_id?: number
@@ -125,12 +126,15 @@ export async function nudgePendingCheckins(app: App): Promise<{ nudged: number }
       if (Number.isFinite(ageMs) && ageMs < 48 * 60 * 60 * 1000) continue
     }
     try {
+      // The scan may race a confirmation. Also reject historical duplicate
+      // cards whose source reply belongs to a different check-in.
+      if (!await checkinActionIsCurrent(r.id, r.status)) continue
       // Name the day: with the window reaching back, "today's hours" would be
       // wrong for anything the reminder catches up on.
       const when = r.check_in_date === today ? 'today' : `*${r.check_in_date}*`
       const text =
         r.status === 'parsed'
-          ? `:wave: Friendly nudge — your hours for ${when} are parsed but still waiting on the *Confirm & log* button above.`
+          ? `:wave: Friendly nudge — you have an unconfirmed hours card for ${when}. Review its dates and hours before selecting *Confirm & log*.`
           : `:wave: Friendly nudge — got a sec to log your hours for ${when}? Just reply with what you worked on.`
       await app.client.chat.postMessage({
         channel: r.dm_channel_id,
@@ -145,6 +149,7 @@ export async function nudgePendingCheckins(app: App): Promise<{ nudged: number }
           nudged_at: new Date().toISOString(),
         })
         .eq('id', r.id)
+        .eq('status', r.status)
       nudged++
     } catch (err: any) {
       console.warn(`[daily-hours] nudge failed for ${r.slack_user_id}: ${err.message}`)

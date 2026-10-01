@@ -173,7 +173,7 @@ Rules:
  */
 export async function postMeme(
   app: App,
-  opts: { channel: string; headline: string; briefing: string; altText?: string; templateIndex?: number; publicOccasion?: keyof typeof PUBLIC_MEME_BRIEFINGS; beforeSend?: () => Promise<void>; clientMsgId?: string },
+  opts: { channel: string; headline: string; briefing: string; altText?: string; templateIndex?: number; publicOccasion?: keyof typeof PUBLIC_MEME_BRIEFINGS; beforeSend?: () => Promise<void>; clientMsgId?: string; footerText?: string },
 ): Promise<{ posted: boolean; template: string; image: boolean; reason?: string; ts?: string }> {
   const { channel, headline, briefing } = opts
   if (!channel) return { posted: false, template: '', image: false, reason: 'no channel' }
@@ -194,8 +194,16 @@ export async function postMeme(
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: textMeme(template, boxes) } })
   }
 
+  // Internal-only context belongs below the meme, never in generation, alt
+  // text or the public image. One Slack payload keeps its delivery atomic.
+  const footer = opts.footerText?.trim().slice(0, 2800)
+  if (footer) blocks.push({ type: 'section', text: { type: 'plain_text', text: footer, emoji: false } })
+
   await opts.beforeSend?.()
-  const message = { channel, text: headline.replace(/[<>*_:]/g, ''), blocks, ...(opts.clientMsgId ? { client_msg_id: opts.clientMsgId } : {}) }
+  const safeFooter = footer?.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  const message = { channel, text: [headline.replace(/[<>*_:]/g, ''), safeFooter].filter(Boolean).join('\n'), blocks,
+    ...(footer ? { parse: 'none' as const, link_names: false, unfurl_links: false, unfurl_media: false } : {}),
+    ...(opts.clientMsgId ? { client_msg_id: opts.clientMsgId } : {}) }
   const sent = opts.clientMsgId ? await sendCultureMessage(message) : await app.client.chat.postMessage(message)
   if (!sent.ok || !sent.ts) throw new Error('Slack did not acknowledge the meme.')
   return { posted: true, template: template.name, image: Boolean(imageUrl), ts: sent.ts }

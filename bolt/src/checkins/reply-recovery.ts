@@ -11,8 +11,9 @@
  *   - scans only recent, open scheduled check-ins;
  *   - considers only the expected Slack user after the reminder timestamp;
  *   - requires explicit hours/skip intent before invoking the parser;
- *   - delegates to handleCheckinReply, whose database compare-and-set means a
- *     live event and this recovery pass cannot process the same reply twice.
+ *   - bounds flat replies by the next prompt (including closed check-ins);
+ *   - atomically claims every message in a recovered reply burst; persisted
+ *     reply ownership prevents reuse across days and live/recovery writers.
  */
 
 import type { App } from '@slack/bolt'
@@ -37,7 +38,7 @@ export interface RecoverableCheckin {
 export interface ReplyRecoveryDeps {
   loadOpen(): Promise<RecoverableCheckin[]>
   readMessages(row: RecoverableCheckin): Promise<SlackMessageLike[]>
-  handle(row: RecoverableCheckin, replyText: string, replyTs: string): Promise<boolean>
+  handle(row: RecoverableCheckin, replyText: string, replyTs: string, replyTimestamps: string[]): Promise<boolean>
   handleParsed(row: RecoverableCheckin, replyText: string): Promise<boolean>
 }
 
@@ -57,6 +58,17 @@ export interface ReplyRecoveryTally {
  */
 export function recoveryAfterTs(row: Pick<RecoverableCheckin, 'dm_ts' | 'reply_ts'>): string {
   return row.reply_ts || (row.dm_ts as string)
+}
+
+/** Explicit replies to this reminder remain eligible after a newer prompt. */
+export function messagesForRecovery(
+  messages: SlackMessageLike[], row: RecoverableCheckin, nextPromptTs: string | null,
+): SlackMessageLike[] {
+  return messages.filter(message => {
+    if (Number(message.ts) <= Number(recoveryAfterTs(row))) return false
+    if (message.thread_ts && message.thread_ts !== message.ts) return message.thread_ts === row.dm_ts
+    return !nextPromptTs || Number(message.ts) < Number(nextPromptTs)
+  })
 }
 
 const SKIP_RE = /^(?:skip|off|no work|didn't work|pto)[.\s!]*$/i
@@ -107,9 +119,19 @@ export function makeReplyRecoveryDeps(app: App): ReplyRecoveryDeps {
       // returns the row to `sent`, but must not make the rejected reply visible
       // to this recovery poll again.
       const afterTs = recoveryAfterTs(row)
-      const history: any = await app.client.conversations.history({
+      // Open-only scans cannot see that a later check-in has already logged.
+      // Query ALL states so yesterday cannot ingest today's completed reply.
+      const { data: next, error: nextError } = await sb.from('daily_hours_checkins')
+        .select('dm_ts').eq('staff_id', row.staff_id).eq('dm_channel_id', channel)
+        .gt('dm_ts', rootTs).order('dm_ts', { ascending: true }).limit(1)
+      if (nextError) throw new Error(`load next check-in prompt: ${nextError.message}`)
+      const nextPromptTs = next?.[0]?.dm_ts || null
+      const history: any = nextPromptTs && Number(afterTs) >= Number(nextPromptTs)
+        ? { messages: [] }
+        : await app.client.conversations.history({
         channel,
         oldest: afterTs,
+        ...(nextPromptTs ? { latest: nextPromptTs } : {}),
         inclusive: true,
         limit: 100,
       })
@@ -135,11 +157,11 @@ export function makeReplyRecoveryDeps(app: App): ReplyRecoveryDeps {
       for (const message of [...(history.messages || []), ...threadMessages]) {
         if (message?.ts && Number(message.ts) > Number(afterTs)) byTs.set(message.ts, message)
       }
-      return [...byTs.values()]
+      return messagesForRecovery([...byTs.values()], row, nextPromptTs)
     },
 
-    handle(row, replyText, replyTs) {
-      return handleCheckinReply({ app, open: row as any, replyText, replyTs })
+    handle(row, replyText, replyTs, replyTimestamps) {
+      return handleCheckinReply({ app, open: row as any, replyText, replyTs, replyTimestamps })
     },
 
     handleParsed(row, replyText) {
@@ -148,6 +170,7 @@ export function makeReplyRecoveryDeps(app: App): ReplyRecoveryDeps {
         slackUserId: row.slack_user_id,
         replyText,
         responseChannelId: row.dm_channel_id || undefined,
+        expectedCheckinId: row.id,
       })
     },
   }
@@ -178,7 +201,7 @@ export async function recoverMissedCheckinReplies(
       }
       const handled = row.status === 'parsed'
         ? await deps.handleParsed(row, burst.text)
-        : await deps.handle(row, burst.text, burst.ts)
+        : await deps.handle(row, burst.text, burst.ts, burst.messageTimestamps)
       if (handled) tally.recovered++
       else tally.ignored++
     } catch (err: any) {

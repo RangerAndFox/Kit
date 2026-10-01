@@ -52,9 +52,10 @@ export async function postCultureItem(app: App, config: CultureWorkspace, item: 
       const occasion = item.kind === 'birthday' ? 'birthday' : item.kind === 'holiday' ? 'holiday' : item.kind === 'delivery' ? 'delivery_prepared' : undefined
       const headline = item.kind === 'birthday' ? `:birthday: *Happy birthday, ${escapeSlack(item.person_name || 'teammate')}!*`
         : item.kind === 'delivery' ? ':package: *Delivery files ready — nice work, team!*' : `:tada: *${escapeSlack(item.name)}*`
-      // Project names are intentionally not sent to the team channel or renderer.
-      void projectName
+      // Owner-approved project identification stays in verified internal Slack,
+      // not in the generated caption or public Imgflip image.
       return postMeme(app, { channel: item.channel_id, headline, briefing: item.briefing || item.name,
+        footerText: item.kind === 'delivery' && projectName ? `Project: ${projectName}` : undefined,
         publicOccasion: occasion, templateIndex: item.template_id === 'rotation' ? undefined : CELEBRATION_TEMPLATES.findIndex(t => t.id === item.template_id),
         beforeSend, clientMsgId: job.id })
     },
@@ -95,12 +96,12 @@ export async function managedTimesheet(app: App): Promise<{ posted: boolean; tem
   }
   return { posted, template: 'Culture Center', image: false, reason: posted ? undefined : 'Paused or already posted; check Culture Center.' }
 }
-export async function managedDelivery(app: App, projectName: string): Promise<boolean | null> {
+export async function managedDelivery(app: App, projectName: string, projectLabel = projectName): Promise<boolean | null> {
   const config = await state(app)
   if (!active(config)) return null
   let posted = false
   for (const item of (await items(config)).filter(row => row.kind === 'delivery' && row.status === 'enabled')) {
-    posted = await postCultureItem(app, config, item, `${localParts(new Date(), item.timezone).date}:${digest(projectName)}`, projectName) || posted
+    posted = await postCultureItem(app, config, item, `${localParts(new Date(), item.timezone).date}:${digest(projectName)}`, projectLabel) || posted
   }
   return posted
 }

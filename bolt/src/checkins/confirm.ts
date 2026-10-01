@@ -8,6 +8,7 @@
 
 import type { App } from '@slack/bolt'
 import { checkinIntentKey } from './intent'
+import { checkinActionIsCurrent, isReplyOwnershipConflict } from './reply-ownership'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import {
   createTimeEntry,
@@ -116,6 +117,7 @@ export async function handleCheckinConfirm(opts: {
 
   const entries = Array.isArray(checkin.parsed_entries) ? checkin.parsed_entries : []
   if (entries.length === 0) return
+  if (!await checkinActionIsCurrent(checkin.id, 'parsed')) return
 
   const sb = createAdminClient()
 
@@ -149,6 +151,7 @@ export async function handleCheckinConfirm(opts: {
     .eq('status', 'parsed')
     .select('id')
   if (claimError) {
+    if (isReplyOwnershipConflict(claimError)) return
     console.error(`[checkin-confirm] claim write failed: ${claimError.message}`)
     await postResult({
       app,

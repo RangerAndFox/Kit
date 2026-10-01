@@ -20,6 +20,7 @@ import {
 import { checkinToday, resolveSpentDate, resolveDayPhrase, inferSharedDayFromText } from './date'
 import { resolveUserTimezone } from './user-tz'
 import type { Json } from '../../../src/types/supabase'
+import { isReplyOwnershipConflict } from './reply-ownership'
 
 /**
  * Cheap pre-filter: does the message even mention hours? Avoids burning
@@ -161,6 +162,7 @@ export async function handleAdhocHoursEntry(opts: {
     .select('id')
     .single()
   if (error || !row) {
+    if (isReplyOwnershipConflict(error)) return true
     console.warn(`[adhoc-hours] insert failed: ${error?.message}`)
     await app.client.chat.postMessage({
       channel: channelId,
@@ -175,7 +177,7 @@ export async function handleAdhocHoursEntry(opts: {
     channel: channelId,
     thread_ts: threadTs,
     text: 'Confirm hours',
-    blocks: buildConfirmBlocks({ checkinId: row.id, entries: resolved, anchorDate: today }),
+    blocks: buildConfirmBlocks({ checkinId: row.id, entries: resolved, anchorDate: today, currentDate: today }),
   })
 
   return true

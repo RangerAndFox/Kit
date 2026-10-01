@@ -28,6 +28,7 @@ import {
 } from './date'
 import { handleCheckinConfirm, handleCheckinRedo } from './confirm'
 import type { Json } from '../../../src/types/supabase'
+import { isReplyOwnershipConflict } from './reply-ownership'
 
 interface OpenCheckin {
   id: string
@@ -157,10 +158,13 @@ export async function handleParsedCheckinText(opts: {
   replyText: string
   /** Channel where the typed decision arrived; defaults to the Assistant DM. */
   responseChannelId?: string
+  /** Recovery must not redirect an old yes/redo to a different pending card. */
+  expectedCheckinId?: string
 }): Promise<boolean> {
   const decision = parseConfirmDecision(opts.replyText)
   if (!decision) return false
   const parsedRow = await findParsedCheckin(opts.slackUserId)
+  if (opts.expectedCheckinId && parsedRow?.id !== opts.expectedCheckinId) return false
   console.log(
     `[checkin-confirm] typed "${opts.replyText.slice(0, 20)}" from ${opts.slackUserId} → decision=${decision}, parsedRow=${parsedRow?.id || 'none'}`,
   )
@@ -365,8 +369,11 @@ export function buildConfirmBlocks(opts: {
   entries: ParsedEntry[]
   /** The check-in day; entries logged to a different day are labelled. */
   anchorDate?: string
+  /** Actual current local date, distinct from an older check-in's anchor. */
+  currentDate?: string
 }) {
   const { checkinId, entries, anchorDate } = opts
+  const currentDate = opts.currentDate || checkinToday()
   const entryLine = (e: ParsedEntry) => {
     if (e.resolution === 'matched') {
       const note = e.notes ? ` _(${e.notes})_` : ''
@@ -385,7 +392,8 @@ export function buildConfirmBlocks(opts: {
   }
   const datedLines = [...byDate.entries()].flatMap(([date, datedEntries]) => {
     const exactDate = date === 'Date not specified' ? date : formatLongDate(date)
-    const heading = date === anchorDate ? `*Today — ${exactDate}*` : `*${exactDate}*`
+    // An old reminder is not "Today" merely because it is the parse anchor.
+    const heading = date === currentDate ? `*Today — ${exactDate}*` : `*${exactDate}*`
     return [heading, ...datedEntries.map(entryLine)]
   })
   const allMatched = entries.every((e) => e.resolution === 'matched')
@@ -458,6 +466,7 @@ export async function handleCheckinReply(opts: {
   open: OpenCheckin
   replyText: string
   replyTs: string
+  replyTimestamps?: string[]
 }): Promise<boolean> {
   const { app, open, replyText, replyTs } = opts
   const sb = createAdminClient()
@@ -467,13 +476,14 @@ export async function handleCheckinReply(opts: {
   // Claim the row (compare-and-set on the open statuses) so two rapid
   // messages don't both run the parser. Losing the race means another
   // message is mid-parse — let this one fall through to the orchestrator.
-  const { data: claimed } = await sb
-    .from('daily_hours_checkins')
-    .update({ status: 'replied', reply_ts: replyTs, updated_at: new Date().toISOString() })
-    .eq('id', open.id)
-    .in('status', ['sent', 'nudged'])
-    .select('id')
-  if (!claimed || claimed.length === 0) return false
+  const { data: claimed, error: claimError } = await sb.rpc('claim_checkin_reply', {
+    p_checkin_id: open.id,
+    p_reply_timestamps: opts.replyTimestamps || [replyTs],
+  })
+  // Consumed replies must not fall through to create a fresh adhoc card.
+  if (isReplyOwnershipConflict(claimError)) return true
+  if (claimError) throw new Error(`check-in reply claim failed: ${claimError.message}`)
+  if (!claimed) return false
 
   // Re-open the check-in (undo the claim) — used on every path where this
   // message turned out not to complete the check-in. Keep reply_ts as the
