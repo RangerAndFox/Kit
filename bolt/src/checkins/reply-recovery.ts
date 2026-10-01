@@ -12,7 +12,7 @@
  *   - considers only the expected Slack user after the reminder timestamp;
  *   - requires explicit hours/skip intent before invoking the parser;
  *   - bounds flat replies by the next prompt (including closed check-ins);
- *   - delegates one Slack message at a time, like the live handler; persisted
+ *   - atomically claims every message in a recovered reply burst; persisted
  *     reply ownership prevents reuse across days and live/recovery writers.
  */
 
@@ -38,7 +38,7 @@ export interface RecoverableCheckin {
 export interface ReplyRecoveryDeps {
   loadOpen(): Promise<RecoverableCheckin[]>
   readMessages(row: RecoverableCheckin): Promise<SlackMessageLike[]>
-  handle(row: RecoverableCheckin, replyText: string, replyTs: string): Promise<boolean>
+  handle(row: RecoverableCheckin, replyText: string, replyTs: string, replyTimestamps: string[]): Promise<boolean>
   handleParsed(row: RecoverableCheckin, replyText: string): Promise<boolean>
 }
 
@@ -160,8 +160,8 @@ export function makeReplyRecoveryDeps(app: App): ReplyRecoveryDeps {
       return messagesForRecovery([...byTs.values()], row, nextPromptTs)
     },
 
-    handle(row, replyText, replyTs) {
-      return handleCheckinReply({ app, open: row as any, replyText, replyTs })
+    handle(row, replyText, replyTs, replyTimestamps) {
+      return handleCheckinReply({ app, open: row as any, replyText, replyTs, replyTimestamps })
     },
 
     handleParsed(row, replyText) {
@@ -191,9 +191,7 @@ export async function recoverMissedCheckinReplies(
         continue
       }
       const messages = await deps.readMessages(row)
-      // Do not combine independently delivered messages under only the first
-      // message's ownership key. Match live handling: one event, one claim.
-      const burst = extractReplyBurst(messages, row.slack_user_id, { burstGapMinutes: 0 })
+      const burst = extractReplyBurst(messages, row.slack_user_id)
       const eligible = row.status === 'parsed'
         ? !!burst && !!parseConfirmDecision(burst.text)
         : !!burst && looksLikeRecoverableCheckinReply(burst.text)
@@ -203,7 +201,7 @@ export async function recoverMissedCheckinReplies(
       }
       const handled = row.status === 'parsed'
         ? await deps.handleParsed(row, burst.text)
-        : await deps.handle(row, burst.text, burst.ts)
+        : await deps.handle(row, burst.text, burst.ts, burst.messageTimestamps)
       if (handled) tally.recovered++
       else tally.ignored++
     } catch (err: any) {

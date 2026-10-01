@@ -19,6 +19,7 @@ test('replies have durable cross-checkin ownership without suppressing legitimat
         ('${id(13)}','${staff}','DM',null,'sent',now()),
         ('${id(14)}','${staff}','DM',null,'sent',now());`)
     await db.exec(`begin; ${await readFile(new URL('../supabase/migrations/20261001172856_checkin_reply_ownership.sql', import.meta.url), 'utf8')} commit;`)
+    await db.exec(await readFile(new URL('../supabase/migrations/20261001173206_checkin_reply_burst_claim.sql', import.meta.url), 'utf8'))
     const current = async (n: number, status: string) =>
       (await db.query<{ ok: boolean }>('select checkin_action_is_current($1,$2) ok', [id(n), status])).rows[0].ok
     assert.equal(await current(11, 'parsed'), false, 'stale copy cannot remind or confirm')
@@ -42,10 +43,25 @@ test('replies have durable cross-checkin ownership without suppressing legitimat
     // Closing stale cards retains history, never invents a successful receipt.
     await db.exec(`update daily_hours_checkins set status='skipped' where id='${id(11)}'`)
     assert.equal(await current(11, 'parsed'), false)
+    const claim = async (n: number, timestamps: string[]) => (await db.query<{ ok: boolean }>(
+      'select claim_checkin_reply($1,$2) ok', [id(n), timestamps],
+    )).rows[0].ok
+    await db.exec(`insert into daily_hours_checkins values
+      ('${id(21)}','${staff}','DM',null,'sent',now()),
+      ('${id(22)}','${staff}','DM',null,'sent',now());`)
+    assert.equal(await claim(21, ['500.1', '500.2']), true)
+    assert.equal(await claim(21, ['500.1', '500.2']), false, 'row CAS rejects repeated live/recovery claim')
+    await assert.rejects(claim(22, ['499.1', '500.2']), /checkin_reply_already_owned/)
+    assert.equal(await current(22, 'sent'), true, 'overlapping second message rolls back the whole burst')
+    assert.equal((await db.query<{ n: number }>("select count(*)::int n from checkin_reply_claims where reply_ts='499.1'")).rows[0].n, 0)
+    await assert.rejects(claim(22, []), /invalid check-in/)
+    await assert.rejects(claim(22, ['bad timestamp']), /invalid check-in/)
+    assert.equal(await claim(22, ['600.1', '600.2']), true, 'all independent lines are retained')
     for (const role of ['anon', 'authenticated']) {
       await db.exec(`set role ${role}`)
       await assert.rejects(db.exec('select * from checkin_reply_claims'), /permission denied/)
       await assert.rejects(current(13, 'parsed'), /permission denied/)
+      await assert.rejects(claim(21, ['700.1']), /permission denied/)
       await db.exec('reset role')
     }
     await db.exec('set role service_role')

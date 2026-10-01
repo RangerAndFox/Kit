@@ -34,6 +34,8 @@ export interface ReplyBurst {
   ts: string
   /** How many messages were joined into `text`. */
   messageCount: number
+  /** Every constituent event must be claimed before a recovered burst is parsed. */
+  messageTimestamps: string[]
   /** Messages inside the search window that were left out (a later burst). */
   excludedCount: number
 }
@@ -80,6 +82,7 @@ export function extractReplyBurst(
     text: burst.map((m) => (m.text as string).trim()).join('\n'),
     ts: burst[0].ts,
     messageCount: burst.length,
+    messageTimestamps: burst.map(m => m.ts),
     excludedCount: mine.length - burst.length,
   }
 }

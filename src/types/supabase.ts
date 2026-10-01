@@ -6322,6 +6322,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      claim_checkin_reply: {
+        Args: { p_checkin_id: string; p_reply_timestamps: string[] }
+        Returns: boolean
+      }
       checkin_action_is_current: {
         Args: { p_checkin_id: string; p_expected_status: string }
         Returns: boolean

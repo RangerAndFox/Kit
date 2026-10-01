@@ -36,7 +36,7 @@ describe('missed hours reply recovery', () => {
     expect(looksLikeRecoverableCheckinReply("what's the Frame.io link?")).toBe(false)
   })
 
-  it('recovers one message per ownership key, matching live handling', async () => {
+  it('recovers a contiguous burst with ownership keys for every message', async () => {
     const handle = vi.fn(async () => true)
     const deps: ReplyRecoveryDeps = {
       loadOpen: async () => [ROW],
@@ -55,8 +55,9 @@ describe('missed hours reply recovery', () => {
     expect(handle).toHaveBeenCalledOnce()
     expect(handle).toHaveBeenCalledWith(
       ROW,
-      '2 hours Fabric',
+      '2 hours Fabric\n30 mins Biz Apps',
       '1001.000001',
+      ['1001.000001', '1002.000001'],
     )
   })
 
