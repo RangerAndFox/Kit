@@ -50,7 +50,8 @@ it.each(['array', 'object'])('managed posting handles a %s RPC claim, verifies d
   expect(mocks.verify).toHaveBeenCalledWith(config.workspace_id,item.channel_id)
   expect(mocks.sends).toHaveBeenCalledTimes(1)
   expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({status:'posted',slack_ts:'123.456'}))
-  expect(JSON.stringify(mocks.post.mock.calls)).not.toContain('Secret client project')
+  expect(mocks.post.mock.calls[0][1].footerText).toBe('Project: Secret client project')
+  expect(mocks.post.mock.calls[0][1].briefing).not.toContain('Secret client project')
 })
 it('an already claimed occurrence performs no generation or Slack send', async () => {
   mocks.rpc.mockResolvedValue({data:null,error:null})

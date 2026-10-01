@@ -62,6 +62,29 @@ describe('image caption boundary', () => {
 })
 
 describe('Slack delivery and public-image privacy', () => {
+  it.each(['image', 'text', 'empty'] as const)('keeps the project beneath the %s meme in one acknowledged post', async mode => {
+    if (mode === 'text') captions(['Files ready', 'Team says 🎉'])
+    if (mode === 'empty') captions([])
+    const { app, postMessage } = slack()
+    const footerText = 'Project: 2638_Microsoft_CS_Demo'
+    await postMeme(app, { channel: 'C_FIXTURE', headline: 'Files ready', briefing: '', publicOccasion: 'delivery_prepared', templateIndex: 1, footerText })
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    const message = postMessage.mock.calls[0][0]
+    expect(message.blocks.at(-1)).toEqual({ type: 'section', text: { type: 'plain_text', text: footerText, emoji: false } })
+    expect(message.text).toContain(footerText)
+    expect(JSON.stringify(createCaption.mock.calls)).not.toContain('2638')
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain('2638')
+    if (mode === 'image') expect(message.blocks[1].alt_text).not.toContain('2638')
+  })
+  it('treats project names as literal text without Slack mentions or link unfurls', async () => {
+    const { app, postMessage } = slack()
+    const footerText = 'Project: 2638_<!channel> & <@U123>'
+    await postMeme(app, { channel: 'C_FIXTURE', headline: 'Files ready', briefing: '', footerText })
+    const message = postMessage.mock.calls[0][0]
+    expect(message.blocks.at(-1).text).toEqual({ type: 'plain_text', text: footerText, emoji: false })
+    expect(message.text).toContain('2638_&lt;!channel&gt; &amp; &lt;@U123&gt;')
+    expect(message).toMatchObject({ parse: 'none', link_names: false, unfurl_links: false, unfurl_media: false })
+  })
   it('drops unsafe generated captions and posts only the approved headline', async () => {
     captions(['Our budget is $5000', 'Contact private@example.test'])
     const { app, postMessage } = slack()

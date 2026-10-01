@@ -388,7 +388,8 @@ async function dispatchDropboxEvent(app: App, event: ClaimedDropboxEvent): Promi
     const safeName = String(payload.safeName || '')
     const projectName = safeName.replace(/^\d+[A-Za-z]?[_-]/, '').replace(/[_-]+/g, ' ').trim() || safeName
     import('../celebrations/celebrations')
-      .then(({ postDeliveryCelebration }) => postDeliveryCelebration(app, projectName))
+      // Retain the existing dedupe key while displaying the full project ID/name.
+      .then(({ postDeliveryCelebration }) => postDeliveryCelebration(app, projectName, safeName || projectName))
       .catch((e) => console.warn(`[dropbox-watcher] delivery celebration failed: ${e?.message || e}`))
   }
 }

@@ -186,9 +186,9 @@ export async function scheduleCelebration(label: string, fireDate: string, creat
  * folder. Deduped to one meme per project per day via the unique index: the
  * insert is the claim; only the first drop of the day posts.
  */
-export async function postDeliveryCelebration(app: App, projectName: string): Promise<boolean> {
+export async function postDeliveryCelebration(app: App, projectName: string, projectLabel = projectName): Promise<boolean> {
   const { managedDelivery } = await import('../culture/runner')
-  const managed = await managedDelivery(app, projectName)
+  const managed = await managedDelivery(app, projectName, projectLabel)
   if (managed !== null) return managed
   const channel = teamChannel()
   if (!channel || !projectName) return false
@@ -196,7 +196,8 @@ export async function postDeliveryCelebration(app: App, projectName: string): Pr
   if (!(await claimOnce('delivery', projectName, today))) return false
   await postMeme(app, {
     channel,
-    headline: `:package: *Delivery files ready — ${projectName}*`,
+    headline: ':package: *Delivery files ready — nice work, team!*',
+    footerText: `Project: ${projectLabel}`,
     briefing: 'The team prepared files in the delivery folder. This does not confirm client receipt or approval.',
     altText: 'delivery preparation meme',
     publicOccasion: 'delivery_prepared',

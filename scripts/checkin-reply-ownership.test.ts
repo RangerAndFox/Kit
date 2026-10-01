@@ -19,7 +19,7 @@ test('replies have durable cross-checkin ownership without suppressing legitimat
         ('${id(13)}','${staff}','DM',null,'sent',now()),
         ('${id(14)}','${staff}','DM',null,'sent',now());`)
     await db.exec(`begin; ${await readFile(new URL('../supabase/migrations/20261001172856_checkin_reply_ownership.sql', import.meta.url), 'utf8')} commit;`)
-    await db.exec(await readFile(new URL('../supabase/migrations/20261001173206_checkin_reply_burst_claim.sql', import.meta.url), 'utf8'))
+    await db.exec(await readFile(new URL('../supabase/migrations/20261001184550_checkin_reply_burst_claim.sql', import.meta.url), 'utf8'))
     const current = async (n: number, status: string) =>
       (await db.query<{ ok: boolean }>('select checkin_action_is_current($1,$2) ok', [id(n), status])).rows[0].ok
     assert.equal(await current(11, 'parsed'), false, 'stale copy cannot remind or confirm')

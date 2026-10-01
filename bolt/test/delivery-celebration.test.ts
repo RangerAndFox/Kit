@@ -10,9 +10,10 @@ it('celebrates prepared files, not confirmed shipment or client approval', async
   vi.stubEnv('KIT_TEAM_CHANNEL_ID', 'C_FIXTURE')
   select.mockResolvedValue({ data: [{ id: 'claim' }], error: null })
   post.mockResolvedValue({ posted: true })
-  expect(await postDeliveryCelebration({} as App, 'SecretClient Project123')).toBe(true)
+  expect(await postDeliveryCelebration({} as App, 'SecretClient Project123', '2638_SecretClient_Project123')).toBe(true)
   const options = post.mock.calls[0][1]
-  expect(options.headline).toBe(':package: *Delivery files ready — SecretClient Project123*')
+  expect(options.headline).toBe(':package: *Delivery files ready — nice work, team!*')
+  expect(options.footerText).toBe('Project: 2638_SecretClient_Project123')
   expect(options.headline).not.toMatch(/shipped|delivered|approved/i)
   expect(options.publicOccasion).toBe('delivery_prepared')
   expect(options.briefing).not.toMatch(/SecretClient|Project123/)
