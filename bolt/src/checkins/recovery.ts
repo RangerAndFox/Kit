@@ -25,6 +25,7 @@ export interface SlackMessageLike {
   bot_id?: string
   subtype?: string
   text?: string
+  thread_ts?: string
 }
 
 export interface ReplyBurst {

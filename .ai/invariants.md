@@ -43,6 +43,11 @@ mechanism in code before assuming full compliance.
 8. **External events and scheduled jobs are retry-safe.** Any handler that
    receives a webhook, claims a job, or runs on a schedule must produce the
    same result if invoked twice.
+   Hours replies use `checkin_reply_claims` to retain one check-in owner per
+   staff/channel/message even after Redo changes the reply cursor. Recovery
+   stops flat replies at the next prompt (including logged prompts); reminders
+   and confirmation recheck ownership. This does not equate separate work
+   sessions merely because their dates or hours match. *(SQL + Bolt tested.)*
 9. **Provisioning and notifications are idempotent.** Re-running project
    provisioning or re-firing a notification must not create duplicates.
    Externally triggered work and notifications must have explicit *persisted*

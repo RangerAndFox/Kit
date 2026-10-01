@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   looksLikeRecoverableCheckinReply,
   recoveryAfterTs,
+  messagesForRecovery,
   recoverMissedCheckinReplies,
   type RecoverableCheckin,
   type ReplyRecoveryDeps,
@@ -35,7 +36,7 @@ describe('missed hours reply recovery', () => {
     expect(looksLikeRecoverableCheckinReply("what's the Frame.io link?")).toBe(false)
   })
 
-  it('recovers the first contiguous reply burst through the normal handler', async () => {
+  it('recovers one message per ownership key, matching live handling', async () => {
     const handle = vi.fn(async () => true)
     const deps: ReplyRecoveryDeps = {
       loadOpen: async () => [ROW],
@@ -54,9 +55,27 @@ describe('missed hours reply recovery', () => {
     expect(handle).toHaveBeenCalledOnce()
     expect(handle).toHaveBeenCalledWith(
       ROW,
-      '2 hours Fabric\n30 mins Biz Apps',
+      '2 hours Fabric',
       '1001.000001',
     )
+  })
+
+  it('does not consume a later day’s reply, even when that check-in is already logged', () => {
+    const old = { ...ROW, dm_ts: '1000.0' }
+    expect(messagesForRecovery([
+      { ts: '1100.0', user: 'U_ME', text: '2h before the next prompt' },
+      { ts: '2100.0', user: 'U_ME', text: '8h for the new day' },
+      { ts: '2101.0', user: 'U_ME', text: 'yes', thread_ts: '2000.0' },
+    ], old, '2000.0').map(m => m.ts)).toEqual(['1100.0'])
+  })
+
+  it('keeps explicit late replies to the old reminder and excludes already consumed messages', () => {
+    const old = { ...ROW, dm_ts: '1000.0', reply_ts: '1100.0' }
+    expect(messagesForRecovery([
+      { ts: '1100.0', user: 'U_ME', text: 'old reply' },
+      { ts: '2100.0', user: 'U_ME', text: '4h yesterday', thread_ts: '1000.0' },
+      { ts: '2200.0', user: 'U_ME', text: '4h today' },
+    ], old, '2000.0').map(m => m.ts)).toEqual(['2100.0'])
   })
 
   it('does not feed unrelated personal-channel messages to the hours parser', async () => {

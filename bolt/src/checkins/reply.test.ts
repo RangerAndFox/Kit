@@ -17,6 +17,7 @@ describe('hours confirmation card dates', () => {
     const blocks = buildConfirmBlocks({
       checkinId: 'checkin-1',
       anchorDate: '2026-09-09',
+      currentDate: '2026-09-09',
       entries: [matched(4, 'Fabric IQ', '2026-09-09')],
     }) as Array<{ text: { text: string } }>
 
@@ -29,6 +30,7 @@ describe('hours confirmation card dates', () => {
     const blocks = buildConfirmBlocks({
       checkinId: 'checkin-1',
       anchorDate: '2026-09-09',
+      currentDate: '2026-09-09',
       entries: [
         matched(4, 'Fabric IQ', '2026-09-08'),
         matched(2, 'Kimmel', '2026-09-09'),

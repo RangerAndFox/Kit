@@ -6322,6 +6322,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      checkin_action_is_current: {
+        Args: { p_checkin_id: string; p_expected_status: string }
+        Returns: boolean
+      }
       record_kit_cron: {
         Args: { p_cron_id: string; p_runtime: string; p_enabled: boolean; p_schedule: Json; p_kind: string }
         Returns: undefined
