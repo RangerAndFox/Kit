@@ -63,3 +63,10 @@ Do not reset or retry these five events based on database evidence alone:
 - Node 22 production webpack build passes; migration integrity: 130 files.
 - No migration or configuration change required. Release and live provider
   verification must be reported separately from these local checks.
+
+The release dependency gates exposed newly published advisories. Only compatible
+transitive patches were applied: sharp 0.35.4 → 0.35.5 (and its matching binaries),
+source-map-js 1.2.1 → 1.2.2, proxy-addr 2.0.7 → 2.0.8. Both production audits pass
+the unchanged high-severity gate. Three moderate findings from the same
+sprintf-js → argparse → mammoth chain remain; the suggested Mammoth downgrade is
+breaking and was deliberately not applied as part of this queue repair.
