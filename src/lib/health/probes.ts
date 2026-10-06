@@ -16,6 +16,7 @@ import { assertNoStalledDeliveryReceipts } from '../slack/durable-delivery'
 import { listTranscriptFiles, driveTranscriptsFolderId } from '../integrations/drive-transcripts'
 import type { CheckResult, Status } from './diff'
 import { runHealthProbe as probe } from './probe'
+import { deliveryQueueDetail } from './delivery-queue'
 import { mostRecentScheduledFire } from './cron-schedule'
 import { getCronSpecs, RAILWAY_CRON_IDS, type CronRegistration } from './cron-specs'
 
@@ -66,17 +67,17 @@ export async function runIntegrationProbes(): Promise<CheckResult[]> {
       if (error) throw new Error(error.message)
     }),
     probe('dropbox-inbox', 'Dropbox delivery queue', async (signal) => {
-      const { data, error } = await createAdminClient()
+      const { data, error, count } = await createAdminClient()
         .from('dropbox_event_inbox')
-        .select('id, event_type, last_error')
+        .select('event_type, last_error, payload', { count: 'exact' })
         .eq('status', 'dead_letter')
         .is('retired_at', null)
-        .limit(1)
+        .order('created_at').order('id')
+        .limit(3)
         .abortSignal(signal)
       if (error) throw new Error(error.message)
       if (data?.length) {
-        const event = data[0]
-        throw new Error(`${event.event_type} requires manual review: ${event.last_error || event.id}`)
+        throw new Error(deliveryQueueDetail(data, count ?? data.length))
       }
       return 'no dead-lettered events'
     }),

@@ -1092,8 +1092,16 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
   let transfer = priorTransfer as any
   let file: any
   if (!transfer) {
-    const current = await dbxPost('/files/get_metadata', { path: d.dropboxId })
-    const sourceState = sourceReadiness({ ...d, firstSeenAt: event.created_at }, current)
+    // Replacing a file (delete + recreate) changes its ID, unlike a rename.
+    // Only an entity-specific not_found permits consulting the original path;
+    // authorization failures and provider outages must remain failures.
+    const currentById = await readReplacementDropboxMetadata(d.dropboxId)
+    const current = currentById ?? await readReplacementDropboxMetadata(d.path)
+    if (!current) throw new Error('Dropbox source missing; restore it or review this obsolete upload attempt')
+    const replaced = !currentById && current.id !== d.dropboxId &&
+      typeof current.path_display === 'string' && current.path_display.toLowerCase() === d.path.toLowerCase()
+    if (!currentById && !replaced) throw new Error('Dropbox source replacement could not be verified')
+    const sourceState = replaced ? 'superseded' : sourceReadiness({ ...d, firstSeenAt: event.created_at }, current)
     if (sourceState === 'superseded') {
       // Identity survives a rename; the old path must not hide a durable newer
       // revision. Still require one live successor at the current eligible path
@@ -1101,7 +1109,7 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
       const { data: successors, error: successorError } = await sb.from('dropbox_event_inbox')
         .select('id, payload').eq('event_type', 'frameio_delivery').neq('id', event.id)
         .is('retired_at', null)
-        .contains('payload', { dropboxId: d.dropboxId, rev: current.rev }).limit(2)
+        .contains('payload', { dropboxId: current.id, rev: current.rev }).limit(2)
       if (successorError) throw successorError
       const currentRoute = typeof current.path_display === 'string' &&
         typeof current.rev === 'string' && /^[0-9a-f]{9,}$/.test(current.rev) &&
@@ -1119,7 +1127,7 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
           ? await lookupDropboxProject(String(currentRoute.payload.safeName)) : null
         if (currentProject?.id === project.id) throw new DropboxEventSuperseded({
           outcome: 'superseded_before_upload', successor_event_id: successors[0].id,
-          successor_rev: current.rev, resolved_at: new Date().toISOString(),
+          successor_dropbox_id: current.id, successor_rev: current.rev, resolved_at: new Date().toISOString(),
           reason: 'Source changed before upload. A durable successor event owns the newer revision; no upload, share, notification or celebration performed for this revision.',
         })
       }

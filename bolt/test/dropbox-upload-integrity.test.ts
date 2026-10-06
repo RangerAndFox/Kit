@@ -29,6 +29,8 @@ let currentProjectId: string | null
 let currentProjectAliasOnly: boolean
 let sourceBytes: Buffer
 let changeAfterInspection: boolean
+let sourceMissing: boolean
+let replacementId: string
 const writes: Array<{ table: string; value: Record<string, unknown> }> = []
 const queries: Array<{ table: string; filters: unknown[][] }> = []
 function json(body: unknown) { return new Response(JSON.stringify(body)) }
@@ -47,6 +49,7 @@ beforeEach(() => {
   sourceBytes.writeUInt32BE(12, 116); sourceBytes.write('trak', 120)
   sourceBytes.writeUInt32BE(128, 128); sourceBytes.write('mdat', 132)
   changeAfterInspection = false
+  sourceMissing = false; replacementId = delivery.dropboxId
   actualFile = { id: 'file', parent_id: 'folder', project_id: 'frame-project', file_size: 256, media_type: 'video/mp4', status: 'transcoding' }
   mocks.from.mockImplementation((table: string) => {
     let mutation = false
@@ -86,8 +89,13 @@ beforeEach(() => {
       if (changeAfterInspection) sourceRev = 'abcdef99999'
       return new Response(sourceBytes, { headers: { 'content-type': 'video/mp4', 'content-length': '256' } })
     }
-    const metadata = { '.tag': 'file', id: delivery.dropboxId, rev: sourceRev, size: 256, path_display: sourcePath, server_modified: '2026-09-22T19:00:00Z' }
-    if (url.endsWith('/files/get_metadata')) return json(metadata)
+    const metadata = { '.tag': 'file', id: replacementId, rev: sourceRev, size: 256, path_display: sourcePath, server_modified: '2026-09-22T19:00:00Z' }
+    if (url.endsWith('/files/get_metadata')) {
+      if (sourceMissing && JSON.parse(String(options.body)).path === delivery.dropboxId) {
+        return new Response(JSON.stringify({ error: { '.tag': 'path', path: { '.tag': 'not_found' } } }), { status: 409 })
+      }
+      return json(metadata)
+    }
     if (url.endsWith('/files/get_temporary_link')) return json({ metadata, link: 'https://uc123.dl.dropboxusercontent.com/file' })
     if (url.endsWith('/projects/frame-project')) return json({ data: { root_folder_id: 'root' } })
     if (url.endsWith('/folders/root/children')) return json({ data: [{ id: 'out', name: '03_Outgoing', type: 'folder' }] })
@@ -101,6 +109,46 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.unstubAllEnvs() })
 
 describe('upload pipeline integrity boundary', () => {
+  it('hands a deleted/recreated source to its exact durable successor without uploading', async () => {
+    prior = null; sourceMissing = true; replacementId = 'id:replacement'; sourceRev = 'abcdef99999'
+    successorRows = [{ id: 'replacement-event', retired_at: null, payload: {
+      ...delivery, dropboxId: replacementId, rev: sourceRev,
+    } }]
+    mocks.rpc.mockImplementation(async (name: string) => ({ error: null, data: name === 'claim_dropbox_events' ? [{ ...event }] : true }))
+    expect(await drainDropboxInbox(app, { maxBatches: 1 })).toMatchObject({ completed: 1, failed: 0 })
+    expect(writes[0]).toMatchObject({ value: { payload: { automatic_resolution: {
+      outcome: 'superseded_before_upload', successor_event_id: 'replacement-event', successor_dropbox_id: replacementId,
+    } } } })
+    expect(mocks.fetch.mock.calls.some(([url]) => url.endsWith('/remote_upload'))).toBe(false)
+    expect(mocks.message).not.toHaveBeenCalled()
+  })
+  it.each(['missing successor', 'retired successor', 'wrong revision', 'ambiguous', 'lease lost'])('does not lose a replaced-source event: %s', async kind => {
+    prior = null; sourceMissing = true; replacementId = 'id:replacement'; sourceRev = 'abcdef99999'
+    const next = { id: 'replacement-event', retired_at: null as string | null,
+      payload: { ...delivery, dropboxId: replacementId, rev: sourceRev } }
+    successorRows = [next]
+    if (kind === 'missing successor') successorRows = []
+    if (kind === 'retired successor') next.retired_at = new Date().toISOString()
+    if (kind === 'wrong revision') next.payload.rev = 'abcdef88888'
+    if (kind === 'ambiguous') successorRows.push({ ...next, id: 'second' })
+    if (kind === 'lease lost') leaseValid = false
+    mocks.rpc.mockImplementation(async (name: string) => ({ error: null, data: name === 'claim_dropbox_events' ? [{ ...event }] : true }))
+    if (kind === 'lease lost') await expect(drainDropboxInbox(app, { maxBatches: 1 })).rejects.toThrow(/lease lost/)
+    else expect(await drainDropboxInbox(app, { maxBatches: 1 })).toMatchObject({ completed: 0, deferred: 1 })
+    expect(mocks.rpc).not.toHaveBeenCalledWith('complete_dropbox_event', expect.anything())
+    expect(mocks.fetch.mock.calls.some(([url]) => url.endsWith('/remote_upload'))).toBe(false)
+    expect(mocks.message).not.toHaveBeenCalled()
+  })
+  it('does not treat Dropbox auth errors as a removed source', async () => {
+    prior = null
+    const originalFetch = mocks.fetch.getMockImplementation()!
+    mocks.fetch.mockImplementation((url, options) => url.endsWith('/get_metadata')
+      ? Promise.resolve(new Response(JSON.stringify({ error: 'denied' }), { status: 403 })) : originalFetch(url, options))
+    await expect(handleNewDelivery(app, { ...delivery }, { ...event })).rejects.toThrow(/metadata check failed \(403\)/)
+    const metadataCalls = mocks.fetch.mock.calls.filter(([url]) => url.endsWith('/get_metadata'))
+    expect(metadataCalls).toHaveLength(1)
+    expect(mocks.fetch.mock.calls.some(([url]) => url.endsWith('/remote_upload'))).toBe(false)
+  })
   it('holds a quiet but unfinished render without uploading or notifying, at a one-minute cadence', async () => {
     prior = null; sourceBytes.fill(0)
     await expect(handleNewDelivery(app, { ...delivery }, { ...event })).rejects.toMatchObject({
