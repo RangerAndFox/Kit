@@ -42,18 +42,36 @@ caption files. No file was deleted, uploaded, renamed or shared; no notification
 was replayed. Audit and retired-row counts both verified at three; five unresolved
 events remain. Future project uploads are unaffected.
 
-## Remaining live verification
+## Live Frame.io verification and retirement
 
-Railway browser authentication expired; GitHub Mobile approval is required to
-use Kit's existing authenticated console without exporting credentials.
-Do not reset or retry these five events based on database evidence alone:
+Authenticated Railway inspection used the app's existing provider clients; no
+credentials or signed URLs were exported. All four original Frame.io asset IDs
+and upload-status endpoints returned entity-specific 404s. The old accessibility
+folder also no longer existed. Replacement files were found in the same project.
+
+Each replacement's original bytes were streamed read-only using the documented
+`include=media_links.original` response, bounded to the expected byte count and
+timeout. Dropbox's 4 MiB block-SHA256 content hash matched for every original;
+source ID/revision/hash were rechecked after streaming. All four replacements
+were `transcoded`, with the expected project, folder and size. No signed links
+were persisted. Video: 175285820 bytes; TTML: 2403; VTT: 1766; TXT: 1046.
+
+These four stale attempts were then retired using `retire_frameio_transfer`,
+first dry-run, then one atomic transaction with exact transfer identities,
+updated-at timestamps and inbox manifests. Four append-only retirement receipts,
+four retired non-ready transfers and four retired dead-letter events verified.
+No media, share links or notifications changed; no delivery success fabricated.
 
 - a634f881-119f-4c6d-b60d-9dd4b8f397b4: CCAI v3 video, Frame.io status 404.
 - 9a1c2966-f765-4ba6-a886-13a3a480fea5: replacement TTML, Frame.io status 404.
 - df696048-13bf-4b5d-b750-193b6dd3643d: replacement VTT, Frame.io status 404.
 - 961832de-a62c-44f0-a924-90e2113139df: replacement TXT, Frame.io status 404.
-- 4bb41f9f-834b-454e-98a6-1203b172f876: CCAI-named master in 2631 outgoing;
-  source absent, no transfer. No exact replacement established.
+
+Seven of the initial eight obsolete attempts are now retired. The one remaining
+event is `4bb41f9f-834b-454e-98a6-1203b172f876`: CCAI-named master in 2631 outgoing;
+source absent, no transfer. No exact replacement established. Owner clarification
+requested before retiring this misplaced-source attempt. The health probe must
+continue reporting this unresolved item until disposition is approved.
 
 ## Validation
 
