@@ -4,6 +4,7 @@ export interface HealthCheck {
   key: string
   label: string
   ok: boolean
+  unknown?: boolean
   detail?: string
 }
 

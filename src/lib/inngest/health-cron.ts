@@ -13,40 +13,31 @@
 
 import { inngest } from './client'
 import { runAllChecks } from '../health/run'
-import { loadHealthRows, statusMap, saveHealthState } from '../health/state'
-import { diffHealth } from '../health/diff'
-import { postSlackAsKit } from '../health/notify'
-import { healthAlertText } from '../health/alert-text'
+import { healthRecipient, reportHealth } from '../health/report-store'
 
 export const healthWatchdog = inngest.createFunction(
   {
     id: 'health-watchdog',
     name: 'Health — watchdog + alerts',
     retries: 1,
+    concurrency: { limit: 1, key: "'kit-health-reporting'", scope: 'env' },
     triggers: [{ cron: '*/10 * * * *' }],
   },
-  async ({ step }) => {
-    const results = await step.run('run-checks', () => runAllChecks())
-    const prev = await step.run('load-state', () => loadHealthRows())
-
-    const diff = diffHealth(statusMap(prev), results)
-
-    if (diff.downed.length || diff.recovered.length) {
-      await step.run('alert', async () => {
-        const channel = process.env.KIT_HEALTH_CHANNEL_ID
-        if (!channel) throw new Error('KIT_HEALTH_CHANNEL_ID is not configured')
-        const delivered = await postSlackAsKit(channel, healthAlertText(diff))
-        if (!delivered) throw new Error('Kit health alert delivery failed')
-      })
-    }
-
-    await step.run('save-state', () => saveHealthState(results, prev))
+  async ({ step, runId }) => {
+    const snapshot = await step.run('health-snapshot-v2', async () => {
+      const observed_at = new Date().toISOString()
+      return { observed_at, checks: await runAllChecks() }
+    })
+    // Keep enqueue, pending-plan delivery and atomic state commit in ONE shared
+    // concurrency step; Inngest concurrency serializes steps, not whole runs.
+    await step.run('publish-health-report', () => reportHealth({
+      id: `watchdog:${runId}`, recipient: healthRecipient(), ...snapshot,
+    }))
 
     return {
-      checked: results.length,
-      down: results.filter((r) => !r.ok).map((r) => r.key),
-      alertedDown: diff.downed.length,
-      alertedRecovered: diff.recovered.length,
+      checked: snapshot.checks.length,
+      down: snapshot.checks.filter((r) => !r.ok && !r.unknown).map((r) => r.key),
+      unknown: snapshot.checks.filter((r) => r.unknown).map((r) => r.key),
     }
   },
 )

@@ -373,12 +373,12 @@ function Panel({ title, eyebrow, icon: Icon, action, children }: { title: string
 function HealthRow({ check, compact = false }: { check: HealthCheck; compact?: boolean }) {
   return (
     <div className={`${stylesModule.healthRow} ${compact ? stylesModule.healthRowCompact : ''}`}>
-      <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${check.ok ? 'bg-emerald-400' : 'bg-rose-400'}`} />
+      <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${check.unknown ? 'bg-amber-400' : check.ok ? 'bg-emerald-400' : 'bg-rose-400'}`} />
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium">{check.label}</p>
         {check.detail ? <p className="truncate font-mono text-[11px] text-[#747c8d]">{check.detail}</p> : null}
       </div>
-      <span className={`text-[11px] font-bold tracking-[0.08em] ${check.ok ? 'text-emerald-300' : 'text-rose-300'}`}>{check.ok ? 'UP' : 'DOWN'}</span>
+      <span className={`text-[11px] font-bold tracking-[0.08em] ${check.unknown ? 'text-amber-300' : check.ok ? 'text-emerald-300' : 'text-rose-300'}`}>{check.unknown ? 'UNKNOWN' : check.ok ? 'UP' : 'DOWN'}</span>
     </div>
   )
 }

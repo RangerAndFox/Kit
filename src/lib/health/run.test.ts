@@ -65,3 +65,31 @@ test('monitor-only outage is not worded as a failed job; mixed failures stay vis
   assert.match(mixed, /something went down/); assert.match(mixed, /Worker/)
   assert.match(healthAlertText({ downed: [], recovered: [{ ...monitor, ok: true }] }), /recovered/)
 })
+
+test('schedule registration retries a timeout once without inventing job successes', async () => {
+  const f = fixture(); let attempts = 0
+  f.io.registerCronSchedules = async () => { if (++attempts === 1) throw new Error('TimeoutError') }
+  const results = await runAllChecks(f.io)
+  assert.equal(attempts, 2)
+  assert.equal(results.find(r => r.key === 'cron:configuration')?.ok, true)
+  assert.equal(results.find(r => r.key === 'cron:worker')?.ok, false)
+})
+
+test('two registration timeouts report unknown and preserve real worker failures', async () => {
+  const f = fixture(); let attempts = 0
+  f.io.registerCronSchedules = async () => { attempts++; throw new Error('TimeoutError') }
+  const results = await runAllChecks(f.io)
+  assert.equal(attempts, 2)
+  assert.equal(results.find(r => r.key === 'cron:configuration')?.unknown, true)
+  assert.equal(results.find(r => r.key === 'cron:worker')?.ok, false)
+})
+
+test('unknown Supabase status is warning-only; a later confirmed failure escalates', () => {
+  const unknown = { key: 'supabase', label: 'Supabase', ok: false, unknown: true }
+  const initial = diffHealth({}, [unknown])
+  assert.doesNotMatch(healthAlertText(initial), /something went down|:red_circle:/)
+  assert.match(healthAlertText(initial), /status is unknown/)
+  assert.equal(diffHealth({ supabase: 'unknown' }, [unknown]).downed.length, 0)
+  assert.equal(diffHealth({ supabase: 'unknown' }, [{ ...unknown, unknown: false }]).downed.length, 1)
+  assert.equal(diffHealth({ supabase: 'unknown' }, [{ ...unknown, unknown: false, ok: true }]).recovered.length, 1)
+})

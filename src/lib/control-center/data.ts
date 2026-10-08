@@ -199,6 +199,7 @@ export async function loadControlCenterData(args: {
     key: row.key,
     label: row.key,
     ok: row.status === 'up',
+    unknown: row.status === 'unknown',
     detail: row.detail || undefined,
   }))
   const resolvedChecks: HealthCheck[] = checks.length ? checks : persistedChecks
@@ -251,9 +252,9 @@ export async function loadControlCenterData(args: {
   for (const check of resolvedChecks.filter((item) => !item.ok)) {
     attention.push({
       id: `health:${check.key}`,
-      title: `${check.label} is failing`,
+      title: check.unknown ? `${check.label} status is unknown` : `${check.label} is failing`,
       detail: check.detail || 'Kit could not complete this health check.',
-      signal: 'danger',
+      signal: check.unknown ? 'warning' : 'danger',
       href: '/status',
     })
   }
