@@ -1,5 +1,6 @@
 export interface SlackResponse {
   ok?: boolean; ts?: string; error?: string; user_id?: string
+  channel?: { id?: string }
   messages?: Array<{ ts?: string; user?: string; metadata?: { event_type?: string; event_payload?: { delivery_key?: string } } }>
   response_metadata?: { next_cursor?: string }
 }

@@ -213,16 +213,19 @@ export function formatHealthDigest(
   dateLabel: string,
 ): string {
   const integrations = checks.filter((c) => !c.key.startsWith('cron:'))
-  const crons = checks.filter((c) => c.key.startsWith('cron:'))
+  const monitoring = checks.filter((c) => ['cron:telemetry', 'cron:configuration'].includes(c.key))
+  const crons = checks.filter((c) => c.key.startsWith('cron:') && !monitoring.includes(c))
   const downInteg = integrations.filter((c) => !c.ok)
   const downCron = crons.filter((c) => !c.ok)
+  const blind = monitoring.filter((c) => !c.ok)
   const timeUrgent = checkinsUrgent(checkins)
-  const issues = downInteg.length + downCron.length + (timeUrgent ? 1 : 0)
+  const issues = downInteg.length + downCron.length + blind.length + (timeUrgent ? 1 : 0)
+  const confirmedFailure = [...downInteg, ...downCron].some(c => !c.unknown) || timeUrgent
 
   const head =
     issues === 0
       ? `:white_check_mark: *Kit health — ${dateLabel}* — all systems go.`
-      : `:rotating_light: *Kit health — ${dateLabel}* — ${issues} ${issues === 1 ? 'issue' : 'issues'}.`
+      : `${confirmedFailure ? ':rotating_light:' : ':warning:'} *Kit health — ${dateLabel}* — ${issues} ${issues === 1 ? 'issue' : 'issues'}.`
 
   const lines: string[] = [head, '']
 
@@ -235,17 +238,24 @@ export function formatHealthDigest(
     lines.push(`*Integrations:* ${names.join(', ')} — all up.`)
   } else {
     lines.push('*Integrations:*')
-    for (const c of downInteg) lines.push(`  :red_circle: *${c.label}* — ${c.detail || 'failing'}`)
+    for (const c of downInteg) lines.push(`  ${c.unknown ? ':warning:' : ':red_circle:'} *${c.label}* — ${c.detail || (c.unknown ? 'status unknown' : 'failing')}`)
     const upCount = integrations.length - downInteg.length
     if (upCount > 0) lines.push(`  (${upCount} other${upCount === 1 ? '' : 's'} up)`)
   }
 
   // Crons
-  if (downCron.length === 0) {
+  if (blind.some(c => c.key === 'cron:telemetry')) {
+    lines.push('*Crons:* outcomes unknown — heartbeat data could not be read.')
+  } else if (downCron.length === 0) {
     lines.push(`*Crons:* ${crons.length}/${crons.length} fresh.`)
   } else {
     lines.push('*Crons:*')
     for (const c of downCron) lines.push(`  :red_circle: *${c.label}* — ${c.detail || 'stale'}`)
+  }
+  if (blind.length) {
+    lines.push('*Monitoring:*')
+    for (const c of blind) lines.push(`  :warning: *${c.label}* — ${c.detail || 'unavailable'}`)
+    lines.push('An unavailable check does not confirm a service or job failure.')
   }
 
   // Time logging — always shown, always emphasised.

@@ -7,6 +7,7 @@
 import { runIntegrationProbes, checkCronFreshness } from './probes'
 import { loadHeartbeats, getOrInitMonitorEpoch, registerCronSchedules } from './state'
 import type { CheckResult } from './diff'
+import { retryHealthIo } from './retry'
 
 const dependencies = { runIntegrationProbes, checkCronFreshness, loadHeartbeats, getOrInitMonitorEpoch, registerCronSchedules }
 
@@ -39,13 +40,15 @@ export async function runAllChecks(io = dependencies): Promise<CheckResult[]> {
     io.runIntegrationProbes(),
     readHeartbeatsWithRetry(io.loadHeartbeats).catch(error => { report('heartbeat_read', error); return null }),
     io.getOrInitMonitorEpoch().catch(error => { report('epoch_read', error); return null }),
-    io.registerCronSchedules('vercel').then(() => true).catch(error => { report('configuration_write', error); return false }),
+    retryHealthIo(() => io.registerCronSchedules('vercel')).then(() => true).catch(error => { report('configuration_write', error); return false }),
   ])
   // Always emit both check keys, including explicit recovery. A failed write
   // cannot prevent reading existing outcomes, and unknown is never healthy.
   const telemetry: CheckResult = { key: 'cron:telemetry', label: 'Cron monitoring', ok: heartbeats !== null,
+    unknown: heartbeats === null,
     detail: heartbeats ? 'Heartbeat data available' : 'Heartbeat data unavailable; job outcomes unknown' }
   const configuration: CheckResult = { key: 'cron:configuration', label: 'Cron configuration', ok: registered,
+    unknown: !registered,
     detail: registered ? 'Schedule registration current' : 'Schedule registration failed; existing recorded outcomes checked when available' }
   return [...integrations, telemetry, configuration,
     ...(heartbeats ? io.checkCronFreshness(heartbeats, new Date(), process.env, epoch ?? undefined) : [])]
