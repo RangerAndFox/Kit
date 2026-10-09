@@ -105,6 +105,24 @@ function makeDeps(over: { bindings?: BindingRow[]; cursor?: string | null; versi
 }
 
 describe('runProjectControlSync', () => {
+  it('stamps the Overview from the sync clock without rewriting unchanged snapshots', async () => {
+    const { deps, store } = makeDeps()
+    let now = '2026-10-09T20:11:00Z'
+    let markdown = ''
+    let writes = 0
+    deps.now = () => now
+    deps.sheets.readProjectSupplement = async () => ({ specs: {}, workback: [], links: [], deliverables: [], assignments: [] })
+    deps.canvas.editControlCanvas = async (input) => { markdown = input.markdown; writes++ }
+    assert.equal((await runProjectControlSync(deps, { force: true })).updated, 1)
+    assert.match(markdown, /Last synced:\*\* Oct 9, 2026, 4:11 PM EDT/)
+    assert.equal(store.bindings[0].last_synced_at, now)
+    now = '2026-10-09T20:21:00Z'
+    assert.equal((await runProjectControlSync(deps, { force: true })).unchanged, 1)
+    assert.equal(writes, 1)
+    assert.equal(store.bindings[0].last_synced_at, '2026-10-09T20:11:00Z')
+    assert.match(markdown, /4:11 PM EDT/)
+  })
+
   it('does not starve later projects when a recovery notification cannot be persisted', async () => {
     const { deps, edits, store } = makeDeps({ bindings: [
       binding({project_id:'broken',canvas_id:'Cbroken',sync_status:'error',last_row_hash:'old'}),
