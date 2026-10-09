@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { projectViewHash, PROJECT_VIEW_RENDER_VERSION, renderNotesAndFeedbackView, renderOverviewView, renderScheduleView, type ProjectSupplement } from './views'
+import { projectViewHash, PROJECT_VIEW_RENDER_VERSION, renderNotesAndFeedbackView, renderOverviewView, renderReferenceView, renderScheduleView, type ProjectSupplement } from './views'
 import { createHash } from 'node:crypto'
 import type { NormalizedRow } from './render'
 
@@ -59,9 +59,33 @@ describe('generated Canvas tables', () => {
   })
 
   it('invalidates the old canvas render hash even when the workbook has not changed', () => {
-    assert.notEqual(PROJECT_VIEW_RENDER_VERSION, '7')
-    const previous = createHash('sha256').update(JSON.stringify({ renderVersion: '7', row, extra: supplement })).digest('hex')
+    assert.notEqual(PROJECT_VIEW_RENDER_VERSION, '8')
+    const previous = createHash('sha256').update(JSON.stringify({ renderVersion: '8', row, extra: supplement })).digest('hex')
     assert.notEqual(projectViewHash(row, supplement), previous)
+  })
+
+  it('replaces the Overview notice and duplicate info table while retaining the status and share data', () => {
+    const markdown = renderOverviewView({ ...row,
+      'Last Share': { ...cell('Boards V2'), hyperlink: 'https://example.test/review' },
+    }, supplement, '2026-10-09T20:11:00Z')
+    assert.match(markdown, /^\*\*Last synced:\*\* Oct 9, 2026, 4:11 PM EDT/)
+    assert.doesNotMatch(markdown, /Generated view|do not edit here|Master Project List|## Project info|## Latest share/)
+    assert.match(markdown, /## Project Status\n/)
+    assert.match(markdown, /\[Boards V2\]\(https:\/\/example.test\/review\)/)
+    assert.equal(markdown.split('| Status |').length - 1, 1)
+    assert.equal(markdown.split('| Next Milestone |').length - 1, 1)
+    assert.match(markdown, /## Today’s assignments/)
+    assert.match(markdown, /## Asset folders/)
+    assert.match(renderReferenceView(row, supplement), /Generated view/)
+    assert.match(renderScheduleView(row, supplement), /Generated view/)
+  })
+
+  it('uses Eastern daylight-saving time and never invents a timestamp from invalid input', () => {
+    assert.match(renderOverviewView(row, supplement, '2026-12-09T21:11:00Z'), /4:11 PM EST/)
+    assert.match(renderOverviewView(row, supplement, 'invalid'), /^\*\*Last synced:\*\* Unavailable/)
+    const hash = projectViewHash(row, supplement)
+    renderOverviewView(row, supplement, '2026-10-10T20:11:00Z')
+    assert.equal(projectViewHash(row, supplement), hash, 'the clock is not a source change')
   })
 
   it('adds a OneDrive row once, including normalized duplicate types', () => {

@@ -284,7 +284,7 @@ export async function runProjectControlSync(
         const projectNumber = row['Project Number']?.display || 'Project'
         const title = controlCanvasTitle(projectNumber)
         const markdown = extra
-          ? renderOverviewView(row, extra)
+          ? renderOverviewView(row, extra, deps.now())
           : renderProjectControlCanvas(b.template_markdown!, row)
         // Ownership check immediately before the irreversible Canvas edit.
         if (!(await deps.store.renewWorkbookLease(config.spreadsheetId, 'sync', holder))) {

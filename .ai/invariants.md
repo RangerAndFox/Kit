@@ -73,9 +73,11 @@ mechanism in code before assuming full compliance.
     developer-metadata record (`kit_project_id`); Kit never writes the workbook's
     margin/formula columns, and sync never edits a canvas other than the
     binding's persisted `canvas_id`. The one-way contract is enforced by three
-    mechanisms, none relied on alone: (a) every render carries a prominent
-    **generated-view notice** at the top directing edits to the Master Project
-    List and warning that Canvas edits are overwritten; (b) sync is a
+    mechanisms: (a) Reference, Schedule and legacy renders carry a
+    **generated-view notice** directing edits to the Master Project List;
+    the Overview instead shows a compact **Last synced** snapshot timestamp
+    (owner-requested October 9, 2026), without changing edit permissions;
+    (b) sync is a
     **deterministic full-document replace** rendered only from the template
     snapshot + the authoritative Sheet row, so a manual Canvas edit is never an
     input and can never become source data; (c) the managed Canvas is created
@@ -83,8 +85,8 @@ mechanism in code before assuming full compliance.
     while Kit continues to edit via its own app token. *(Verified — migration 056
     unique constraints + `src/lib/project-control/`; the read-only grant's enum
     is verified against `@slack/web-api`, but the read + Kit-edit interaction is
-    a staging-runbook item, so the notice + full re-render are the guaranteed
-    safeguards.)*
+    a staging-runbook item, so full re-render remains a guaranteed
+    safeguard.)*
 15. **Project-control provisioning is durable, effectively-once, and Railway-recovered.**
     Provisioning is a per-service durable ledger (`project_provisioning_steps`)
     with per-step ownership (holder + monotonic fence + lease); the final result

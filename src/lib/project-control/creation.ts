@@ -279,7 +279,7 @@ export async function bindProjectControl(
     const projectNumber = opts.submission.projectNumber || row['Project Number']?.display || 'Project'
     const title = controlCanvasTitle(projectNumber)
     const markdown = extra
-      ? renderOverviewView(row, extra)
+      ? renderOverviewView(row, extra, deps.now())
       : renderProjectControlCanvas(controlTemplate!.markdown, row)
     const ensureSupplementalViews = async () => {
       if (!extra) return
