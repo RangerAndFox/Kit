@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { GENERATED_VIEW_NOTICE, type NormalizedRow } from './render'
+import { GENERATED_VIEW_NOTICE, parseDateToSerial, type NormalizedRow } from './render'
 
 export interface ProjectSupplement {
   scheduleStatus?: string
@@ -13,7 +13,7 @@ export interface ProjectSupplement {
 
 // Bump when generated Canvas markup changes so the sync cursor performs one
 // complete regeneration even if the workbook itself has not changed.
-export const PROJECT_VIEW_RENDER_VERSION = '7'
+export const PROJECT_VIEW_RENDER_VERSION = '8'
 
 const val = (row: NormalizedRow, key: string) => row[key]?.display || '—'
 const link = (label: string, url?: string) => url ? `[${label}](${url})` : '—'
@@ -79,8 +79,23 @@ function statusLabel(status: string): string {
   return '⚪ Not Started'
 }
 
+function scheduleDate(value?: string): number | null {
+  const text = value?.trim() || ''
+  // Real Sheet dates arrive as ISO; pasted US dates can arrive as display text.
+  // Reuse the strict calendar validator rather than permissive Date.parse.
+  const us = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(text)
+  return parseDateToSerial(us ? `${us[3]}-${us[1].padStart(2, '0')}-${us[2].padStart(2, '0')}` : text)
+}
+
 export function renderScheduleView(row: NormalizedRow, extra: ProjectSupplement): string {
-  const ordered = [...extra.workback].sort((a, b) => Number(a['Sort Order'] || 0) - Number(b['Sort Order'] || 0))
+  const last = Number.MAX_SAFE_INTEGER
+  const ordered = extra.workback.map(w => {
+    const start = scheduleDate(w['Start Date'])
+    const due = scheduleDate(w['Due Date'])
+    const order = w['Sort Order']?.trim()
+    return { w, start: start ?? due ?? last, due: due ?? start ?? last,
+      order: order && Number.isFinite(Number(order)) ? Number(order) : last }
+  }).sort((a, b) => a.start - b.start || a.due - b.due || a.order - b.order).map(({ w }) => w)
   const rows = ordered.filter((x) => x['Show on Canvas'] !== 'FALSE').map((w) => {
     const complete = w.Status === 'Complete'
     const task = complete ? `~~${w.Task}~~` : w.Status === 'In Progress' ? `**${w.Task}**` : w.Task
