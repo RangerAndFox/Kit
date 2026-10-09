@@ -192,6 +192,7 @@ interface SpreadsheetMetadataResponse {
       title?: string
       gridProperties?: { rowCount?: number }
     }
+    basicFilter?: SourceBasicFilter
     tables?: Array<{
       tableId?: string
       range?: {
@@ -307,8 +308,20 @@ async function getSheetRowCount(config: WorkbookConfig, sheetId: number): Promis
   return rowCount
 }
 
+interface SourceBasicFilter {
+  range: {
+    sheetId?: number
+    startRowIndex?: number
+    endRowIndex?: number
+    startColumnIndex?: number
+    endColumnIndex?: number
+  }
+  [key: string]: unknown
+}
+
 interface NativeTable {
   tableId: string
+  basicFilter?: SourceBasicFilter
   range: {
     sheetId: number
     startRowIndex: number
@@ -321,7 +334,7 @@ interface NativeTable {
 /** Return the normalized source table on a sheet, when one exists. */
 async function getNativeTable(config: WorkbookConfig, sheetId: number): Promise<NativeTable | null> {
   if (config.layout !== 'rf-production-v1') return null
-  const fields = encodeURIComponent('sheets(properties(sheetId),tables(tableId,range))')
+  const fields = encodeURIComponent('sheets(properties(sheetId),tables(tableId,range),basicFilter)')
   const data = await api<SpreadsheetMetadataResponse>(
     'GET',
     `${SHEETS_BASE}/${config.spreadsheetId}?fields=${fields}`,
@@ -340,6 +353,7 @@ async function getNativeTable(config: WorkbookConfig, sheetId: number): Promise<
       range.endRowIndex == null || range.startColumnIndex == null || range.endColumnIndex == null) return null
   return {
     tableId: table.tableId,
+    basicFilter: sheet?.basicFilter,
     range: {
       sheetId: range.sheetId,
       startRowIndex: range.startRowIndex,
@@ -906,7 +920,15 @@ export async function createBoundRow(
   const rowIndex = await findNextEmptyRowIndex(config)
   const table = await getNativeTable(config, config.sheetId)
 
-  const requests: unknown[] = buildCellRequests(config, rowIndex, ownedCells)
+  // Only initialize genuinely new RF rows. Renames, updates and metadata-bound
+  // retries must never reactivate a producer's Completed/Archived project.
+  const creationCells: OwnedCell[] = config.layout === 'rf-production-v1' &&
+    !ownedCells.some((cell) => cell.header === 'Status' && cell.value.trim())
+    ? [...ownedCells.filter((cell) => cell.header !== 'Status'), {
+        header: 'Status', column: headerToA1Column('Status', config.layout), kind: 'string', value: 'Active',
+      }]
+    : ownedCells
+  const requests: unknown[] = buildCellRequests(config, rowIndex, creationCells)
   const tableExpansion = expandTableRequest(table, rowIndex + 1)
   if (tableExpansion) requests.push(tableExpansion)
   requests.push({
@@ -926,6 +948,23 @@ export async function createBoundRow(
       },
     },
   })
+
+  // API writes can leave an empty-row filter's hiddenByFilter state stale.
+  // Re-evaluate the existing source filter AFTER values/metadata are written;
+  // preserve every user criterion and sort rather than clearing their filter.
+  const filter = table?.basicFilter
+  if (filter?.range.sheetId === config.sheetId &&
+      filter.range.startRowIndex === config.headerRow - 1) {
+    requests.push({ setBasicFilter: { filter: {
+      ...filter,
+      range: {
+        ...filter.range,
+        ...(filter.range.endRowIndex != null
+          ? { endRowIndex: Math.max(filter.range.endRowIndex, rowIndex + 1) }
+          : {}),
+      },
+    } } })
+  }
 
   const data = await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests })
   const replies = data.replies || []

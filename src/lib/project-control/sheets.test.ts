@@ -295,6 +295,86 @@ describe('createBoundRow RF Production placement safety', () => {
   })
 })
 
+describe('new RF project visibility', () => {
+  const config: WorkbookConfig = { ...CONFIG, layout: 'rf-production-v1', headerRow: 4 }
+  const filter = {
+    range: { sheetId: 0, startRowIndex: 3, endRowIndex: 5, startColumnIndex: 0, endColumnIndex: 23 },
+    criteria: {
+      '0': { condition: { type: 'CUSTOM_FORMULA', values: [{ userEnteredValue: '=COUNTA($A5:$C5)>0' }] } },
+      '5': { hiddenValues: ['Archived', 'Completed'] },
+    },
+    sortSpecs: [{ dimensionIndex: 0, sortOrder: 'ASCENDING' }],
+  }
+  type Request = {
+    updateCells?: { start: { rowIndex: number; columnIndex: number }; fields: string;
+      rows: Array<{ values: Array<{ userEnteredValue: { stringValue?: string } }> }> }
+    setBasicFilter?: { filter: typeof filter }
+    createDeveloperMetadata?: unknown
+  }
+  function backend(basicFilter: typeof filter | undefined = filter) {
+    const batches: Request[][] = []
+    let bound = false
+    __setSheetsTransportForTests(async <T>(_method: string, url: string, body?: unknown): Promise<T> => {
+      if (url.includes('developerMetadata:search')) return { matchedDeveloperMetadata: bound ? [{
+        developerMetadata: { metadataId: 99, location: { dimensionRange: { sheetId: 0, startIndex: 5 } } },
+      }] : [] } as T
+      if (url.includes(':getByDataFilter')) return { sheets: [{ properties: { sheetId: 0 }, data: [{ rowData: [
+        { values: [{ formattedValue: '2645' }] }, { values: [] },
+      ] }] }] } as T
+      if (decodeURIComponent(url).includes('tables(tableId,range)')) return { sheets: [{
+        properties: { sheetId: 0 }, basicFilter,
+        tables: [{ tableId: 'projects', range: filter.range }],
+      }] } as T
+      if (url.includes(':batchUpdate')) {
+        batches.push((body as { requests: Request[] }).requests)
+        bound = true
+        return { replies: [{ createDeveloperMetadata: { developerMetadata: { metadataId: 99 } } }] } as T
+      }
+      throw new Error(`unexpected url ${url}`)
+    })
+    return batches
+  }
+
+  it('defaults Lifecycle and refreshes the preserved filter after the atomic row write', async () => {
+    const batches = backend()
+    const owned = kitOwnedCreationCells({ projectNumber: '2646', projectName: 'Ignite' }, config.layout)
+    await createBoundRow(config, 'p2646', owned)
+    assert.equal(batches.length, 1)
+    const requests = batches[0]
+    const lifecycle = requests.find((r) => r.updateCells?.start.columnIndex === 5)?.updateCells
+    assert.equal(lifecycle?.rows[0].values[0].userEnteredValue.stringValue, 'Active')
+    assert.equal(lifecycle?.fields, 'userEnteredValue', 'preserve validation and formatting')
+    assert.equal(lifecycle?.start.rowIndex, 5)
+    assert.deepEqual(requests.at(-1)?.setBasicFilter?.filter, {
+      ...filter, range: { ...filter.range, endRowIndex: 6 },
+    }, 'extend through the new row without changing criteria or sort')
+    assert.ok(requests.findIndex((r) => r.createDeveloperMetadata) < requests.length - 1)
+    assert.ok(!owned.some((cell) => cell.header === 'Status'), 'do not mutate caller input')
+
+    await createBoundRow(config, 'p2646', owned)
+    assert.equal(batches.length, 1, 'a retry neither duplicates the row nor resets Lifecycle')
+    await updateBoundRow(config, 'p2646', owned)
+    assert.ok(batches[1].every((r) => r.updateCells?.start.columnIndex !== 5 && !r.setBasicFilter),
+      'later updates do not reset Lifecycle or filters')
+  })
+
+  it('preserves an explicitly supplied Lifecycle', async () => {
+    const batches = backend()
+    await createBoundRow(config, 'paused', kitOwnedCreationCells({
+      projectNumber: '2646', initialStatus: 'On Hold',
+    }, config.layout))
+    const writes = batches[0].filter((r) => r.updateCells?.start.columnIndex === 5)
+    assert.equal(writes.length, 1)
+    assert.equal(writes[0].updateCells?.rows[0].values[0].userEnteredValue.stringValue, 'On Hold')
+  })
+
+  it('does not replace a filter on an unrelated range', async () => {
+    const batches = backend({ ...filter, range: { ...filter.range, startRowIndex: 0 } })
+    await createBoundRow(config, 'p', kitOwnedCreationCells({ projectNumber: '2646' }, config.layout))
+    assert.ok(batches[0].every((r) => !r.setBasicFilter))
+  })
+})
+
 describe('adoptLegacyProjectRow', () => {
   const config: WorkbookConfig = {
     ...CONFIG,
