@@ -8,6 +8,15 @@ import { cultureRpcRow } from './rpc'
 import { LegacyImportReviewError, validateLegacySeeds } from './legacy-import'
 
 const fixture = () => ({ ...newMeme('custom', 'C12345678', 'America/New_York', '11111111-1111-4111-8111-111111111111'), name: 'Studio wins', fire_date: '2026-09-14' })
+test('Friday timesheet at 4pm Eastern follows daylight saving and does not fire at the former noon slot', () => {
+  const item = memeSchema.parse({ ...newMeme('timesheet', 'C12345678', 'America/New_York', '11111111-1111-4111-8111-111111111111'),
+    status: 'enabled', local_time: '16:00' })
+  assert.equal(dueKey(item, new Date('2026-10-09T20:00:00Z'), () => false), '2026-10-09')
+  assert.equal(dueKey(item, new Date('2026-11-06T21:00:00Z'), () => false), '2026-11-06')
+  for (const date of ['2026-10-09T16:00:00Z', '2026-10-09T19:59:00Z', '2026-11-06T20:00:00Z', '2026-10-08T20:00:00Z']) {
+    assert.equal(dueKey(item, new Date(date), () => false), null)
+  }
+})
 test('legacy preflight reports every invalid row without leaking private copy or skipping schedules', () => {
   const good = { ...fixture(), legacy_key: 'safe' }
   validateLegacySeeds([good])

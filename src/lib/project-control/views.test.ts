@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { renderNotesAndFeedbackView, renderOverviewView, renderScheduleView, type ProjectSupplement } from './views'
+import { projectViewHash, PROJECT_VIEW_RENDER_VERSION, renderNotesAndFeedbackView, renderOverviewView, renderScheduleView, type ProjectSupplement } from './views'
+import { createHash } from 'node:crypto'
 import type { NormalizedRow } from './render'
 
 const cell = (display: string) => ({ display, value: display, hyperlink: null, iso: null })
@@ -22,6 +23,47 @@ const supplement: ProjectSupplement = {
 }
 
 describe('generated Canvas tables', () => {
+  const scheduleTasks = (workback: ProjectSupplement['workback']) => renderScheduleView(row, { ...supplement, workback })
+    .split('\n').filter(line => line.startsWith('| ') && !line.startsWith('| Milestone') && !line.startsWith('| ---'))
+    .map(line => line.split(' | ')[0].slice(2))
+
+  it('orders the 2645 regression by dates, not blank or stale Sort Order', () => {
+    const workback: ProjectSupplement['workback'] = [
+      { Task: 'Client Feedback', 'Start Date': '2026-10-07', 'Due Date': '2026-10-07', 'Sort Order': '' },
+      { Task: 'Final Delivery', 'Start Date': '2026-11-06', 'Due Date': '2026-11-06', 'Sort Order': '-1' },
+      { Task: 'Storyboard V1', 'Start Date': '2026-09-30', 'Due Date': '2026-10-06', 'Sort Order': '8', Status: 'In Progress' },
+      { Task: 'Storyboard V2', 'Start Date': '2026-10-07', 'Due Date': '2026-10-09', 'Sort Order': '0' },
+    ]
+    const original = structuredClone(workback)
+    assert.deepEqual(scheduleTasks(workback), ['**Storyboard V1**', 'Client Feedback', 'Storyboard V2', 'Final Delivery'])
+    assert.deepEqual(workback, original)
+  })
+
+  it('handles US dates, deadline-only rows, invalid dates and undated rows deterministically', () => {
+    assert.deepEqual(scheduleTasks([
+      { Task: 'Undated', 'Sort Order': '-100' },
+      { Task: 'Invalid date', 'Start Date': '2026-02-31' },
+      { Task: 'Next year', 'Start Date': '1/2/2027' },
+      { Task: 'Earlier', 'Start Date': ' 9/30/2026 ' },
+      { Task: 'Deadline only', 'Due Date': '2026-10-01' },
+      { Task: 'Hidden', 'Start Date': '2026-01-01', 'Show on Canvas': 'FALSE' },
+    ]), ['Earlier', 'Deadline only', 'Next year', 'Undated', 'Invalid date'])
+  })
+
+  it('uses explicit sort order only for equal dates and retains source order for equal keys', () => {
+    const dates = { 'Start Date': '2026-10-09', 'Due Date': '2026-10-09' }
+    assert.deepEqual(scheduleTasks([
+      { ...dates, Task: 'Blank' }, { ...dates, Task: 'Two', 'Sort Order': '2' },
+      { ...dates, Task: 'One', 'Sort Order': '1' }, { ...dates, Task: 'Invalid order', 'Sort Order': 'abc' },
+    ]), ['One', 'Two', 'Blank', 'Invalid order'])
+  })
+
+  it('invalidates the old canvas render hash even when the workbook has not changed', () => {
+    assert.notEqual(PROJECT_VIEW_RENDER_VERSION, '7')
+    const previous = createHash('sha256').update(JSON.stringify({ renderVersion: '7', row, extra: supplement })).digest('hex')
+    assert.notEqual(projectViewHash(row, supplement), previous)
+  })
+
   it('adds a OneDrive row once, including normalized duplicate types', () => {
     const markdown = renderOverviewView(row, { ...supplement, links: [
       { 'Link Type': 'OneDrive', URL: 'https://example.test/old', Active: 'TRUE' },
