@@ -15,6 +15,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { isOperationalProject } from '../project-control/project-filters'
 import { RetryAfterError } from 'inngest'
 import { enqueueSyncAlert } from '../control-center/outbox'
 import { inngest } from './client'
@@ -33,6 +34,7 @@ import {
   type ControlCanvasAccessLevel,
   controlCanvasTitle,
   projectCanvasTitle,
+  ensureProjectRefreshControl,
   type CanvasHandle,
   type CanvasReconcile,
 } from '../project-control/canvas'
@@ -69,6 +71,7 @@ export interface SyncSheetsPort {
   readProjectSupplement?(config: WorkbookConfig, projectNumber: string): Promise<ProjectSupplement>
 }
 export interface SyncCanvasPort {
+  ensureProjectRefreshControl?: typeof ensureProjectRefreshControl
   editControlCanvas(o: { canvasId: string; title: string; markdown: string }): Promise<void>
   createControlCanvas?(o: { channelId: string; title: string; markdown: string; accessLevel?: ControlCanvasAccessLevel }): Promise<CanvasHandle>
   reconcileControlCanvas?(o: { channelId: string; expectedTitle: string }): Promise<CanvasReconcile>
@@ -103,7 +106,7 @@ export interface SyncDeps {
 export function defaultSyncDeps(): SyncDeps {
   return {
     sheets: { getWorkbookVersion, searchRowMetadata, readRow: readRowForSync, readProjectSupplement: createCachedProjectSupplementReader() },
-    canvas: { createControlCanvas, editControlCanvas, reconcileControlCanvas, setControlCanvasReadOnly, setControlCanvasEditable },
+    canvas: { createControlCanvas, editControlCanvas, reconcileControlCanvas, setControlCanvasReadOnly, setControlCanvasEditable, ensureProjectRefreshControl },
     store: {
       listSyncableBindings, updateBinding, getSyncState, claimWorkbookLease,
       resolveSyncableProjectIdByCode,
@@ -146,6 +149,8 @@ export interface SyncSummary {
 }
 
 export interface SyncOptions {
+  /** Explicit operator refresh also repairs drift when source hashes match. */
+  refresh?: boolean
   /** An authenticated human edit must inspect row hashes even if Drive's coarse
    * file version has not advanced yet. */
   force?: boolean
@@ -204,7 +209,7 @@ export async function runProjectControlSync(
     const needsRecovery = bindings.filter((b) => b.sync_status !== 'synced')
 
     // Coarse gate: unchanged workbook AND nothing to recover ⇒ cheap exit.
-    if (!options.force && cursorVersionKey === cursorVersion && needsRecovery.length === 0) {
+    if (!options.force && !options.refresh && cursorVersionKey === cursorVersion && needsRecovery.length === 0) {
       return { ...empty, ran: true, reason: 'no_change', considered: bindings.length }
     }
 
@@ -264,7 +269,11 @@ export async function runProjectControlSync(
             .some((type) => !present.has(type))
         }
 
-        if (hash === b.last_row_hash && b.sync_status === 'synced' && !missingGeneratedView) {
+        const refreshChannel = extra ? slackChannelId(extra) : null
+        const missingRefreshControl = Boolean(extra && deps.canvas.ensureProjectRefreshControl && refreshChannel
+          && isOperationalProject(row['Project Number']?.display || '', row.Status?.display || '')
+          && (!b.refresh_message_url || b.refresh_channel_id !== refreshChannel))
+        if (!options.refresh && hash === b.last_row_hash && b.sync_status === 'synced' && !missingGeneratedView && !missingRefreshControl) {
           unchanged++
           continue
         }
@@ -283,29 +292,29 @@ export async function runProjectControlSync(
 
         const projectNumber = row['Project Number']?.display || 'Project'
         const title = controlCanvasTitle(projectNumber)
-        const markdown = extra
-          ? renderOverviewView(row, extra, deps.now())
-          : renderProjectControlCanvas(b.template_markdown!, row)
+        let refreshUrl = b.refresh_message_url
+        if (extra && deps.canvas.ensureProjectRefreshControl && isOperationalProject(projectNumber, row.Status?.display || '')) {
+          const channelId = slackChannelId(extra)
+          if (channelId && (!refreshUrl || b.refresh_channel_id !== channelId)) {
+            const startedAt = b.refresh_started_at || deps.now()
+            await deps.store.updateBinding(b.project_id, { refresh_started_at: startedAt })
+            const control = await deps.canvas.ensureProjectRefreshControl({ projectId: b.project_id, projectNumber, channelId, startedAt })
+            refreshUrl = control.url
+            await deps.store.updateBinding(b.project_id, { refresh_channel_id: channelId, refresh_message_ts: control.ts, refresh_message_url: control.url })
+          }
+        }
         // Ownership check immediately before the irreversible Canvas edit.
         if (!(await deps.store.renewWorkbookLease(config.spreadsheetId, 'sync', holder))) {
           leaseLost = true
           allOk = false
           break
         }
-        await deps.canvas.editControlCanvas({ canvasId: b.canvas_id, title, markdown })
 
         // Reference and Schedule remain deterministic workbook projections.
         // NotesAndFeedback is seeded once, then owned by the Slack channel: sync
         // may repair its access but must never replace its human-authored body.
         if (extra && deps.store.listProjectCanvases && deps.store.updateProjectCanvas) {
           const viewHash = projectViewHash(row, extra)
-          const overview = canvases.find((view) => view.canvas_type === 'overview')
-          if (overview) {
-            await deps.store.updateProjectCanvas(b.project_id, 'overview', {
-              sync_status: 'synced', last_source_hash: viewHash,
-              last_synced_at: deps.now(), error: null,
-            })
-          }
           const desired = [
             { type: 'reference' as const, markdown: renderReferenceView(row, extra), editable: false },
             { type: 'schedule' as const, markdown: renderScheduleView(row, extra), editable: false },
@@ -349,11 +358,29 @@ export async function runProjectControlSync(
           }
         }
 
+        // Publish the success timestamp LAST, only after the other generated
+        // tabs succeeded. A failed Schedule refresh must not look fully synced.
+        if (!(await deps.store.renewWorkbookLease(config.spreadsheetId, 'sync', holder))) {
+          leaseLost = true
+          allOk = false
+          break
+        }
+        const completedAt = deps.now()
+        const markdown = extra
+          ? renderOverviewView(row, extra, completedAt, refreshUrl)
+          : renderProjectControlCanvas(b.template_markdown!, row)
+        await deps.canvas.editControlCanvas({ canvasId: b.canvas_id, title, markdown })
+        if (extra && canvases.some(view => view.canvas_type === 'overview') && deps.store.updateProjectCanvas) {
+          await deps.store.updateProjectCanvas(b.project_id, 'overview', {
+            sync_status: 'synced', last_source_hash: hash, last_synced_at: completedAt, error: null,
+          })
+        }
+
         const wasBroken = b.sync_status === 'error' || b.sync_status === 'orphaned'
         await deps.store.updateBinding(b.project_id, {
           sync_status: 'synced',
           last_row_hash: hash,
-          last_synced_at: deps.now(),
+          last_synced_at: completedAt,
           error: null,
         })
         updated++

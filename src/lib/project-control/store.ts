@@ -12,6 +12,7 @@
  */
 
 import { createAdminClient } from '@/lib/supabase/admin'
+import { projectCodeMatches } from './project-identity'
 
 const nowIso = () => new Date().toISOString()
 const CREATION_LEASE_MS = 5 * 60 * 1000
@@ -274,6 +275,10 @@ export interface BindingRow {
   template_markdown: string | null
   canvas_id: string | null
   canvas_url: string | null
+  refresh_channel_id?: string | null
+  refresh_message_ts?: string | null
+  refresh_message_url?: string | null
+  refresh_started_at?: string | null
   creation_state: string
   sync_status: string
   last_row_hash: string | null
@@ -350,22 +355,20 @@ export async function resolveSyncableProjectIdByCode(
   spreadsheetId: string,
   projectCode: string,
 ): Promise<string | null> {
-  const { data: projects, error: projectError } = await db()
-    .from('projects')
-    .select('id')
-    .eq('project_code', projectCode)
-  if (projectError) throw new Error(`resolveSyncableProjectIdByCode projects: ${projectError.message}`)
-  const projectIds = ((projects as Array<{ id: string }>) || []).map((row) => row.id)
-  if (projectIds.length === 0) return null
   const { data: bindings, error: bindingError } = await db()
     .from('project_control_bindings')
     .select('project_id')
     .eq('spreadsheet_id', spreadsheetId)
     .eq('creation_state', 'connected')
-    .in('project_id', projectIds)
   if (bindingError) throw new Error(`resolveSyncableProjectIdByCode bindings: ${bindingError.message}`)
-  const matches = (bindings as Array<{ project_id: string }>) || []
-  return matches.length === 1 ? matches[0].project_id : null
+  const boundIds = ((bindings as Array<{ project_id: string }>) || []).map(row => row.project_id)
+  if (!boundIds.length) return null
+  const { data: projects, error: projectError } = await db().from('projects')
+    .select('id,project_code').in('id', boundIds)
+  if (projectError) throw new Error(`resolveSyncableProjectIdByCode projects: ${projectError.message}`)
+  const matches = ((projects as Array<{ id: string; project_code: string | null }>) || [])
+    .filter(project => projectCodeMatches(project.project_code, projectCode))
+  return matches.length === 1 ? matches[0].id : null
 }
 
 export type ProjectCanvasType = 'overview' | 'reference' | 'schedule' | 'notesAndFeedback'

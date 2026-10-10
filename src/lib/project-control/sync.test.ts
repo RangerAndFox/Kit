@@ -105,6 +105,39 @@ function makeDeps(over: { bindings?: BindingRow[]; cursor?: string | null; versi
 }
 
 describe('runProjectControlSync', () => {
+  it('installs a missing refresh control even after provisioning saved an unchanged source hash', async () => {
+    const { deps, store } = makeDeps()
+    const active = cells()
+    active[MASTER_HEADERS.indexOf('Status')] = { formattedValue: 'Active' }
+    deps.sheets.readRow = async () => active
+    deps.sheets.readProjectSupplement = async () => ({ specs: {}, workback: [], links: [{ 'Link Type': 'Slack Channel', URL: 'https://slack.com/app_redirect?channel=CTEST' }], deliverables: [], assignments: [] })
+    await runProjectControlSync(deps, { force: true })
+    let controls = 0
+    deps.canvas.ensureProjectRefreshControl = async () => { controls++; return {channelId:'CTEST',ts:'123.456',url:'https://studio.slack.com/archives/CTEST/p123456'} }
+    assert.equal((await runProjectControlSync(deps, { force: true })).updated, 1)
+    assert.equal(controls, 1)
+    assert.match(store.bindings[0].refresh_message_url || '', /p123456$/)
+    assert.equal((await runProjectControlSync(deps, { force: true })).unchanged, 1)
+    assert.equal(controls, 1)
+  })
+  it('an explicit refresh republishes unchanged data without advancing the workbook cursor', async () => {
+    const { deps, edits, store } = makeDeps({ bindings: [binding()] })
+    const result = await runProjectControlSync(deps, { force: true, refresh: true, projectId: 'p1' })
+    assert.equal(result.updated, 1)
+    assert.deepEqual(edits, ['C1'])
+    assert.equal(store.advanced, null)
+  })
+
+  it('does not publish a successful Overview timestamp if Schedule fails', async () => {
+    const { deps, edits, store } = makeDeps()
+    deps.sheets.readProjectSupplement = async () => ({ specs: {}, workback: [], links: [], deliverables: [], assignments: [] })
+    deps.store.listProjectCanvases = async () => ['overview', 'reference', 'schedule', 'notesAndFeedback'].map(type => ({canvas_type:type,canvas_id:type}) as ProjectCanvasRow)
+    deps.store.updateProjectCanvas = async () => {}
+    deps.canvas.editControlCanvas = async input => { if (input.canvasId === 'schedule') throw new Error('outage'); edits.push(input.canvasId) }
+    assert.equal((await runProjectControlSync(deps, { force: true })).errored, 1)
+    assert.deepEqual(edits, ['reference'])
+    assert.equal(store.bindings[0].last_synced_at, null)
+  })
   it('stamps the Overview from the sync clock without rewriting unchanged snapshots', async () => {
     const { deps, store } = makeDeps()
     let now = '2026-10-09T20:11:00Z'
@@ -277,7 +310,7 @@ describe('runProjectControlSync', () => {
     assert.equal(result.updated, 1)
     assert.deepEqual(created, [{ channelId: 'CTEST', title: '2601_NotesAndFeedback', accessLevel: 'write' }])
     assert.deepEqual(saved, ['notesAndFeedback'])
-    assert.deepEqual(edits, ['C1', 'CR', 'CS'])
+    assert.deepEqual(edits, ['CR', 'CS', 'C1'])
   })
 
   it('makes an existing NotesAndFeedback canvas editable without replacing its contents', async () => {
@@ -301,7 +334,7 @@ describe('runProjectControlSync', () => {
 
     await runProjectControlSync(deps)
 
-    assert.deepEqual(edits, ['C1', 'CR', 'CS'], 'Notes body is never replaced')
+    assert.deepEqual(edits, ['CR', 'CS', 'C1'], 'Notes body is never replaced; Overview success is last')
     assert.deepEqual(access, [{ canvasId: 'CN', channelId: 'CTEST' }])
   })
 

@@ -13,7 +13,7 @@ export interface ProjectSupplement {
 
 // Bump when generated Canvas markup changes so the sync cursor performs one
 // complete regeneration even if the workbook itself has not changed.
-export const PROJECT_VIEW_RENDER_VERSION = '9'
+export const PROJECT_VIEW_RENDER_VERSION = '10'
 
 const val = (row: NormalizedRow, key: string) => row[key]?.display || '—'
 const link = (label: string, url?: string) => url ? `[${label}](${url})` : '—'
@@ -30,7 +30,7 @@ export function projectViewHash(row: NormalizedRow, extra: ProjectSupplement): s
   return createHash('sha256').update(JSON.stringify({ renderVersion: PROJECT_VIEW_RENDER_VERSION, row, extra })).digest('hex')
 }
 
-export function renderOverviewView(row: NormalizedRow, extra: ProjectSupplement, syncedAt = new Date().toISOString()): string {
+export function renderOverviewView(row: NormalizedRow, extra: ProjectSupplement, syncedAt = new Date().toISOString(), refreshUrl?: string | null): string {
   // This is the time of the rendered snapshot, not a heartbeat. It stays out
   // of the source hash so unchanged polls do not repeatedly edit Slack.
   const timestamp = new Date(syncedAt)
@@ -55,7 +55,9 @@ export function renderOverviewView(row: NormalizedRow, extra: ProjectSupplement,
   // Optional supported assets add a row automatically, without duplicating
   // the fixed template rows or leaking arbitrary Other/financial links.
   if (links.has('onedrive')) assetTypes.splice(1, 0, 'OneDrive')
-  return `**Last synced:** ${lastSynced}\n\n# ${val(row, 'Project Number')} — ${val(row, 'Project Name')}\n\n` +
+  const refresh = refreshUrl && /^https:\/\/[a-z0-9-]+\.slack\.com\/archives\/[A-Z0-9]+\/p\d+$/i.test(refreshUrl)
+    ? ` · [Refresh this project](${refreshUrl})` : ''
+  return `**Last synced:** ${lastSynced}${refresh}\n\n` +
     `## Today’s assignments\n${table(['Artist', 'Assignment'], assignmentRows)}\n\n` +
     `## Project Status\n${table(['Field', 'Value'], [['Last Share', row['Last Share']?.hyperlink ? link(row['Last Share'].display, row['Last Share'].hyperlink) : val(row, 'Last Share')], ['Status', val(row, 'Quick Status')], ['Next Milestone', val(row, 'Next Share')]])}\n\n` +
     `## Asset folders\n${table(['Asset', 'Link'], assetTypes.map((k) => [k, link(k, links.get(typeKey(k)))]))}`

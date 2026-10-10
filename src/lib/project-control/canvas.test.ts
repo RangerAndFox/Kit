@@ -11,6 +11,7 @@ import { describe, it, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   createControlCanvas,
+  ensureProjectRefreshControl,
   editControlCanvas,
   assertValidCanvasChanges,
   formatSlackResponseMessages,
@@ -39,6 +40,40 @@ function recorder(overrides: Record<string, Record<string, unknown>> = {}) {
 }
 
 afterEach(() => __setCanvasTransportForTests(null))
+
+describe('project refresh control', () => {
+  const input = { projectId: 'p1', projectNumber: '2645', channelId: 'C123', startedAt: '2026-10-09T20:00:00Z' }
+  it('creates and pins one control, then reconciles an ambiguous prior send', async () => {
+    let message: Record<string, unknown> | undefined
+    let posts = 0
+    __setCanvasTransportForTests(async (_kind, method, payload) => {
+      if (method === 'auth.test') return { ok: true, user_id: 'UKIT' }
+      if (method === 'conversations.history') return { ok: true, messages: message ? [message] : [] }
+      if (method === 'chat.postMessage') { posts++; message = { ...payload, user: 'UKIT', ts: '123.456' }; return { ok: true, ts: '123.456' } }
+      if (method === 'chat.getPermalink') return { ok: true, permalink: 'https://studio.slack.com/archives/C123/p123456' }
+      assert.equal(method, 'pins.add'); return { ok: true }
+    })
+    assert.equal((await ensureProjectRefreshControl(input)).ts, '123.456')
+    assert.equal((await ensureProjectRefreshControl(input)).ts, '123.456')
+    assert.equal(posts, 1)
+  })
+  it('incomplete history fails closed instead of blindly posting another control', async () => {
+    const r = recorder({ 'auth.test': { user_id: 'UKIT' }, 'conversations.history': { has_more: true } })
+    __setCanvasTransportForTests(r.transport)
+    await assert.rejects(ensureProjectRefreshControl(input), /history incomplete/)
+    assert.equal(r.calls.some(call => call.method === 'chat.postMessage'), false)
+  })
+  it('an installation without optional pin scope still gets a working Overview link', async () => {
+    __setCanvasTransportForTests(async (_kind, method) => {
+      if (method === 'auth.test') return { ok: true, user_id: 'UKIT' }
+      if (method === 'conversations.history') return { ok: true, messages: [] }
+      if (method === 'chat.postMessage') return { ok: true, ts: '123.456' }
+      if (method === 'pins.add') throw new Error('Slack pins.add: missing_scope')
+      return { ok: true, permalink: 'https://studio.slack.com/archives/C123/p123456' }
+    })
+    assert.match((await ensureProjectRefreshControl(input)).url, /p123456$/)
+  })
+})
 
 describe('createControlCanvas read-only enforcement', () => {
   it('sets the channel to read-only (never write) for the managed canvas', async () => {

@@ -26,7 +26,7 @@ import {
   recordArtistOffboardingInSheet,
   __setSheetsTransportForTests,
 } from './sheets'
-import { kitOwnedCreationCells, parseDateToSerial, MASTER_HEADERS } from './render'
+import { kitOwnedCreationCells, parseDateToSerial, MASTER_HEADERS, normalizeRow, sourceRowHash } from './render'
 import type { SheetCell } from './render'
 import type { WorkbookConfig } from './types'
 
@@ -648,6 +648,23 @@ describe('RF Production workbook adapter', () => {
 
     await readRowForSync(config, 4)
     assert.deepEqual(calls, [config.sheetId])
+  })
+
+  it('preserves a URL-only Figma Last Share and detects URL edits even without a label', async () => {
+    let urlValue = 'https://www.figma.com/design/example/Deck?node-id=1-1'
+    __setSheetsTransportForTests(async <T>(_method: string, url: string): Promise<T> => {
+      assert.ok(url.includes(':getByDataFilter'))
+      const values = Array.from({ length: 23 }, () => c(''))
+      values[0] = c('2645'); values[17] = c(urlValue)
+      return { sheets: [{ properties: { sheetId: config.sheetId }, data: [{ rowData: [{ values }] }] }] } as T
+    })
+    const first = normalizeRow(MASTER_HEADERS, await readRowForSync(config, 4))
+    assert.equal(first['Last Share'].display, urlValue)
+    assert.equal(first['Last Share'].hyperlink, urlValue)
+    urlValue = 'https://www.figma.com/design/example/Deck?node-id=2-2'
+    const second = normalizeRow(MASTER_HEADERS, await readRowForSync(config, 4))
+    assert.notEqual(sourceRowHash(first), sourceRowHash(second))
+    assert.equal(second['Last Share'].hyperlink, urlValue)
   })
 
   it('reads normalized supplement tabs once and reuses the invocation snapshot across projects', async () => {

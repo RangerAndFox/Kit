@@ -34,6 +34,7 @@ import { dashboardBaseUrl } from './dashboard-card'
 import { buildProjectDeletionCardForContext } from '../project-deletion/handlers'
 import { registerKitCommand } from './command-dispatch'
 import { openOffboarding } from '../offboarding/handlers'
+import { requestSlackProjectRefresh } from './project-refresh'
 
 /**
  * Resolve the Slack user's Kit access context for a slash command.
@@ -64,6 +65,17 @@ export function registerCommandHandlers(app: App) {
     const args = (command.text || '').trim().split(/\s+/).slice(1).join(' ')
 
     switch (subcommand) {
+      case 'refresh': {
+        await ack()
+        try {
+          const text = await requestSlackProjectRefresh(client, { userId: command.user_id, teamId: command.team_id,
+            channelId: command.channel_id, code: args })
+          await respond({ response_type: 'ephemeral', text })
+        } catch {
+          await respond({ response_type: 'ephemeral', text: 'Could not queue the refresh. Producer/admin access and one connected project are required. Try `/kit refresh 2645` or use Sync now in the project channel.' })
+        }
+        break
+      }
       case 'offboard': {
         await ack()
         try { await openOffboarding(client,command.user_id,command.team_id,args) }
@@ -998,6 +1010,7 @@ export function registerCommandHandlers(app: App) {
             '`/kit role @user producer|artist|admin|freelancer` — Admin only: assign a role\n' +
             '`/kit sync-staff` — Admin only: map staff to Harvest users by email (activates hours check-ins)\n' +
             '`/kit sync-projects` — Admin only: preview Harvest→Supabase project reconciliation; `run` to apply\n' +
+            '`/kit refresh [project ID]` — Producer/admin: refresh saved Sheet data into this project’s Slack tabs; Kit DMs the result\n' +
             '`/kit meme` — Admin only: post this week’s timesheet meme to the team channel now\n' +
             '`/kit celebrate <event>` — Celebrate now or schedule with MM-DD\n' +
             '`/kit birthday @person MM-DD` — Set a team birthday\n' +
