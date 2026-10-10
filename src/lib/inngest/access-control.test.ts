@@ -59,10 +59,14 @@ describe('checkGateway — brain', () => {
   })
 
   it('allows brain actions for producers', () => {
-    for (const action of ['get', 'seed', 'why', 'refresh_canvas']) {
+    for (const action of ['get', 'seed', 'why']) {
       const r = checkGateway(producer(), 'brain', action)
       assert.equal(r.allowed, true)
     }
+  })
+
+  it('does not route the retired canvas refresh for producers', () => {
+    assert.equal(checkGateway(producer(), 'brain', 'refresh_canvas').allowed, false)
   })
 
   it('allows brain actions for admins', () => {
