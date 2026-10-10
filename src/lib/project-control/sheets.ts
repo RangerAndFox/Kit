@@ -58,7 +58,7 @@ function getServiceAccountCreds(): { client_email: string; private_key: string }
 let cachedToken: { token: string; exp: number } | null = null
 
 /** Mint (and cache) a service-account access token for the Sheets+Drive scopes. */
-async function getAccessToken(): Promise<string> {
+export async function getAccessToken(): Promise<string> {
   const now = Math.floor(Date.now() / 1000)
   if (cachedToken && cachedToken.exp - 60 > now) return cachedToken.token
   const creds = getServiceAccountCreds()

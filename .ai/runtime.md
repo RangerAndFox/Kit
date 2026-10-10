@@ -51,6 +51,16 @@ fact.
 
 ## Vercel — Next.js app + Inngest functions
 
+- **Project asset comments:** `projectFeedbackSync` is the sole scheduled owner
+  (`src/lib/inngest/project-feedback.ts`, every five minutes), disabled unless
+  `PROJECT_FEEDBACK_SYNC_ENABLED=true`. The existing Project Control sync
+  registers team-safe Assets links; the new worker polls due files hourly and
+  reconciles only its H3/table sections in Notes & Feedback. Private snapshots,
+  leases and publication hashes live in `project_feedback_sources`. No source
+  comments are edited. See `src/lib/project-feedback/README.md` for activation,
+  provider access and direct-file limitations. *(Verified in code; activation
+  and live provider contracts require separate verification.)*
+
 - **Responsibility:** the Next.js web app (`/status` and API routes) and all
   registered Inngest cron/background functions.
 - **Entry point (web):** `src/app/`. **Entry point (crons):**

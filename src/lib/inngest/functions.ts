@@ -15,6 +15,7 @@ import { projectControlSync, projectControlSyncOnEdit } from './project-control-
 import { selectRegisteredFunctions } from './registration'
 import { archivePublisher, archiveRecovery } from '../archive/workflow'
 import { controlOutboxDelivery } from './control-outbox'
+import { projectFeedbackSync } from './project-feedback'
 
 /** Canonical Kit Inngest function list, kept outside the Next route module. */
 export const inngestFunctions = [
@@ -37,6 +38,7 @@ export const inngestFunctions = [
   archivePublisher,
   archiveRecovery,
   controlOutboxDelivery,
+  projectFeedbackSync,
 ]
 
 /** Exact fail-closed list registered by the API adapter. */

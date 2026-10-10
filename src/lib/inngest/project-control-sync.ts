@@ -63,6 +63,7 @@ import {
   type ProjectCanvasRow,
 } from '../project-control/store'
 import { PROJECT_VIEW_RENDER_VERSION, projectControlDay, projectViewHash, renderNotesAndFeedbackView, renderOverviewView, renderReferenceView, renderScheduleView, type ProjectSupplement } from '../project-control/views'
+import { feedbackEnabled, registerFeedbackSources } from '../project-feedback/sync'
 
 export interface SyncSheetsPort {
   getWorkbookVersion(spreadsheetId: string): Promise<string>
@@ -92,6 +93,7 @@ export interface SyncStorePort {
   updateProjectCanvas?(projectId: string, canvasType: ProjectCanvasType, patch: Partial<ProjectCanvasRow>): Promise<void>
 }
 export interface SyncDeps {
+  registerFeedbackSources?: typeof registerFeedbackSources
   sheets: SyncSheetsPort
   canvas: SyncCanvasPort
   store: SyncStorePort
@@ -105,6 +107,7 @@ export interface SyncDeps {
 
 export function defaultSyncDeps(): SyncDeps {
   return {
+    registerFeedbackSources: feedbackEnabled() ? registerFeedbackSources : undefined,
     sheets: { getWorkbookVersion, searchRowMetadata, readRow: readRowForSync, readProjectSupplement: createCachedProjectSupplementReader() },
     canvas: { createControlCanvas, editControlCanvas, reconcileControlCanvas, setControlCanvasReadOnly, setControlCanvasEditable, ensureProjectRefreshControl },
     store: {
@@ -249,6 +252,7 @@ export async function runProjectControlSync(
         // from the wrong tab.
         const meta = await deps.sheets.searchRowMetadata(config.spreadsheetId, b.project_id, config.sheetId)
         if (!meta) {
+          await deps.registerFeedbackSources?.(b.project_id, [])
           orphaned++
           allOk = false
           await deps.store.updateBinding(b.project_id, { sync_status: 'orphaned', error: 'row_metadata_missing' })
@@ -263,6 +267,8 @@ export async function runProjectControlSync(
         if (deps.sheets.readProjectSupplement) {
           extra = await deps.sheets.readProjectSupplement(config, row['Project Number']?.display || '')
           hash = projectViewHash(row, extra, assignmentDay)
+          await deps.registerFeedbackSources?.(b.project_id,
+            isOperationalProject(row['Project Number']?.display || '', row.Status?.display || '') ? extra.links : [])
         }
 
         let canvases: ProjectCanvasRow[] = []

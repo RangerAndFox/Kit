@@ -140,6 +140,17 @@ describe('generated Canvas tables', () => {
     assert.doesNotMatch(markdown, /example.test\/old/)
     assert.equal(renderOverviewView(row, { ...supplement, links: [] }).includes('| OneDrive |'), false)
   })
+  it('publishes every explicit Figma and Script asset while collapsing duplicate URLs', () => {
+    const first = { 'Link Type':'Figma', URL:'https://www.figma.com/design/FIRST' }
+    const markdown = renderOverviewView(row,{...supplement,links:[first,first,
+      { 'Link Type':'Figma', URL:'https://www.figma.com/design/SECOND' },
+      { 'Link Type':'Script', URL:'https://docs.google.com/document/d/ONE' },
+      { 'Link Type':'Script', URL:'https://docs.google.com/document/d/TWO' },
+    ]})
+    assert.equal(markdown.split('| Figma |').length-1,2)
+    assert.equal(markdown.split('| Script |').length-1,2)
+    assert.match(markdown,/FIRST/); assert.match(markdown,/SECOND/)
+  })
 
   it('does not project inactive, unknown, or restricted asset types', () => {
     const markdown = renderOverviewView(row, { ...supplement, links: [

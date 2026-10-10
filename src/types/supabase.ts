@@ -14,6 +14,12 @@ export type Database = {
   }
   public: {
     Tables: {
+      project_feedback_sources: {
+        Row: { id: string; project_id: string; source_key: string; source: Json; active: boolean; snapshot: Json | null; heading_hash: string | null; body_hash: string | null; error_code: string | null; checked_at: string | null; next_attempt_at: string; lease_token: string | null; lease_expires_at: string | null }
+        Insert: { project_id: string; source_key: string; source: Json; id?: string; active?: boolean; snapshot?: Json | null; heading_hash?: string | null; body_hash?: string | null; error_code?: string | null; checked_at?: string | null; next_attempt_at?: string; lease_token?: string | null; lease_expires_at?: string | null }
+        Update: { source?: Json; active?: boolean; snapshot?: Json | null; heading_hash?: string | null; body_hash?: string | null; error_code?: string | null; checked_at?: string | null; next_attempt_at?: string; lease_token?: string | null; lease_expires_at?: string | null }
+        Relationships: [{ foreignKeyName: "project_feedback_sources_project_id_fkey"; columns: ["project_id"]; isOneToOne: false; referencedRelation: "projects"; referencedColumns: ["id"] }]
+      }
       culture_audit: {
         Row: {
           action: string
@@ -6322,6 +6328,9 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      register_project_feedback: { Args: { p_project: string; p_sources: Json }; Returns: undefined }
+      claim_project_feedback: { Args: { p_id: string; p_token: string }; Returns: boolean }
+      finish_project_feedback: { Args: { p_id: string; p_token: string; p_snapshot: Json | null; p_heading: string | null; p_body: string | null; p_error: string | null; p_delay: number }; Returns: boolean }
       claim_checkin_reply: {
         Args: { p_checkin_id: string; p_reply_timestamps: string[] }
         Returns: boolean

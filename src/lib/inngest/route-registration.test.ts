@@ -47,6 +47,9 @@ describe('canonical Inngest registration list', () => {
     assert.ok(ids.includes('project-control-sync'), 'cron missing')
     assert.ok(ids.includes('project-control-sync-on-edit'), 'event fn missing')
   })
+  it('registers exactly one asset-comment scheduler inside the same preview boundary', () => {
+    assert.equal(ids.filter(id=>id==='project-feedback-sync').length,1)
+  })
 
   it('registers the private archive publisher workflow', () => {
     assert.ok(ids.includes('archive-publisher'), 'archive publisher missing')

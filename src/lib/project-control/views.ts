@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { GENERATED_VIEW_NOTICE, parseDateToSerial, type NormalizedRow } from './render'
+import { TEAM_ASSET_TYPES, assetTypeKey, teamAssetLinks } from './assets'
 
 export interface ProjectSupplement {
   scheduleStatus?: string
@@ -13,7 +14,7 @@ export interface ProjectSupplement {
 
 // Bump when generated Canvas markup changes so the sync cursor performs one
 // complete regeneration even if the workbook itself has not changed.
-export const PROJECT_VIEW_RENDER_VERSION = '11'
+export const PROJECT_VIEW_RENDER_VERSION = '12'
 export const PROJECT_CONTROL_TIMEZONE = 'America/Los_Angeles'
 
 /** Calendar date, not a UTC day or a fixed PST offset (Pacific observes DST). */
@@ -58,24 +59,21 @@ export function renderOverviewView(row: NormalizedRow, extra: ProjectSupplement,
   const assignmentRows = assignments.length > 0
     ? assignments.map((a) => [a.Person, a['Daily Assignment']])
     : [['—', 'No assignments for today']]
-  // Explicit team-safe types only: adding a producer-only option to Lists must
-  // never publish its link. Normalize spelling and deduplicate by type.
-  const assetTypes = ['Dropbox','Frame.io','Figma','Script','Boords','Client Visual Reference','Music Reference','ElevenLabs']
-  const typeKey = (value: string) => value.trim().toLowerCase().replace(/\s+/g, '')
-  const links = new Map<string, string>()
-  for (const entry of extra.links) {
-    if (String(entry.Active || '').trim().toUpperCase() === 'FALSE') continue
-    if (entry.URL?.trim()) links.set(typeKey(entry['Link Type'] || ''), entry.URL.trim())
-  }
+  const assetTypes = [...TEAM_ASSET_TYPES]
+  const links = teamAssetLinks(extra.links)
   // Optional supported assets add a row automatically, without duplicating
   // the fixed template rows or leaking arbitrary Other/financial links.
-  if (links.has('onedrive')) assetTypes.splice(1, 0, 'OneDrive')
+  if (links.some(entry => assetTypeKey(entry['Link Type']) === 'onedrive')) assetTypes.splice(1, 0, 'OneDrive')
+  const assetRows = assetTypes.flatMap(type => {
+    const entries = links.filter(entry => assetTypeKey(entry['Link Type']) === assetTypeKey(type))
+    return entries.length ? entries.map(entry => [type, link(type, entry.URL)]) : [[type, '—']]
+  })
   const refresh = refreshUrl && /^https:\/\/[a-z0-9-]+\.slack\.com\/archives\/[A-Z0-9]+\/p\d+$/i.test(refreshUrl)
     ? ` · [Refresh this project](${refreshUrl})` : ''
   return `**Last synced:** ${lastSynced}${refresh}\n\n` +
     `## Today’s assignments\n${table(['Artist', 'Assignment'], assignmentRows)}\n\n` +
     `## Project Status\n${table(['Field', 'Value'], [['Last Share', row['Last Share']?.hyperlink ? link(row['Last Share'].display, row['Last Share'].hyperlink) : val(row, 'Last Share')], ['Status', val(row, 'Quick Status')], ['Next Milestone', val(row, 'Next Share')]])}\n\n` +
-    `## Asset folders\n${table(['Asset', 'Link'], assetTypes.map((k) => [k, link(k, links.get(typeKey(k)))]))}`
+    `## Asset folders\n${table(['Asset', 'Link'], assetRows)}`
 }
 
 export function renderReferenceView(row: NormalizedRow, extra: ProjectSupplement): string {
