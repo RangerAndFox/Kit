@@ -77,6 +77,11 @@ mechanism in code before assuming full compliance.
     **generated-view notice** directing edits to the Master Project List;
     the Overview instead shows a compact **Last synced** snapshot timestamp
     (owner-requested October 9, 2026), without changing edit permissions;
+    Overview timestamps and today's assignment selection use **America/Los_Angeles**
+    (PST/PDT). The workbook cursor includes the Pacific date, and assignment-bearing
+    view hashes include that date, so the existing sync rolls over even without
+    a Sheet edit. A pass uses one date consistently; unchanged same-day polls
+    remain no-ops. Personal hours timezones and culture schedules are independent.
     (b) sync is a
     **deterministic full-document replace** rendered only from the template
     snapshot + the authoritative Sheet row, so a manual Canvas edit is never an

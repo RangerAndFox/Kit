@@ -13,7 +13,19 @@ export interface ProjectSupplement {
 
 // Bump when generated Canvas markup changes so the sync cursor performs one
 // complete regeneration even if the workbook itself has not changed.
-export const PROJECT_VIEW_RENDER_VERSION = '10'
+export const PROJECT_VIEW_RENDER_VERSION = '11'
+export const PROJECT_CONTROL_TIMEZONE = 'America/Los_Angeles'
+
+/** Calendar date, not a UTC day or a fixed PST offset (Pacific observes DST). */
+export function projectControlDay(instant = new Date().toISOString()): string | null {
+  const date = new Date(instant)
+  if (Number.isNaN(date.getTime())) return null
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: PROJECT_CONTROL_TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(date)
+  const value = (type: string) => parts.find(part => part.type === type)?.value
+  return `${value('year')}-${value('month')}-${value('day')}`
+}
 
 const val = (row: NormalizedRow, key: string) => row[key]?.display || '—'
 const link = (label: string, url?: string) => url ? `[${label}](${url})` : '—'
@@ -26,20 +38,23 @@ const table = (headers: string[], rows: string[][]) => [
   ...rows.map((r) => `| ${r.map(tableCell).join(' | ')} |`),
 ].join('\n')
 
-export function projectViewHash(row: NormalizedRow, extra: ProjectSupplement): string {
-  return createHash('sha256').update(JSON.stringify({ renderVersion: PROJECT_VIEW_RENDER_VERSION, row, extra })).digest('hex')
+export function projectViewHash(row: NormalizedRow, extra: ProjectSupplement, assignmentDay = projectControlDay()): string {
+  // Only assignment-bearing projects depend on the local day. Minute-by-minute
+  // clock changes and projects without assignments must not cause Slack writes.
+  return createHash('sha256').update(JSON.stringify({ renderVersion: PROJECT_VIEW_RENDER_VERSION, row, extra,
+    assignmentDay: extra.assignments.length ? assignmentDay : null,
+  })).digest('hex')
 }
 
-export function renderOverviewView(row: NormalizedRow, extra: ProjectSupplement, syncedAt = new Date().toISOString(), refreshUrl?: string | null): string {
+export function renderOverviewView(row: NormalizedRow, extra: ProjectSupplement, syncedAt = new Date().toISOString(), refreshUrl?: string | null, assignmentDay = projectControlDay(syncedAt)): string {
   // This is the time of the rendered snapshot, not a heartbeat. It stays out
   // of the source hash so unchanged polls do not repeatedly edit Slack.
   const timestamp = new Date(syncedAt)
   const lastSynced = Number.isNaN(timestamp.getTime()) ? 'Unavailable' : new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York', month: 'short', day: 'numeric', year: 'numeric',
+    timeZone: PROJECT_CONTROL_TIMEZONE, month: 'short', day: 'numeric', year: 'numeric',
     hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
   }).format(timestamp)
-  const today = new Date().toISOString().slice(0, 10)
-  const assignments = extra.assignments.filter((a) => a.Date === today)
+  const assignments = extra.assignments.filter((a) => assignmentDay !== null && a.Date === assignmentDay)
   const assignmentRows = assignments.length > 0
     ? assignments.map((a) => [a.Person, a['Daily Assignment']])
     : [['—', 'No assignments for today']]

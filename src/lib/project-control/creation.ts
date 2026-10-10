@@ -52,7 +52,7 @@ import {
   readProjectSupplement as realReadProjectSupplement,
   type ProjectLinksInput,
 } from './sheets'
-import { projectViewHash, renderNotesAndFeedbackView, renderOverviewView, renderReferenceView, renderScheduleView, type ProjectSupplement } from './views'
+import { projectControlDay, projectViewHash, renderNotesAndFeedbackView, renderOverviewView, renderReferenceView, renderScheduleView, type ProjectSupplement } from './views'
 import {
   ensureBinding,
   getBindingByProject,
@@ -275,11 +275,12 @@ export async function bindProjectControl(
     const extra = deps.sheets.readProjectSupplement
       ? await deps.sheets.readProjectSupplement(config, row['Project Number']?.display || '')
       : null
-    const rowHash = extra ? projectViewHash(row, extra) : sourceRowHash(row)
+    const renderedAt = deps.now()
+    const rowHash = extra ? projectViewHash(row, extra, projectControlDay(renderedAt)) : sourceRowHash(row)
     const projectNumber = opts.submission.projectNumber || row['Project Number']?.display || 'Project'
     const title = controlCanvasTitle(projectNumber)
     const markdown = extra
-      ? renderOverviewView(row, extra, deps.now())
+      ? renderOverviewView(row, extra, renderedAt)
       : renderProjectControlCanvas(controlTemplate!.markdown, row)
     const ensureSupplementalViews = async () => {
       if (!extra) return
