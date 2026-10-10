@@ -1,11 +1,12 @@
 import crypto from 'node:crypto'
 import type { App } from '@slack/bolt'
-import type { KnownBlock, ModalView } from '@slack/types'
+import type { ModalView } from '@slack/types'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { distinctUploadName, uploadReviewers, validateUploadName, type UploadApproval, type UploadSource } from '../../../src/lib/delivery/upload-approval'
-import { assertUploadReviewer, getUploadApproval, updateUploadApproval, uploadApprovalsEnabled } from '../../../src/lib/delivery/upload-approval-store'
+import { assertUploadReviewer, getUploadApproval, uploadApprovalsEnabled } from '../../../src/lib/delivery/upload-approval-store'
 import { uploadApprovalConflicts, verifyApprovalSource } from './dropbox'
 import { deliverSlackOnce } from '../../../src/lib/slack/durable-delivery'
+import { decidedUploadMessage, uploadApprovalCard } from './upload-approval-card'
 
 const escape = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
 
@@ -31,33 +32,24 @@ function reviewModal(row: UploadApproval): ModalView {
   }
 }
 
-function card(row: UploadApproval, label: string): { text: string; blocks: KnownBlock[] } {
-  const source = row.source_payload as unknown as UploadSource
-  const kind = /02_Delivery/i.test(source.subfolder) ? 'Delivery' : 'Client Progress'
-  const text = `${kind} — ${label}: ${row.state === 'awaiting' ? 'ready for review' : row.state.replace('_',' ')}`
-  const blocks: KnownBlock[] = [
-    { type: 'section', text: { type: 'mrkdwn', text: `*${escape(text)}*\n${escape(row.source_path)}\nSuggested name: ${escape(row.approved_name || row.suggested_name)}${row.detail ? `\n${escape(row.detail)}` : ''}` } },
-  ]
-  if (row.state === 'awaiting') blocks.push({ type: 'actions', elements: [
-    { type: 'button', action_id: 'kit_frame_upload_review', value: row.id, text: { type: 'plain_text', text: 'Review & upload' }, style: 'primary' },
-    { type: 'button', action_id: 'kit_frame_upload_skip', value: row.id, text: { type: 'plain_text', text: 'Skip' } },
-  ] })
-  return { text, blocks }
-}
-
 /** Bounded outbox drain on the existing Railway inbox sweep. The shared Slack
  * receipt ledger refuses to repost when an earlier outcome is unknown. */
-export async function syncUploadApprovalNotices(app: App): Promise<void> {
+export async function syncUploadApprovalNotices(app: App, requestId?: string): Promise<void> {
   if (!uploadApprovalsEnabled()) return
   const db = createAdminClient()
-  const { data: rows, error } = await db.from('frame_upload_approvals').select('*').eq('notice_dirty', true).order('updated_at').limit(10)
+  let query = db.from('frame_upload_approvals').select('*').eq('notice_dirty', true).order('updated_at').limit(10)
+  if (requestId) query = query.eq('id', requestId)
+  const { data: rows, error } = await query
   if (error) throw error
-  for (const row of rows || []) {
+  for (const snapshot of rows || []) {
     const token = crypto.randomUUID()
-    const { data: claimed, error: claimError } = await db.rpc('claim_frame_upload_notice', { p_id: row.id, p_token: token })
+    const { data: claimed, error: claimError } = await db.rpc('claim_frame_upload_notice', { p_id: snapshot.id, p_token: token })
     if (claimError) throw claimError
     if (!claimed) continue
     try {
+      // Read after acquiring the lease: an older sweep snapshot must not
+      // restore review buttons after another sender displayed the decision.
+      const row = await getUploadApproval(snapshot.id)
       const { data: project, error: projectError } = await db.from('projects').select('project_manager_slack_id,external_ids,project_code,name').eq('id', row.project_id).eq('workspace_id', row.workspace_id).single()
       if (projectError || !project) throw new Error('Upload reviewer project unavailable')
       const users = uploadReviewers(project)
@@ -69,13 +61,13 @@ export async function syncUploadApprovalNotices(app: App): Promise<void> {
         const { error: channelError } = await db.from('frame_upload_approvals').update({ slack_channel_id: channel }).eq('id', row.id).eq('notice_token', token)
         if (channelError) throw channelError
       }
-      const content = card(row, `${project.project_code} — ${project.name}`)
+      const content = uploadApprovalCard(row, `${project.project_code} — ${project.name}`)
       let ts = row.slack_message_ts
       if (ts) await app.client.chat.update({ channel, ts, ...content })
       else ts = await deliverSlackOnce({ key: `frame-upload-review:${row.id}`, channel, ...content })
       if (!ts) throw new Error('Slack did not return a review receipt')
       const { error: savedError } = await db.from('frame_upload_approvals').update({ slack_message_ts: ts })
-        .eq('id', row.id).eq('notice_token', token)
+        .eq('id', snapshot.id).eq('notice_token', token)
       if (savedError) throw savedError
       // A concurrent approval may have dirtied the card after our snapshot.
       const { error: ackError } = await db.from('frame_upload_approvals').update({ notice_dirty: false })
@@ -83,10 +75,15 @@ export async function syncUploadApprovalNotices(app: App): Promise<void> {
       if (ackError) throw ackError
     } finally {
       const { error: releaseError } = await db.from('frame_upload_approvals').update({ notice_token: null })
-        .eq('id', row.id).eq('notice_token', token)
+        .eq('id', snapshot.id).eq('notice_token', token)
       if (releaseError) throw releaseError
     }
   }
+}
+
+async function refreshDecisionCard(app: App, id: string): Promise<void> {
+  try { await syncUploadApprovalNotices(app, id) }
+  catch { console.warn('[upload-review] Card refresh deferred to durable outbox') }
 }
 
 export function registerUploadApprovalHandlers(app: App): void {
@@ -105,11 +102,12 @@ export function registerUploadApprovalHandlers(app: App): void {
       }
       const row = await getUploadApproval(action.value)
       await authorize(row, body.team?.id || '', body.user.id)
-      if (row.state !== 'awaiting') throw new Error('This request has already been decided or superseded.')
+      if (row.state !== 'awaiting') throw new Error(decidedUploadMessage(row))
       if (skipping) {
         const { data, error } = await createAdminClient().rpc('decide_frame_upload', { p_id: row.id, p_workspace: row.workspace_id, p_actor: body.user.id, p_name: '', p_decision: 'skip' })
         if (error) throw error
-        if (!data) throw new Error('Already decided or superseded.')
+        if (!data) throw new Error(decidedUploadMessage(await getUploadApproval(row.id)))
+        await refreshDecisionCard(app, row.id)
       } else await client.views.update({ view_id: openedView!, view: reviewModal(row) })
     } catch (error) {
       const text = `Upload review: ${error instanceof Error ? error.message : 'Could not open request.'}`
@@ -130,7 +128,7 @@ export function registerUploadApprovalHandlers(app: App): void {
     try {
       const row = await getUploadApproval(view.private_metadata)
       await authorize(row, body.team?.id || '', body.user.id)
-      if (row.state !== 'awaiting') throw new Error('This request has already been decided or superseded.')
+      if (row.state !== 'awaiting') throw new Error(decidedUploadMessage(row))
       let name = view.state.values.filename?.value?.value || ''
       let decision = view.state.values.collision?.value?.selected_option?.value || ''
       if (!['replace','keep_both','skip'].includes(decision)) throw new Error('Choose what to do if the name exists.')
@@ -140,7 +138,13 @@ export function registerUploadApprovalHandlers(app: App): void {
         if (invalid) throw new Error(invalid)
         if (!view.state.values.ready?.value?.selected_options?.length) throw new Error('Confirm the render/export is finished before uploading.')
         if (!await verifyApprovalSource(row)) {
-          await updateUploadApproval(row.id, { state: 'superseded', detail: 'The Dropbox source changed. Review the new revision instead.' })
+          // A second review may finish this read after the first has approved.
+          // Never overwrite the winning decision from a stale form.
+          const { error } = await createAdminClient().from('frame_upload_approvals').update({
+            state: 'superseded', detail: 'The Dropbox source changed. Review the new revision instead.',
+            notice_dirty: true, updated_at: new Date().toISOString(),
+          }).eq('id', row.id).eq('state', 'awaiting').eq('approval_version', row.approval_version)
+          if (error) throw error
           throw new Error('The Dropbox source changed. This approval is no longer valid.')
         }
         const children = await uploadApprovalConflicts(row.project_id, row.source_payload as unknown as UploadSource)
@@ -170,6 +174,7 @@ export function registerUploadApprovalHandlers(app: App): void {
       const input = JSON.parse(view.private_metadata) as { id: string; name: string; decision: string; conflict?: { id: string; type: string } }
       const row = await getUploadApproval(input.id)
       await authorize(row, body.team?.id || '', body.user.id)
+      if (row.state !== 'awaiting') throw new Error(decidedUploadMessage(row))
       if (input.decision !== 'skip') {
         const invalid = validateUploadName(input.name, row.source_path)
         if (invalid) throw new Error(invalid)
@@ -180,7 +185,8 @@ export function registerUploadApprovalHandlers(app: App): void {
         p_conflict_id: input.conflict?.id, p_conflict_type: input.conflict?.type,
       })
       if (error) throw new Error('Could not reserve this upload. Another upload may already be using that name; reopen the review.')
-      if (!data) throw new Error('Already decided or superseded. No second upload was queued.')
+      if (!data) throw new Error(decidedUploadMessage(await getUploadApproval(row.id)))
+      await refreshDecisionCard(app, row.id)
     } catch (error) {
       await client.chat.postMessage({ channel: body.user.id, text: `Upload review: ${error instanceof Error ? error.message : 'Could not confirm upload.'}` })
     }

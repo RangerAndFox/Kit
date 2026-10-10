@@ -38,6 +38,22 @@ test('upload decisions are atomic, workspace scoped, replay safe and private', a
     assert.equal((await decide(first)).rows[0].ok,true)
     const events = (await db.query<{payload:{approvalVersion:number}}>('select payload from dropbox_event_inbox order by event_key')).rows
     assert.deepEqual(events.map(r=>r.payload.approvalVersion),[1,2],'re-review gets a new fenced execution event')
+    const competing = await create('competing')
+    const submit = (actor: string, name: string) => db.query<{ok:boolean}>(
+      'select decide_frame_upload($1,$2,$3,$4,$5) ok', [competing,workspace,actor,name,'new'])
+    const competitors = [
+      { actor: 'UPRODUCER', name: 'R&F_A_B_Edit_V3.mov' },
+      { actor: 'UCD', name: 'R&F_A_B_Anim_R3.mov' },
+    ]
+    const outcomes = await Promise.all(competitors.map(c => submit(c.actor,c.name)))
+    assert.equal(outcomes.filter(r => r.rows[0].ok).length,1,'only one competing reviewer wins')
+    const winner = competitors[outcomes.findIndex(r => r.rows[0].ok)]
+    const saved = (await db.query<{approved_by:string,approved_name:string,approval_version:number}>(
+      'select approved_by,approved_name,approval_version from frame_upload_approvals where id=$1',[competing])).rows[0]
+    assert.deepEqual(saved,{approved_by:winner.actor,approved_name:winner.name,approval_version:1})
+    assert.equal((await db.query<{n:number}>("select count(*)::int n from dropbox_event_inbox where payload->>'approvalRequestId'=$1",[competing])).rows[0].n,1)
+    const stale = await db.query("update frame_upload_approvals set state='superseded' where id=$1 and state='awaiting' and approval_version=0 returning id",[competing])
+    assert.equal(stale.rows.length,0,'a stale review source check cannot overwrite the winner')
     for (const role of ['anon','authenticated']) {
       await db.exec(`reset role;set role ${role}`)
       await assert.rejects(db.exec('select * from frame_upload_approvals'),/permission denied/)

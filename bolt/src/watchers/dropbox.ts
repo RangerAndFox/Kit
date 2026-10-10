@@ -1338,6 +1338,10 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
     if (frameFileReadiness(moved.data || moved, {
       id: file.id, folderId: resultingStack, projectId: frameioId, name: fileName, size: approval.source_size,
     }) !== 'ready') throw new Error('Frame version could not be verified ready')
+    const stack = await frameioGet(`/accounts/${acct}/version_stacks/${resultingStack}`)
+    if ((stack.data || stack).head_version?.id !== file.id) {
+      throw new Error('Frame version is not the displayed latest version; manual reconciliation required')
+    }
     await updateUploadApproval(approval.id, { state: 'uploading', version_stack_id: resultingStack, detail: null })
     approval.version_stack_id = resultingStack
   }

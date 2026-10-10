@@ -157,6 +157,26 @@ describe('upload pipeline integrity boundary', () => {
     expect(mocks.createApproval).not.toHaveBeenCalled()
     expect(mocks.fetch.mock.calls.some(([url]) => url.endsWith('/remote_upload'))).toBe(false)
   })
+  it.each(['file','version_stack'])('holds replacement for review if the new %s version is not the displayed head', async conflictType => {
+    actualFile.status = 'transcoded'
+    mocks.getApproval.mockResolvedValue({ id:'request',project_id:'project',source_file_id:delivery.dropboxId,source_rev:delivery.rev,
+      source_size:256,source_path:delivery.path,approved_name:'video.mp4',decision:'replace',approval_version:1,state:'uploading',
+      conflict_id: conflictType === 'file' ? 'old-file' : 'stack', conflict_type:conflictType })
+    const originalFetch = mocks.fetch.getMockImplementation()!
+    mocks.fetch.mockImplementation((url:string, options:RequestInit = {}) => {
+      if (url.endsWith('/version_stacks') || url.endsWith('/files/file/move')) {
+        actualFile.parent_id = 'stack'
+        return Promise.resolve(json({data:{id:'stack'}}))
+      }
+      if (url.endsWith('/version_stacks/stack')) return Promise.resolve(json({data:{head_version:{id:'old-file'}}}))
+      return originalFetch(url,options)
+    })
+    await expect(handleNewDelivery(app,{...delivery,approvalRequestId:'request',approvalVersion:1},{...event}))
+      .rejects.toThrow(/not the displayed latest version/)
+    expect(mocks.updateApproval).toHaveBeenCalledWith('request',expect.objectContaining({state:'needs_review'}))
+    expect(mocks.updateApproval).not.toHaveBeenCalledWith('request',expect.objectContaining({version_stack_id:'stack'}))
+    expect(mocks.message).not.toHaveBeenCalled()
+  })
   it('renames only an approved exact revision and checkpoints the upload before processing', async () => {
     prior = null; mocks.claimPost.mockResolvedValue(true)
     mocks.getApproval.mockResolvedValue({id:'request',project_id:'project',source_file_id:delivery.dropboxId,source_rev:delivery.rev,

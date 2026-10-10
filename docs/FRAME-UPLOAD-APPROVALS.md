@@ -18,6 +18,11 @@ Unknown phases require editing; Kit does not invent a phase from the date.
 - Keep both previews a distinct numbered filename before the final confirmation.
 - Skip records the decision and leaves Dropbox untouched.
 - Every decision is atomic. Repeated clicks cannot enqueue two uploads.
+- Competing producer/CD submissions preserve the first committed filename and
+  reviewer. A stale form cannot overwrite the winning decision. The losing
+  reviewer sees who approved and which name won. The existing shared card is
+  refreshed immediately when possible, removes its action buttons, and shows
+  the approver and approved filename; the durable outbox retries failed refreshes.
 - A changed revision invalidates its approval. Worker execution rechecks the
   actor's current project access, source revision/size/location, and destination.
 - A destination collision appearing after confirmation reopens review.
@@ -48,6 +53,27 @@ the finished video into Dropbox when practical.
 
 The feature is staged disabled. Do not describe repository tests as a live
 provider contract test. Runtime verification is still required.
+
+### Provider contract checks — October 10, 2026
+
+Verified with Kit's existing credentials (no new grants or credential rotation):
+
+- Slack `auth.test` identifies Kit in the expected workspace and includes
+  group-DM creation/history permissions. A private conversation containing only
+  Kit, the assigned producer and CD was opened; one explicitly labeled test
+  message was posted, updated, read back, and removed. No public message sent.
+- Frame: three synthetic PNGs uploaded into an isolated restricted test project,
+  with exact byte counts and `transcoded` status. A two-file version stack used
+  the new file as `head_version`; moving a third file into that stack made it
+  the head. Every previous file and a synthetic comment remained readable.
+  The application now also verifies the head before reporting replacement done.
+- An initial local-upload test lacked Frame's required `x-amz-acl: private`
+  header and returned 403. Correcting the test harness resolved it. Kit's
+  production path uses remote upload, not this local-upload fixture method.
+
+These provider checks do not alone prove the full live Dropbox-to-Slack-modal
+workflow. Production migration, deployed revision, enablement and a monitored
+first review remain separate rollout checks.
 
 ## Recovery
 
