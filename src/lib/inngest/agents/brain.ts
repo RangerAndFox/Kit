@@ -4,9 +4,7 @@
  *   get             load a brain by id or by slack_channel
  *   seed            build (or fetch) the initial brain for a channel
  *   why             retrieve source-backed provenance from channel knowledge
- *   refresh_canvas  no-op here; the Bolt /kit brain command does the Slack
- *                   side. This action exists so the registry surfaces the
- *                   capability for routing.
+ *   refresh_canvas  retired; compatibility requests return a clear explanation
  *
  * Spec: KIT-BRAIN-SPEC.md §3.1, §6
  */
@@ -101,15 +99,12 @@ async function handle(action: string, payload: Record<string, unknown>): Promise
       }
 
       case 'refresh_canvas': {
-        // The canvas write itself happens in the Bolt layer (it has the
-        // authenticated `app` reference). This action exists so the
-        // registry can announce the capability; the actual call lives in
-        // bolt/src/handlers/commands.ts (/kit brain).
+        // Keep a truthful compatibility response for old action requests.
         return {
           agent: 'brain',
           action,
           success: false,
-          error: 'No canvas was refreshed. Run /kit brain in the project Slack channel to refresh it.',
+          error: 'The separate Brain tab is retired. Project memory is still active; producers/admins can read it privately with /kit brain. Use Overview and Notes & Feedback for team updates.',
         }
       }
 
@@ -126,7 +121,7 @@ export const brainAgent: AgentDefinition = {
   name: 'Brain',
   domain: "the channel's living team brain — operating context, decisions, watchlist, glossary",
   expertise:
-    "Owns the per-channel project brain: a versioned markdown knowledgebase mirrored to a Slack canvas. Use this to load a brain, seed one for a channel that doesn't have one yet, or ask why a fact in the brain is what it is. Brain sections are also embedded into the studio_knowledge RAG so the studio_knowledge agent can quote from them.",
+    "Owns per-channel project memory: a versioned markdown knowledgebase used for retrieval, not a separate Slack tab. Use this to load memory, seed it for a channel, or trace a fact to its source. Brain sections are embedded into studio_knowledge RAG. Existing visibility and access rules still apply.",
   requiredEnvVars: ['NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'],
   capabilities: [
     {
@@ -146,12 +141,6 @@ export const brainAgent: AgentDefinition = {
       description: 'Find source-backed provenance for a claim in this channel. Explicitly reports when no source can be traced.',
       inputDescription: 'claim (string)',
       mutates: false,
-    },
-    {
-      action: 'refresh_canvas',
-      description: 'Trigger a brain canvas refresh in Slack. In Phase 1 the actual canvas write is performed by the /kit brain command handler; this action is a no-op placeholder.',
-      inputDescription: 'channelId (string)',
-      mutates: true,
     },
   ],
   handler: handle,

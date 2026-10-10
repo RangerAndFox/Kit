@@ -8,8 +8,8 @@
  *      "Approve" / "Reject" buttons.
  *   3. On button click, applies an `add` patch to the brain (with the
  *      candidate's source_ref as provenance) or marks rejected.
- *   4. After approval, posts an in-channel notice + refreshes the
- *      canvas so the team sees the new context immediately.
+ *   4. After approval, posts an in-channel receipt. Memory is retained;
+ *      the separate Brain canvas is retired and never recreated.
  *
  * This is the one path that ALWAYS asks for human approval, regardless
  * of the brain's autonomy setting (KIT-BRAIN-SPEC.md §3.3, §4).
@@ -24,8 +24,7 @@ import {
   markCandidatesDmSent,
   type PendingCandidateRow,
 } from '../../../src/lib/brain/scavenger'
-import { applyPatches, getBrainById, setCanvasHandle } from '../../../src/lib/brain/store'
-import { createOrUpdateBrainCanvas } from '../../../src/lib/brain/canvas'
+import { applyPatches, getBrainById } from '../../../src/lib/brain/store'
 
 const ACTION_APPROVE = 'brain_scavenger_approve'
 const ACTION_REJECT = 'brain_scavenger_reject'
@@ -144,27 +143,15 @@ async function applyCandidate(app: App, candidate: PendingCandidateRow, approver
     author: approverSlackId,
   })
 
-  // Refresh canvas + post in-channel notice so the team sees the update.
+  // Retain the existing receipt, but never recreate the retired Brain canvas.
   if (loaded.row.slack_channel) {
     try {
-      const fresh = await getBrainById(candidate.brain_id)
-      if (fresh) {
-        const handle = await createOrUpdateBrainCanvas({
-          app,
-          channelId: loaded.row.slack_channel,
-          brain: fresh.brain,
-          existingCanvasId: fresh.row.canvas_id,
-        })
-        if (handle.canvas_id !== fresh.row.canvas_id || handle.canvas_url !== fresh.row.canvas_url) {
-          await setCanvasHandle(fresh.row.id, handle.canvas_id, handle.canvas_url)
-        }
-      }
       await app.client.chat.postMessage({
         channel: loaded.row.slack_channel,
         text: `:brain: <@${approverSlackId}> approved a piece of outside context — brain updated (§ ${section}).`,
       })
     } catch (err: any) {
-      console.error('[brain.approvals] post-approval refresh failed:', err?.data?.error || err?.message)
+      console.error('[brain.approvals] post-approval receipt failed:', err?.data?.error || err?.message)
     }
   }
 }

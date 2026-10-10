@@ -578,7 +578,7 @@ export function registerCommandHandlers(app: App) {
           if (target !== 'team' && target !== 'producers_only') {
             await respond({
               response_type: 'ephemeral',
-              text: 'Usage: `/kit brain visibility team` (channel canvas, visible to everyone in the channel) or `/kit brain visibility producers_only` (no canvas; producer/admin only).',
+              text: 'Usage: `/kit brain visibility team` or `/kit brain visibility producers_only` to set memory visibility. The separate Brain canvas is retired; neither option creates a tab.',
             })
             break
           }
@@ -593,52 +593,28 @@ export function registerCommandHandlers(app: App) {
           await sb.from('brains').update({ visibility: target, updated_at: new Date().toISOString() }).eq('id', loaded.row.id)
           await respond({
             response_type: 'ephemeral',
-            text: `:brain: Brain visibility set to *${target}*.${target === 'producers_only' ? ' The channel canvas tab is no longer maintained — refreshes go to producers via `/kit brain` text output.' : ' Channel canvas will refresh next time the brain updates.'}`,
+            text: `:brain: Memory visibility set to *${target}*. The separate Brain tab is retired. Producers/admins can read memory privately with \`/kit brain\`; Overview and Notes & Feedback remain the team-facing tabs.`,
           })
           break
         }
 
         try {
           const { seedBrainForChannel } = await import('../../../src/lib/brain/seed')
-          const { createOrUpdateBrainCanvas } = await import('../../../src/lib/brain/canvas')
-          const { setCanvasHandle } = await import('../../../src/lib/brain/store')
           const { stripProvenance, serializeBrain } = await import('../../../src/lib/brain/format')
 
-          const { loaded, created } = await seedBrainForChannel({
+          const { loaded } = await seedBrainForChannel({
             workspaceId,
             slackChannelId: command.channel_id,
             author: command.user_id,
           })
 
-          // producers_only: no canvas, return a text dump only the
-          // requester sees (ephemeral). Channel artists never see this.
-          if (loaded.row.visibility === 'producers_only') {
-            const body = stripProvenance(serializeBrain(loaded.brain))
-            const trimmed = body.length > 3500 ? body.slice(0, 3500) + '\n\n…(truncated)' : body
-            await respond({
-              response_type: 'ephemeral',
-              text: `:lock: *Brain (producers_only)* — revision ${loaded.row.revision}\n\n\`\`\`\n${trimmed}\n\`\`\`\n\n_Flip to channel-visible with_ \`/kit brain visibility team\`.`,
-            })
-            break
-          }
-
-          const handle = await createOrUpdateBrainCanvas({
-            app: { client } as any,
-            channelId: command.channel_id,
-            brain: loaded.brain,
-            existingCanvasId: loaded.row.canvas_id,
-          })
-
-          if (handle.canvas_id !== loaded.row.canvas_id || handle.canvas_url !== loaded.row.canvas_url) {
-            await setCanvasHandle(loaded.row.id, handle.canvas_id, handle.canvas_url)
-          }
-
-          const link = handle.canvas_url ? `<${handle.canvas_url}|open canvas>` : 'open this channel\'s Canvas tab'
+          // Retired presentation only: keep seeding, retrieval and the existing
+          // producer/admin gate. Never recreate a channel canvas for either policy.
+          const body = stripProvenance(serializeBrain(loaded.brain))
+          const trimmed = body.length > 3500 ? body.slice(0, 3500) + '\n\n…(truncated)' : body
           await respond({
             response_type: 'ephemeral',
-            text: created
-              ? `:brain: Brain seeded for this channel — ${link}. Every bullet carries a source tag.`
-              : `:brain: Brain refreshed — ${link}. Current revision: ${loaded.row.revision}.`,
+            text: `:brain: *Project memory (${loaded.row.visibility})* — revision ${loaded.row.revision}\n\n\`\`\`\n${trimmed}\n\`\`\`\n\n_The separate Brain tab is retired. Kit still uses this memory; use Overview and Notes & Feedback for team updates._`,
           })
         } catch (err: any) {
           console.error('[Bolt] /kit brain failed:', err.data?.error || err.message)
@@ -1004,9 +980,9 @@ export function registerCommandHandlers(app: App) {
             '`/kit workers` — Show render worker fleet · `opt-out <host>` / `opt-in <host>`\n' +
             '`/kit render` — Render an After Effects project on the farm (reads its render queue; `/kit render status` for jobs)\n' +
             '`/kit access status` — Status of accessibility jobs (captions + DV)\n' +
-            '`/kit brain` — Open or refresh this channel\'s living project brain (producer/admin only)\n' +
+            '`/kit brain` — Read this channel\'s saved project memory privately (producer/admin only; no separate tab)\n' +
             '`/kit brain why <claim>` — Show the sources behind a fact in the brain\n' +
-            '`/kit brain visibility team|producers_only` — Producer toggle for whether the channel canvas is created\n' +
+            '`/kit brain visibility team|producers_only` — Set memory visibility; does not create a canvas\n' +
             '`/kit role @user producer|artist|admin|freelancer` — Admin only: assign a role\n' +
             '`/kit sync-staff` — Admin only: map staff to Harvest users by email (activates hours check-ins)\n' +
             '`/kit sync-projects` — Admin only: preview Harvest→Supabase project reconciliation; `run` to apply\n' +

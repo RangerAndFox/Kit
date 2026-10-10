@@ -1664,45 +1664,21 @@ export function registerInteractionHandlers(app: App) {
       // status message below.)
 
       // ── Auto-seed the project brain ───────────────────────
-      // New brains default to visibility='producers_only' so we DON'T
-      // create a channel canvas (the channel may contain artists, and
-      // briefs/budgets/contacts in the brain are producer-tier material
-      // until the producer explicitly promotes the brain via
-      // /kit brain visibility team. Best-effort: we never fail
-      // provisioning over a brain seed.
+      // Keep project memory, but never create the retired Brain tab. Existing
+      // visibility rules and private producer/admin reading remain unchanged.
+      // Best-effort: we never fail provisioning over a memory seed.
       const brainSlackChannel = serviceResults.slack?.id
       if (brainSlackChannel && workspaceId) {
         try {
           const { seedBrainForChannel } = await import('../../../src/lib/brain/seed')
-          const { createOrUpdateBrainCanvas } = await import('../../../src/lib/brain/canvas')
-          const { setCanvasHandle } = await import('../../../src/lib/brain/store')
-
-          const { loaded, created } = await seedBrainForChannel({
+          await seedBrainForChannel({
             workspaceId,
             slackChannelId: brainSlackChannel,
             author: userId || 'system',
           })
 
-          if (loaded.row.visibility === 'team') {
-            const handle = await createOrUpdateBrainCanvas({
-              app: { client } as any,
-              channelId: brainSlackChannel,
-              brain: loaded.brain,
-              existingCanvasId: loaded.row.canvas_id,
-            })
-            if (handle.canvas_id !== loaded.row.canvas_id || handle.canvas_url !== loaded.row.canvas_url) {
-              await setCanvasHandle(loaded.row.id, handle.canvas_id, handle.canvas_url)
-            }
-            await client.chat.postMessage({
-              channel: brainSlackChannel,
-              text: created
-                ? `:brain: I seeded this channel's brain with what I know so far — open the Canvas tab. Every fact I learn here goes in automatically. \`/kit brain why <claim>\` shows sources.`
-                : `:brain: Brain refreshed (revision ${loaded.row.revision}).`,
-            })
-          } else {
-            // producers_only — no channel canvas. DM the project creator
-            // (who is presumably the producer) with a quick how-to so
-            // they know the brain exists. Nothing posts in the channel.
+          {
+            // DM the project creator a receipt, never publish the memory body.
             try {
               const dm: any = await client.conversations.open({ users: userId })
               const dmChannel = dm?.channel?.id
@@ -1711,10 +1687,9 @@ export function registerInteractionHandlers(app: App) {
                   channel: dmChannel,
                   text:
                     `:brain: I seeded the project brain for <#${brainSlackChannel}> with what I know so far. ` +
-                    `It's *producers-only* by default — no canvas in the channel, so artists don't see it.\n\n` +
+                    `Kit keeps project memory in the background; there is no separate Brain tab. Access rules remain unchanged.\n\n` +
                     `• \`/kit brain\` (from the project channel) — read the current brain (ephemeral to you)\n` +
-                    `• \`/kit brain why <claim>\` — show the source behind a fact\n` +
-                    `• \`/kit brain visibility team\` — flip to channel-visible Canvas if you want the team to see it`,
+                    `• \`/kit brain why <claim>\` — show the source behind a fact`,
                 })
               }
             } catch (err: any) {

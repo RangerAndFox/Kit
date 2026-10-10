@@ -10,6 +10,15 @@ fact.
 
 ## Railway — persistent Slack Bolt service
 
+- **Project memory / retired Brain tab (owner-approved 2026-10-10):** seeding,
+  ingestion, provenance, approval and retrieval remain active. The old Brain
+  Canvas publisher and all callers are removed; `/kit brain` is a private
+  producer/admin text response for both visibility policies. Changing memory
+  visibility never creates a tab. Historical `brains.canvas_id` handles and
+  canvas documents are retained, not deleted or reused as Overview targets.
+  Remove existing Brain tabs through Slack's **Remove tab** control (not
+  Delete canvas); Overview, Reference, Schedule and Notes & Feedback are intact.
+
 - **Culture Center:** `bolt/src/culture/runner.ts` is the only owner of managed
   meme posting (every-minute cron in `app.ts`). Vercel edits service-only records;
   it does not run another scheduler. Explicit setup sets a next-local-midnight
