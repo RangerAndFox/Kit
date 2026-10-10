@@ -73,6 +73,14 @@ export async function syncUploadApprovalNotices(app: App, requestId?: string): P
       const { error: ackError } = await db.from('frame_upload_approvals').update({ notice_dirty: false })
         .eq('id', row.id).eq('notice_token', token).eq('updated_at', row.updated_at)
       if (ackError) throw ackError
+    } catch {
+      // One inaccessible conversation or missing reviewer must not starve the
+      // rest of the bounded outbox. Retain dirty state and rotate it to the end.
+      const { error: retryError } = await db.from('frame_upload_approvals').update({
+        notice_dirty: true, updated_at: new Date().toISOString(),
+      }).eq('id', snapshot.id).eq('notice_token', token)
+      if (retryError) throw retryError
+      console.warn('[upload-review] Notice refresh deferred; request remains queued', snapshot.id)
     } finally {
       const { error: releaseError } = await db.from('frame_upload_approvals').update({ notice_token: null })
         .eq('id', snapshot.id).eq('notice_token', token)
