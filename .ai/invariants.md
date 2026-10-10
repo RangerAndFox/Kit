@@ -61,6 +61,10 @@ mechanism in code before assuming full compliance.
    Unknown upload/version-write outcomes require reconciliation, never a blind
    repeat. Initial review cards reuse the shared durable Slack receipt ledger.
    Railway's existing inbox sweep owns this flow; no second cursor or cron.
+   Same-name Frame collisions pause before source rename/upload and belong
+   solely to the original approver. Resolution is actor/version-fenced; shared
+   review cards cannot transfer ownership. Replace is an explicit version-add,
+   Keep both an explicitly previewed numbered name, and Skip has no file effect.
 10. **Cursor ownership is explicit.** Every scan/watcher owns a named cursor
     or ledger key and no other component advances it. Shared/implicit cursors
     are a defect.

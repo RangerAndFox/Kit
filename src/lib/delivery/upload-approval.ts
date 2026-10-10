@@ -8,6 +8,7 @@ export type UploadApproval = {
   conflict_id: string | null; conflict_type: string | null; destination_key: string | null
   upload_attempted_at: string | null; frame_file_id: string | null; version_stack_id: string | null; renamed_path: string | null
   slack_channel_id: string | null; slack_message_ts: string | null; notice_claimed_at: string | null
+  collision_channel_id: string | null; collision_message_ts: string | null
   notice_token: string | null; notice_dirty: boolean; detail: string | null; created_at: string; updated_at: string
 }
 

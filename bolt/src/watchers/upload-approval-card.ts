@@ -6,6 +6,7 @@ const actor = (row: UploadApproval) => row.approved_by && /^[UW][A-Z0-9]+$/.test
   ? `<@${row.approved_by}>` : 'another reviewer'
 
 export function decidedUploadMessage(row: UploadApproval): string {
+  if (row.state === 'collision') return `Approved by ${actor(row)} as ${escape(row.approved_name || row.suggested_name)}. Upload is paused; only that approver can resolve the duplicate in their private Kit DM.`
   if (row.state === 'superseded') return 'This request was superseded by a changed source. Review the latest request. No upload was queued by this submission.'
   const decision = row.decision === 'skip' ? `Skipped by ${actor(row)}.`
     : `Already approved by ${actor(row)} as ${escape(row.approved_name || row.suggested_name)}.`

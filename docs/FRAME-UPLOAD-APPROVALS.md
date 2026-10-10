@@ -14,9 +14,20 @@ only one is assigned). Either may review an editable `R&F_Client_Project_Phase`
 filename, confirm the export is finished, and approve the exact final name.
 Unknown phases require editing; Kit does not invent a phase from the date.
 
-- Replace adds a version, retaining the previous file and comments.
-- Keep both previews a distinct numbered filename before the final confirmation.
-- Skip records the decision and leaves Dropbox untouched.
+- Initial review asks for the filename and render readiness only, not a default
+  replacement policy. Approval atomically locks in the reviewer and filename.
+- The worker checks the exact mirrored destination folder. No matching name
+  means upload normally. A case-insensitive same-name match pauses before any
+  rename or upload and DMs **only the original approver** (not both reviewers).
+- The collision form has no preselected choice: Replace adds a version,
+  retaining the previous file and comments; Keep both previews a distinct
+  numbered filename (`_02`, `_03`, etc.); Skip leaves Dropbox/Frame untouched.
+  Ambiguous multiple matches never offer Replace. If the match disappears,
+  the approver can explicitly upload the original name or skip.
+- Collision decisions are approver- and version-fenced in the database; stale
+  forms and the other reviewer cannot take over. The shared card shows status
+  without collision controls. The private card uses a durable receipt and
+  updates in place after the decision.
 - Every decision is atomic. Repeated clicks cannot enqueue two uploads.
 - Competing producer/CD submissions preserve the first committed filename and
   reviewer. A stale form cannot overwrite the winning decision. The losing
@@ -25,7 +36,8 @@ Unknown phases require editing; Kit does not invent a phase from the date.
   the approver and approved filename; the durable outbox retries failed refreshes.
 - A changed revision invalidates its approval. Worker execution rechecks the
   actor's current project access, source revision/size/location, and destination.
-- A destination collision appearing after confirmation reopens review.
+- A destination collision appearing after confirmation pauses again for the
+  same approver, never reopening the decision to both people.
 - An uncertain remote-upload or version-stack receipt becomes `needs_review`;
   Kit never repeats that external write blindly.
 - A file is announced only after Frame byte-size and playable-media verification.
@@ -35,7 +47,7 @@ and readable container are useful checks, not proof the artist finished. The
 human confirmation is the final readiness boundary. Export locally, then copy
 the finished video into Dropbox when practical.
 
-## Rollout prerequisites (not yet production-verified)
+## Rollout checks
 
 1. Apply `20261010143816_frame_upload_approvals.sql` before enabling the flag.
 2. Verify Kit's Slack bot can open a group DM with producer and CD and can read
@@ -51,8 +63,10 @@ the finished video into Dropbox when practical.
 5. Enable the flag on Railway only after those checks, then verify the live
    deployed revision and the existing `dropbox-inbox-sweep` heartbeat.
 
-The feature is staged disabled. Do not describe repository tests as a live
-provider contract test. Runtime verification is still required.
+The initial shared-approval feature was enabled in production on October 10,
+2026 at commit `ff0b8f0`. The collision-owner refinement requires its additive
+migration and a new bot deployment. Do not describe repository tests as a live
+provider contract test; runtime verification is a separate release check.
 
 ### Provider contract checks — October 10, 2026
 
@@ -80,6 +94,21 @@ workflow. Production migration, deployed revision, enablement and a monitored
 first review remain separate rollout checks.
 
 ## Recovery
+
+The additive `frame_upload_collision_owner` migration must be applied before
+deploying the collision handlers. It adds a paused `collision` state, private
+DM receipts, and service-only atomic pause/resolve functions. It preserves the
+existing first-winner decision, upload-post fence, and execution-event outbox.
+Pending collisions are not failed uploads and cannot be re-driven until the
+original approver resolves them. A newer Dropbox revision supersedes them.
+
+Collision refinement verification (October 10): migration
+`20261010153609_frame_upload_collision_owner.sql` was applied, and a rolled-back
+production transaction confirmed that the wrong actor and a repeated decision
+are rejected, the owner is retained, and Skip adds no execution event. Local
+coverage exercises numbered names, ambiguous matches, stale forms, provider
+outages, private-DM routing, and actual SQL concurrency/permissions. It does not
+claim a real user has completed the new Slack duplicate-resolution form yet.
 
 `frame_upload_approvals` is service-only. Its `notice_dirty` rows drain in
 bounded batches from the existing inbox sweep; initial Slack posts reuse the

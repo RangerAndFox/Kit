@@ -1206,7 +1206,10 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
         ? conflicts.length === 1 && conflicts[0].id === approval.conflict_id && conflicts[0].type === approval.conflict_type
         : conflicts.length === 0
       if (!valid) {
-        await updateUploadApproval(approval.id, { state: 'awaiting', detail: 'The Frame destination changed. Please review the filename and conflict choice again.' })
+        const { error } = await sb.rpc('pause_frame_upload_collision', {
+          p_id: approval.id, p_version: approval.approval_version,
+        })
+        if (error) throw error
         return
       }
       const latestPath = String(latest.path_display || '')
