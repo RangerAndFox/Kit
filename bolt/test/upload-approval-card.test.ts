@@ -11,7 +11,7 @@ const row = {
 describe('shared upload decision feedback', () => {
   it('offers actions only while awaiting a decision', () => {
     expect(uploadApprovalCard(row, 'Test').blocks.some(b => b.type === 'actions')).toBe(true)
-    for (const state of ['approved', 'uploading', 'complete', 'skipped', 'superseded', 'needs_review']) {
+    for (const state of ['approved', 'collision', 'uploading', 'complete', 'skipped', 'superseded', 'needs_review']) {
       expect(uploadApprovalCard({ ...row, state }, 'Test').blocks.some(b => b.type === 'actions')).toBe(false)
     }
   })

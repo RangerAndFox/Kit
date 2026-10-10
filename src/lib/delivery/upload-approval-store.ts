@@ -39,7 +39,7 @@ export async function createUploadApproval(projectId: string, source: UploadSour
   const { error: supersedeError } = await db.from('frame_upload_approvals').update({
     state: 'superseded', detail: 'A newer Dropbox revision needs its own approval.', notice_dirty: true, updated_at: new Date().toISOString(),
   }).eq('project_id', projectId).eq('source_file_id', source.dropboxId).neq('source_rev', source.rev)
-    .in('state', ['awaiting','approved']).is('upload_attempted_at', null)
+    .in('state', ['awaiting','approved','collision']).is('upload_attempted_at', null)
   if (supersedeError) throw supersedeError
   const { error } = await db.from('frame_upload_approvals').upsert({
     workspace_id: project.workspace_id, project_id: projectId, source_file_id: source.dropboxId,

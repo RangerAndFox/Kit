@@ -6336,6 +6336,11 @@ export type Database = {
         Returns: boolean
       }
       claim_frame_upload_notice: { Args: { p_id: string; p_token: string }; Returns: boolean }
+      pause_frame_upload_collision: { Args: { p_id: string; p_version: number }; Returns: boolean }
+      resolve_frame_upload_collision: {
+        Args: { p_id: string; p_workspace: string; p_actor: string; p_version: number; p_name: string; p_decision: string; p_conflict_id?: string; p_conflict_type?: string }
+        Returns: boolean
+      }
       claim_checkin_reply: {
         Args: { p_checkin_id: string; p_reply_timestamps: string[] }
         Returns: boolean

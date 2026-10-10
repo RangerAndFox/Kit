@@ -2,11 +2,12 @@ import crypto from 'node:crypto'
 import type { App } from '@slack/bolt'
 import type { ModalView } from '@slack/types'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
-import { distinctUploadName, uploadReviewers, validateUploadName, type UploadApproval, type UploadSource } from '../../../src/lib/delivery/upload-approval'
+import { uploadReviewers, validateUploadName, type UploadApproval, type UploadSource } from '../../../src/lib/delivery/upload-approval'
 import { assertUploadReviewer, getUploadApproval, uploadApprovalsEnabled } from '../../../src/lib/delivery/upload-approval-store'
 import { uploadApprovalConflicts, verifyApprovalSource } from './dropbox'
 import { deliverSlackOnce } from '../../../src/lib/slack/durable-delivery'
 import { decidedUploadMessage, uploadApprovalCard } from './upload-approval-card'
+import { assertCollisionOwner, collisionCard, collisionChoices, collisionModal, type CollisionChoice } from './upload-collision'
 
 const escape = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
 
@@ -17,16 +18,13 @@ async function authorize(row: UploadApproval, team: string, user: string): Promi
   await assertUploadReviewer(row, user)
 }
 
-function reviewModal(row: UploadApproval): ModalView {
+export function reviewModal(row: UploadApproval): ModalView {
   return {
     type: 'modal', callback_id: 'kit_frame_upload_submit', private_metadata: row.id,
     title: { type: 'plain_text', text: 'Review Frame upload' }, submit: { type: 'plain_text', text: 'Continue' }, close: { type: 'plain_text', text: 'Cancel' },
     blocks: [
-      { type: 'section', text: { type: 'mrkdwn', text: `Source: ${escape(row.source_path)}\nNothing uploads until you confirm. Replace preserves previous versions and their comments.` } },
+      { type: 'section', text: { type: 'mrkdwn', text: `Source: ${escape(row.source_path)}\nNothing uploads until you confirm. If Frame already has that filename, Kit will ask you what to do.` } },
       { type: 'input', block_id: 'filename', label: { type: 'plain_text', text: 'Client-facing filename' }, element: { type: 'plain_text_input', action_id: 'value', initial_value: row.suggested_name, max_length: 240 } },
-      { type: 'input', block_id: 'collision', label: { type: 'plain_text', text: 'If that name already exists in Frame' }, element: { type: 'static_select', action_id: 'value', options: [
-        ['replace','Replace — add a version'], ['keep_both','Keep both — use a distinct name'], ['skip','Skip — leave Dropbox untouched'],
-      ].map(([value,text]) => ({ text: { type: 'plain_text', text }, value })) } },
       { type: 'input', block_id: 'ready', optional: true, label: { type: 'plain_text', text: 'Render readiness' }, element: { type: 'checkboxes', action_id: 'value', options: [{ text: { type: 'plain_text', text: 'The render/export is finished and ready for review.' }, value: 'yes' }] } },
     ],
   }
@@ -69,6 +67,25 @@ export async function syncUploadApprovalNotices(app: App, requestId?: string): P
       const { error: savedError } = await db.from('frame_upload_approvals').update({ slack_message_ts: ts })
         .eq('id', snapshot.id).eq('notice_token', token)
       if (savedError) throw savedError
+      // Only the locked-in approver receives the collision controls. Keep the
+      // shared producer/CD card informational; it cannot transfer ownership.
+      if (row.state === 'collision' || row.collision_message_ts) {
+        if (!row.approved_by) throw new Error('Collision approver missing')
+        let dm = row.collision_channel_id
+        if (!dm) {
+          dm = (await app.client.conversations.open({ users: row.approved_by })).channel?.id || null
+          if (!dm) throw new Error('Could not open approver DM')
+          const { error } = await db.from('frame_upload_approvals').update({ collision_channel_id: dm }).eq('id', row.id).eq('notice_token', token)
+          if (error) throw error
+        }
+        const content = collisionCard(row)
+        let ts = row.collision_message_ts
+        if (ts) await app.client.chat.update({ channel: dm, ts, ...content })
+        else ts = await deliverSlackOnce({ key: `frame-upload-collision:${row.id}`, channel: dm, ...content })
+        if (!ts) throw new Error('Slack did not return a collision receipt')
+        const { error } = await db.from('frame_upload_approvals').update({ collision_message_ts: ts }).eq('id', row.id).eq('notice_token', token)
+        if (error) throw error
+      }
       // A concurrent approval may have dirtied the card after our snapshot.
       const { error: ackError } = await db.from('frame_upload_approvals').update({ notice_dirty: false })
         .eq('id', row.id).eq('notice_token', token).eq('updated_at', row.updated_at)
@@ -92,6 +109,14 @@ export async function syncUploadApprovalNotices(app: App, requestId?: string): P
 async function refreshDecisionCard(app: App, id: string): Promise<void> {
   try { await syncUploadApprovalNotices(app, id) }
   catch { console.warn('[upload-review] Card refresh deferred to durable outbox') }
+}
+
+function confirmationModal(row: UploadApproval, choice: CollisionChoice, collisionVersion?: number): ModalView {
+  return {
+    type: 'modal', callback_id: 'kit_frame_upload_confirm', private_metadata: JSON.stringify({ id: row.id, ...choice, collisionVersion }),
+    title: { type: 'plain_text', text: 'Confirm upload' }, submit: { type: 'plain_text', text: choice.decision === 'skip' ? 'Skip' : 'Approve upload' }, close: { type: 'plain_text', text: 'Cancel' },
+    blocks: [{ type: 'section', text: { type: 'plain_text', text: choice.decision === 'skip' ? 'Leave Dropbox and Frame untouched. Do not upload this revision.' : `Approve this client-facing filename:\n${choice.name}\n\n${choice.decision === 'replace' ? 'Add a version, preserving the existing file and comments.' : 'Kit checks the destination before renaming or uploading. If a matching filename is found, only you will be asked what to do.'}` } }],
+  }
 }
 
 export function registerUploadApprovalHandlers(app: App): void {
@@ -131,44 +156,27 @@ export function registerUploadApprovalHandlers(app: App): void {
     // Show a loading modal immediately, then a final exact-name confirmation.
     await ack({ response_action: 'update', view: {
       type: 'modal', title: { type: 'plain_text', text: 'Checking upload' }, close: { type: 'plain_text', text: 'Close' },
-      blocks: [{ type: 'section', text: { type: 'plain_text', text: 'Checking the source and Frame destination. Nothing has changed yet.' } }],
+      blocks: [{ type: 'section', text: { type: 'plain_text', text: 'Checking the source. Nothing has changed yet.' } }],
     } })
     try {
       const row = await getUploadApproval(view.private_metadata)
       await authorize(row, body.team?.id || '', body.user.id)
       if (row.state !== 'awaiting') throw new Error(decidedUploadMessage(row))
-      let name = view.state.values.filename?.value?.value || ''
-      let decision = view.state.values.collision?.value?.selected_option?.value || ''
-      if (!['replace','keep_both','skip'].includes(decision)) throw new Error('Choose what to do if the name exists.')
-      let conflict: { id: string; type: string } | undefined
-      if (decision !== 'skip') {
-        const invalid = validateUploadName(name, row.source_path)
-        if (invalid) throw new Error(invalid)
-        if (!view.state.values.ready?.value?.selected_options?.length) throw new Error('Confirm the render/export is finished before uploading.')
-        if (!await verifyApprovalSource(row)) {
-          // A second review may finish this read after the first has approved.
-          // Never overwrite the winning decision from a stale form.
-          const { error } = await createAdminClient().from('frame_upload_approvals').update({
-            state: 'superseded', detail: 'The Dropbox source changed. Review the new revision instead.',
-            notice_dirty: true, updated_at: new Date().toISOString(),
-          }).eq('id', row.id).eq('state', 'awaiting').eq('approval_version', row.approval_version)
-          if (error) throw error
-          throw new Error('The Dropbox source changed. This approval is no longer valid.')
-        }
-        const children = await uploadApprovalConflicts(row.project_id, row.source_payload as unknown as UploadSource)
-        const matches = children.filter(c => c.name.toLowerCase() === name.toLowerCase())
-        if (!matches.length) decision = 'new'
-        else if (decision === 'keep_both') name = distinctUploadName(name, children.map(c => c.name))
-        else {
-          if (matches.length !== 1 || !['file','version_stack'].includes(matches[0].type)) throw new Error('The destination has ambiguous same-name items. Choose a different name.')
-          conflict = matches[0]
-        }
+      const name = view.state.values.filename?.value?.value || ''
+      const invalid = validateUploadName(name, row.source_path)
+      if (invalid) throw new Error(invalid)
+      if (!view.state.values.ready?.value?.selected_options?.length) throw new Error('Confirm the render/export is finished before uploading.')
+      if (!await verifyApprovalSource(row)) {
+        // A second review may finish this read after the first has approved.
+        // Never overwrite the winning decision from a stale form.
+        const { error } = await createAdminClient().from('frame_upload_approvals').update({
+          state: 'superseded', detail: 'The Dropbox source changed. Review the new revision instead.',
+          notice_dirty: true, updated_at: new Date().toISOString(),
+        }).eq('id', row.id).eq('state', 'awaiting').eq('approval_version', row.approval_version)
+        if (error) throw error
+        throw new Error('The Dropbox source changed. This approval is no longer valid.')
       }
-      await client.views.update({ view_id: view.id, view: {
-        type: 'modal', callback_id: 'kit_frame_upload_confirm', private_metadata: JSON.stringify({ id: row.id, name, decision, conflict }),
-        title: { type: 'plain_text', text: 'Confirm upload' }, submit: { type: 'plain_text', text: decision === 'skip' ? 'Skip' : 'Upload to Frame' }, close: { type: 'plain_text', text: 'Cancel' },
-        blocks: [{ type: 'section', text: { type: 'plain_text', text: decision === 'skip' ? 'Leave Dropbox untouched. Do not upload this revision.' : `Rename in Dropbox and upload as:\n${name}\n\n${decision === 'replace' ? 'Add a version, preserving the existing file and comments.' : 'Create a new file in the mirrored Frame folder.'}` } }],
-      } })
+      await client.views.update({ view_id: view.id, view: confirmationModal(row, { name, decision: 'new' }) })
     } catch (error) {
       await client.views.update({ view_id: view.id, view: {
         type: 'modal', title: { type: 'plain_text', text: 'Review needed' }, close: { type: 'plain_text', text: 'Close' },
@@ -176,22 +184,81 @@ export function registerUploadApprovalHandlers(app: App): void {
       } })
     }
   })
+  app.action('kit_frame_collision_review', async ({ ack, body, action, client }) => {
+    await ack()
+    let viewId: string | undefined
+    try {
+      if (!('value' in action) || !action.value || !('trigger_id' in body)) return
+      viewId = (await client.views.open({ trigger_id: body.trigger_id, view: {
+        type: 'modal', title: { type: 'plain_text', text: 'Checking duplicate' }, close: { type: 'plain_text', text: 'Close' },
+        blocks: [{ type: 'section', text: { type: 'plain_text', text: 'Checking the current destination. Nothing has changed yet.' } }],
+      } })).view?.id
+      if (!viewId) throw new Error('Slack did not open the duplicate review.')
+      const row = await getUploadApproval(action.value)
+      await authorize(row, body.team?.id || '', body.user.id)
+      assertCollisionOwner(row, body.user.id)
+      const children = await uploadApprovalConflicts(row.project_id, row.source_payload as unknown as UploadSource)
+      await client.views.update({ view_id: viewId, view: collisionModal(row, children) })
+    } catch (error) {
+      const text = error instanceof Error ? error.message : 'Could not check the duplicate.'
+      if (viewId) await client.views.update({ view_id: viewId, view: {
+        type: 'modal', title: { type: 'plain_text', text: 'Review needed' }, close: { type: 'plain_text', text: 'Close' },
+        blocks: [{ type: 'section', text: { type: 'plain_text', text } }],
+      } })
+      else await client.chat.postMessage({ channel: body.user.id, text })
+    }
+  })
+  app.view('kit_frame_collision_choose', async ({ ack, body, view, client }) => {
+    await ack({ response_action: 'update', view: {
+      type: 'modal', title: { type: 'plain_text', text: 'Checking decision' }, close: { type: 'plain_text', text: 'Close' },
+      blocks: [{ type: 'section', text: { type: 'plain_text', text: 'Checking the exact filename before confirmation…' } }],
+    } })
+    try {
+      const input = JSON.parse(view.private_metadata) as { id: string; version: number }
+      const row = await getUploadApproval(input.id)
+      await authorize(row, body.team?.id || '', body.user.id)
+      assertCollisionOwner(row, body.user.id, input.version)
+      const decision = view.state.values.collision?.value?.selected_option?.value
+      let choice: CollisionChoice | undefined
+      if (decision === 'skip') choice = { decision, name: row.approved_name || '' }
+      else {
+        if (!await verifyApprovalSource(row)) throw new Error('The Dropbox source changed. Review the new revision instead.')
+        const children = await uploadApprovalConflicts(row.project_id, row.source_payload as unknown as UploadSource)
+        choice = collisionChoices(row, children).find(c => c.decision === decision)
+      }
+      if (!choice) throw new Error('The destination changed. Reopen Resolve duplicate to check the latest choices.')
+      await client.views.update({ view_id: view.id, view: confirmationModal(row, choice, input.version) })
+    } catch (error) {
+      await client.views.update({ view_id: view.id, view: {
+        type: 'modal', title: { type: 'plain_text', text: 'Review needed' }, close: { type: 'plain_text', text: 'Close' },
+        blocks: [{ type: 'section', text: { type: 'plain_text', text: error instanceof Error ? error.message : 'Could not check this decision.' } }],
+      } })
+    }
+  })
   app.view('kit_frame_upload_confirm', async ({ ack, body, view, client }) => {
     await ack()
     try {
-      const input = JSON.parse(view.private_metadata) as { id: string; name: string; decision: string; conflict?: { id: string; type: string } }
+      const input = JSON.parse(view.private_metadata) as CollisionChoice & { id: string; collisionVersion?: number }
       const row = await getUploadApproval(input.id)
       await authorize(row, body.team?.id || '', body.user.id)
-      if (row.state !== 'awaiting') throw new Error(decidedUploadMessage(row))
+      if (input.collisionVersion !== undefined) assertCollisionOwner(row, body.user.id, input.collisionVersion)
+      else {
+        if (row.state !== 'awaiting') throw new Error(decidedUploadMessage(row))
+        if (input.decision !== 'new') throw new Error('This form is outdated. Reopen Review & upload; duplicate decisions are now requested after approval.')
+      }
       if (input.decision !== 'skip') {
         const invalid = validateUploadName(input.name, row.source_path)
         if (invalid) throw new Error(invalid)
         if (!await verifyApprovalSource(row)) throw new Error('The Dropbox source changed. Reopen the latest request.')
       }
-      const { data, error } = await createAdminClient().rpc('decide_frame_upload', {
+      const args = {
         p_id: row.id, p_workspace: row.workspace_id, p_actor: body.user.id, p_name: input.name, p_decision: input.decision,
         p_conflict_id: input.conflict?.id, p_conflict_type: input.conflict?.type,
-      })
+      }
+      const db = createAdminClient()
+      const { data, error } = input.collisionVersion !== undefined
+        ? await db.rpc('resolve_frame_upload_collision', { ...args, p_version: input.collisionVersion })
+        : await db.rpc('decide_frame_upload', args)
       if (error) throw new Error('Could not reserve this upload. Another upload may already be using that name; reopen the review.')
       if (!data) throw new Error(decidedUploadMessage(await getUploadApproval(row.id)))
       await refreshDecisionCard(app, row.id)

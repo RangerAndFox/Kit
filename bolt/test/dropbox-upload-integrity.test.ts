@@ -42,6 +42,7 @@ const queries: Array<{ table: string; filters: unknown[][] }> = []
 function json(body: unknown) { return new Response(JSON.stringify(body)) }
 beforeEach(() => {
   vi.clearAllMocks(); writes.length = 0; queries.length = 0
+  mocks.rpc.mockResolvedValue({ data: true, error: null })
   vi.setSystemTime(new Date('2026-09-22T19:10:00Z'))
   vi.stubEnv('FRAMEIO_ACCOUNT_ID', 'account'); vi.stubGlobal('fetch', mocks.fetch)
   prior = { ...transfer }; sourceRev = delivery.rev; uploadComplete = true; leaseValid = true
@@ -138,7 +139,7 @@ describe('upload pipeline integrity boundary', () => {
     expect(mocks.createApproval).not.toHaveBeenCalled()
     expect(mocks.fetch.mock.calls.some(([url]) => url.includes('api.frame.io'))).toBe(false)
   })
-  it.each(['skipped','superseded','complete'])('never executes a %s approval', async state => {
+  it.each(['skipped','superseded','complete','collision'])('never executes a %s approval', async state => {
     prior = null
     mocks.getApproval.mockResolvedValue({project_id:'project',source_file_id:delivery.dropboxId,source_rev:delivery.rev,approval_version:1,state})
     await handleNewDelivery(app,{...delivery,approvalRequestId:'request',approvalVersion:1},{...event})
@@ -189,7 +190,7 @@ describe('upload pipeline integrity boundary', () => {
     expect(mocks.updateApproval).toHaveBeenCalledWith('request',{frame_file_id:'file'})
     expect(mocks.message).not.toHaveBeenCalled()
   })
-  it('reopens review if a same-name Frame file appears after confirmation', async () => {
+  it('pauses for the same approver if a same-name Frame file exists after confirmation', async () => {
     prior = null
     mocks.getApproval.mockResolvedValue({id:'request',project_id:'project',source_file_id:delivery.dropboxId,source_rev:delivery.rev,
       source_size:256,source_path:delivery.path,approved_name:'R&F_Microsoft_MRA_Edit_V2.mp4',decision:'new',approval_version:1,state:'approved'})
@@ -197,7 +198,8 @@ describe('upload pipeline integrity boundary', () => {
     mocks.fetch.mockImplementation((url:string,options:RequestInit)=>url.includes('/folders/folder/children')
       ? Promise.resolve(json({data:[{id:'someone-elses-file',name:'R&F_Microsoft_MRA_Edit_V2.mp4',type:'file'}]})) : originalFetch(url,options))
     expect(await handleNewDelivery(app,{...delivery,approvalRequestId:'request',approvalVersion:1},{...event})).toBeUndefined()
-    expect(mocks.updateApproval).toHaveBeenCalledWith('request',expect.objectContaining({state:'awaiting'}))
+    expect(mocks.rpc).toHaveBeenCalledWith('pause_frame_upload_collision',{p_id:'request',p_version:1})
+    expect(mocks.updateApproval).not.toHaveBeenCalledWith('request',expect.objectContaining({state:'awaiting'}))
     expect(mocks.fetch.mock.calls.some(([url])=>url.endsWith('/files/move_v2')||url.endsWith('/remote_upload'))).toBe(false)
   })
   it('hands a deleted/recreated source to its exact durable successor without uploading', async () => {
