@@ -19,6 +19,12 @@ test('upload decisions are atomic, workspace scoped, replay safe and private', a
       values($1,$2,'id:source',$3,100,'/production/test.mov','{"subfolder":"02_Delivery","name":"v1/test.mov"}','R&F_A_B_Edit_V1.mov') returning id`,[workspace,project,rev])).rows[0].id
     const decide = (id:string, choice='new', ws=workspace) => db.query<{ok:boolean}>('select decide_frame_upload($1,$2,$3,$4,$5) ok',[id,ws,'U123','R&F_A_B_Edit_V1.mov',choice])
     const first = await create('one')
+    const token = '33333333-3333-4333-8333-333333333333'
+    const claim = () => db.query<{ok:boolean}>('select claim_frame_upload_notice($1,$2) ok',[first,token])
+    assert.equal((await claim()).rows[0].ok,true)
+    assert.equal((await claim()).rows[0].ok,false,'an active notice lease has one sender')
+    await db.query('update frame_upload_approvals set notice_token=null where id=$1',[first])
+    assert.equal((await claim()).rows[0].ok,true,'a released notice can refresh without waiting for lease expiry')
     assert.equal((await decide(first,'new',project)).rows[0].ok,false)
     assert.equal((await decide(first)).rows[0].ok,true)
     assert.equal((await decide(first)).rows[0].ok,false)

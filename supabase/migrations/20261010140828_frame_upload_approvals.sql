@@ -80,7 +80,7 @@ create function public.claim_frame_upload_notice(p_id uuid,p_token uuid) returns
 language plpgsql security invoker set search_path=public as $$
 begin
   update public.frame_upload_approvals set notice_token=p_token,notice_claimed_at=now()
-    where id=p_id and notice_dirty and (notice_claimed_at is null or notice_claimed_at<now()-interval '2 minutes');
+    where id=p_id and notice_dirty and (notice_token is null or notice_claimed_at<now()-interval '2 minutes');
   return found;
 end $$;
 revoke all on function public.claim_frame_upload_notice(uuid,uuid) from public,anon,authenticated;
