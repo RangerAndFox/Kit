@@ -70,14 +70,29 @@ changes the user-visible safety boundary.
 
 ## Related cleanup inventory
 
-Nike test scope: project `40975df6-6315-4bbc-9ca6-5ec18ead653f`, code
-`2566-Nike`, name `Sizzle`, Slack channel `C0B5BGT53UP`, historical canvas
-`F0B7PC3KZ5K`. Other Nike projects and reference images are excluded.
+The user clarified the cleanup scope as anything pertaining to Nike Sizzle.
+Exact matching project records:
 
-Read-only checks found one project/brain, one brain revision and nine indexed
+- `40975df6-6315-4bbc-9ca6-5ec18ead653f`, code `2566-Nike`, name `Sizzle`,
+  Slack channel `C0B5BGT53UP`, historical canvas `F0B7PC3KZ5K`.
+- `96a534e2-9a1f-431c-a818-b694de6674b4`, code `4444-Nike`, name `sizzle`,
+  Slack channel `C0B5YNA6ZMJ`.
+
+Differently named Nike projects (including Pizza Sizzle, Summer and Socks) and
+unrelated Nike reference images remain excluded.
+
+For 2566, read-only checks found one project/brain, one brain revision and nine indexed
 project documents. No known Frame, Dropbox or Harvest project IDs are recorded;
 no transfer, share, provisioning or Project Control binding rows were found.
 Dropbox searches and the exact 2025/2026 folder candidates found no matching
 project folder. Slack reports the channel unavailable and canvas access denied.
 No production deletions have been executed. Preserve these identifiers until
 provider cleanup can be verified; absence of access is not proof of deletion.
+
+For 4444, the project has no recorded Frame, Dropbox or Harvest project IDs.
+There are no brain, indexed document, Project Control binding/canvas,
+provisioning-step, transfer, time-entry or financial-entry rows. Its recorded
+Slack channel also returns `channel_not_found`. Dropbox search returned only
+unrelated filename matches; the exact production/2026/4444_Nike_sizzle folder
+candidate returned not found. This is not a full provider-absence verification.
+Both project records are retained pending external cleanup verification.
