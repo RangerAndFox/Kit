@@ -105,6 +105,20 @@ function makeDeps(over: { bindings?: BindingRow[]; cursor?: string | null; versi
 }
 
 describe('runProjectControlSync', () => {
+  it('registers linked comment sources for active projects and withdraws them for missing rows', async () => {
+    const { deps } = makeDeps()
+    const links = [{ 'Link Type':'Figma', URL:'https://www.figma.com/design/FILE' }]
+    deps.sheets.readRow = async () => cells().map((cell,i)=>MASTER_HEADERS[i]==='Status' ? {formattedValue:'Active',effectiveValue:{stringValue:'Active'}} : cell)
+    deps.sheets.readProjectSupplement = async()=>({specs:{},workback:[],links,deliverables:[],assignments:[]})
+    const calls:unknown[]=[]
+    deps.registerFeedbackSources=async(project,sources)=>{calls.push([project,sources])}
+    await runProjectControlSync(deps)
+    assert.deepEqual(calls,[['p1',links]])
+    const missing=makeDeps({metaMissing:true})
+    missing.deps.registerFeedbackSources=deps.registerFeedbackSources
+    await runProjectControlSync(missing.deps)
+    assert.deepEqual(calls[1],['p1',[]])
+  })
   it('rolls assignments over at Pacific midnight without a sheet edit and stays quiet within the day', async () => {
     const { deps, store } = makeDeps()
     let now = '2026-10-10T06:59:00Z'
