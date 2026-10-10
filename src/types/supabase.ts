@@ -14,6 +14,15 @@ export type Database = {
   }
   public: {
     Tables: {
+      frame_upload_approvals: {
+        Row: import('../lib/delivery/upload-approval').UploadApproval
+        Insert: Partial<import('../lib/delivery/upload-approval').UploadApproval> & {
+          workspace_id: string; project_id: string; source_file_id: string; source_rev: string
+          source_size: number; source_path: string; source_payload: Json; suggested_name: string
+        }
+        Update: Partial<import('../lib/delivery/upload-approval').UploadApproval>
+        Relationships: []
+      }
       culture_audit: {
         Row: {
           action: string
@@ -6322,6 +6331,11 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      decide_frame_upload: {
+        Args: { p_id: string; p_workspace: string; p_actor: string; p_name: string; p_decision: string; p_conflict_id?: string; p_conflict_type?: string }
+        Returns: boolean
+      }
+      claim_frame_upload_notice: { Args: { p_id: string; p_token: string }; Returns: boolean }
       claim_checkin_reply: {
         Args: { p_checkin_id: string; p_reply_timestamps: string[] }
         Returns: boolean

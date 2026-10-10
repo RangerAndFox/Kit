@@ -54,6 +54,13 @@ mechanism in code before assuming full compliance.
    deduplication or idempotency (a dedupe ledger, a per-status flag, or an
    equivalent). *(Target invariant — confirm the specific mechanism in the
    relevant subsystem before relying on it.)*
+   Outgoing upload approval (when `FRAMEIO_UPLOAD_APPROVALS_ENABLED=true`) is
+   per exact Dropbox file/revision. Only a current producer/CD or admin can
+   decide it; its atomic decision queues a fenced execution event. Pending or
+   skipped requests must not mutate Dropbox/Frame or announce a delivery.
+   Unknown upload/version-write outcomes require reconciliation, never a blind
+   repeat. Initial review cards reuse the shared durable Slack receipt ledger.
+   Railway's existing inbox sweep owns this flow; no second cursor or cron.
 10. **Cursor ownership is explicit.** Every scan/watcher owns a named cursor
     or ledger key and no other component advances it. Shared/implicit cursors
     are a defect.

@@ -37,6 +37,7 @@ import { recoverMissedCheckinReplies } from './checkins/reply-recovery'
 import { scanMissingTime } from './checkins/missing-time'
 import { dispatchAllPendingApprovals } from './brain/approvals'
 import { reconcileBehanceDraftSlack, registerArchiveHandlers } from './archive/handlers'
+import { registerUploadApprovalHandlers, syncUploadApprovalNotices } from './watchers/upload-approval-handlers'
 import { enqueueArchiveMedia } from '../../src/lib/archive/media-worker'
 import { reconcileElevenLabsDraftSlack } from './storyboard/elevenlabs-notify'
 import { registerProjectDeletionHandlers } from './project-deletion/handlers'
@@ -132,6 +133,7 @@ registerNaturalCommandHandlers(app)
 const { runProjectControlRecoverySweep } = registerInteractionHandlers(app)
 registerBrainApprovalHandlers(app)
 registerArchiveHandlers(app)
+registerUploadApprovalHandlers(app)
 registerProjectDeletionHandlers(app)
 registerOffboardingHandlers(app)
 // Publish actual runtime flags/timezone once at startup; timestamp enrollment is
@@ -210,6 +212,7 @@ const runDropboxInboxSweep = () => {
   void stampCronAttempt('dropbox-inbox-sweep')
   processDropboxNotification(app)
     .then(() => drainDropboxInbox(app))
+    .then(async (result) => { await syncUploadApprovalNotices(app); return result })
     .then((result) => {
       if (result.claimed || result.failed) console.log('[dropbox-inbox-sweep]', result)
       return stampCronSuccess('dropbox-inbox-sweep')

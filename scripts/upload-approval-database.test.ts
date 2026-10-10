@@ -1,0 +1,41 @@
+import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import { test } from 'node:test'
+import { PGlite } from '@electric-sql/pglite'
+
+test('upload decisions are atomic, workspace scoped, replay safe and private', async () => {
+  const db = new PGlite()
+  const workspace = '11111111-1111-4111-8111-111111111111', project = '22222222-2222-4222-8222-222222222222'
+  try {
+    await db.exec(`create role anon; create role authenticated; create role service_role bypassrls;
+      alter default privileges in schema public grant all on tables to service_role;
+      create table workspaces(id uuid primary key);
+      create table projects(id uuid primary key, workspace_id uuid,unique(workspace_id,id));
+      create table dropbox_event_inbox(id uuid default gen_random_uuid(),event_key text unique,event_type text,payload jsonb,source_cursor text not null);
+      insert into workspaces values('${workspace}');insert into projects values('${project}','${workspace}');`)
+    await db.exec(await readFile(new URL('../supabase/migrations/20261010140828_frame_upload_approvals.sql',import.meta.url),'utf8'))
+    await db.exec('set role service_role')
+    const create = async (rev: string) => (await db.query<{id:string}>(`insert into frame_upload_approvals(workspace_id,project_id,source_file_id,source_rev,source_size,source_path,source_payload,suggested_name)
+      values($1,$2,'id:source',$3,100,'/production/test.mov','{"subfolder":"02_Delivery","name":"v1/test.mov"}','R&F_A_B_Edit_V1.mov') returning id`,[workspace,project,rev])).rows[0].id
+    const decide = (id:string, choice='new', ws=workspace) => db.query<{ok:boolean}>('select decide_frame_upload($1,$2,$3,$4,$5) ok',[id,ws,'U123','R&F_A_B_Edit_V1.mov',choice])
+    const first = await create('one')
+    assert.equal((await decide(first,'new',project)).rows[0].ok,false)
+    assert.equal((await decide(first)).rows[0].ok,true)
+    assert.equal((await decide(first)).rows[0].ok,false)
+    assert.equal((await db.query<{n:number}>('select count(*)::int n from dropbox_event_inbox')).rows[0].n,1)
+    const second = await create('two')
+    await assert.rejects(decide(second),/duplicate key/)
+    assert.equal((await db.query<{state:string}>('select state from frame_upload_approvals where id=$1',[second])).rows[0].state,'awaiting','failed destination reservation rolls back decision')
+    assert.equal((await decide(second,'skip')).rows[0].ok,true)
+    assert.equal((await db.query<{n:number}>('select count(*)::int n from dropbox_event_inbox')).rows[0].n,1,'skip never queues work')
+    await db.query("update frame_upload_approvals set state='awaiting' where id=$1",[first])
+    assert.equal((await decide(first)).rows[0].ok,true)
+    const events = (await db.query<{payload:{approvalVersion:number}}>('select payload from dropbox_event_inbox order by event_key')).rows
+    assert.deepEqual(events.map(r=>r.payload.approvalVersion),[1,2],'re-review gets a new fenced execution event')
+    for (const role of ['anon','authenticated']) {
+      await db.exec(`reset role;set role ${role}`)
+      await assert.rejects(db.exec('select * from frame_upload_approvals'),/permission denied/)
+      await assert.rejects(decide(first),/permission denied/)
+    }
+  } finally { await db.close() }
+})
