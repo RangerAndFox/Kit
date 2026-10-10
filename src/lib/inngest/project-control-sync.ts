@@ -62,7 +62,7 @@ import {
   type ProjectCanvasType,
   type ProjectCanvasRow,
 } from '../project-control/store'
-import { PROJECT_VIEW_RENDER_VERSION, projectViewHash, renderNotesAndFeedbackView, renderOverviewView, renderReferenceView, renderScheduleView, type ProjectSupplement } from '../project-control/views'
+import { PROJECT_VIEW_RENDER_VERSION, projectControlDay, projectViewHash, renderNotesAndFeedbackView, renderOverviewView, renderReferenceView, renderScheduleView, type ProjectSupplement } from '../project-control/views'
 
 export interface SyncSheetsPort {
   getWorkbookVersion(spreadsheetId: string): Promise<string>
@@ -187,7 +187,12 @@ export async function runProjectControlSync(
     const v1 = await deps.sheets.getWorkbookVersion(config.spreadsheetId)
     const state = await deps.store.getSyncState(config.spreadsheetId)
     const cursorVersion = state?.drive_version || null
-    const cursorVersionKey = `${v1}|project-views:${PROJECT_VIEW_RENDER_VERSION}`
+    // An unchanged workbook still needs convergence when "today" changes.
+    // Freeze one Pacific day for the pass so its hashes and renders agree even
+    // if provider calls cross midnight. The next tick picks up the new day.
+    const assignmentDay = projectControlDay(deps.now())
+    if (!assignmentDay) throw new Error('invalid_project_control_clock')
+    const cursorVersionKey = `${v1}|project-views:${PROJECT_VIEW_RENDER_VERSION}|day:${assignmentDay}`
 
     const allBindings = await deps.store.listSyncableBindings(config.spreadsheetId)
     let bindings = allBindings
@@ -257,7 +262,7 @@ export async function runProjectControlSync(
         let hash = sourceRowHash(row)
         if (deps.sheets.readProjectSupplement) {
           extra = await deps.sheets.readProjectSupplement(config, row['Project Number']?.display || '')
-          hash = projectViewHash(row, extra)
+          hash = projectViewHash(row, extra, assignmentDay)
         }
 
         let canvases: ProjectCanvasRow[] = []
@@ -314,7 +319,7 @@ export async function runProjectControlSync(
         // NotesAndFeedback is seeded once, then owned by the Slack channel: sync
         // may repair its access but must never replace its human-authored body.
         if (extra && deps.store.listProjectCanvases && deps.store.updateProjectCanvas) {
-          const viewHash = projectViewHash(row, extra)
+          const viewHash = projectViewHash(row, extra, assignmentDay)
           const desired = [
             { type: 'reference' as const, markdown: renderReferenceView(row, extra), editable: false },
             { type: 'schedule' as const, markdown: renderScheduleView(row, extra), editable: false },
@@ -367,7 +372,7 @@ export async function runProjectControlSync(
         }
         const completedAt = deps.now()
         const markdown = extra
-          ? renderOverviewView(row, extra, completedAt, refreshUrl)
+          ? renderOverviewView(row, extra, completedAt, refreshUrl, assignmentDay)
           : renderProjectControlCanvas(b.template_markdown!, row)
         await deps.canvas.editControlCanvas({ canvasId: b.canvas_id, title, markdown })
         if (extra && canvases.some(view => view.canvas_type === 'overview') && deps.store.updateProjectCanvas) {

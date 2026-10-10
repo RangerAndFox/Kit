@@ -97,7 +97,7 @@ function makeDeps(over: { bindings?: BindingRow[]; cursor?: string | null; versi
     enqueueAlert: async (pid, key, t) => { if (await store.claimNotification(pid, key)) posts.push(t) },
     config: CONFIG,
     enabled: true,
-    now: () => 't',
+    now: () => '2026-10-09T20:11:00Z',
     sleep: async () => {},
     perBindingDelayMs: 0,
   }
@@ -105,6 +105,57 @@ function makeDeps(over: { bindings?: BindingRow[]; cursor?: string | null; versi
 }
 
 describe('runProjectControlSync', () => {
+  it('rolls assignments over at Pacific midnight without a sheet edit and stays quiet within the day', async () => {
+    const { deps, store } = makeDeps()
+    let now = '2026-10-10T06:59:00Z'
+    const writes: string[] = []
+    deps.now = () => now
+    deps.sheets.readProjectSupplement = async () => ({ specs: {}, workback: [], links: [], deliverables: [], assignments: [
+      { Date: '2026-10-09', Person: 'Ted', 'Daily Assignment': 'Friday design' },
+      { Date: '2026-10-10', Person: 'Ted', 'Daily Assignment': 'Saturday design' },
+    ] })
+    deps.canvas.editControlCanvas = async input => { writes.push(input.markdown) }
+    assert.equal((await runProjectControlSync(deps)).updated, 1)
+    assert.match(writes[0], /Friday design/)
+    assert.doesNotMatch(writes[0], /Saturday design/)
+    store.state.drive_version = store.advanced
+    now = '2026-10-10T06:59:30Z'
+    assert.equal((await runProjectControlSync(deps)).reason, 'no_change')
+    assert.equal(writes.length, 1)
+    now = '2026-10-10T07:00:00Z'
+    assert.equal((await runProjectControlSync(deps)).updated, 1)
+    assert.match(writes[1], /Saturday design/)
+    assert.doesNotMatch(writes[1], /Friday design/)
+    store.state.drive_version = store.advanced
+    now = '2026-10-10T08:00:00Z'
+    assert.equal((await runProjectControlSync(deps)).reason, 'no_change')
+    assert.equal(writes.length, 2)
+    now = '2026-10-11T07:00:00Z'
+    assert.equal((await runProjectControlSync(deps)).updated, 1)
+    assert.match(writes[2], /No assignments for today/)
+  })
+
+  it('keeps a midnight-crossing pass coherent and catches up on the next tick', async () => {
+    const { deps, store } = makeDeps()
+    let now = '2026-10-10T06:59:59Z'
+    let markdown = ''
+    deps.now = () => now
+    deps.sheets.readProjectSupplement = async () => {
+      now = '2026-10-10T07:00:01Z'
+      return { specs: {}, workback: [], links: [], deliverables: [], assignments: [
+        { Date: '2026-10-09', Person: 'Ted', 'Daily Assignment': 'Friday design' },
+      ] }
+    }
+    deps.canvas.editControlCanvas = async input => { markdown = input.markdown }
+    assert.equal((await runProjectControlSync(deps)).updated, 1)
+    assert.match(markdown, /Friday design/)
+    assert.match(store.advanced || '', /day:2026-10-09$/)
+    store.state.drive_version = store.advanced
+    assert.equal((await runProjectControlSync(deps)).updated, 1)
+    assert.match(markdown, /No assignments for today/)
+    assert.match(store.advanced || '', /day:2026-10-10$/)
+  })
+
   it('installs a missing refresh control even after provisioning saved an unchanged source hash', async () => {
     const { deps, store } = makeDeps()
     const active = cells()
@@ -147,13 +198,13 @@ describe('runProjectControlSync', () => {
     deps.sheets.readProjectSupplement = async () => ({ specs: {}, workback: [], links: [], deliverables: [], assignments: [] })
     deps.canvas.editControlCanvas = async (input) => { markdown = input.markdown; writes++ }
     assert.equal((await runProjectControlSync(deps, { force: true })).updated, 1)
-    assert.match(markdown, /Last synced:\*\* Oct 9, 2026, 4:11 PM EDT/)
+    assert.match(markdown, /Last synced:\*\* Oct 9, 2026, 1:11 PM PDT/)
     assert.equal(store.bindings[0].last_synced_at, now)
     now = '2026-10-09T20:21:00Z'
     assert.equal((await runProjectControlSync(deps, { force: true })).unchanged, 1)
     assert.equal(writes, 1)
     assert.equal(store.bindings[0].last_synced_at, '2026-10-09T20:11:00Z')
-    assert.match(markdown, /4:11 PM EDT/)
+    assert.match(markdown, /1:11 PM PDT/)
   })
 
   it('does not starve later projects when a recovery notification cannot be persisted', async () => {
@@ -197,7 +248,7 @@ describe('runProjectControlSync', () => {
 
   it('forces an authenticated edit pass even before the Drive version advances', async () => {
     const { deps, edits } = makeDeps({
-      cursor: `v2|project-views:${PROJECT_VIEW_RENDER_VERSION}`,
+      cursor: `v2|project-views:${PROJECT_VIEW_RENDER_VERSION}|day:2026-10-09`,
       versions: ['v2', 'v2'],
       bindings: [binding({ last_row_hash: 'old' })],
     })
@@ -225,7 +276,7 @@ describe('runProjectControlSync', () => {
     })
     await runProjectControlSync(deps)
     assert.deepEqual(edits, ['C1'])
-    assert.equal(store.advanced, `v2|project-views:${PROJECT_VIEW_RENDER_VERSION}`)
+    assert.equal(store.advanced, `v2|project-views:${PROJECT_VIEW_RENDER_VERSION}|day:2026-10-09`)
   })
 
   it('unchanged hash produces no canvas write', async () => {
@@ -237,7 +288,7 @@ describe('runProjectControlSync', () => {
 
   it('takes the cheap no-change exit when both workbook and view version match', async () => {
     const { deps, edits } = makeDeps({
-      cursor: `v2|project-views:${PROJECT_VIEW_RENDER_VERSION}`,
+      cursor: `v2|project-views:${PROJECT_VIEW_RENDER_VERSION}|day:2026-10-09`,
       versions: ['v2'],
       bindings: [binding({ last_row_hash: ROW_HASH })],
     })

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { projectViewHash, PROJECT_VIEW_RENDER_VERSION, renderNotesAndFeedbackView, renderOverviewView, renderReferenceView, renderScheduleView, type ProjectSupplement } from './views'
+import { projectControlDay, projectViewHash, PROJECT_VIEW_RENDER_VERSION, renderNotesAndFeedbackView, renderOverviewView, renderReferenceView, renderScheduleView, type ProjectSupplement } from './views'
 import { createHash } from 'node:crypto'
 import type { NormalizedRow } from './render'
 
@@ -68,14 +68,14 @@ describe('generated Canvas tables', () => {
     const markdown = renderOverviewView({ ...row,
       'Last Share': { ...cell('Boards V2'), hyperlink: 'https://example.test/review' },
     }, supplement, '2026-10-09T20:11:00Z')
-    assert.match(markdown, /^\*\*Last synced:\*\* Oct 9, 2026, 4:11 PM EDT/)
+    assert.match(markdown, /^\*\*Last synced:\*\* Oct 9, 2026, 1:11 PM PDT/)
     assert.doesNotMatch(markdown, /Generated view|do not edit here|Master Project List|## Project info|## Latest share/)
     assert.match(markdown, /## Project Status\n/)
     assert.match(markdown, /\[Boards V2\]\(https:\/\/example.test\/review\)/)
     assert.equal(markdown.split('| Status |').length - 1, 1)
     assert.equal(markdown.split('| Next Milestone |').length - 1, 1)
     assert.match(markdown, /## Today’s assignments/)
-    assert.match(markdown, /EDT\n\n## Today’s assignments/)
+    assert.match(markdown, /PDT\n\n## Today’s assignments/)
     assert.doesNotMatch(markdown, /# 2637|Fabric IQ/)
     assert.match(markdown, /## Asset folders/)
     assert.match(renderReferenceView(row, supplement), /Generated view/)
@@ -84,16 +84,50 @@ describe('generated Canvas tables', () => {
 
   it('links refresh beside the timestamp only for a verified Slack message URL', () => {
     const url = 'https://rangerfox.slack.com/archives/C123/p1234567890'
-    assert.match(renderOverviewView(row, supplement, '2026-10-09T20:11:00Z', url), /EDT · \[Refresh this project\]/)
+    assert.match(renderOverviewView(row, supplement, '2026-10-09T20:11:00Z', url), /PDT · \[Refresh this project\]/)
     assert.doesNotMatch(renderOverviewView(row, supplement, '2026-10-09T20:11:00Z', 'https://evil.test'), /Refresh this project/)
   })
 
-  it('uses Eastern daylight-saving time and never invents a timestamp from invalid input', () => {
-    assert.match(renderOverviewView(row, supplement, '2026-12-09T21:11:00Z'), /4:11 PM EST/)
+  it('uses Pacific daylight-saving time and never invents a timestamp from invalid input', () => {
+    assert.match(renderOverviewView(row, supplement, '2026-12-09T21:11:00Z'), /1:11 PM PST/)
     assert.match(renderOverviewView(row, supplement, 'invalid'), /^\*\*Last synced:\*\* Unavailable/)
     const hash = projectViewHash(row, supplement)
     renderOverviewView(row, supplement, '2026-10-10T20:11:00Z')
     assert.equal(projectViewHash(row, supplement), hash, 'the clock is not a source change')
+  })
+
+  it('shows the 2645 Ted assignment on its Pacific date after UTC and Eastern midnight', () => {
+    const extra = { ...supplement, assignments: [
+      { Date: '2026-10-09', Person: 'Ted', 'Daily Assignment': 'Look dev on Cloud environment' },
+      { Date: '2026-10-10', Person: 'Tomorrow', 'Daily Assignment': 'Next day work' },
+    ] }
+    for (const instant of ['2026-10-10T03:55:05.377Z', '2026-10-10T06:59:59Z']) {
+      const markdown = renderOverviewView(row, extra, instant)
+      assert.match(markdown, /\| Ted \| Look dev on Cloud environment \|/)
+      assert.doesNotMatch(markdown, /No assignments|Next day work/)
+    }
+    const nextDay = renderOverviewView(row, extra, '2026-10-10T07:00:00Z')
+    assert.match(nextDay, /Next day work/)
+    assert.doesNotMatch(nextDay, /Look dev on Cloud environment/)
+    assert.doesNotMatch(renderOverviewView(row, extra, 'invalid'), /Look dev|Next day work/)
+  })
+
+  it('uses local midnight across winter, DST changes and year rollover', () => {
+    for (const [instant, expected] of [
+      ['2026-12-10T07:59:59Z', '2026-12-09'], ['2026-12-10T08:00:00Z', '2026-12-10'],
+      ['2026-03-08T09:59:59Z', '2026-03-08'], ['2026-03-08T10:00:00Z', '2026-03-08'],
+      ['2026-11-01T08:59:59Z', '2026-11-01'], ['2026-11-01T09:00:00Z', '2026-11-01'],
+      ['2027-01-01T07:59:59Z', '2026-12-31'], ['2027-01-01T08:00:00Z', '2027-01-01'],
+    ]) assert.equal(projectControlDay(instant), expected)
+    assert.equal(projectControlDay('invalid'), null)
+  })
+
+  it('invalidates assignment projections on a new Pacific day, not on every tick', () => {
+    const extra = { ...supplement, assignments: [{ Date: '2026-10-09', Person: 'Ted', 'Daily Assignment': 'Design' }] }
+    const hashAt = (instant: string) => projectViewHash(row, extra, projectControlDay(instant))
+    assert.equal(hashAt('2026-10-09T23:55:00Z'), hashAt('2026-10-10T06:59:59Z'))
+    assert.notEqual(hashAt('2026-10-10T06:59:59Z'), hashAt('2026-10-10T07:00:00Z'))
+    assert.equal(projectViewHash(row, supplement, '2026-10-09'), projectViewHash(row, supplement, '2026-10-10'))
   })
 
   it('adds a OneDrive row once, including normalized duplicate types', () => {
