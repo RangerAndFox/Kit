@@ -35,6 +35,8 @@ import type { Json } from '../../../src/types/supabase'
 import { provesReadyReplacement } from './replacement-proof'
 import { assertExactSource, frameFileReadiness, sourceReadiness, verifySourceLink } from './upload-integrity'
 import { processingPollSeconds, renderReadiness } from './render-readiness'
+import { approvalMatches, type UploadApproval, type UploadSource } from '../../../src/lib/delivery/upload-approval'
+import { assertUploadReviewer, uploadApprovalsEnabled, createUploadApproval, getUploadApproval, updateUploadApproval, claimUploadPost } from '../../../src/lib/delivery/upload-approval-store'
 
 type JsonRecord = { [key: string]: Json | undefined }
 
@@ -383,8 +385,8 @@ async function dispatchDropboxEvent(app: App, event: ClaimedDropboxEvent): Promi
     await handleAeRenderFarmDrop(app, payload)
     return
   }
-  await handleNewDelivery(app, payload, event)
-  if (/02_Delivery/i.test(payload.subfolder || '')) {
+  const delivered = await handleNewDelivery(app, payload, event)
+  if (delivered && /02_Delivery/i.test(payload.subfolder || '')) {
     const safeName = String(payload.safeName || '')
     const projectName = safeName.replace(/^\d+[A-Za-z]?[_-]/, '').replace(/[_-]+/g, ' ').trim() || safeName
     import('../celebrations/celebrations')
@@ -560,6 +562,8 @@ interface Delivery {
   dropboxId: string
   rev: string
   sizeBytes?: number
+  approvalRequestId?: string
+  approvalVersion?: number
 }
 
 type DeliveryProject = {
@@ -939,7 +943,31 @@ async function hasRecentFolderNotification(
   return Boolean(data)
 }
 
-export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDropboxEvent): Promise<void> {
+async function handOffChangedSource(current: { id: string; rev: string; size: number; path_display?: string; name: string; '.tag'?: string }, event: ClaimedDropboxEvent, projectId: string): Promise<never> {
+  const { data: successors, error } = await createAdminClient().from('dropbox_event_inbox')
+    .select('id, payload').eq('event_type', 'frameio_delivery').neq('id', event.id)
+    .is('retired_at', null).contains('payload', { dropboxId: current.id, rev: current.rev }).limit(2)
+  if (error) throw error
+  const route = typeof current.path_display === 'string' && /^[0-9a-f]{9,}$/.test(current.rev) &&
+    Number.isSafeInteger(current.size) && current.size > 0 ? classifyDropboxEntry({
+      path_display: current.path_display, path_lower: current.path_display.toLowerCase(), name: current.name,
+      tag: current['.tag'] || '', id: current.id, rev: current.rev, size: current.size,
+    }) : null
+  if (successors?.length === 1 && route?.event_type === 'frameio_delivery') {
+    const successor = asJsonRecord(successors[0].payload)
+    const matches = ['path','name','safeName','subfolder','year','dropboxId','rev'].every(k => successor[k] === route.payload[k]) &&
+      (successor.sizeBytes === undefined || successor.sizeBytes === current.size)
+    const nextProject = matches ? await lookupDropboxProject(String(route.payload.safeName)) : null
+    if (nextProject?.id === projectId) throw new DropboxEventSuperseded({
+      outcome: 'superseded_before_upload', successor_event_id: successors[0].id,
+      successor_dropbox_id: current.id, successor_rev: current.rev, resolved_at: new Date().toISOString(),
+      reason: 'Source changed before upload. A durable successor event owns the newer revision; no upload, share, notification or celebration performed for this revision.',
+    })
+  }
+  deferFrameioProcessing(event.created_at, 'Dropbox source changed; waiting for its durable successor event; inbox will retry', 60)
+}
+
+export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDropboxEvent): Promise<boolean | void> {
   // Defend the worker as well as intake: an artifact queued by an older
   // deployment must not be uploaded after this filter ships.
   if (isDropboxConflictArtifact(d.name)) {
@@ -988,6 +1016,50 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
       `[dropbox-watcher] Frame.io upload disabled for project ${project.id} (${project.name}); leaving ${d.name} in Dropbox only`,
     )
     return
+  }
+
+  const { data: priorTransfer, error: priorTransferError } = await sb
+    .from('frameio_delivery_transfers').select('*').eq('project_id', project.id)
+    .eq('dropbox_file_id', d.dropboxId).eq('dropbox_rev', d.rev).maybeSingle()
+  if (priorTransferError) throw new Error(`Frame.io transfer lookup failed: ${priorTransferError.message}`)
+  let approval: UploadApproval | null = null
+  if (d.approvalRequestId) {
+    approval = await getUploadApproval(d.approvalRequestId)
+    if (!approvalMatches(approval, d, project.id)) return
+    if (!priorTransfer && approval.upload_attempted_at) {
+      await updateUploadApproval(approval.id, { state: 'needs_review', detail: 'An upload was attempted without a confirmed receipt. Kit will not upload again automatically; inspect Frame before retrying.' })
+      return
+    }
+  } else if (uploadApprovalsEnabled() && !priorTransfer) {
+    // No Frame folders, renames, shares or celebrations before human approval.
+    const current = await readReplacementDropboxMetadata(d.dropboxId) ?? await readReplacementDropboxMetadata(d.path)
+    if (!current) throw new Error('Dropbox source missing; review this obsolete upload attempt')
+    if (current.id !== d.dropboxId || current.rev !== d.rev) await handOffChangedSource(current, event, project.id)
+    if (sourceReadiness({ ...d, firstSeenAt: event.created_at }, current) !== 'ready') {
+      deferFrameioProcessing(event.created_at, 'Dropbox source is not stable yet; inbox will retry', 60)
+    }
+    const temp = await dbxPost('/files/get_temporary_link', { path: `rev:${d.rev}` })
+    const size = assertExactSource(d, temp.metadata)
+    await verifySourceLink(temp.link, d.name, size)
+    const render = await renderReadiness(temp.link, d.name, size)
+    if (!render.ready) deferFrameioProcessing(event.created_at, `Dropbox render not finalized: ${render.reason}; inbox will retry`, 60)
+    const latest = await dbxPost('/files/get_metadata', { path: d.dropboxId })
+    if (latest.rev !== d.rev) await handOffChangedSource(latest, event, project.id)
+    await createUploadApproval(project.id, d, size)
+    return
+  }
+
+  if (approval && !priorTransfer) {
+    await assertUploadReviewer(approval, approval.approved_by || '')
+    const current = await dbxPost('/files/get_metadata', { path: d.dropboxId })
+    const originalParent = approval.source_path.slice(0, approval.source_path.lastIndexOf('/')).toLowerCase()
+    const currentParent = String(current.path_display || '').slice(0, String(current.path_display || '').lastIndexOf('/')).toLowerCase()
+    if (current.rev !== d.rev || current.size !== approval.source_size || currentParent !== originalParent) {
+      await updateUploadApproval(approval.id, { state: 'superseded', detail: 'The source changed or moved after review. No upload was started; review the new Dropbox revision.' })
+      return
+    }
+    // Do not rename yet. Provider collision recheck happens immediately before
+    // the external-write fence below, after byte/container verification.
   }
 
   const acct = process.env.FRAMEIO_ACCOUNT_ID
@@ -1040,10 +1112,11 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
   const rootFolderId = projData.root_folder_id || projData.root_asset_id
   if (!rootFolderId) throw new Error(`Frame.io project ${frameioId} has no root folder`)
 
-  const outgoingId = await findChildFolder(acct, rootFolderId, '03_Outgoing')
+  const folderLookup = approval ? findApprovalFolder : findChildFolder
+  const outgoingId = await folderLookup(acct, rootFolderId, '03_Outgoing')
   if (!outgoingId) throw new Error(`No 03_Outgoing under Frame.io project ${frameioId}`)
 
-  const subId = await findChildFolder(acct, outgoingId, d.subfolder)
+  const subId = await folderLookup(acct, outgoingId, d.subfolder)
   if (!subId) throw new Error(`No "${d.subfolder}" subfolder under 03_Outgoing`)
 
   // ── Mirror any intermediate Dropbox subfolders ──────────
@@ -1053,11 +1126,12 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
   // We walk the path, finding-or-creating each Frame.io folder, so the
   // file lands in the same hierarchy on Frame.io's side.
   const pathParts = d.name.split('/').filter(Boolean)
-  const fileName = pathParts.pop() || d.name
+  const originalName = pathParts.pop() || d.name
+  const fileName = approval?.approved_name || originalName
   let targetFolderId = subId
   const traversedNames: string[] = []
   for (const folderName of pathParts) {
-    let child = await findChildFolder(acct, targetFolderId, folderName)
+    let child = await folderLookup(acct, targetFolderId, folderName)
     if (!child) {
       const created = await frameioPost(
         `/accounts/${acct}/folders/${targetFolderId}/folders`,
@@ -1080,15 +1154,6 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
   // Check the ledger before reading Dropbox: after Frame.io accepts an upload,
   // producers may move/rename the source while Kit is waiting for processing.
   // Resuming that checkpoint must not depend on the old Dropbox path.
-  const { data: priorTransfer, error: priorTransferError } = await sb
-    .from('frameio_delivery_transfers')
-    .select('*')
-    .eq('project_id', project.id)
-    .eq('dropbox_file_id', d.dropboxId)
-    .eq('dropbox_rev', d.rev)
-    .maybeSingle()
-  if (priorTransferError) throw new Error(`Frame.io transfer lookup failed: ${priorTransferError.message}`)
-
   let transfer = priorTransfer as any
   let file: any
   if (!transfer) {
@@ -1103,35 +1168,7 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
     if (!currentById && !replaced) throw new Error('Dropbox source replacement could not be verified')
     const sourceState = replaced ? 'superseded' : sourceReadiness({ ...d, firstSeenAt: event.created_at }, current)
     if (sourceState === 'superseded') {
-      // Identity survives a rename; the old path must not hide a durable newer
-      // revision. Still require one live successor at the current eligible path
-      // in this same project, not a retired event or a move to another project.
-      const { data: successors, error: successorError } = await sb.from('dropbox_event_inbox')
-        .select('id, payload').eq('event_type', 'frameio_delivery').neq('id', event.id)
-        .is('retired_at', null)
-        .contains('payload', { dropboxId: current.id, rev: current.rev }).limit(2)
-      if (successorError) throw successorError
-      const currentRoute = typeof current.path_display === 'string' &&
-        typeof current.rev === 'string' && /^[0-9a-f]{9,}$/.test(current.rev) &&
-        Number.isSafeInteger(current.size) && current.size > 0
-        ? classifyDropboxEntry({
-          path_display: current.path_display, path_lower: current.path_display.toLowerCase(),
-          name: current.name, tag: current['.tag'], id: current.id, rev: current.rev, size: current.size,
-        }) : null
-      if (successors?.length === 1 && currentRoute?.event_type === 'frameio_delivery') {
-        const successor = asJsonRecord(successors[0].payload)
-        const routeMatches = ['path', 'name', 'safeName', 'subfolder', 'year', 'dropboxId', 'rev']
-          .every(key => successor[key] === currentRoute.payload[key]) &&
-          (successor.sizeBytes === undefined || successor.sizeBytes === current.size)
-        const currentProject = routeMatches
-          ? await lookupDropboxProject(String(currentRoute.payload.safeName)) : null
-        if (currentProject?.id === project.id) throw new DropboxEventSuperseded({
-          outcome: 'superseded_before_upload', successor_event_id: successors[0].id,
-          successor_dropbox_id: current.id, successor_rev: current.rev, resolved_at: new Date().toISOString(),
-          reason: 'Source changed before upload. A durable successor event owns the newer revision; no upload, share, notification or celebration performed for this revision.',
-        })
-      }
-      deferFrameioProcessing(event.created_at, 'Dropbox source changed; waiting for its durable successor event; inbox will retry', 60)
+      await handOffChangedSource(current, event, project.id)
     }
     if (sourceState !== 'ready') {
       deferFrameioProcessing(event.created_at, 'Dropbox source is empty or has not been stable for 60 seconds; inbox will retry', 60)
@@ -1163,6 +1200,25 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
     event.payload = checkpointPayload
     d.sizeBytes = sourceSize
 
+    if (approval) {
+      const conflicts = (await listApprovalFolderChildren(acct, targetFolderId)).filter(c => c.name.toLowerCase() === fileName.toLowerCase())
+      const valid = approval.decision === 'replace'
+        ? conflicts.length === 1 && conflicts[0].id === approval.conflict_id && conflicts[0].type === approval.conflict_type
+        : conflicts.length === 0
+      if (!valid) {
+        await updateUploadApproval(approval.id, { state: 'awaiting', detail: 'The Frame destination changed. Please review the filename and conflict choice again.' })
+        return
+      }
+      const latestPath = String(latest.path_display || '')
+      const renamedPath = `${latestPath.slice(0, latestPath.lastIndexOf('/'))}/${fileName}`
+      if (latestPath !== renamedPath) {
+        const renamed = await dbxPost('/files/move_v2', { from_path: d.dropboxId, to_path: renamedPath, autorename: false, allow_shared_folder: true })
+        assertExactSource(d, renamed.metadata)
+      }
+      await updateUploadApproval(approval.id, { renamed_path: renamedPath })
+      if (!await claimUploadPost(approval)) return
+    }
+
     const createResp = await frameioPost(
       `/accounts/${acct}/folders/${targetFolderId}/files/remote_upload`,
       { data: { name: fileName, source_url: sourceUrl } },
@@ -1192,6 +1248,7 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
       throw new Error(`Frame.io accepted upload ${file.id}, but transfer checkpoint failed: ${transferError.message}`)
     }
     transfer = insertedTransfer
+    if (approval) await updateUploadApproval(approval.id, { frame_file_id: file.id })
   } else {
     file = {
       id: transfer.frameio_file_id,
@@ -1239,7 +1296,7 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
       await dbxPost('/files/get_metadata', { path: `rev:${d.rev}` }))
     const actual = await frameioGet(`/accounts/${acct}/files/${transfer.frameio_file_id}`)
     const mediaState = frameFileReadiness(actual.data || actual, {
-      id: transfer.frameio_file_id, folderId: transfer.frameio_folder_id,
+      id: transfer.frameio_file_id, folderId: approval?.version_stack_id || transfer.frameio_folder_id,
       projectId: transfer.frameio_project_id, name: fileName, size: expectedSize,
     })
     if (mediaState !== 'ready') {
@@ -1258,6 +1315,35 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
     }).eq('id', transfer.id)
     if (checkpointError) throw new Error(`Upload integrity checkpoint failed: ${checkpointError.message}`)
     throw integrityError
+  }
+  if (approval?.decision === 'replace' && !approval.version_stack_id) {
+    // Never remove the previous version. Provider-side versioning is a second
+    // external write, so an ambiguous result is left for reconciliation rather
+    // than blindly creating another stack on retry.
+    await updateUploadApproval(approval.id, { state: 'needs_review', detail: 'Media is ready; version-stack update is pending verification.' })
+    const stackId = approval.conflict_type === 'version_stack' ? approval.conflict_id : null
+    let resultingStack: string
+    if (stackId) {
+      const response = await fetch(`${FRAMEIO_API}/accounts/${acct}/files/${file.id}/move`, {
+        method: 'PATCH', headers: await frameioHeaders(), body: JSON.stringify({ data: { parent_id: stackId } }), signal: AbortSignal.timeout(15_000),
+      })
+      if (!response.ok) throw new Error(`Frame version move failed (${response.status})`)
+      resultingStack = stackId
+    } else {
+      const stacked = await frameioPost(`/accounts/${acct}/folders/${targetFolderId}/version_stacks`, { data: { file_ids: [approval.conflict_id, file.id] } })
+      resultingStack = (stacked.data || stacked).id
+      if (!resultingStack) throw new Error('Frame did not return a version stack receipt')
+    }
+    const moved = await frameioGet(`/accounts/${acct}/files/${file.id}`)
+    if (frameFileReadiness(moved.data || moved, {
+      id: file.id, folderId: resultingStack, projectId: frameioId, name: fileName, size: approval.source_size,
+    }) !== 'ready') throw new Error('Frame version could not be verified ready')
+    const stack = await frameioGet(`/accounts/${acct}/version_stacks/${resultingStack}`)
+    if ((stack.data || stack).head_version?.id !== file.id) {
+      throw new Error('Frame version is not the displayed latest version; manual reconciliation required')
+    }
+    await updateUploadApproval(approval.id, { state: 'uploading', version_stack_id: resultingStack, detail: null })
+    approval.version_stack_id = resultingStack
   }
   const breadcrumb =
     traversedNames.length > 0
@@ -1325,6 +1411,8 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
       progression,
     })
   }
+  if (approval) await updateUploadApproval(approval.id, { state: 'complete', detail: 'Uploaded and verified ready in Frame.' })
+  return true
 }
 
 /** Retry the Sheet + Slack half of durable Frame.io share events. This closes
@@ -1812,6 +1900,52 @@ async function findChildFolder(
     if (t === 'folder' && c.name === name) return c.id
   }
   return null
+}
+
+export interface ApprovalFrameChild { id: string; name: string; type: string }
+async function findApprovalFolder(account: string, parent: string, name: string): Promise<string | null> {
+  const matches = (await listApprovalFolderChildren(account, parent)).filter(c => c.type === 'folder' && c.name === name)
+  if (matches.length > 1) throw new Error('Ambiguous Frame folder; review duplicate folders before uploading')
+  return matches[0]?.id || null
+}
+export async function listApprovalFolderChildren(account: string, folder: string): Promise<ApprovalFrameChild[]> {
+  const children: ApprovalFrameChild[] = []
+  let path: string | null = `/accounts/${account}/folders/${folder}/children?page_size=100`
+  for (let page = 0; path && page < 50; page++) {
+    const response = await frameioGet(path)
+    if (!Array.isArray(response.data)) throw new Error('Frame returned an incomplete folder listing')
+    for (const child of response.data) {
+      if (!child.id || !child.name || !(child.type || child.resource_type)) throw new Error('Frame returned an unknown folder item')
+      children.push({ id: child.id, name: child.name, type: child.type || child.resource_type })
+    }
+    path = response.links?.next ? normalizeFrameioNextLink(response.links.next) : null
+  }
+  if (path) throw new Error('Frame folder listing exceeded the review limit')
+  return children
+}
+
+/** Read-only destination discovery for the Slack review form. */
+export async function uploadApprovalConflicts(projectId: string, source: UploadSource): Promise<ApprovalFrameChild[]> {
+  const { data: project, error } = await createAdminClient().from('projects').select('external_links').eq('id', projectId).single()
+  const frameId = asJsonRecord(project?.external_links).frameio_id
+  const account = process.env.FRAMEIO_ACCOUNT_ID
+  if (error || typeof frameId !== 'string' || !account) throw new Error('Project Frame destination is not configured')
+  const response = await frameioGet(`/accounts/${account}/projects/${frameId}`)
+  let folder = (response.data || response).root_folder_id
+  if (!folder) throw new Error('Frame project root unavailable')
+  for (const name of ['03_Outgoing', source.subfolder, ...source.name.split('/').slice(0,-1)]) {
+    const matches = (await listApprovalFolderChildren(account, folder)).filter(c => c.type === 'folder' && c.name === name)
+    if (matches.length > 1) throw new Error('Ambiguous Frame folder; review the duplicate folders first')
+    if (!matches.length) return []
+    folder = matches[0].id
+  }
+  return listApprovalFolderChildren(account, folder)
+}
+
+export async function verifyApprovalSource(row: UploadApproval): Promise<boolean> {
+  const metadata = await dbxPost('/files/get_metadata', { path: row.source_file_id })
+  return metadata.id === row.source_file_id && metadata.rev === row.source_rev && metadata.size === row.source_size &&
+    String(metadata.path_display || '').toLowerCase() === row.source_path.toLowerCase()
 }
 
 async function findChildFile(
