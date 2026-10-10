@@ -13,7 +13,7 @@ test('upload decisions are atomic, workspace scoped, replay safe and private', a
       create table projects(id uuid primary key, workspace_id uuid,unique(workspace_id,id));
       create table dropbox_event_inbox(id uuid default gen_random_uuid(),event_key text unique,event_type text,payload jsonb,source_cursor text not null);
       insert into workspaces values('${workspace}');insert into projects values('${project}','${workspace}');`)
-    await db.exec(await readFile(new URL('../supabase/migrations/20261010140828_frame_upload_approvals.sql',import.meta.url),'utf8'))
+    await db.exec(await readFile(new URL('../supabase/migrations/20261010143816_frame_upload_approvals.sql',import.meta.url),'utf8'))
     await db.exec('set role service_role')
     const create = async (rev: string) => (await db.query<{id:string}>(`insert into frame_upload_approvals(workspace_id,project_id,source_file_id,source_rev,source_size,source_path,source_payload,suggested_name)
       values($1,$2,'id:source',$3,100,'/production/test.mov','{"subfolder":"02_Delivery","name":"v1/test.mov"}','R&F_A_B_Edit_V1.mov') returning id`,[workspace,project,rev])).rows[0].id

@@ -37,7 +37,7 @@ the finished video into Dropbox when practical.
 
 ## Rollout prerequisites (not yet production-verified)
 
-1. Apply `20261010140828_frame_upload_approvals.sql` before enabling the flag.
+1. Apply `20261010143816_frame_upload_approvals.sql` before enabling the flag.
 2. Verify Kit's Slack bot can open a group DM with producer and CD and can read
    its history for lost-receipt reconciliation (`mpim:write`, `mpim:history`,
    plus the existing direct-message and chat permissions).
@@ -55,6 +55,10 @@ The feature is staged disabled. Do not describe repository tests as a live
 provider contract test. Runtime verification is still required.
 
 ### Provider contract checks — October 10, 2026
+
+Production migration applied successfully as `20261010143816`; the local filename
+matches Supabase's recorded version. The additive table remains unused while the
+feature flag is off.
 
 Verified with Kit's existing credentials (no new grants or credential rotation):
 
