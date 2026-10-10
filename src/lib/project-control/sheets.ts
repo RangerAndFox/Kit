@@ -565,7 +565,8 @@ async function readRfProductionRow(config: WorkbookConfig, rowIndex: number, inc
   put('Producer', 13)
   put('VO', 14)
   put('Music', 15)
-  const lastShareLabel = physical[16] || physical[17] || {}
+  // Empty CellData objects are truthy. URL-only edits still need a visible label.
+  const lastShareLabel = normalizeCell(physical[16]).display.trim() ? physical[16] : physical[17] || {}
   const lastShareUrl = normalizeCell(physical[17]).hyperlink || normalizeCell(physical[17]).display.trim()
   out[MASTER_HEADERS.indexOf('Last Share')] = lastShareUrl ? { ...lastShareLabel, hyperlink: lastShareUrl } : lastShareLabel
 

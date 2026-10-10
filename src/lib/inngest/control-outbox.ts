@@ -50,7 +50,7 @@ async function dispatchAction(row: OutboxRow): Promise<void> {
       db.from('project_control_canvases').update({ sync_status: 'pending' }).eq('project_id', row.project_id).neq('canvas_type', 'notesAndFeedback'),
     ])
     if (updates.some(result => result.error)) throw new Error('Could not checkpoint requested refresh')
-    requireCompletedSync(await runProjectControlSync(undefined, { force: true, projectId: row.project_id }))
+    requireCompletedSync(await runProjectControlSync(undefined, { force: true, refresh: true, projectId: row.project_id }))
   } else if (row.payload.action === 'retry_behance') {
     const { data: job, error: jobError } = await db.from('behance_draft_jobs').select('archive_job_id,status').eq('id', row.payload.jobId).eq('project_id', row.project_id).eq('workspace_id', row.payload.workspaceId).single()
     if (jobError || !job) throw new Error('Draft no longer available')
@@ -93,7 +93,8 @@ export async function drainControlOutbox(): Promise<{ processed: number }> {
       },
       action: () => dispatchAction(row),
       async finish(status, error, ts) {
-        const result = await db.rpc('finish_control_outbox', { p_id: row.id, p_token: token, p_status: status, p_error: error || null, p_slack_ts: ts || null })
+        const finish = row.payload.source === 'slack_refresh' ? 'finish_slack_project_refresh' : 'finish_control_outbox'
+        const result = await db.rpc(finish, { p_id: row.id, p_token: token, p_status: status, p_error: error || null, p_slack_ts: ts || null })
         if (result.error || result.data !== true) throw new Error('Outbox completion checkpoint failed')
       },
     })
@@ -104,5 +105,5 @@ export async function drainControlOutbox(): Promise<{ processed: number }> {
 
 export const controlOutboxDelivery = inngest.createFunction({
   id: 'control-outbox-delivery', name: 'Kit — durable control requests and alerts',
-  concurrency: 1, retries: 3, triggers: [{ cron: '* * * * *' }],
+  concurrency: 1, retries: 3, triggers: [{ cron: '* * * * *' }, { event: 'project-control/refresh.requested' }],
 }, async ({ step }) => step.run('drain', drainControlOutbox))

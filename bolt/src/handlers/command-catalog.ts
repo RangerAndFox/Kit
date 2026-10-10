@@ -5,6 +5,7 @@ import { parseNoteIntent } from '../notes/keyword'
 
 /** All live slash-command families. CI checks this against registration. */
 export const KIT_COMMANDS = {
+  refresh: { tier: 'producer', description: 'Refresh saved Google Sheet data into this project’s generated Slack tabs. Optional exact project number/code; without arguments uses the SOURCE channel. Queues a retry-safe refresh and DMs actual completion; does not edit source data or Notes & Feedback.' },
   dashboard: { tier: 'admin', description: 'Open Kit health/usage dashboard. No arguments.' },
   newproject: { tier: 'producer', description: 'Create a full project using the private form. No arguments; never collect budgets in chat.' },
   update: { tier: 'producer', description: 'Edit project details; opens a picker and preview form. Optional project name/code is a hint, not automatic selection.' },
@@ -54,6 +55,8 @@ export function normalizeCommandRequest(text: string): string {
 export function parseFastCommand(text: string): KitCommandRequest | null {
   const value = normalizeCommandRequest(text)
   if (/^(?:don't|do not|not|never|if|when|how|tell me how)\b/i.test(value) || /^[>"`]/.test(value)) return null
+  const refresh = value.match(/^(?:\/kit\s+)?(?:refresh|sync|synchronize)(?:\s+(?:this|the))?(?:\s+project)?(?:\s+(\d{3,4}[a-z]?(?:[-_][a-z0-9_-]+)?))?(?:\s+now)?$/i)
+  if (refresh) return { command: 'refresh', args: refresh[1] || '' }
   const literal = value.match(/^(?:\/kit\s+)?(dashboard|newproject|update|archive|delete|onboard|offboard|status|pilot|deliver|profiles|workers|render|access|celebrate|birthday|brain|role|sync-staff|sync-projects|backfill-time|meme|note|help|storyboard)\b(?:\s+([\s\S]*))?$/i)
   // Exact command names and their arguments can be typed without a slash.
   if (literal && !/^(?:update|archive|delete|onboard|status|note|role|render|deliver|celebrate|birthday)$/i.test(literal[1])) return { command: literal[1].toLowerCase() as KitCommandName, args: literal[2] || '' }

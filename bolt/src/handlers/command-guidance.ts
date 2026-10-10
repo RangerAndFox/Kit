@@ -8,6 +8,7 @@ type Guide = { title: string; steps: string[]; next: string; start?: KitCommandR
 
 /** Product instructions, not project data. Keep aligned with the canonical handlers. */
 export const COMMAND_GUIDES: Record<KitCommandName, Guide> = {
+  refresh: { title: 'Refresh project tabs', steps: ['Save your changes in the Production Control Center Sheet.', 'Use Refresh this project beside Last synced, then Sync now, or say “Kit sync this project” in its channel. Producer/admin access is required.', 'Kit queues one refresh and privately confirms completion or a failure requiring attention. Notes & Feedback are never overwritten.'], next: 'Want me to request a refresh for this project?', start: { command: 'refresh', args: '' } },
   offboard: {
     title:'Offboard an artist from a project',
     steps:['A producer/admin selects the exact project and artist in the private offboarding picker.', 'Review the memberships to remove, then choose Offboard, Edit or Cancel. No files, time logs, paperwork, other projects or shared accounts are deleted.', 'Check every service result. Retry failed steps; resolve inherited permissions, public links or unsupported invitations manually. The person remains available for other projects.'],

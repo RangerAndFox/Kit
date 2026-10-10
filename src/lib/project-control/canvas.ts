@@ -129,6 +129,56 @@ export function controlCanvasTitle(projectNumber: string): string {
   return projectCanvasTitle(projectNumber, 'overview')
 }
 
+/** Called under the workbook lease. Reconcile a prior ambiguous post before
+ * creating a new control; only this bot's matching project marker is trusted. */
+export async function ensureProjectRefreshControl(input: {
+  projectId: string; projectNumber: string; channelId: string; startedAt: string
+}): Promise<{ channelId: string; ts: string; url: string }> {
+  const auth = await slackPost('auth.test', {})
+  if (!auth.user_id) throw new Error('Refresh control bot identity unavailable')
+  const marker = `kit_project_refresh_${input.projectId}`
+  type Message = { ts?: string; user?: string; blocks?: Array<{ block_id?: string }> }
+  let ts: string | undefined
+  let cursor: string | undefined
+  // The durable start timestamp predates the first post. Searching only this
+  // interval bounds work and makes a post-before-checkpoint crash recoverable.
+  for (let page = 0; page < 10; page++) {
+    const result = await slackGet('conversations.history', {
+      channel: input.channelId, oldest: String(Date.parse(input.startedAt) / 1000 - 60),
+      limit: '100', ...(cursor ? { cursor } : {}),
+    })
+    const found = (result.messages as Message[] | undefined)?.find(message =>
+      message.user === auth.user_id && message.blocks?.some(block => block.block_id === marker))
+    if (found?.ts) { ts = found.ts; break }
+    cursor = (result.response_metadata as { next_cursor?: string } | undefined)?.next_cursor
+    if (!result.has_more && !cursor) break
+    if (!cursor || page === 9) throw new Error('Refresh control history incomplete; refusing duplicate post')
+  }
+  if (!ts) {
+    const label = input.projectNumber.replace(/[<>&]/g, '')
+    const posted = await slackPost('chat.postMessage', {
+      channel: input.channelId, text: `Kit project controls — ${label}`,
+      unfurl_links: false, unfurl_media: false,
+      blocks: [
+        { type: 'section', block_id: marker, text: { type: 'mrkdwn', text: `*${label} — Project sync*\nSaved a change in the Sheet? Producers and admins can refresh this project’s generated tabs here. Kit will DM you when it finishes. Notes & Feedback stay editable and untouched.` } },
+        { type: 'actions', elements: [{ type: 'button', action_id: 'kit_project_sync_now', value: input.projectId,
+          text: { type: 'plain_text', text: 'Sync now' }, style: 'primary' }] },
+      ],
+    })
+    ts = posted.ts as string | undefined
+    if (!ts) throw new Error('Refresh control post was not acknowledged')
+  }
+  try { await slackPost('pins.add', { channel: input.channelId, timestamp: ts }) }
+  catch (error) {
+    // Pinning is optional discoverability, not a prerequisite for the working
+    // Overview link. Older installations may not grant pins:write.
+    if (!(error instanceof Error) || !['already_pinned', 'missing_scope', 'cant_pin_message'].some(code => error.message.includes(code))) throw error
+  }
+  const permalink = await slackGet('chat.getPermalink', { channel: input.channelId, message_ts: ts })
+  if (typeof permalink.permalink !== 'string') throw new Error('Refresh control permalink unavailable')
+  return { channelId: input.channelId, ts, url: permalink.permalink }
+}
+
 export function hashTemplate(markdown: string): string {
   return createHash('sha256').update(markdown).digest('hex')
 }

@@ -59,8 +59,8 @@ describe('generated Canvas tables', () => {
   })
 
   it('invalidates the old canvas render hash even when the workbook has not changed', () => {
-    assert.notEqual(PROJECT_VIEW_RENDER_VERSION, '8')
-    const previous = createHash('sha256').update(JSON.stringify({ renderVersion: '8', row, extra: supplement })).digest('hex')
+    assert.notEqual(PROJECT_VIEW_RENDER_VERSION, '9')
+    const previous = createHash('sha256').update(JSON.stringify({ renderVersion: '9', row, extra: supplement })).digest('hex')
     assert.notEqual(projectViewHash(row, supplement), previous)
   })
 
@@ -75,9 +75,17 @@ describe('generated Canvas tables', () => {
     assert.equal(markdown.split('| Status |').length - 1, 1)
     assert.equal(markdown.split('| Next Milestone |').length - 1, 1)
     assert.match(markdown, /## Today’s assignments/)
+    assert.match(markdown, /EDT\n\n## Today’s assignments/)
+    assert.doesNotMatch(markdown, /# 2637|Fabric IQ/)
     assert.match(markdown, /## Asset folders/)
     assert.match(renderReferenceView(row, supplement), /Generated view/)
     assert.match(renderScheduleView(row, supplement), /Generated view/)
+  })
+
+  it('links refresh beside the timestamp only for a verified Slack message URL', () => {
+    const url = 'https://rangerfox.slack.com/archives/C123/p1234567890'
+    assert.match(renderOverviewView(row, supplement, '2026-10-09T20:11:00Z', url), /EDT · \[Refresh this project\]/)
+    assert.doesNotMatch(renderOverviewView(row, supplement, '2026-10-09T20:11:00Z', 'https://evil.test'), /Refresh this project/)
   })
 
   it('uses Eastern daylight-saving time and never invents a timestamp from invalid input', () => {

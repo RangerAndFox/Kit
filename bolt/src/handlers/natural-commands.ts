@@ -129,7 +129,7 @@ export async function executeNaturalCommand(app: App, record: CommandRecord, tri
   const client = privateCommandClient(app.client, record)
   // Brain/pilot/note operate on a channel. All other form progress is private;
   // project pickers make the target explicit rather than inferring the wrong one.
-  const sourceContext = ['brain', 'pilot', 'note'].includes(record.command)
+  const sourceContext = ['brain', 'pilot', 'note', 'refresh'].includes(record.command)
   const command = {
     command: record.command === 'storyboard' ? '/storyboard' : '/kit',
     text: record.command === 'storyboard' ? record.args : record.command + (record.args ? ' ' + record.args : ''),
