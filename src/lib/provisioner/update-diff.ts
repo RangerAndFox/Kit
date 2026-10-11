@@ -146,7 +146,6 @@ export function computeUpdatePlan(
     { field: 'client', label: 'Client', current: current.clientName, next: effClientName },
     { field: 'client_contact', label: 'Client Contact', current: current.clientContact, next: next.clientContact },
     { field: 'project_name', label: 'Project Name', current: current.projectName, next: next.projectName },
-    { field: 'project_type', label: 'Project Type', current: current.projectType, next: next.projectType },
     { field: 'project_manager', label: 'Producer', isUser: true, current: current.projectManagerSlackId, next: next.projectManager },
     { field: 'creative_director', label: 'Creative Director', isUser: true, current: current.creativeDirectorSlackId, next: next.creativeDirector },
     { field: 'start_date', label: 'Start Date', current: current.startDate, next: next.startDate },
@@ -157,11 +156,6 @@ export function computeUpdatePlan(
   const changes: FieldChange[] = []
   const changed = new Set<string>()
   for (const s of specs) {
-    // Project Type is a static_select with no clear affordance: a blank selection
-    // means "not set / no match" (e.g. a NULL or legacy non-canonical type that
-    // couldn't be pre-selected), NOT an intent to clear it. Never diff a blank
-    // project_type as a change — that would silently null out the stored value.
-    if (s.field === 'project_type' && norm(s.next) === '') continue
     if (norm(s.current) !== norm(s.next)) {
       changed.add(s.field)
       changes.push({
@@ -227,7 +221,6 @@ export function computeUpdatePlan(
       changed.has('client') ||
       changed.has('client_contact') ||
       changed.has('project_name') ||
-      changed.has('project_type') ||
       changed.has('start_date') ||
       changed.has('deadline') ||
       changed.has('creative_director') ||

@@ -8,6 +8,7 @@ import TurndownService from 'turndown'
 import { gfm } from 'turndown-plugin-gfm'
 import { deriveSlackSlug } from '../provisioner/identifiers'
 import { projectCanvasTitle, type ProjectCanvasTitleType } from '../project-control/canvas-title'
+import { withoutProjectTypeRows } from '../project-control/render'
 
 const SLACK_API = 'https://slack.com/api'
 
@@ -202,14 +203,13 @@ export function fillCanvasTemplate(
     if (value && value.trim()) wanted.push({ key: norm(label), value: value.trim(), done: false })
   }
   add('Client', fields.client)
-  add('Project Type', fields.projectType)
   add('Producer', fields.producer)
   add('CD', fields.cd)
   add('Delivery', fields.delivery)
   add('Dropbox', fields.dropbox)
   add('Frame.io', fields.frameio)
 
-  const filled = markdown
+  const filled = withoutProjectTypeRows(markdown)
     .split('\n')
     .map((line) => {
       const trimmed = line.trim()
@@ -427,7 +427,7 @@ export async function createProjectSlackChannel(opts: {
     throw new Error('SLACK_BOT_TOKEN not configured — cannot create channel')
   }
 
-  const { projectId, projectName, client, projectNumber, projectType, targetDelivery, inviteUserIds } = opts
+  const { projectId, projectName, client, projectNumber, targetDelivery, inviteUserIds } = opts
 
   // Validate required fields up front so we don't ship a "client-undefined" channel.
   if (!projectName || !projectName.trim()) {
@@ -518,7 +518,6 @@ export async function createProjectSlackChannel(opts: {
     '',
     `*Client:* ${client}`,
   ]
-  if (projectType) lines.push(`*Type:* ${projectType}`)
   if (targetDelivery) lines.push(`*Target delivery:* ${targetDelivery}`)
   lines.push(
     '',
@@ -964,7 +963,7 @@ export async function duplicateTemplateCanvases(opts: {
       }
 
       // Auto-fill the template's project-metadata table with everything we
-      // know at provisioning time (Client, Project Type, Producer, CD,
+      // know at provisioning time (Client, Producer, CD,
       // Delivery) + the placeholder H1. Non-destructive: only empty cells
       // get filled, and only the first match per field. Producers still
       // fill the rest (contacts, VO, music, specs) by hand.
