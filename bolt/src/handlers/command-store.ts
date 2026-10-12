@@ -41,8 +41,8 @@ export async function claimCommandRequest(record: CommandRecord, cancel = false)
   return !!data
 }
 
-export async function finishCommandRequest(id: string, status: 'complete' | 'review'): Promise<void> {
-  const { data, error } = await table().update({ status, args: '', updated_at: new Date().toISOString() }).eq('id', id).eq('status', 'running').select('id').maybeSingle()
+export async function finishCommandRequest(id: string, status: 'complete' | 'review', retainAudit = false): Promise<void> {
+  const { data, error } = await table().update({ status, ...(!retainAudit ? { args: '' } : {}), updated_at: new Date().toISOString() }).eq('id', id).eq('status', 'running').select('id').maybeSingle()
   checked(error)
   if (!data) throw new Error('Command receipt could not be recorded')
 }

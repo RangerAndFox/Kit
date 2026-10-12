@@ -18,6 +18,7 @@ import {
 } from './handlers/messages'
 import { registerCommandHandlers } from './handlers/commands'
 import { registerProjectRefreshHandlers } from './handlers/project-refresh'
+import { registerProjectSpecsHandlers } from './handlers/project-specs'
 import { registerNaturalCommandHandlers } from './handlers/natural-commands'
 import { registerInteractionHandlers } from './handlers/interactions'
 import { registerBrainApprovalHandlers } from './brain/approvals'
@@ -129,6 +130,7 @@ app.assistant(assistant)
 registerMessageHandlers(app)
 registerCommandHandlers(app)
 registerProjectRefreshHandlers(app)
+registerProjectSpecsHandlers(app)
 registerNaturalCommandHandlers(app)
 const { runProjectControlRecoverySweep } = registerInteractionHandlers(app)
 registerBrainApprovalHandlers(app)

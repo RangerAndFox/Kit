@@ -19,6 +19,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import type { TablesUpdate } from '@/types/supabase'
 import { getAgent } from './agents/registry'
 import type { AgentResult } from './agents/types'
+import { memberAccessTier, roleAssignment } from '../permissions/tier'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -46,15 +47,6 @@ export interface AccessCheck {
 
 // ─── Tier Resolution ────────────────────────────────────────
 
-const ROLE_TO_TIER: Record<string, AccessTier> = {
-  founder: 'admin',
-  admin: 'admin',
-  owner: 'admin',
-  producer: 'producer',
-  artist: 'artist',
-  freelancer: 'artist',
-}
-
 /**
  * Resolve a user's access tier from their Slack user ID.
  * This is the primary entry point — Kit identifies users by Slack ID.
@@ -73,12 +65,12 @@ export async function resolveUserContext(
   // only.
   const { data: member, error } = await db
     .from('team_members')
-    .select('id, role, name, email')
+    .select('id, role, permission_tier, name, email, is_active')
     .eq('workspace_id', workspaceId)
     .eq('slack_user_id', slackUserId)
     .maybeSingle()
 
-  if (!error && member) {
+  if (!error && member && member.is_active !== false) {
     // Get project-level financial overrides
     const { data: accessOverrides } = await db
       .from('project_access')
@@ -90,7 +82,7 @@ export async function resolveUserContext(
       (accessOverrides || []).map((a: any) => a.project_id)
     )
 
-    const tier: AccessTier = ROLE_TO_TIER[member.role] || 'artist'
+    const tier: AccessTier = memberAccessTier(member.role, member.permission_tier)
 
     return {
       teamMemberId: member.id,
@@ -404,7 +396,7 @@ export function failsafeArtistContext(workspaceId: string, slackUserId: string):
 // ─── Role management (shared by /kit role + conversational path) ─────────
 
 /** The team_members.role strings an admin can assign. */
-export const ASSIGNABLE_ROLES = ['founder', 'producer', 'artist', 'freelancer'] as const
+export const ASSIGNABLE_ROLES = ['founder', 'producer', 'creative_director', 'artist', 'freelancer'] as const
 
 /**
  * Map a user-typed role word to a canonical team_members.role value.
@@ -414,6 +406,7 @@ export const ASSIGNABLE_ROLES = ['founder', 'producer', 'artist', 'freelancer'] 
 export function normalizeRoleInput(raw: string): string | null {
   const r = (raw || '').trim().toLowerCase()
   if (r === 'admin' || r === 'owner') return 'founder'
+  if (r === 'cd' || r === 'creative director') return 'creative_director'
   if ((ASSIGNABLE_ROLES as readonly string[]).includes(r)) return r
   return null
 }
@@ -421,6 +414,7 @@ export function normalizeRoleInput(raw: string): string | null {
 /** Friendly label for a stored role string. */
 export function tierLabelForRole(role: string): string {
   if (role === 'founder') return 'admin/owner'
+  if (role === 'creative_director') return 'CD (producer permissions)'
   return role
 }
 
@@ -442,15 +436,18 @@ export async function setTeamMemberRole(
   opts: { email?: string | null; name?: string | null } = {},
 ): Promise<{ created: boolean }> {
   const db = createAdminClient()
-  const { data: existing } = await db
+  const assignment = roleAssignment(role)
+  const { data: existing, error: readError } = await db
     .from('team_members')
     .select('id, email, name')
     .eq('workspace_id', workspaceId)
     .eq('slack_user_id', slackUserId)
     .maybeSingle()
 
+  if (readError) throw new Error('Could not verify existing Kit role; no change made')
+
   if (existing?.id) {
-    const patch: TablesUpdate<'team_members'> = { role }
+    const patch: TablesUpdate<'team_members'> = assignment
     // Backfill a real email/name if the row is missing them and we have them.
     if (opts.email && (!existing.email || existing.email.endsWith('@slack.local'))) patch.email = opts.email
     if (opts.name && (!existing.name || existing.name.startsWith('slack:'))) patch.name = opts.name
@@ -462,7 +459,7 @@ export async function setTeamMemberRole(
   const { error } = await db.from('team_members').insert({
     workspace_id: workspaceId,
     slack_user_id: slackUserId,
-    role,
+    ...assignment,
     email: opts.email || `${slackUserId.toLowerCase()}@slack.local`,
     name: opts.name || `slack:${slackUserId}`,
   })
@@ -477,12 +474,13 @@ export async function getTeamMemberRole(
   const db = createAdminClient()
   const { data } = await db
     .from('team_members')
-    .select('role, name, email')
+    .select('role, permission_tier, name, email')
     .eq('workspace_id', workspaceId)
     .eq('slack_user_id', slackUserId)
     .maybeSingle()
   if (!data) return null
-  return { role: data.role, name: data.name || data.email || null }
+  const tier = memberAccessTier(data.role, data.permission_tier)
+  return { role: data.role === 'creative_director' ? data.role : tier, name: data.name || data.email || null }
 }
 
 /**

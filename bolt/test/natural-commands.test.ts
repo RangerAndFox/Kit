@@ -94,7 +94,7 @@ describe('private natural command confirmations', () => {
     expect(save).not.toHaveBeenCalled()
     expect(dispatch).not.toHaveBeenCalled()
   })
-  it.each(Object.keys(KIT_COMMANDS))('can offer %s but never executes from a message', async command => {
+  it.each(Object.keys(KIT_COMMANDS).filter(command => command !== 'specs'))('can offer %s but never executes from a message', async command => {
     await offerNaturalCommand(context(), { command, args: '' })
     expect(save).toHaveBeenCalledOnce()
     expect(client.chat.postMessage).toHaveBeenCalledOnce()

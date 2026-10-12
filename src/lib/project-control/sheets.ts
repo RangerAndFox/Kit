@@ -28,6 +28,7 @@ import { generateWorkback } from './workback'
 import type { CreationSubmission } from './render'
 import type { ProjectSupplement } from './views'
 import { OFFBOARD_METADATA_KEY, parseExclusion, projectAssignmentView, type AssignmentExclusion } from '../artist-access/assignments'
+import { SPEC_HEADERS, specEditSchema, specHash, specValues, type SpecEdit, type SpecSnapshot } from './specs'
 
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 const SCOPES = [
@@ -1150,6 +1151,43 @@ async function readTableRows(config: WorkbookConfig, sheetId: number | undefined
 async function readTableForProject(config: WorkbookConfig, sheetId: number | undefined, headers: readonly string[], projectNumber: string): Promise<Array<Record<string, string>>> {
   const rows = await readTableRows(config, sheetId, headers)
   return rows.filter((row) => row[headers[0]] === projectNumber)
+}
+
+/** Exact, metadata-bound project identity; no fuzzy lookup or cached specs. */
+export async function readBoundProjectSpecs(config: WorkbookConfig, projectId: string): Promise<SpecSnapshot> {
+  if (config.layout !== 'rf-production-v1' || config.specsSheetId == null) throw new Error('Project specs are not configured.')
+  const match = await searchRowMetadata(config.spreadsheetId, projectId, config.sheetId)
+  if (!match) throw new Error('Project must have a control-sheet binding.')
+  const projectCells = await readRow(config, match.rowIndex)
+  const projectNumber = normalizeCell(projectCells[0]).display.trim()
+  if (!projectNumber) throw new Error('The bound project number is missing.')
+  const header = await getGridData(config, { startRowIndex: config.headerRow - 1, endRowIndex: config.headerRow, startColumnIndex: 0, endColumnIndex: 8 }, 'formattedValue,effectiveValue', config.specsSheetId)
+  if (!SPEC_HEADERS.every((h, i) => normalizeCell(header[0]?.values?.[i]).display.trim() === h)) throw new Error('Specs column layout changed; no values were written.')
+  const rows = await getGridData(config, { startRowIndex: config.headerRow, startColumnIndex: 0, endColumnIndex: 8 }, 'formattedValue,effectiveValue', config.specsSheetId)
+  const found = rows.flatMap((row, i) => {
+    const values = SPEC_HEADERS.map((_, col) => normalizeCell(row.values?.[col]).display.trim())
+    return values[0] === projectNumber ? [{ values, rowIndex: config.headerRow + i }] : []
+  })
+  if (found.length !== 1) throw new Error('Project must have exactly one Specs row. Ask a producer to repair the sheet.')
+  return { ...found[0], projectNumber, hash: specHash(found[0].values) }
+}
+
+/** Caller owns the workbook creation lease. Re-read before writing; stale
+ * confirmation cards cannot overwrite intervening sheet edits. Only the exact
+ * Specs row B:H changes; no project identity, formulas or financial columns. */
+export async function writeBoundProjectSpecs(config: WorkbookConfig, projectId: string, expectedHash: string, input: SpecEdit, assertLease: () => Promise<void>): Promise<SpecSnapshot> {
+  const next = specEditSchema.parse(input)
+  const current = await readBoundProjectSpecs(config, projectId)
+  if (current.hash !== expectedHash) throw new Error('Specs changed since this form was opened. Reopen it to review the latest values.')
+  await assertLease()
+  await api<BatchUpdateResponse>('POST', `${SHEETS_BASE}/${config.spreadsheetId}:batchUpdate`, { requests: [{ updateCells: {
+    start: { sheetId: config.specsSheetId, rowIndex: current.rowIndex, columnIndex: 1 },
+    rows: [{ values: specValues(current.projectNumber, next).slice(1).map(value => ({ userEnteredValue: { stringValue: value } })) }],
+    fields: 'userEnteredValue',
+  } }] })
+  const verified = await readBoundProjectSpecs(config, projectId)
+  if (verified.hash !== specHash(specValues(current.projectNumber, next))) throw new Error('Specs write could not be verified. Check the sheet before retrying.')
+  return verified
 }
 
 export async function readProjectSupplement(config: WorkbookConfig, projectNumber: string): Promise<ProjectSupplement> {

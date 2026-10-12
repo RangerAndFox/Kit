@@ -9,10 +9,12 @@
  */
 
 import type { App } from '@slack/bolt'
+import { randomUUID } from 'node:crypto'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { ingestDocument } from '../../../src/lib/rag/ingest'
 import { parseNoteIntent } from './keyword'
 import { handleBrainIngestNote } from '../brain/handler'
+import { commandActor } from '../handlers/natural-commands'
 
 interface ResolvedProject {
   id: string
@@ -21,23 +23,25 @@ interface ResolvedProject {
   project_code: string | null
 }
 
-async function resolveProjectForChannel(channelId: string): Promise<ResolvedProject | null> {
+async function resolveProjectForChannel(channelId: string, workspaceId: string): Promise<ResolvedProject | null> {
   const sb = createAdminClient()
   const { data } = await sb
     .from('projects')
     .select('id, workspace_id, name, project_code')
+    .eq('workspace_id', workspaceId)
     .or(`external_links->>slack_id.eq.${channelId},external_links->>slack_channel_id.eq.${channelId},slack_channel_id.eq.${channelId}`)
     .maybeSingle()
   if (!data?.id) return null
   return data as ResolvedProject
 }
 
-async function fuzzyResolveProject(hint: string): Promise<{ matches: ResolvedProject[] }> {
+async function fuzzyResolveProject(hint: string, workspaceId: string): Promise<{ matches: ResolvedProject[] }> {
   const sb = createAdminClient()
   // Exact project_code first
   const { data: exact } = await sb
     .from('projects')
     .select('id, workspace_id, name, project_code')
+    .eq('workspace_id', workspaceId)
     .eq('project_code', hint)
     .maybeSingle()
   if (exact) return { matches: [exact as ResolvedProject] }
@@ -46,6 +50,7 @@ async function fuzzyResolveProject(hint: string): Promise<{ matches: ResolvedPro
   const { data: fuzzy } = await sb
     .from('projects')
     .select('id, workspace_id, name, project_code')
+    .eq('workspace_id', workspaceId)
     .or(`name.ilike.%${hint}%,client.ilike.%${hint}%,project_code.ilike.%${hint}%`)
     .limit(5)
   return { matches: (fuzzy as ResolvedProject[]) || [] }
@@ -55,12 +60,15 @@ export async function handleNoteMessage(opts: {
   app: App
   channelId: string
   userId: string
+  teamId?: string
   text: string
   threadTs?: string
 }): Promise<boolean> {
   const { app, channelId, userId, text } = opts
   const intent = parseNoteIntent(text)
   if (!intent) return false
+  const { user } = await commandActor(app.client, userId, opts.teamId || '')
+  if (user.tier === 'artist') throw new Error('A producer, CD or admin must confirm a project note.')
   if (!intent.body || intent.body.length < 3) {
     await app.client.chat.postMessage({
       channel: channelId,
@@ -72,7 +80,9 @@ export async function handleNoteMessage(opts: {
   let project: ResolvedProject | null = null
 
   if (intent.projectHint) {
-    const { matches } = await fuzzyResolveProject(intent.projectHint)
+    // A hint is data, not a PostgREST filter expression.
+    if (!/^[\w .&\-]+$/.test(intent.projectHint)) throw new Error('Use a project code for this note.')
+    const { matches } = await fuzzyResolveProject(intent.projectHint, user.workspaceId)
     if (matches.length === 0) {
       await app.client.chat.postMessage({
         channel: channelId,
@@ -92,7 +102,7 @@ export async function handleNoteMessage(opts: {
     }
     project = matches[0]
   } else {
-    project = await resolveProjectForChannel(channelId)
+    project = await resolveProjectForChannel(channelId, user.workspaceId)
     if (!project) {
       await app.client.chat.postMessage({
         channel: channelId,
@@ -109,7 +119,7 @@ export async function handleNoteMessage(opts: {
   const now = new Date()
   const dateStr = now.toISOString().slice(0, 16).replace('T', ' ')
   const projectLabel = project.project_code || project.name || project.id.slice(0, 8)
-  const title = `Note · ${projectLabel} · ${dateStr}`
+  const title = `Note · ${projectLabel} · ${dateStr} · ${randomUUID().slice(0, 8)}`
 
   try {
     const { documentId } = await ingestDocument({
@@ -133,7 +143,9 @@ export async function handleNoteMessage(opts: {
       channel: channelId,
       text:
         `:writing_hand: Note saved to *${project.name || project.project_code || project.id.slice(0, 8)}*. ` +
-        `It's now searchable — ask me anything about ${project.project_code || project.name || 'this project'} and I'll pull it in.`,
+        `It is searchable project context, not approved production specs. The control sheet was not changed.\n` + intent.body,
+      unfurl_links: false,
+      unfurl_media: false,
     })
 
     // Fire-and-forget brain ingest. The note has already been saved + embedded

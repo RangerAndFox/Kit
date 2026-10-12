@@ -37,8 +37,10 @@ export function parseNoteIntent(text: string): NoteIntent | null {
   }
 
   const rememberFor = cleaned.match(RE_REMEMBER_FOR)
-  if (rememberFor) {
-    return { projectHint: rememberFor[2].trim(), body: rememberFor[1].trim() }
+  // "4K / 24fps for animation specs" describes the note, not a project named
+  // "animation specs". Only explicit project/code suffixes select a target.
+  if (rememberFor && /^(?:project\s+|\d{3,4}(?:\b|[-_]))/i.test(rememberFor[2])) {
+    return { projectHint: rememberFor[2].trim().replace(/^project\s+/i, ''), body: rememberFor[1].trim() }
   }
 
   const remember = cleaned.match(RE_REMEMBER)
