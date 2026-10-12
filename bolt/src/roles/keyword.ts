@@ -28,7 +28,7 @@ export interface RoleIntent {
 }
 
 const MENTION = '<@([UW][A-Z0-9]+)(?:\\|[^>]+)?>'
-const ROLE = '(producer|artist|admin|owner|founder|freelancer)'
+const ROLE = '(producer|artist|admin|owner|founder|freelancer|cd|creative director|creative_director)'
 
 // Each pattern captures (targetSlackId, roleWord) from ONE structured phrase.
 const SET_PATTERNS: RegExp[] = [
@@ -53,6 +53,7 @@ const QUERY_RE = /\brole\b/i
 function normalize(raw: string): string | null {
   const r = raw.toLowerCase()
   if (r === 'admin' || r === 'owner') return 'founder'
+  if (['cd', 'creative director', 'creative_director'].includes(r)) return 'creative_director'
   if (['founder', 'producer', 'artist', 'freelancer'].includes(r)) return r
   return null
 }

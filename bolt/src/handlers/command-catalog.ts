@@ -5,6 +5,8 @@ import { parseNoteIntent } from '../notes/keyword'
 
 /** All live slash-command families. CI checks this against registration. */
 export const KIT_COMMANDS = {
+  specs: { tier: 'artist', description: 'Read authoritative project specs from the control sheet. Optional exact project code; otherwise uses SOURCE channel. Artists see only confirmed specs for channels they belong to. No confirmation or mutation.' },
+  setspecs: { tier: 'producer', description: 'Producer/CD/admin: edit and confirm official project specs in a private form. Args: optional exact project code | original requested change. Preserve uncertainty; remember/note requests are NOT specs approvals. Never guess exact pixels for 4K.' },
   refresh: { tier: 'producer', description: 'Refresh saved Google Sheet data into this project’s generated Slack tabs. Optional exact project number/code; without arguments uses the SOURCE channel. Queues a retry-safe refresh and DMs actual completion; does not edit source data or Notes & Feedback.' },
   dashboard: { tier: 'admin', description: 'Open Kit health/usage dashboard. No arguments.' },
   newproject: { tier: 'producer', description: 'Create a full project using the private form. No arguments; never collect budgets in chat.' },
@@ -22,13 +24,13 @@ export const KIT_COMMANDS = {
   access: { tier: 'producer', description: 'Accessibility captions/DV. Args: status for jobs, convert for instructions to convert SRT to VTT/TTML/TXT using the existing Dropbox Delivery-Queue. Do not claim a conversion ran.' },
   celebrate: { tier: 'producer', description: 'Posts celebration to TEAM CHANNEL after confirmation, or schedules it. Args: celebration text, optionally prefixed MM-DD. Only public-safe text; never include budgets, contacts or confidential info.' },
   birthday: { tier: 'producer', description: 'Set a team birthday. Args: actual Slack @mention followed by MM-DD. Ask if ambiguous. Schedules team-channel meme.' },
-  brain: { tier: 'producer', description: 'Project brain in SOURCE channel. No args seeds/refreshes per existing visibility; why <claim> retrieves provenance; visibility team|producers_only changes visibility. team may publish a channel canvas; confirm explicitly.' },
-  role: { tier: 'admin', description: 'Query/set Kit role. Args: exact Slack @mention and optional producer|artist|admin|freelancer. Never infer a mention from a name.' },
+  brain: { tier: 'producer', description: 'Private project memory in SOURCE channel. No args seeds/reads existing memory; why <claim> retrieves provenance; visibility team|producers_only changes visibility. The Brain tab is retired. Use specs for specifications and note for remember requests.' },
+  role: { tier: 'admin', description: 'Query/set Kit role. Args: exact Slack @mention and optional creative_director|producer|artist|admin|freelancer. CD has producer project rights, never admin. Never infer a mention from a name.' },
   'sync-staff': { tier: 'admin', description: 'Sync staff with Harvest, assignments and timezones. No args. Writes after confirmation.' },
   'sync-projects': { tier: 'admin', description: 'Harvest project reconciliation. No args previews. run applies; only use run if explicitly requested, otherwise preview.' },
   'backfill-time': { tier: 'admin', description: 'Backfill confirmable time logs. No args previews; run logs to Harvest only when explicitly requested.' },
   meme: { tier: 'admin', description: 'Post the weekly timesheet meme to TEAM CHANNEL after confirmation. No args. For custom celebrations use celebrate.' },
-  note: { tier: 'producer', description: 'Save project note. Args: project hint | note body, or just note body for SOURCE channel project. Keep content private.' },
+  note: { tier: 'producer', description: 'Save project note after private confirmation. Args: project hint | verbatim note body, or just note body for SOURCE channel project. Preserve seems/maybe/unconfirmed wording. Does NOT change official specs or the control sheet.' },
   help: { tier: 'artist', description: 'Show Kit commands and natural-language examples. No arguments.' },
   storyboard: { tier: 'producer', description: 'Storyboard + VO setup form; accepts resume <exact job UUID> to resume existing job. Do not invent job ID.' },
 } as const
@@ -46,7 +48,7 @@ export const OPEN_KIT_COMMAND_TOOL: ClaudeTool = {
 
 export function normalizeCommandRequest(text: string): string {
   let value = String(text || '').trim().replace(/[’]/g, "'").replace(/^[,:!—–]+\s*/, '')
-  const prefix = /^(?:(?:hey|hi|hello|kit|please)\b[\s,:!—–-]*|(?:can|could|would|will)\s+you\b[\s,:!—–-]*|(?:i|we)(?:\s+(?:want|need|would like)|'d like)\s+(?:to\s+)?|let's\s+)/i
+  const prefix = /^(?:(?:yo|hey|hi|hello|kit|please)\b[\s,:!—–-]*|(?:can|could|would|will)\s+you\b[\s,:!—–-]*|(?:i|we)(?:\s+(?:want|need|would like)|'d like)\s+(?:to\s+)?|let's\s+)/i
   while (prefix.test(value)) value = value.replace(prefix, '')
   return value.replace(/\s+please[.!?]*$/i, '').replace(/[.!?]+$/, '').trim()
 }
@@ -55,6 +57,12 @@ export function normalizeCommandRequest(text: string): string {
 export function parseFastCommand(text: string): KitCommandRequest | null {
   const value = normalizeCommandRequest(text)
   if (/^(?:don't|do not|not|never|if|when|how|tell me how)\b/i.test(value) || /^[>"`]/.test(value)) return null
+  const specRead = value.match(/^(?:what (?:are|are the|are this project's)|show(?: me)?(?: the)?|get(?: the)?)\s*(?:(?:animation|production|project|delivery)\s+)?specs(?:\s+(?:for\s+)?(?:project\s+)?(\d{3,4}[a-z]?(?:[-_][a-z0-9_-]+)?))?\??$/i)
+  if (specRead) return { command: 'specs', args: specRead[1] || '' }
+  const specsLiteral = value.match(/^(specs|setspecs)(?:\s+([\s\S]+))?$/i)
+  if (specsLiteral) return { command: specsLiteral[1].toLowerCase() as KitCommandName, args: specsLiteral[2] || '' }
+  const specSet = value.match(/^(?:set|change|edit|update|confirm)(?:\s+the)?\s+(?:(?:animation|production|project|delivery)\s+)?specs(?:\s+(?:for\s+)?(?:project\s+)?(\d{3,4}[a-z]?(?:[-_][a-z0-9_-]+)?))?(?:\s+([\s\S]+))?$/i)
+  if (specSet) return { command: 'setspecs', args: `${specSet[1] || ''} | ${specSet[2] || ''}` }
   const refresh = value.match(/^(?:\/kit\s+)?(?:refresh|sync|synchronize)(?:\s+(?:this|the))?(?:\s+project)?(?:\s+(\d{3,4}[a-z]?(?:[-_][a-z0-9_-]+)?))?(?:\s+now)?$/i)
   if (refresh) return { command: 'refresh', args: refresh[1] || '' }
   const literal = value.match(/^(?:\/kit\s+)?(dashboard|newproject|update|archive|delete|onboard|offboard|status|pilot|deliver|profiles|workers|render|access|celebrate|birthday|brain|role|sync-staff|sync-projects|backfill-time|meme|note|help|storyboard)\b(?:\s+([\s\S]*))?$/i)
@@ -97,7 +105,7 @@ export function parseFastCommand(text: string): KitCommandRequest | null {
   }
   const role = parseRoleIntent(value)
   if (role && /^(?:make|set|promote|demote|change|assign|give|role|what'?s|what is|<@)/i.test(value)) return { command: 'role', args: '<@' + role.targetSlackId + '>' + (role.role ? ' ' + (role.role === 'founder' ? 'admin' : role.role) : '') }
-  const note = parseNoteIntent(value)
+  const note = parseNoteIntent(value.replace(/^(?:make|save|add)\s+(?:a\s+)?note\s*:?\s*/i, 'note: '))
   if (note) return { command: 'note', args: note.projectHint ? note.projectHint + ' | ' + note.body : note.body }
   if (literal) return { command: literal[1].toLowerCase() as KitCommandName, args: literal[2] || '' }
   return null

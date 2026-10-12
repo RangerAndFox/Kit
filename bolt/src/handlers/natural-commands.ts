@@ -86,15 +86,24 @@ export async function offerNaturalCommand(context: NaturalCommandContext, input:
   if (!parsed.success) return 'That command was not recognized. Please clarify the operation; nothing was run.'
   const { command, args } = parsed.data
   const { app, userId, channelId, threadTs } = context
+  if (command === 'specs') {
+    const { readProjectSpecsReply, safeSpecsError } = await import('./project-specs')
+    try { return await readProjectSpecsReply(app.client, { userId, teamId: context.teamId, channelId, code: args.trim() }) }
+    catch (error) { return safeSpecsError(error) }
+  }
+  let stage = 'identity'
   try {
     const { teamId, user } = await commandActor(app.client, userId, context.teamId)
     if (!canUseCommand(user.tier, command)) return 'That command is restricted to ' + KIT_COMMANDS[command].tier + ' access. Nothing was run.'
+    stage = 'private-dm'
     const opened = await app.client.conversations.open({ users: userId })
     const dm = opened.channel?.id
     if (!opened.ok || !dm?.startsWith('D')) throw new Error('Private DM unavailable')
     const key = createHash('sha256').update([teamId, userId, channelId, context.messageTs || randomUUID()].join(':')).digest('hex')
+    stage = 'checkpoint'
     const record = await saveCommandRequest({ request_key: key, workspace_id: user.workspaceId, team_id: teamId, user_id: userId, source_channel: channelId, dm_channel: dm, thread_ts: channelId === dm ? threadTs : null, command, args })
     if (!record) return 'This request already has a private review card. No additional command was run.'
+    stage = 'card-delivery'
     const result = await app.client.chat.postMessage({
       channel: dm, ...(record.thread_ts ? { thread_ts: record.thread_ts } : {}),
       text: 'Review Kit request: ' + command,
@@ -110,7 +119,9 @@ export async function offerNaturalCommand(context: NaturalCommandContext, input:
     if (!result.ok) throw new Error('Card delivery failed')
     if (channelId === dm) return 'The review card is here in this Kit DM' + (record.thread_ts ? ' thread' : '') + '. Click Continue above; nothing has run yet.'
     return 'I sent the command review card to your private Kit DM. Review it and click Continue; nothing has run yet.'
-  } catch {
+  } catch (error) {
+    console.warn('[natural-command] review failed', { stage, command, code: error instanceof Error ? error.name : 'unknown' })
+    if (stage === 'identity') return 'Kit could not verify your workspace role. Ask an admin to check your Kit access record. Nothing was saved or changed.'
     // No raw provider error or input values enter a shared reply/model context.
     return 'I could not safely open the private command card. Nothing was run. Please try again in your DM with Kit.'
   }
@@ -129,7 +140,7 @@ export async function executeNaturalCommand(app: App, record: CommandRecord, tri
   const client = privateCommandClient(app.client, record)
   // Brain/pilot/note operate on a channel. All other form progress is private;
   // project pickers make the target explicit rather than inferring the wrong one.
-  const sourceContext = ['brain', 'pilot', 'note', 'refresh'].includes(record.command)
+  const sourceContext = ['brain', 'pilot', 'note', 'refresh', 'specs', 'setspecs'].includes(record.command)
   const command = {
     command: record.command === 'storyboard' ? '/storyboard' : '/kit',
     text: record.command === 'storyboard' ? record.args : record.command + (record.args ? ' ' + record.args : ''),

@@ -81,7 +81,7 @@ export async function handleRoleMessage(opts: {
   const role = normalizeRoleInput(intent.role || '')
   if (!role) {
     await post(
-      `I can set *producer*, *artist*, *admin*, or *freelancer*. Which one for <@${intent.targetSlackId}>?`,
+      `I can set *CD* (producer permissions), *producer*, *artist*, *admin*, or *freelancer*. Which one for <@${intent.targetSlackId}>?`,
     )
     return true
   }

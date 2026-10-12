@@ -16,6 +16,12 @@ describe('all-command natural language catalog', () => {
     expect((OPEN_KIT_COMMAND_TOOL.input_schema.properties.command as { enum: string[] }).enum.sort()).toEqual(Object.keys(KIT_COMMANDS).sort())
   })
   it.each([
+    ['what are the specs', 'specs', ''],
+    ['what are the specs?', 'specs', ''],
+    ['show me the specs for 2635', 'specs', '2635'],
+    ['set the animation specs to 4K / 24fps', 'setspecs', ' | to 4K / 24fps'],
+    ['yo Kit can you remember this project seems to be 4k and 24fps for animation specs', 'note', 'this project seems to be 4k and 24fps for animation specs'],
+    ['make a note: animation specs are 4k / 24fps', 'note', 'animation specs are 4k / 24fps'],
     ['Kit, show me the dashboard', 'dashboard', ''],
     ['Could you open the control center?', 'dashboard', ''],
     ['Kit, what can you do?', 'help', ''],

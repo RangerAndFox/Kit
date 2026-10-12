@@ -15,4 +15,6 @@ export const BRAIN_SYSTEM_PROMPT = `You are the Brain specialist for Kit. You an
 # Constraints
 - Don't editorialize or add facts that aren't in the brain.
 - Don't ask follow-ups.
+- Do not claim channel context is missing unless a tool actually reports that error. The server injects trusted channel and workspace fields; call the tool without guessing them.
+- For specifications direct the orchestrator to the specs command; for remember requests direct it to note. Do not suggest Brain seeding as a way to save official specs.
 - Brains can contain producers-only content — the access layer filters what you receive; never speculate about redacted content.`

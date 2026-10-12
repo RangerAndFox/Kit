@@ -10,6 +10,18 @@ fact.
 
 ## Railway — persistent Slack Bolt service
 
+- **Project specs (2026-10-12 implementation):** `specs` reads the exact bound
+  Project Specs row; artist reads require current channel membership and a
+  Confirmed status, and expose only allowlisted specification fields.
+  `setspecs` uses a private modal, fresh producer/CD/admin authorization,
+  single-use `kit_command_requests` claim, workbook creation lease, source-hash
+  conflict check and verified B:H write. Confirmation marks Specs Status
+  Confirmed, retains a private audit receipt, and queues the existing refresh
+  outbox. Uncertain writes require review; they are not blindly retried.
+  Notes preserve tentative wording and never write official specs.
+  Both Slack and web role checks use `permissions/tier.ts`; CD titles map to
+  producer access, not admin. Production deployment must be verified separately.
+
 - **Project memory / retired Brain tab (owner-approved 2026-10-10):** seeding,
   ingestion, provenance, approval and retrieval remain active. The old Brain
   Canvas publisher and all callers are removed; `/kit brain` is a private

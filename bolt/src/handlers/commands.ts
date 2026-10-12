@@ -35,6 +35,7 @@ import { buildProjectDeletionCardForContext } from '../project-deletion/handlers
 import { registerKitCommand } from './command-dispatch'
 import { openOffboarding } from '../offboarding/handlers'
 import { requestSlackProjectRefresh } from './project-refresh'
+import { openProjectSpecs, readProjectSpecsReply, safeSpecsError } from './project-specs'
 
 /**
  * Resolve the Slack user's Kit access context for a slash command.
@@ -65,6 +66,21 @@ export function registerCommandHandlers(app: App) {
     const args = (command.text || '').trim().split(/\s+/).slice(1).join(' ')
 
     switch (subcommand) {
+      case 'specs': {
+        await ack()
+        try { await respond({ response_type: 'ephemeral', text: await readProjectSpecsReply(client, { userId: command.user_id, teamId: command.team_id, channelId: command.channel_id, code: args }) }) }
+        catch (error) { await respond({ response_type: 'ephemeral', text: safeSpecsError(error) }) }
+        break
+      }
+      case 'setspecs': {
+        await ack()
+        const split = args.indexOf('|')
+        const code = (split >= 0 ? args.slice(0, split) : args).trim()
+        const suggestion = split >= 0 ? args.slice(split + 1).trim() : ''
+        try { await openProjectSpecs(client, { userId: command.user_id, teamId: command.team_id, channelId: command.channel_id, triggerId: command.trigger_id, code, suggestion }) }
+        catch (error) { await respond({ response_type: 'ephemeral', text: safeSpecsError(error) }) }
+        break
+      }
       case 'refresh': {
         await ack()
         try {
@@ -944,6 +960,7 @@ export function registerCommandHandlers(app: App) {
             app: { client } as any,
             channelId: command.channel_id,
             userId: command.user_id,
+            teamId: command.team_id,
             text,
           })
         } catch (err: any) {
@@ -973,6 +990,8 @@ export function registerCommandHandlers(app: App) {
             '`/kit onboard` — Onboard a freelancer to a project (Slack/Dropbox/Frame.io/Harvest)\n' +
             '`/kit offboard` — Remove an artist’s project access after private review; keep their work and other projects\n' +
             '`/kit status <name>` — Quick project lookup\n' +
+            '`/kit specs [project]` — Read approved project specs; artists must belong to the project channel\n' +
+            '`/kit setspecs [project]` — Producer/CD/admin: review and confirm specs in the control sheet\n' +
             '`/kit note [project | body]` — Save a freeform note to a project (or current channel\'s project)\n' +
             '`/storyboard` — Turn a script into a Boords storyboard\n' +
             '`/kit deliver [path]` — Submit a transcode job (or run `/kit deliver status` for queue)\n' +

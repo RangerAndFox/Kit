@@ -30,7 +30,6 @@ import { handleAdhocHoursEntry, looksLikeHoursIntent } from '../checkins/adhoc'
 import { handleOnboardKeyword, isOnboardTrigger } from '../onboarding/keyword'
 import { getPendingOnboarding } from '../onboarding/state'
 import { isNoteTrigger } from '../notes/keyword'
-import { handleNoteMessage } from '../notes/handler'
 import { handleBrainIngestMessage } from '../brain/handler'
 import { handleRoleMessage } from '../roles/handler'
 import { handleFrameioToggleMessage } from '../delivery/frameio-toggle'
@@ -615,12 +614,7 @@ export async function handleConversationalMessage(args: HandlerArgs): Promise<vo
     // ── Fast path 4: Notes capture ───────────────────────────
     if (isNoteTrigger(messageText)) {
       try {
-        const handled = await handleNoteMessage({
-          app,
-          channelId,
-          userId,
-          text: messageText,
-        })
+        const handled = await handleNaturalCommandShortcut({ app, channelId, userId, teamId, threadTs: replyThreadTs, messageTs }, messageText)
         if (handled) {
           await clearThinking(app, channelId, replyThreadTs || threadTs)
           return
