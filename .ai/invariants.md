@@ -24,7 +24,13 @@ but are not yet fully confirmed across the repo.
    *(Verified.)*
 5. **The `/health` endpoint reflects real Slack connectivity.** The Railway
    health probe depends on it; it must not regress to an always-200 stub.
-   *(Verified intent in `railway.toml` + `bolt/Dockerfile` comments.)*
+   Requires the SDK hello handshake and an active underlying WebSocket, in
+   addition to Web API authentication. Lifecycle loss is unhealthy immediately;
+   the SDK owns normal reconnects, and a continuous 120-second outage triggers
+   graceful restart. Quiet channels never count as an outage. Upload button
+   diagnostics log receipt/form stages and allowlisted error codes, never raw
+   Slack payloads or temporary interaction credentials. *(Bolt unit-tested;
+   live click-to-form verification remains a release check.)*
 
 ## Proposed target invariants
 

@@ -8,6 +8,7 @@ import { uploadApprovalConflicts, verifyApprovalSource } from './dropbox'
 import { deliverSlackOnce } from '../../../src/lib/slack/durable-delivery'
 import { decidedUploadMessage, uploadApprovalCard } from './upload-approval-card'
 import { assertCollisionOwner, collisionCard, collisionChoices, collisionModal, type CollisionChoice } from './upload-collision'
+import { uploadReviewDiagnostic } from './upload-review-diagnostics'
 
 const escape = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
 
@@ -121,18 +122,28 @@ function confirmationModal(row: UploadApproval, choice: CollisionChoice, collisi
 
 export function registerUploadApprovalHandlers(app: App): void {
   app.action(/kit_frame_upload_(review|skip)/, async ({ ack, body, action, client }) => {
-    await ack()
+    const diagnostic = { action: 'action_id' in action ? action.action_id : undefined,
+      request: 'value' in action ? action.value : undefined, actor: body.user.id }
+    uploadReviewDiagnostic('handler_received', diagnostic)
     let openedView: string | undefined
+    let stage = 'ack'
     try {
-      if (!('value' in action) || !action.value || !('trigger_id' in body)) return
+      await ack()
+      if (!('value' in action) || !action.value || !('trigger_id' in body)) {
+        stage = 'invalid_action'
+        throw new Error('This button is missing its review context. Please reopen the original request.')
+      }
       const skipping = 'action_id' in action && action.action_id === 'kit_frame_upload_skip'
       if (!skipping) {
+        stage = 'open_form'
         openedView = (await client.views.open({ trigger_id: body.trigger_id, view: {
           type: 'modal', title: { type: 'plain_text', text: 'Upload review' }, close: { type: 'plain_text', text: 'Close' },
           blocks: [{ type: 'section', text: { type: 'plain_text', text: 'Loading the request and checking your project access…' } }],
         } })).view?.id
         if (!openedView) throw new Error('Slack did not open the review form.')
+        uploadReviewDiagnostic('loading_form_opened', diagnostic)
       }
+      stage = 'authorize'
       const row = await getUploadApproval(action.value)
       await authorize(row, body.team?.id || '', body.user.id)
       if (row.state !== 'awaiting') throw new Error(decidedUploadMessage(row))
@@ -141,14 +152,23 @@ export function registerUploadApprovalHandlers(app: App): void {
         if (error) throw error
         if (!data) throw new Error(decidedUploadMessage(await getUploadApproval(row.id)))
         await refreshDecisionCard(app, row.id)
-      } else await client.views.update({ view_id: openedView!, view: reviewModal(row) })
+      } else {
+        stage = 'populate_form'
+        await client.views.update({ view_id: openedView!, view: reviewModal(row) })
+        uploadReviewDiagnostic('review_form_ready', diagnostic)
+      }
     } catch (error) {
+      uploadReviewDiagnostic(`${stage}_failed`, { ...diagnostic, error })
       const text = `Upload review: ${error instanceof Error ? error.message : 'Could not open request.'}`
-      if (openedView) await client.views.update({ view_id: openedView, view: {
+      try {
+        if (openedView) await client.views.update({ view_id: openedView, view: {
         type: 'modal', title: { type: 'plain_text', text: 'Review needed' }, close: { type: 'plain_text', text: 'Close' },
         blocks: [{ type: 'section', text: { type: 'plain_text', text } }],
-      } })
-      else await client.chat.postMessage({ channel: body.user.id, text })
+        } })
+        else await client.chat.postMessage({ channel: body.user.id, text })
+      } catch (feedbackError) {
+        uploadReviewDiagnostic('error_feedback_failed', { ...diagnostic, error: feedbackError })
+      }
     }
   })
   app.view('kit_frame_upload_submit', async ({ ack, body, view, client }) => {
