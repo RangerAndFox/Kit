@@ -8,7 +8,9 @@
 import 'dotenv/config'
 import http from 'node:http'
 import crypto from 'node:crypto'
-import { App, Assistant, LogLevel } from '@slack/bolt'
+import { App, Assistant, LogLevel, SocketModeReceiver } from '@slack/bolt'
+import { createSlackConnectionHealth } from './slack-connection-health'
+import { observeUploadInteraction } from './watchers/upload-review-diagnostics'
 import {
   registerMessageHandlers,
   handleConversationalMessage,
@@ -45,10 +47,27 @@ import { registerOffboardingHandlers } from './offboarding/handlers'
 
 // ─── Boot ──────────────────────────────────────────────────
 
+const slackAppToken = process.env.SLACK_APP_TOKEN
+if (!slackAppToken) throw new Error('SLACK_APP_TOKEN must be configured for Socket Mode')
+const socketReceiver = new SocketModeReceiver({
+  appToken: slackAppToken,
+  logLevel: LogLevel.INFO,
+})
+const socketHealth = createSlackConnectionHealth(() => socketReceiver.client.websocket?.isActive() === true)
+socketReceiver.client.on('connected', () => {
+  socketHealth.connected()
+  console.info('[slack-connection] connected')
+})
+for (const event of ['connecting', 'reconnecting', 'disconnecting', 'disconnected']) {
+  socketReceiver.client.on(event, () => {
+    socketHealth.disconnected()
+    console.info('[slack-connection]', event)
+  })
+}
+socketReceiver.client.on('interactive', observeUploadInteraction)
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
-  appToken: process.env.SLACK_APP_TOKEN,
-  socketMode: true,
+  receiver: socketReceiver,
   // DEBUG emits complete Slack messages and temporary interaction credentials.
   logLevel: LogLevel.INFO,
 })
@@ -276,11 +295,15 @@ process.on('SIGINT', () => {
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001
 
 // ─── Slack-connectivity watchdog ───────────────────────────
-// The old health story was a no-op (Docker HEALTHCHECK always exited 0 and
-// the HTTP server 200'd every path), so a wedged Socket Mode connection left
-// Kit silently deaf until a human noticed. Every 5 minutes we auth.test;
-// after 3 consecutive failures we exit(1) so Railway's restart policy brings
-// up a fresh process. /health (below) exposes the same signal to probes.
+// Web API authentication and Socket Mode are independent. The SDK owns normal
+// socket reconnects. A sustained socket outage drains/restarts the process even
+// when auth.test succeeds; no event inactivity or quiet-channel heuristic.
+setInterval(() => {
+  if (socketHealth.snapshot(shuttingDown).restartRequired) {
+    console.error('[slack-connection] unavailable for 120s; draining for restart')
+    void gracefulShutdown('socket-unavailable', 1)
+  }
+}, 10_000).unref()
 let consecutiveAuthFailures = 0
 let lastAuthOkAt = Date.now()
 
@@ -308,12 +331,16 @@ httpServer = http.createServer((req, res) => {
 
     // Health probe: 200 only while the Slack connection is verifiably alive.
     if (url.startsWith('/health')) {
-      const healthy = socketStarted && !shuttingDown && consecutiveAuthFailures < 3
+      const connection = socketHealth.snapshot(shuttingDown)
+      const healthy = socketStarted && connection.connected && !shuttingDown && consecutiveAuthFailures < 3
       res.writeHead(healthy ? 200 : 503, { 'Content-Type': 'application/json' })
       res.end(
         JSON.stringify({
           ok: healthy,
           socket_started: socketStarted,
+          socket_connected: connection.connected,
+          socket_last_connected_at: connection.lastConnectedAt === null ? null : new Date(connection.lastConnectedAt).toISOString(),
+          socket_unavailable_ms: connection.unavailableMs,
           draining: shuttingDown,
           last_auth_ok: new Date(lastAuthOkAt).toISOString(),
           consecutive_failures: consecutiveAuthFailures,
