@@ -15,15 +15,6 @@ const SERVICE_LABELS: Record<string, string> = {
   boords: 'Boords — blank storyboard project',
 }
 
-const PROJECT_TYPE_OPTIONS = [
-  'Brand Video',
-  'Motion Graphics',
-  'Social Campaign',
-  'Explainer',
-  'Broadcast',
-  'Other',
-]
-
 export function buildNewProjectModal(
   channelId: string,
   availableServices: string[] = ['slack', 'frameio', 'harvest', 'dropbox'],
@@ -78,17 +69,6 @@ export function buildNewProjectModal(
         label: { type: 'plain_text', text: 'Budget (hours)' },
         hint: { type: 'plain_text', text: 'Total project hours. Harvest budgets by hours and can\'t be changed after the project is created — enter it now if known.' },
         element: { type: 'plain_text_input', action_id: 'val', placeholder: { type: 'plain_text', text: 'e.g. 120' } },
-      },
-      {
-        type: 'input',
-        block_id: 'project_type',
-        label: { type: 'plain_text', text: 'Project Type' },
-        element: {
-          type: 'static_select',
-          action_id: 'val',
-          placeholder: { type: 'plain_text', text: 'Select type' },
-          options: PROJECT_TYPE_OPTIONS.map((t) => ({ text: { type: 'plain_text', text: t }, value: t })),
-        },
       },
       {
         type: 'input',
@@ -211,8 +191,6 @@ export function buildUpdateProjectModal(opts: {
   snapshot: UpdateProjectSnapshot
 }) {
   const s = opts.snapshot
-  const typeInitial = s.projectType && PROJECT_TYPE_OPTIONS.includes(s.projectType) ? s.projectType : undefined
-  const opt = (text: string) => ({ text: { type: 'plain_text' as const, text }, value: text })
 
   const textInput = (
     block_id: string,
@@ -302,23 +280,6 @@ export function buildUpdateProjectModal(opts: {
       textInput('client_name', 'Client', s.clientName, {}, true),
       textInput('client_contact', 'Client Contact', s.clientContact, {}, true),
       textInput('project_name', 'Project Name', s.projectName),
-      {
-        type: 'input',
-        block_id: 'project_type',
-        // Optional like every other non-identity field: a Harvest-synced project
-        // (project_type NULL) or a legacy non-canonical type has no initial_option,
-        // and a required select with nothing pre-selected would block Slack from
-        // accepting ANY edit (e.g. a deadline fix) until a type is forced.
-        optional: true,
-        label: { type: 'plain_text', text: 'Project Type' },
-        element: {
-          type: 'static_select',
-          action_id: 'val',
-          placeholder: { type: 'plain_text', text: 'Select type' },
-          ...(typeInitial ? { initial_option: opt(typeInitial) } : {}),
-          options: PROJECT_TYPE_OPTIONS.map(opt),
-        },
-      },
       userSelect('project_manager', 'Producer', s.projectManagerSlackId, true),
       userSelect('creative_director', 'Creative Director', s.creativeDirectorSlackId, true),
       dateInput('start_date', 'Start Date', s.startDate),
