@@ -17,7 +17,7 @@ import { listTranscriptFiles, driveTranscriptsFolderId } from '../integrations/d
 import type { CheckResult, Status } from './diff'
 import { runHealthProbe as probe } from './probe'
 import { deliveryQueueDetail } from './delivery-queue'
-import { mostRecentScheduledFire } from './cron-schedule'
+import { mostRecentScheduledFire, intervalElapsedMs } from './cron-schedule'
 import { getCronSpecs, RAILWAY_CRON_IDS, type CronRegistration } from './cron-specs'
 
 /**
@@ -171,7 +171,7 @@ export function checkCronFreshness(
     // Never observed: hold green through startup grace / until first fire is due.
     if (success === null && attempt === null) {
       const enrollmentGrace = enrolledMs !== null && (spec.kind === 'daily'
-        ? enrolledAfterRequired : now.getTime() - enrolledMs < spec.maxAgeMin * 60_000)
+        ? enrolledAfterRequired : intervalElapsedMs(spec, enrolledMs, now) < spec.maxAgeMin * 60_000)
       if (enrollmentGrace || (bootAt && now.getTime() - bootAt.getTime() < STARTUP_GRACE_MIN * 60_000)) {
         out.push({ key, label, ok: true, detail: 'awaiting first run (startup grace)' })
       } else if (spec.kind === 'daily' && requiredFire === null) {
@@ -185,7 +185,7 @@ export function checkCronFreshness(
     // Freshness of the last SUCCESS.
     let fresh: boolean
     if (spec.kind === 'interval') {
-      fresh = success !== null && now.getTime() - success <= spec.maxAgeMin * 60_000
+      fresh = success !== null && intervalElapsedMs(spec, success, now) <= spec.maxAgeMin * 60_000
     } else {
       fresh = enrolledAfterRequired || (success !== null && requiredFire !== null && success >= requiredFire.getTime())
     }
@@ -199,7 +199,7 @@ export function checkCronFreshness(
 
     // Stale success — is it at least still ATTEMPTING?
     const attemptFresh = spec.kind === 'interval'
-      ? attempt !== null && now.getTime() - attempt <= spec.maxAgeMin * 60_000
+      ? attempt !== null && intervalElapsedMs(spec, attempt, now) <= spec.maxAgeMin * 60_000
       : attempt !== null && fire !== null && attempt >= fire.getTime()
     const succDesc = success !== null ? `last success ${fmtAgo(now, success)}` : 'no successful run'
     const attDesc = attempt !== null ? `last attempt ${fmtAgo(now, attempt)}` : 'no attempt recorded'

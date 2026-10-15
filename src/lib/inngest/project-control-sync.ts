@@ -433,7 +433,7 @@ export const projectControlSync = inngest.createFunction(
     name: 'Project Control — Sheet→Canvas sync',
     retries: 6,
     concurrency: { limit: 1, key: "'project-control-workbook'", scope: 'env' },
-    triggers: [{ cron: '*/10 * * * *' }],
+    triggers: [{ cron: 'TZ=America/Detroit */10 * * * 1-5' }],
   },
   async ({ step }: { step: { run: <T>(id: string, fn: () => Promise<T> | T) => Promise<T> } }) => {
     return step.run('sync', async () => retryIncompleteSync(await runProjectControlSync()))

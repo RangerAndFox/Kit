@@ -456,9 +456,9 @@ describe('projectControlSync functions — cron + event share ONE core', () => {
   const cron = projectControlSync as unknown as { opts: any; fn: (...a: any[]) => Promise<unknown> }
   const onEdit = projectControlSyncOnEdit as unknown as { opts: any; fn: (...a: any[]) => Promise<unknown> }
 
-  it('cron is a 10-minute schedule', () => {
+  it('cron is a weekday 10-minute Eastern schedule', () => {
     assert.equal(cron.opts.id, 'project-control-sync')
-    assert.deepEqual(cron.opts.triggers, [{ cron: '*/10 * * * *' }])
+    assert.deepEqual(cron.opts.triggers, [{ cron: 'TZ=America/Detroit */10 * * * 1-5' }])
   })
 
   it('on-edit is triggered by the named event, debounced per target AND idempotent per request', () => {

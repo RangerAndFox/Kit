@@ -22,7 +22,7 @@ export const plaudTranscriptScan = inngest.createFunction(
     name: 'Plaud — Ingest completed recordings directly',
     retries: 2,
     concurrency: 1,
-    triggers: [{ cron: '7,22,37,52 * * * *' }],
+    triggers: [{ cron: 'TZ=America/Detroit 7,22,37,52 * * * 1-5' }],
   },
   async ({ step }) => {
     if (!plaudIngestEnabled()) {

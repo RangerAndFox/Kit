@@ -52,7 +52,7 @@ export const brainScavengerScan = inngest.createFunction(
     id: 'brain-scavenger-scan',
     name: 'Brain — daily scavenger candidate scan',
     retries: 1,
-    triggers: [{ cron: '0 7 * * *' }], // 7am UTC
+    triggers: [{ cron: 'TZ=UTC 0 7 * * 1-5' }], // 7am UTC
   },
   async ({ step, logger }) => {
     if (process.env.KIT_BRAIN_SCAVENGER_ENABLED !== 'true') {
@@ -81,7 +81,7 @@ export const brainConsolidate = inngest.createFunction(
     id: 'brain-consolidate',
     name: 'Brain — nightly consolidator',
     retries: 0,
-    triggers: [{ cron: '0 10 * * *' }], // 10am UTC
+    triggers: [{ cron: 'TZ=UTC 0 10 * * 1-5' }], // 10am UTC
   },
   async ({ step, logger }) => {
     if (process.env.KIT_BRAIN_CONSOLIDATOR_ENABLED !== 'true') {
@@ -103,7 +103,7 @@ export const brainDeadlineSweep = inngest.createFunction(
     id: 'brain-deadline-sweep',
     name: 'Brain — hourly watchlist deadline sweep',
     retries: 1,
-    triggers: [{ cron: '0 * * * *' }], // every hour on the hour
+    triggers: [{ cron: 'TZ=America/Detroit 0 * * * 1-5' }], // every hour on the hour
   },
   async ({ step, logger }) => {
     if (process.env.KIT_BRAIN_DEADLINE_SWEEP_ENABLED !== 'true') {

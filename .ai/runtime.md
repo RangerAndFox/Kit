@@ -182,3 +182,14 @@ in this session.
   `/production/.../09_Outgoing` → Frame.io mirror; Vercel/Inngest owns the
   polling `/Delivery-Queue` → render-worker workflow. Revisit only if product
   requirements intentionally merge those contracts.
+
+## Scheduled monitoring weekdays (owner-directed October 15, 2026)
+
+Scheduled scans, transcript observation, project-summary/brain maintenance,
+health reports and reminder/culture checks run Monday–Friday. Interval monitors
+use America/Detroit; existing daily UTC and local studio fire times remain in
+place with weekday restrictions. Cron freshness excludes closed weekend time
+for restricted intervals, including DST transitions. Live Slack commands,
+webhooks, render/delivery queues, upload approval/recovery, and explicit Sheet
+edit events remain available every day. Existing provider cursors and durable
+ledgers are retained for the next weekday scan; no duplicate scheduler exists.
