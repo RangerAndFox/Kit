@@ -36,7 +36,7 @@ export const driveTranscriptScan = inngest.createFunction(
     id: 'drive-transcript-scan',
     name: 'Drive — Ingest Plaud transcripts from the watched folder',
     retries: 1,
-    triggers: [{ cron: '*/15 * * * *' }],
+    triggers: [{ cron: 'TZ=America/Detroit */15 * * * 1-5' }],
   },
   async ({ step }) => {
     await step.run('heartbeat', async () => {

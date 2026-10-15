@@ -26,7 +26,7 @@ export const healthDailyDigest = inngest.createFunction(
     name: 'Health — daily digest DM',
     retries: 1,
     concurrency: { limit: 1, key: "'kit-health-reporting'", scope: 'env' },
-    triggers: [{ cron: 'TZ=America/New_York 0 9 * * *' }],
+    triggers: [{ cron: 'TZ=America/New_York 0 9 * * 1-5' }],
   },
   async ({ step, runId }) => {
     const recipient = healthRecipient()

@@ -181,12 +181,12 @@ setTimeout(() => {
     console.error('[startup] Frame.io project-link reconcile failed:', err),
   )
 }, 5_000)
-cron.schedule('23 * * * *', () => {
+cron.schedule('23 * * * 1-5', () => {
   void stampCronAttempt('frameio-project-link-reconcile')
   reconcileMissingFrameioProjectLinks()
     .then(() => stampCronSuccess('frameio-project-link-reconcile'))
     .catch((err) => console.error('[cron] Frame.io project-link reconcile failed:', err))
-})
+}, { timezone: 'America/Detroit' })
 
 // Existing projects may already contain Frame.io shares from before the
 // durable Dropbox share ledger was deployed. Fill only blank Last Share cells
@@ -456,14 +456,14 @@ httpServer.listen(PORT, () => {
 const CHECKIN_TZ = process.env.CHECKIN_TIMEZONE || 'America/Los_Angeles'
 
 cron.schedule(
-  '0 * * * *',
+  '0 * * * 1-5',
   () => {
     void stampCronAttempt('daily-hours-reminder')
     sweepDailyReminders(app)
       .then(() => stampCronSuccess('daily-hours-reminder'))
       .catch((err) => console.error('[cron] daily-hours-reminder sweep failed:', err))
   },
-  { timezone: 'UTC' },
+  { timezone: 'America/Detroit' },
 )
 
 // Slack can retain a private-channel reply without delivering the corresponding
@@ -524,7 +524,7 @@ cron.schedule(
 // stays off until the operator activates the scavenger.
 
 cron.schedule(
-  '15 * * * *',
+  '15 * * * 1-5',
   () => {
     if (process.env.KIT_BRAIN_SCAVENGER_ENABLED !== 'true') return
     const workspaceId = process.env.KIT_DEFAULT_WORKSPACE_ID
@@ -533,7 +533,7 @@ cron.schedule(
       .then((res) => console.log('[cron] brain-scavenger-dispatch:', res))
       .catch((err) => console.error('[cron] brain-scavenger-dispatch failed:', err))
   },
-  { timezone: 'UTC' },
+  { timezone: 'America/Detroit' },
 )
 
 // ─── Cron: AE render-farm completion notifier ──────────────
@@ -614,7 +614,7 @@ cron.schedule(
 // full-team channel via the shared meme engine. Requires KIT_TEAM_CHANNEL_ID.
 
 cron.schedule(
-  '0 9 * * *',
+  '0 9 * * 1-5',
   () => {
     if (!process.env.KIT_TEAM_CHANNEL_ID) return
     void stampCronAttempt('daily-celebrations')
@@ -633,7 +633,7 @@ cron.schedule(
 // Culture Center takes over legacy schedules only after its persisted cutoff.
 // This is the sole scheduled owner; the web dashboard only edits configuration.
 let cultureTickRunning = false
-cron.schedule('* * * * *', async () => {
+cron.schedule('* * * * 1-5', async () => {
   if (cultureTickRunning) return
   cultureTickRunning = true
   try {
@@ -641,7 +641,7 @@ cron.schedule('* * * * *', async () => {
     await runCultureTick(app)
   } catch { console.warn('[culture] tick could not complete; inspect Culture Center') }
   finally { cultureTickRunning = false }
-}, { timezone: 'UTC' })
+}, { timezone: CHECKIN_TZ })
 
 ;(async () => {
   // Restore mid-conversation context persisted before the last restart so a

@@ -16,6 +16,9 @@ export interface IntervalSpec {
   label: string
   /** Success older than this many minutes is stale. */
   maxAgeMin: number
+  /** Optional operating days/timezone; closed periods do not age an interval. */
+  days?: number[]
+  tz?: string
   /** When present and false for the current env, the cron is not checked. */
   enabled?: (env: Record<string, string | undefined>) => boolean
 }
@@ -103,4 +106,24 @@ export function mostRecentScheduledFire(spec: DailySpec, now: Date): Date | null
     if (fire.getTime() <= now.getTime()) return fire
   }
   return null
+}
+
+/** Age only while a weekday-restricted interval was scheduled to operate. */
+export function intervalElapsedMs(spec: IntervalSpec, since: number, now: Date): number {
+  const elapsed = Math.max(0, now.getTime() - since)
+  if (!spec.days || elapsed > 14 * 86_400_000) return elapsed
+  const tz = spec.tz ?? 'UTC'
+  const first = zonedParts(new Date(since), tz)
+  const last = zonedParts(now, tz)
+  const end = Date.UTC(last.year, last.month - 1, last.day)
+  let active = 0
+  for (let cal = Date.UTC(first.year, first.month - 1, first.day); cal <= end; cal += 86_400_000) {
+    const d = new Date(cal)
+    if (!spec.days.includes(d.getUTCDay())) continue
+    const next = new Date(cal + 86_400_000)
+    const startMs = zonedTimeToUtc(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), 0, 0, tz).getTime()
+    const endMs = zonedTimeToUtc(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), 0, 0, tz).getTime()
+    active += Math.max(0, Math.min(now.getTime(), endMs) - Math.max(since, startMs))
+  }
+  return active
 }

@@ -19,7 +19,7 @@ export const studioKnowledgeAutoSummarize = inngest.createFunction(
     id: 'studio-knowledge-auto-summarize',
     name: 'Studio Knowledge — nightly project re-summarization',
     retries: 0,
-    triggers: [{ cron: '0 9 * * *' }],
+    triggers: [{ cron: 'TZ=UTC 0 9 * * 1-5' }],
   },
   async ({ step, logger }) => {
     if (!ingestEnabled()) {

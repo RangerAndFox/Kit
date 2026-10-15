@@ -69,7 +69,7 @@ export const preMeetingScan = inngest.createFunction(
     id: 'pre-meeting-scan',
     name: 'Pre-meeting — Scan upcoming events',
     retries: 1,
-    triggers: [{ cron: '*/15 * * * *' }],
+    triggers: [{ cron: 'TZ=America/Detroit */15 * * * 1-5' }],
   },
   async ({ step, logger }) => {
     await step.run('heartbeat', async () => {

@@ -6,7 +6,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { tzOffsetMs, zonedTimeToUtc, mostRecentScheduledFire, type DailySpec } from './cron-schedule'
+import { tzOffsetMs, zonedTimeToUtc, mostRecentScheduledFire, intervalElapsedMs, type DailySpec } from './cron-schedule'
 
 const LA = 'America/Los_Angeles'
 const H = 3_600_000
@@ -58,5 +58,20 @@ describe('mostRecentScheduledFire', () => {
     // 2026-03-09 is the Monday after DST start (2026-03-08).
     const fire = mostRecentScheduledFire(daily9([1, 2, 3, 4, 5]), new Date('2026-03-09T20:00:00Z'))!
     assert.equal(fire.toISOString(), '2026-03-09T16:00:00.000Z')
+  })
+})
+
+describe('weekday interval age', () => {
+  const spec = { kind: 'interval' as const, label: 'poll', maxAgeMin: 45, days: [1,2,3,4,5], tz: 'America/Detroit' }
+  it('counts Friday and Monday active minutes without charging the closed weekend', () => {
+    assert.equal(intervalElapsedMs(spec, Date.parse('2026-10-17T03:50:00Z'), new Date('2026-10-19T04:05:00Z')), 15 * 60_000)
+  })
+  it('uses local boundaries across both DST changes', () => {
+    assert.equal(intervalElapsedMs(spec, Date.parse('2026-03-07T04:50:00Z'), new Date('2026-03-09T04:05:00Z')), 15 * 60_000)
+    assert.equal(intervalElapsedMs(spec, Date.parse('2026-10-31T03:50:00Z'), new Date('2026-11-02T05:05:00Z')), 15 * 60_000)
+  })
+  it('does not forgive missing weekday work or stop measuring live queue age', () => {
+    assert.equal(intervalElapsedMs(spec, Date.parse('2026-10-16T22:00:00Z'), new Date('2026-10-19T06:00:00Z')), 8 * H)
+    assert.equal(intervalElapsedMs({ ...spec, days: undefined }, Date.parse('2026-10-17T03:50:00Z'), new Date('2026-10-19T04:05:00Z')), (48 * 60 + 15) * 60_000)
   })
 })

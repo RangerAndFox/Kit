@@ -197,3 +197,20 @@ describe('checkCronFreshness — schedule-aware weekday crons', () => {
     assert.equal(overdue.detail, 'no heartbeat recorded')
   })
 })
+
+it('keeps Friday monitored success fresh on Monday but still flags a stale live queue', () => {
+  const now = new Date('2026-10-19T04:05:00Z')
+  const success = '2026-10-17T03:50:00Z'
+  const out = checkCronFreshness({ 'pre-meeting-scan': success, 'dropbox-inbox-sweep': success }, now, {})
+  assert.equal(find(out, 'cron:pre-meeting-scan').ok, true)
+  assert.equal(find(out, 'cron:dropbox-inbox-sweep').ok, false)
+  const later = checkCronFreshness({ 'pre-meeting-scan': success }, new Date('2026-10-19T05:00:00Z'), {})
+  assert.equal(find(later, 'cron:pre-meeting-scan').ok, false)
+})
+it('preserves the owning worker weekday interval policy through schedule enrollment', () => {
+  const spec = getCronSpecs()['daily-hours-reminder']
+  const row = { owner_runtime: 'railway', enabled: true, enrolled_at: '2026-10-16T00:00:00Z', schedule: spec }
+  const registration = parseRegistration('daily-hours-reminder', row)!
+  assert.deepEqual(registration.spec, spec)
+  assert.throws(() => parseRegistration('daily-hours-reminder', { ...row, schedule: { ...spec, tz: 'invalid-zone' } }))
+})

@@ -21,7 +21,7 @@ export const healthWatchdog = inngest.createFunction(
     name: 'Health — watchdog + alerts',
     retries: 1,
     concurrency: { limit: 1, key: "'kit-health-reporting'", scope: 'env' },
-    triggers: [{ cron: '*/10 * * * *' }],
+    triggers: [{ cron: 'TZ=America/Detroit */10 * * * 1-5' }],
   },
   async ({ step, runId }) => {
     const snapshot = await step.run('health-snapshot-v2', async () => {
