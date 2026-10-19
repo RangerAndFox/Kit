@@ -83,6 +83,16 @@ describe('archive publisher Slack surface', () => {
     assert.deepEqual(parsed.destinations, ['dropbox'])
   })
 
+  it('provides a source correction form action for a failed initial validation', () => {
+    const job = { id: 'j1', status: 'failed', project_snapshot: snapshot,
+      results: {}, progress: {}, error: 'Choose an MP4, MOV, or M4V file from Dropbox.' } as ArchiveJob
+    const card = buildArchiveProgressCard(job)
+    const buttons = card.blocks.flatMap((block: { elements?: { action_id?: string }[] }) => block.elements || [])
+    assert.ok(buttons.some((button: { action_id?: string }) => button.action_id === 'kit_archive_change_video'))
+    const laterFailure = buildArchiveProgressCard({ ...job, results: { dropbox: { status: 'prepared' } } })
+    assert.ok(!laterFailure.blocks.flatMap((block: { elements?: { action_id?: string }[] }) => block.elements || []).some((button: { action_id?: string }) => button.action_id === 'kit_archive_change_video'))
+  })
+
   it('never offers a public publish button', () => {
     const job = {
       id: 'j1', workspace_id: 'w1', project_id: 'p1', requested_by_slack_user_id: 'U1', status: 'awaiting_confirmation',

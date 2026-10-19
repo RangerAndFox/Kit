@@ -1,4 +1,4 @@
-import type { App } from '@slack/bolt'
+import type { App, BlockAction, ButtonAction } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
 import { resolveUserContext } from '../../../src/lib/inngest/access-control'
 import { projectNumberFromCode } from '../../../src/lib/studio-knowledge/project-sync'
@@ -6,8 +6,8 @@ import { inngest } from '../../../src/lib/inngest/client'
 import { configuredArchiveDestinations } from '../../../src/lib/archive/adapters'
 import { archiveSettingsFromSlack, buildArchiveConfirmationCard, buildArchiveLoadingErrorModal, buildArchiveLoadingModal, buildArchiveModal, buildArchiveProgressCard, buildArchiveProjectCard } from '../../../src/lib/archive/blocks'
 import { generateArchiveCopyDraft } from '../../../src/lib/archive/draft'
-import { findDeliveryVideos } from '../../../src/lib/archive/dropbox'
-import { claimArchiveJob, createArchiveJob, getArchiveJob, requeueArchiveJob, saveArchiveSlackMessage, updateArchiveJob } from '../../../src/lib/archive/store'
+import { findDeliveryVideos, validateDropboxVideo } from '../../../src/lib/archive/dropbox'
+import { claimArchiveJob, createArchiveJob, getArchiveJob, getArchiveStep, requeueArchiveJob, saveArchiveSlackMessage, updateArchiveJob } from '../../../src/lib/archive/store'
 import { runArchiveJob } from '../../../src/lib/archive/workflow'
 import type { ArchiveProjectSnapshot } from '../../../src/lib/archive/types'
 import { acknowledgeBehanceSlack, listUnsyncedBehanceDrafts, queueBehanceDraft, syncBehanceResultToArchive } from '../../../src/lib/archive/behance-store'
@@ -16,12 +16,9 @@ import { deliverBehanceUpdate } from '../../../src/lib/archive/behance-sync'
 const db = () => createAdminClient() as any
 
 async function resolveWorkspaceId(teamId: string): Promise<string> {
-  if (teamId) {
-    const { data } = await db().from('workspaces').select('id').eq('slack_team_id', teamId).limit(1).maybeSingle()
-    if (data?.id) return data.id
-  }
-  if (process.env.KIT_DEFAULT_WORKSPACE_ID) return process.env.KIT_DEFAULT_WORKSPACE_ID
-  const { data } = await db().from('workspaces').select('id').limit(1).maybeSingle()
+  if (!teamId) return ''
+  const { data, error } = await db().from('workspaces').select('id').eq('slack_team_id', teamId).maybeSingle()
+  if (error) throw new Error('Could not verify the archive workspace.')
   return data?.id || ''
 }
 
@@ -135,25 +132,64 @@ export function registerArchiveHandlers(app: App): void {
   app.action('kit_pick_archive_project', async (args: any) => open({ ...args, projectId: args.action.selected_option?.value }))
   app.action('kit_archive_cancel_picker', async ({ ack }: any) => ack())
 
+  app.action<BlockAction<ButtonAction>>('kit_archive_change_video', async ({ ack, body, action, client }) => {
+    await ack()
+    // Open immediately: authorization/provider reads must not expire the trigger.
+    let viewId: string | undefined
+    try {
+      const opened = await client.views.open({ trigger_id: body.trigger_id,
+        view: buildArchiveLoadingModal('', '') })
+      viewId = opened?.view?.id
+      if (!viewId) throw new Error('Slack did not open the archive source form.')
+      if (!action.value) throw new Error('The archive request is missing. Reopen the original archive card.')
+      const job = await getArchiveJob(action.value)
+      if (!job || job.workspace_id !== await resolveWorkspaceId(body.team?.id || '') ||
+        !await archiveAccess(client, job.workspace_id, body.user.id)) throw new Error('Archive publishing is restricted to this workspace’s producers and admins.')
+      const step = await getArchiveStep(job.id, 'validate_source')
+      if (job.status !== 'failed' || step?.status !== 'failed' || Object.keys(job.results || {}).length) {
+        throw new Error('This source can only be changed after video validation fails, before any archive outputs are created.')
+      }
+      await client.views.update({ view_id: viewId, view: buildArchiveModal({
+        snapshot: job.project_snapshot, workspaceId: job.workspace_id, channelId: job.slack_channel_id || '',
+        sourceVideoPath: job.source_video_path, destinations: job.destinations,
+        draft: { ...job.settings, rightsConfirmed: false },
+        draftNotice: 'Edit the Dropbox source video below. Your archive copy is preserved. Review again before starting; the failed job remains in the history.',
+      }) })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not reopen the archive source.'
+      if (viewId) await client.views.update({ view_id: viewId, view: buildArchiveLoadingErrorModal('', '', message) })
+      else await client.chat.postMessage({ channel: body.user.id, text: `Could not open Change video: ${message}` })
+    }
+  })
+
   app.view('kit_archive_project_submit', async ({ ack, body, view, client }: any) => {
     const meta = JSON.parse(view.private_metadata || '{}')
     const parsed = archiveSettingsFromSlack(view.state?.values || {})
     const errors: Record<string, string> = {}
-    if (!parsed.sourceVideoPath) errors.source_video = 'Choose the approved Dropbox source video.'
+    if (!parsed.sourceVideoPath) errors.source_video = 'Paste a Dropbox link or full path to the approved video.'
     if (!parsed.settings.rightsConfirmed) errors.rights = 'You must confirm approval and portfolio rights.'
     if (!parsed.destinations.length) errors.destinations = 'Choose at least one destination.'
     if (Object.keys(errors).length) { await ack({ response_action: 'errors', errors }); return }
 
-    await ack()
+    await ack({ response_action: 'update', view: {
+      type: 'modal', callback_id: 'kit_archive_checking', private_metadata: view.private_metadata,
+      title: { type: 'plain_text', text: 'Checking video' }, close: { type: 'plain_text', text: 'Close' },
+      blocks: [{ type: 'section', text: { type: 'plain_text', text: 'Checking the video in Dropbox. Your archive copy and selections are saved in this form.' } }],
+    } })
+    let snapshot: ArchiveProjectSnapshot | undefined
     try {
+      if (meta.workspaceId !== await resolveWorkspaceId(body.team?.id || '')) throw new Error('This archive form belongs to another workspace.')
       const access = await archiveAccess(client, meta.workspaceId, body.user.id)
       if (!access) throw new Error('Archive publishing is restricted to producers and admins.')
-      const { snapshot } = await loadArchiveSnapshot(meta.projectId)
+      const loaded = await loadArchiveSnapshot(meta.projectId)
+      if (loaded.workspaceId !== meta.workspaceId) throw new Error('The project does not belong to this archive workspace.')
+      snapshot = loaded.snapshot
+      const source = await validateDropboxVideo(parsed.sourceVideoPath)
       const job = await createArchiveJob({
         workspace_id: meta.workspaceId,
         project_id: meta.projectId,
         requested_by_slack_user_id: body.user.id,
-        source_video_path: parsed.sourceVideoPath,
+        source_video_path: source.path,
         project_snapshot: snapshot,
         settings: parsed.settings,
         destinations: parsed.destinations,
@@ -162,8 +198,20 @@ export function registerArchiveHandlers(app: App): void {
         idempotency_key: `slack-view:${view.id}`,
       } as any)
       await postPrivateConfirmation(client, body.user.id, job)
+      await client.views.update({ view_id: view.id, view: {
+        type: 'modal', title: { type: 'plain_text', text: 'Archive review ready' }, close: { type: 'plain_text', text: 'Close' },
+        blocks: [{ type: 'section', text: { type: 'plain_text', text: 'Video verified. Your archive review is in your private Kit DM. Review it and select Start archive when ready.' } }],
+      } })
     } catch (error: any) {
-      await client.chat.postMessage({ channel: body.user.id, text: `:x: Kit couldn't prepare the archive review: ${error.message}` })
+      if (snapshot) {
+        await client.views.update({ view_id: view.id, view: buildArchiveModal({
+          snapshot, workspaceId: meta.workspaceId, channelId: meta.channelId,
+          sourceVideoPath: parsed.sourceVideoPath, destinations: parsed.destinations,
+          draft: parsed.settings, draftNotice: `:warning: ${error.message} Edit the source video field below and select Review Archive again.`,
+        }) })
+      } else {
+        await client.views.update({ view_id: view.id, view: buildArchiveLoadingErrorModal(meta.projectId, meta.channelId, error.message) })
+      }
     }
   })
 

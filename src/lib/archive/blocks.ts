@@ -70,10 +70,10 @@ export function buildArchiveModal(opts: {
       { type: 'section', text: { type: 'mrkdwn', text: `*${plain(s.projectNumber)} — ${plain(s.client)} — ${plain(s.projectName)}*\nKit prefilled the writing from approved project context. Review every field. External outputs remain drafts or unlisted.` } },
       ...(opts.draftNotice ? [{ type: 'context', elements: [{ type: 'mrkdwn', text: opts.draftNotice }] }] : []),
       ...(detected ? [{ type: 'context', elements: [{ type: 'mrkdwn', text: `*Detected delivery videos:*\n${detected}` }] }] : []),
-      { type: 'input', block_id: 'source_video', label: { type: 'plain_text', text: 'Dropbox source video' }, hint: { type: 'plain_text', text: 'Use the full Dropbox path to the approved final video.' }, element: { type: 'plain_text_input', action_id: 'val', ...(opts.sourceVideoPath ? { initial_value: opts.sourceVideoPath } : {}), placeholder: { type: 'plain_text', text: '/production/2026/…/09_Outgoing/02_Delivery/final.mp4' } } },
+      { type: 'input', block_id: 'source_video', label: { type: 'plain_text', text: 'Dropbox source video' }, hint: { type: 'plain_text', text: 'Paste a Dropbox file link or full Dropbox path here. Kit checks the actual filename in Dropbox.' }, element: { type: 'plain_text_input', action_id: 'val', ...(opts.sourceVideoPath ? { initial_value: opts.sourceVideoPath } : {}), placeholder: { type: 'plain_text', text: 'Dropbox file link or /production/2026/…/final.mp4' } } },
       { type: 'input', block_id: 'title', label: { type: 'plain_text', text: 'Portfolio title' }, element: { type: 'plain_text_input', action_id: 'val', initial_value: String(draft.title || `${s.client} | ${s.projectName}`).slice(0, 3000) } },
       { type: 'input', block_id: 'subtitle', optional: true, label: { type: 'plain_text', text: 'Subtitle' }, element: { type: 'plain_text_input', action_id: 'val', ...initial(draft.subtitle) } },
-      { type: 'input', block_id: 'year', label: { type: 'plain_text', text: 'Year' }, element: { type: 'plain_text_input', action_id: 'val', initial_value: `20${s.projectNumber.slice(0, 2)}` } },
+      { type: 'input', block_id: 'year', label: { type: 'plain_text', text: 'Year' }, element: { type: 'plain_text_input', action_id: 'val', initial_value: draft.year || `20${s.projectNumber.slice(0, 2)}` } },
       { type: 'input', block_id: 'services', optional: true, label: { type: 'plain_text', text: 'Services' }, hint: { type: 'plain_text', text: 'Comma-separated, for example: Design, Animation, Editorial' }, element: { type: 'plain_text_input', action_id: 'val', ...initial(Array.isArray(draft.services) ? draft.services.join(', ') : '') } },
       { type: 'input', block_id: 'description_1', optional: true, label: { type: 'plain_text', text: 'Description 1 — hero intro' }, element: { type: 'plain_text_input', action_id: 'val', multiline: true, max_length: 3000, ...initial(draft.description1) } },
       { type: 'input', block_id: 'description_2', optional: true, label: { type: 'plain_text', text: 'Description 2 — project story' }, element: { type: 'plain_text_input', action_id: 'val', multiline: true, max_length: 3000, ...initial(draft.description2) } },
@@ -81,10 +81,10 @@ export function buildArchiveModal(opts: {
       { type: 'input', block_id: 'credits', optional: true, label: { type: 'plain_text', text: 'Credits' }, hint: { type: 'plain_text', text: 'Verified project team only. Review roles and publication permission.' }, element: { type: 'plain_text_input', action_id: 'val', multiline: true, max_length: 3000, ...initial(draft.credits) } },
       { type: 'input', block_id: 'social_copy', optional: true, label: { type: 'plain_text', text: 'Social copy' }, element: { type: 'plain_text_input', action_id: 'val', multiline: true, max_length: 3000, ...initial(draft.socialCopy) } },
       { type: 'input', block_id: 'excerpt', optional: true, label: { type: 'plain_text', text: 'Website excerpt' }, element: { type: 'plain_text_input', action_id: 'val', multiline: true, max_length: 1000, ...initial(draft.excerpt) } },
-      { type: 'input', block_id: 'background_color', optional: true, label: { type: 'plain_text', text: 'Background color' }, element: { type: 'plain_text_input', action_id: 'val', initial_value: '#000000' } },
-      { type: 'input', block_id: 'process', optional: true, label: { type: 'plain_text', text: 'Process section' }, element: { type: 'checkboxes', action_id: 'val', options: [{ text: { type: 'plain_text', text: 'Include approved process imagery when available' }, value: 'include' }] } },
+      { type: 'input', block_id: 'background_color', optional: true, label: { type: 'plain_text', text: 'Background color' }, element: { type: 'plain_text_input', action_id: 'val', initial_value: draft.backgroundColor || '#000000' } },
+      { type: 'input', block_id: 'process', optional: true, label: { type: 'plain_text', text: 'Process section' }, element: { type: 'checkboxes', action_id: 'val', options: [{ text: { type: 'plain_text', text: 'Include approved process imagery when available' }, value: 'include' }], ...(draft.includeProcess ? { initial_options: [{ text: { type: 'plain_text', text: 'Include approved process imagery when available' }, value: 'include' }] } : {}) } },
       { type: 'input', block_id: 'destinations', label: { type: 'plain_text', text: 'Prepare destinations' }, element: { type: 'checkboxes', action_id: 'val', options: destinationOptions, initial_options: destinationOptions } },
-      { type: 'input', block_id: 'rights', label: { type: 'plain_text', text: 'Approval and rights' }, element: { type: 'checkboxes', action_id: 'val', options: [{ text: { type: 'plain_text', text: 'I confirm this media and copy are approved for portfolio preparation' }, value: 'confirmed' }] } },
+      { type: 'input', block_id: 'rights', label: { type: 'plain_text', text: 'Approval and rights' }, element: { type: 'checkboxes', action_id: 'val', options: [{ text: { type: 'plain_text', text: 'I confirm this media and copy are approved for portfolio preparation' }, value: 'confirmed' }], ...(draft.rightsConfirmed ? { initial_options: [{ text: { type: 'plain_text', text: 'I confirm this media and copy are approved for portfolio preparation' }, value: 'confirmed' }] } : {}) } },
     ],
   }
 }
@@ -152,8 +152,12 @@ export function buildArchiveProgressCard(job: ArchiveJob): any {
       ...(value.proofUrl ? [`  ↳ <${value.proofUrl}|Draft proof screenshot>`] : []),
     ]
   })
+  const sourceFailed = job.status === 'failed' && !Object.keys(job.results || {}).length
   const retry = ['failed', 'partial'].includes(job.status) ? [{
-    type: 'actions', elements: [{ type: 'button', style: 'primary', text: { type: 'plain_text', text: 'Retry failed steps' }, action_id: 'kit_archive_retry', value: job.id }],
+    type: 'actions', elements: [
+      ...(sourceFailed ? [{ type: 'button', text: { type: 'plain_text', text: 'Change video' }, action_id: 'kit_archive_change_video', value: job.id }] : []),
+      { type: 'button', style: 'primary', text: { type: 'plain_text', text: 'Retry failed steps' }, action_id: 'kit_archive_retry', value: job.id },
+    ],
   }] : []
   const behance = job.results?.behance
   const behanceActions = behance?.status === 'ready' ? [{
@@ -179,6 +183,7 @@ export function buildArchiveProgressCard(job: ArchiveJob): any {
       ...(resultLines.length ? [{ type: 'section', text: { type: 'mrkdwn', text: `*Results*\n${resultLines.join('\n')}` } }] : []),
       ...(job.error ? [{ type: 'section', text: { type: 'mrkdwn', text: `:warning: ${job.error}` } }] : []),
       ...retry,
+      ...(sourceFailed ? [{ type: 'context', elements: [{ type: 'plain_text', text: 'Use Change video to edit the source in the archive form. Pasting a link into chat does not update this job.' }] }] : []),
       ...behanceActions,
       { type: 'context', elements: [{ type: 'mrkdwn', text: 'Kit only prepares drafts and unlisted assets. Review each destination before publishing.' }] },
     ],
