@@ -152,7 +152,11 @@ export function buildArchiveProgressCard(job: ArchiveJob): any {
       ...(value.proofUrl ? [`  ↳ <${value.proofUrl}|Draft proof screenshot>`] : []),
     ]
   })
-  const sourceFailed = job.status === 'failed' && !Object.keys(job.results || {}).length
+  const failedStep = (job.progress as { failed_step?: string })?.failed_step
+  // Legacy jobs did not record the failed step. Only the exact historical
+  // source-validation error is safe to recognize without that evidence.
+  const sourceFailed = job.status === 'failed' && !Object.keys(job.results || {}).length &&
+    (failedStep === 'validate_source' || (!failedStep && job.error === 'Choose an MP4, MOV, or M4V file from Dropbox.'))
   const retry = ['failed', 'partial'].includes(job.status) ? [{
     type: 'actions', elements: [
       ...(sourceFailed ? [{ type: 'button', text: { type: 'plain_text', text: 'Change video' }, action_id: 'kit_archive_change_video', value: job.id }] : []),

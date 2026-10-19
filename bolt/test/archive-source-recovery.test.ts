@@ -92,4 +92,27 @@ describe('archive source correction', () => {
     expect(client.views.update.mock.calls[0][0].view.callback_id).toBe('kit_archive_loading_error')
     expect(io.create).not.toHaveBeenCalled()
   })
+  it('does not reopen editable inputs after creating a job when confirmation delivery fails', async () => {
+    io.validate.mockResolvedValue({ path: '/production/final.mp4' })
+    io.create.mockResolvedValue({ id: 'saved-job' })
+    client.conversations.open.mockRejectedValue(new Error('Slack unavailable'))
+    await views.kit_archive_project_submit(submission())
+    const result = client.views.update.mock.calls[0][0].view
+    expect(result.callback_id).toBe('kit_archive_loading_error')
+    expect(JSON.stringify(result)).toContain('saved-job')
+    expect(JSON.stringify(result)).not.toContain('plain_text_input')
+  })
+  it('falls back to a private message when a source error cannot update the modal', async () => {
+    io.validate.mockRejectedValue(new Error('Choose a video file.'))
+    client.views.update.mockRejectedValue(new Error('view_not_found'))
+    await views.kit_archive_project_submit(submission())
+    expect(client.chat.postMessage).toHaveBeenCalledWith(expect.objectContaining({ channel: 'U1', text: expect.stringContaining('no job was created') }))
+  })
+  it('falls back to a private message when Change video cannot show its error', async () => {
+    io.get.mockResolvedValue(null)
+    client.views.update.mockRejectedValue(new Error('view_not_found'))
+    await actions.kit_archive_change_video({ ack: vi.fn(), client, action: { value: 'missing' },
+      body: { trigger_id: 'trigger', team: { id: 'T1' }, user: { id: 'U1' } } })
+    expect(client.chat.postMessage).toHaveBeenCalledWith(expect.objectContaining({ channel: 'U1', text: expect.stringContaining('Could not open Change video') }))
+  })
 })

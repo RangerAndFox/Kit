@@ -91,6 +91,10 @@ describe('archive publisher Slack surface', () => {
     assert.ok(buttons.some((button: { action_id?: string }) => button.action_id === 'kit_archive_change_video'))
     const laterFailure = buildArchiveProgressCard({ ...job, results: { dropbox: { status: 'prepared' } } })
     assert.ok(!laterFailure.blocks.flatMap((block: { elements?: { action_id?: string }[] }) => block.elements || []).some((button: { action_id?: string }) => button.action_id === 'kit_archive_change_video'))
+    const prepareFailure = buildArchiveProgressCard({ ...job, progress: { failed_step: 'prepare_dropbox' }, error: 'Dropbox copy failed' })
+    assert.ok(!JSON.stringify(prepareFailure).includes('kit_archive_change_video'))
+    const sourceFailure = buildArchiveProgressCard({ ...job, progress: { failed_step: 'validate_source' }, error: 'Invalid source file' })
+    assert.ok(JSON.stringify(sourceFailure).includes('kit_archive_change_video'))
   })
 
   it('never offers a public publish button', () => {

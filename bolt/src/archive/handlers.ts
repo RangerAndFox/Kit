@@ -118,6 +118,15 @@ async function postPrivateConfirmation(client: any, userId: string, job: any): P
   await saveArchiveSlackMessage(job.id, dm.channel.id, posted.ts)
 }
 
+async function updateArchiveModalOrNotify(client: Pick<import('@slack/web-api').WebClient, 'views' | 'chat'>,
+  userId: string, viewId: string, view: import('@slack/types').ModalView, message: string): Promise<void> {
+  try {
+    await client.views.update({ view_id: viewId, view })
+  } catch {
+    await client.chat.postMessage({ channel: userId, text: message })
+  }
+}
+
 export function registerArchiveHandlers(app: App): void {
   const open = async ({ ack, body, client, projectId }: any) => {
     await ack()
@@ -157,7 +166,8 @@ export function registerArchiveHandlers(app: App): void {
       }) })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not reopen the archive source.'
-      if (viewId) await client.views.update({ view_id: viewId, view: buildArchiveLoadingErrorModal('', '', message) })
+      if (viewId) await updateArchiveModalOrNotify(client, body.user.id, viewId,
+        buildArchiveLoadingErrorModal('', '', message), `Could not open Change video: ${message}`)
       else await client.chat.postMessage({ channel: body.user.id, text: `Could not open Change video: ${message}` })
     }
   })
@@ -177,6 +187,10 @@ export function registerArchiveHandlers(app: App): void {
       blocks: [{ type: 'section', text: { type: 'plain_text', text: 'Checking the video in Dropbox. Your archive copy and selections are saved in this form.' } }],
     } })
     let snapshot: ArchiveProjectSnapshot | undefined
+    // An insert can succeed even when its response/Slack delivery fails. Never
+    // reopen this view for edited inputs once its idempotency key may exist.
+    let creationAttempted = false
+    let savedJobId: string | undefined
     try {
       if (meta.workspaceId !== await resolveWorkspaceId(body.team?.id || '')) throw new Error('This archive form belongs to another workspace.')
       const access = await archiveAccess(client, meta.workspaceId, body.user.id)
@@ -185,6 +199,7 @@ export function registerArchiveHandlers(app: App): void {
       if (loaded.workspaceId !== meta.workspaceId) throw new Error('The project does not belong to this archive workspace.')
       snapshot = loaded.snapshot
       const source = await validateDropboxVideo(parsed.sourceVideoPath)
+      creationAttempted = true
       const job = await createArchiveJob({
         workspace_id: meta.workspaceId,
         project_id: meta.projectId,
@@ -197,20 +212,25 @@ export function registerArchiveHandlers(app: App): void {
         slack_message_ts: null,
         idempotency_key: `slack-view:${view.id}`,
       } as any)
+      savedJobId = job.id
       await postPrivateConfirmation(client, body.user.id, job)
       await client.views.update({ view_id: view.id, view: {
         type: 'modal', title: { type: 'plain_text', text: 'Archive review ready' }, close: { type: 'plain_text', text: 'Close' },
         blocks: [{ type: 'section', text: { type: 'plain_text', text: 'Video verified. Your archive review is in your private Kit DM. Review it and select Start archive when ready.' } }],
       } })
     } catch (error: any) {
-      if (snapshot) {
-        await client.views.update({ view_id: view.id, view: buildArchiveModal({
+      if (snapshot && !creationAttempted) {
+        await updateArchiveModalOrNotify(client, body.user.id, view.id, buildArchiveModal({
           snapshot, workspaceId: meta.workspaceId, channelId: meta.channelId,
           sourceVideoPath: parsed.sourceVideoPath, destinations: parsed.destinations,
           draft: parsed.settings, draftNotice: `:warning: ${error.message} Edit the source video field below and select Review Archive again.`,
-        }) })
+        }), `Archive video validation failed: ${error.message}. Reopen the archive form to correct the source; no job was created.`)
       } else {
-        await client.views.update({ view_id: view.id, view: buildArchiveLoadingErrorModal(meta.projectId, meta.channelId, error.message) })
+        const message = creationAttempted
+          ? `Your archive request ${savedJobId || 'may already be saved'}. Kit could not finish displaying its review. Do not submit another archive request; check your private Kit DM or ask an admin to recover this request. Nothing has been started by this form.`
+          : error.message
+        await updateArchiveModalOrNotify(client, body.user.id, view.id,
+          buildArchiveLoadingErrorModal(meta.projectId, meta.channelId, message), message)
       }
     }
   })
