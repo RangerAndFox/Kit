@@ -876,7 +876,7 @@ export async function clearProjectControlProject(
 function buildCellRequests(config: WorkbookConfig, rowIndex: number, ownedCells: OwnedCell[]): unknown[] {
   return ownedCells.map((cell) => {
     // OwnedCell already carries the schema-resolved physical column. Using it
-    // directly also supports RF-only fields (Project Type) that intentionally
+    // directly also supports RF-only fields (Workback Template) that intentionally
     // have no legacy semantic header.
     const start = { sheetId: config.sheetId, rowIndex, columnIndex: cell.column.charCodeAt(0) - 'A'.charCodeAt(0) }
     if (cell.kind === 'date' && typeof cell.serial === 'number') {

@@ -74,7 +74,6 @@ function buildPromptText(ctx: ProjectContext): string {
   lines.push(`Name: ${p.name || '(unnamed)'}`)
   if (p.client) lines.push(`Client: ${p.client}`)
   if (p.project_code) lines.push(`Code: ${p.project_code}`)
-  if (p.project_type) lines.push(`Type: ${p.project_type}`)
   if (p.status) lines.push(`Status: ${p.status}`)
   if (p.start_date) lines.push(`Started: ${p.start_date}`)
   if (p.target_delivery) lines.push(`Target delivery: ${p.target_delivery}`)

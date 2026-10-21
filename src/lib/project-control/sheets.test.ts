@@ -792,7 +792,8 @@ describe('RF Production workbook adapter', () => {
     }, 'rf-production-v1')
     await updateBoundRow(config, 'project-uuid', owned)
     const cols = requests.map((r) => r.updateCells.start.columnIndex)
-    assert.deepEqual(cols, [0, 1, 3, 2, 10, 11, 12, 13, 4])
+    assert.deepEqual(cols, [0, 1, 3, 2, 10, 11, 12, 13])
+    assert.ok(!owned.some((x) => x.header === 'Project Type'))
     assert.ok(!owned.some((x) => x.header === 'Frame.io' || x.header === 'Dropbox'))
   })
 
