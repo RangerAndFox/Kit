@@ -130,14 +130,48 @@ describe('generated Canvas tables', () => {
     assert.equal(projectViewHash(row, supplement, '2026-10-09'), projectViewHash(row, supplement, '2026-10-10'))
   })
 
-  it('adds a OneDrive row once, including normalized duplicate types', () => {
+  it('uses labels as link text and retains multiple assets of the same type', () => {
     const markdown = renderOverviewView(row, { ...supplement, links: [
-      { 'Link Type': 'OneDrive', URL: 'https://example.test/old', Active: 'TRUE' },
-      { 'Link Type': ' one drive ', URL: 'https://example.test/current', Active: 'TRUE' },
+      { 'Link Type': 'Figma', Label: ' Client Figma ', URL: 'https://figma.com/client', Active: 'TRUE' },
+      { 'Link Type': ' figma ', Label: 'Internal Figma', URL: 'https://figma.com/internal', Active: 'TRUE' },
+      { 'Link Type': 'Script', Label: '  ', URL: 'https://example.test/script' },
     ] })
-    assert.equal(markdown.split('| OneDrive |').length - 1, 1)
+    assert.match(markdown, /\| Figma \| \[Client Figma\]\(https:\/\/figma.com\/client\) \|/)
+    assert.match(markdown, /\| Figma \| \[Internal Figma\]\(https:\/\/figma.com\/internal\) \|/)
+    assert.match(markdown, /\[Script\]\(https:\/\/example.test\/script\)/)
+    assert.equal(markdown.split('| Figma |').length - 1, 2)
+  })
+
+  it('keeps blank, inactive and restricted rows out regardless of their labels', () => {
+    const markdown = renderOverviewView(row, { ...supplement, links: [
+      { 'Link Type': 'Figma', Label: 'No URL', URL: '  ' },
+      { 'Link Type': 'Figma', Label: 'Inactive', URL: 'https://example.test/inactive', Active: ' false ' },
+      { 'Link Type': 'Harvest', Label: 'Client Figma', URL: 'https://example.test/private' },
+      { 'Link Type': 'Other', Label: 'Internal Figma', URL: 'https://example.test/other' },
+    ] })
+    assert.match(markdown, /\| Figma \| — \|/)
+    assert.doesNotMatch(markdown, /No URL|Inactive|Client Figma|Internal Figma|example.test/)
+  })
+
+  it('treats labels as text and hashes label-only changes for sync', () => {
+    const links = [{ 'Link Type': 'Figma', Label: 'Client [draft] | review\nboards', URL: 'https://figma.com/design' }]
+    const markdown = renderOverviewView(row, { ...supplement, links })
+    assert.ok(markdown.includes('[Client \\[draft\\] \\| review boards](https://figma.com/design)'))
+    assert.notEqual(projectViewHash(row, { ...supplement, links }), projectViewHash(row, {
+      ...supplement, links: [{ ...links[0], Label: 'Internal Figma' }],
+    }))
+    assert.notEqual(PROJECT_VIEW_RENDER_VERSION, '11')
+  })
+
+  it('retains distinct OneDrive assets but deduplicates exact normalized rows', () => {
+    const markdown = renderOverviewView(row, { ...supplement, links: [
+      { 'Link Type': 'OneDrive', URL: 'https://example.test/current', Active: 'TRUE' },
+      { 'Link Type': ' one drive ', URL: 'https://example.test/current', Active: 'TRUE' },
+      { 'Link Type': 'OneDrive', Label: 'Client drive', URL: 'https://example.test/client', Active: 'TRUE' },
+    ] })
+    assert.equal(markdown.split('| OneDrive |').length - 1, 2)
     assert.match(markdown, /\[OneDrive\]\(https:\/\/example.test\/current\)/)
-    assert.doesNotMatch(markdown, /example.test\/old/)
+    assert.match(markdown, /\[Client drive\]\(https:\/\/example.test\/client\)/)
     assert.equal(renderOverviewView(row, { ...supplement, links: [] }).includes('| OneDrive |'), false)
   })
 
