@@ -29,6 +29,7 @@ import {
 import { kitOwnedCreationCells, parseDateToSerial, MASTER_HEADERS, normalizeRow, sourceRowHash } from './render'
 import type { SheetCell } from './render'
 import type { WorkbookConfig } from './types'
+import { renderOverviewView } from './views'
 
 const CONFIG: WorkbookConfig = {
   spreadsheetId: 'sid',
@@ -751,6 +752,8 @@ describe('RF Production workbook adapter', () => {
         const urlCell: SheetCell = { ...c('Open'), hyperlink: 'https://next.frame.io/project/fabric' }
         return { sheets: [{ properties: { sheetId: config.linksSheetId }, data: [{ rowData: [
           { values: [c('2637'), linkedType, c('Frame.io'), urlCell, c('TRUE'), c('20')] },
+          { values: [c('2637'), c('Figma'), c('Client Figma'), c('https://figma.com/client'), c('TRUE')] },
+          { values: [c('2637'), c('Figma'), c('Internal Figma'), c('https://figma.com/internal'), c('TRUE')] },
         ] }] }] } as T
       }
       throw new Error(`wrong sheet ${gr.sheetId}`)
@@ -759,6 +762,14 @@ describe('RF Production workbook adapter', () => {
     const supplement = await readProjectSupplement(config, '2637')
     assert.equal(supplement.links[0]['Link Type'], 'Frame.io')
     assert.equal(supplement.links[0].URL, 'https://next.frame.io/project/fabric')
+    // Both the direct and invocation-cached Sheet reader feed the same view.
+    const cached = await createCachedProjectSupplementReader()(config, '2637')
+    for (const extra of [supplement, cached]) {
+      assert.equal(extra.links.length, 3)
+      const markdown = renderOverviewView({}, extra)
+      assert.ok(markdown.includes('[Client Figma](https://figma.com/client)'))
+      assert.ok(markdown.includes('[Internal Figma](https://figma.com/internal)'))
+    }
   })
 
   it('writes new-layout fields to their physical Projects columns', async () => {
