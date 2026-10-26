@@ -22,7 +22,7 @@ test('renamed legacy receipts retain original-path identity, exact revision proo
       select $1,$2,'id:obsolete','abcdef11111',100,$3,'{}','R&F_Client_Project.mp4',review_slot_id,'2026-10-24T22:00:00Z' from frame_upload_approvals where id=$4 returning id`,[ws,project,path,pending])).rows[0].id
     assert.equal((await db.query<{n:number}>('select count(*)::int n from frame_upload_review_slots')).rows[0].n,2)
     const history=(await db.query('select state,frame_file_id,upload_attempted_at,updated_at from frame_upload_approvals where id=$1',[old])).rows[0]
-    await db.exec(await readFile(new URL('../supabase/migrations/20261026183233_frame_upload_review_aliases.sql',import.meta.url),'utf8'))
+    await db.exec(await readFile(new URL('../supabase/migrations/20261026184307_frame_upload_review_aliases.sql',import.meta.url),'utf8'))
     await db.exec('set role service_role')
     const slots=(await db.query<{id:string;review_slot_id:string}>('select id,review_slot_id from frame_upload_approvals where id in ($1,$2)',[old,pending])).rows
     assert.equal(slots[0].review_slot_id,slots[1].review_slot_id)
