@@ -13,7 +13,7 @@ export const saveWorkbackSchedule: KitTool = {
   schema: z.object({
     workspace_id: workspaceId,
     project_id: z.string().uuid(),
-    schedule: z.record(z.any()).describe('Structured schedule payload (phases, tasks, dates)'),
+    schedule: z.record(z.string(), z.any()).describe('Structured schedule payload (phases, tasks, dates)'),
     version: z.number().int().optional().default(1),
     is_active: z.boolean().optional().default(true),
     confidence_score: z.number().min(0).max(1).optional(),

@@ -62,7 +62,10 @@ export interface ToolCallResult {
 
 // ─── Kit Tool Definition ─────────────────────────────────────
 
-export interface KitTool<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {
+// Preserve the registry's Zod 3 erased-schema default in Zod 4. Concrete
+// schema parameters still retain their inferred types; dispatch safeParses
+// every argument before executing a handler.
+export interface KitTool<TSchema extends z.ZodType = z.ZodType<z.infer<z.ZodAny>>> {
   name: string
   description: string
   schema: TSchema

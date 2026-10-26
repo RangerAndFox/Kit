@@ -42,6 +42,9 @@ async function getShareableFolderId(path: string): Promise<string> {
     include_has_explicit_shared_members: true,
   })
   if (meta.shared_folder_id) return meta.shared_folder_id
+  // FolderMetadata nests the folder's own share ID here. Never use
+  // parent_shared_folder_id: that would grant access beyond this project.
+  if (meta.sharing_info?.shared_folder_id) return meta.sharing_info.shared_folder_id
 
   // Not yet shared — share it now. Returns either complete or async_job_id.
   const shared = await dbxPost('/sharing/share_folder', { path })
@@ -59,6 +62,7 @@ async function getShareableFolderId(path: string): Promise<string> {
       if (status['.tag'] === 'complete' && status.shared_folder_id) {
         return status.shared_folder_id
       }
+      if (status['.tag'] === 'failed') throw new Error('Dropbox could not share this project folder; an administrator must review its sharing settings. No artist invitation was sent.')
     }
     throw new Error('share_folder still in_progress after 6s — try again')
   }

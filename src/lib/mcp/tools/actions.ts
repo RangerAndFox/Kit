@@ -92,7 +92,7 @@ export const createActionBreakdown: KitTool = {
   schema: z.object({
     workspace_id: workspaceId,
     project_id: z.string().uuid(),
-    assignments: z.record(z.any()).describe('Structured assignments — e.g., { "producer": [...], "director": [...], "tasks": [...] }'),
+    assignments: z.record(z.string(), z.any()).describe('Structured assignments — e.g., { "producer": [...], "director": [...], "tasks": [...] }'),
     transcript_source: z.string().optional().describe('URL or ID of source transcript (Plaud, Otter, etc.)'),
     call_date: z.string().optional().describe('ISO date of the call'),
     call_summary: z.string().optional().describe('Short prose summary'),

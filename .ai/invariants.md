@@ -66,6 +66,19 @@ mechanism in code before assuming full compliance.
    skipped requests must not mutate Dropbox/Frame or announce a delivery.
    Unknown upload/version-write outcomes require reconciliation, never a blind
    repeat. Initial review cards reuse the shared durable Slack receipt ledger.
+   A Kit rename is journaled before moving Dropbox; a revision-only change can
+   continue the same approval only with matching file ID, content hash, size,
+   recorded destination and approver. Downloads and transfer receipts remain
+   pinned to the original approved revision. A rename without this evidence
+   never authorizes changed media or a second Frame upload.
+   A private logical-file review slot owns the canonical Slack receipt and a
+   sender lease across recreated Dropbox IDs. Fresh source proof retires only
+   obsolete unattempted requests; completed and ambiguous-POST receipts remain
+   intact. Replacements quietly update the adopted card; stale copies lose
+   controls without deletion. Exact-byte deduplication additionally requires a
+   live Frame identity/destination/size/readiness check, never a filename match.
+   Outcome timestamps and the slot generation fence card acknowledgments so
+   replacements or approvals arriving during a send remain dirty for recovery.
    Railway's existing inbox sweep owns this flow; no second cursor or cron.
    Same-name Frame collisions pause before source rename/upload and belong
    solely to the original approver. Resolution is actor/version-fenced; shared
