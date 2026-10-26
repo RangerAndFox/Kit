@@ -5,6 +5,16 @@ const VIDEO_RE = /\.(mp4|mov|m4v)$/i
 const IMAGE_RE = /\.(png|jpe?g|webp)$/i
 const GIF_RE = /\.gif$/i
 
+interface DropboxVideoMetadata {
+  '.tag'?: string
+  id?: string
+  name?: string
+  size?: number
+  path_lower?: string
+  path_display?: string
+  server_modified?: string
+}
+
 export interface DropboxArchiveFile {
   id: string
   path: string
@@ -44,12 +54,36 @@ export async function findDeliveryVideos(projectPath: string): Promise<DropboxAr
 }
 
 export async function validateDropboxVideo(path: string): Promise<DropboxArchiveFile> {
-  if (!path || !VIDEO_RE.test(path)) throw new Error('Choose an MP4, MOV, or M4V file from Dropbox.')
-  const entry = await dropboxRpc('/files/get_metadata', { path, include_media_info: true }, 20_000)
+  let source = (path || '').trim()
+  // Slack sometimes wraps pasted links as <url|label>. Resolve links using
+  // Dropbox's authenticated metadata API, never by fetching an arbitrary URL.
+  const wrapped = /^<(https:\/\/[^|>]+)(?:\|[^>]*)?>$/.exec(source)
+  if (wrapped) source = wrapped[1].replace(/&amp;/g, '&')
+  if (!source) throw new Error('Paste a Dropbox link or full path to an MP4, MOV, or M4V file.')
+  if (/^https?:\/\//i.test(source)) {
+    let url: URL
+    try { url = new URL(source) } catch { throw new Error('Paste a valid Dropbox file link.') }
+    if (url.protocol !== 'https:' || !['dropbox.com', 'www.dropbox.com', 'dl.dropboxusercontent.com'].includes(url.hostname) ||
+      url.username || url.password || url.port) throw new Error('Use an HTTPS Dropbox file link or a full Dropbox path.')
+    let linked: DropboxVideoMetadata
+    try { linked = await dropboxRpc('/sharing/get_shared_link_metadata', { url: url.toString() }, 20_000) }
+    catch { throw new Error('Kit could not read that Dropbox link. Check its access, or paste the full Dropbox path instead.') }
+    if (linked['.tag'] !== 'file') throw new Error('That Dropbox link points to a folder. Paste a link to the video file itself.')
+    if (!VIDEO_RE.test(linked.name || '')) throw new Error('That Dropbox file is not an MP4, MOV, or M4V video.')
+    source = linked.id || linked.path_lower || ''
+    if (!source) throw new Error('Kit can view that link but cannot access its file in the connected Dropbox. Paste the file’s full Dropbox path.')
+  } else if (!source.startsWith('/') && !source.startsWith('id:')) {
+    throw new Error('Paste a Dropbox file link or the full path starting with /.')
+  }
+  let entry: DropboxVideoMetadata
+  try { entry = await dropboxRpc('/files/get_metadata', { path: source, include_media_info: true }, 20_000) }
+  catch { throw new Error('Kit could not access this file in the connected Dropbox. Check the link or path and try again.') }
   if (entry['.tag'] !== 'file') throw new Error('The selected Dropbox source is not a file.')
-  if (!VIDEO_RE.test(entry.name || '')) throw new Error('The selected Dropbox source is not a supported video.')
-  if (Number(entry.size || 0) < 1024) throw new Error('The selected video is empty or still an online-only placeholder.')
-  return { id: entry.id, path: entry.path_display || entry.path_lower, name: entry.name, size: Number(entry.size), modified: entry.server_modified || '' }
+  if (!VIDEO_RE.test(entry.name || '')) throw new Error('The selected Dropbox file must be an MP4, MOV, or M4V video.')
+  if (!Number.isFinite(Number(entry.size)) || Number(entry.size) < 1024) throw new Error('The video is empty or too small to archive. Wait for its export and Dropbox sync to finish.')
+  const resolvedPath = entry.path_display || entry.path_lower || entry.id
+  if (!resolvedPath || !entry.id) throw new Error('Dropbox did not return a usable file identity. Try the full Dropbox path.')
+  return { id: entry.id, path: resolvedPath, name: entry.name || '', size: Number(entry.size), modified: entry.server_modified || '' }
 }
 
 async function ensureFolder(path: string): Promise<void> {
