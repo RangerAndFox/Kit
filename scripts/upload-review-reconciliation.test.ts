@@ -5,7 +5,7 @@ import { PGlite } from '@electric-sql/pglite'
 
 const ws='11111111-1111-4111-8111-111111111111',project='22222222-2222-4222-8222-222222222222'
 const path='/production/2026/project/09_Outgoing/01_Client Progress/edit.mp4'
-const migration='20261024222101_frame_upload_review_reconciliation.sql'
+const migration='20261026181526_frame_upload_review_reconciliation.sql'
 const source=(id:string,rev:string,extra:Record<string,unknown>={})=>({path,name:'edit.mp4',safeName:'project',year:'2026',subfolder:'01_Client Progress',dropboxId:id,rev,source_modified_at:'2026-10-24T19:23:00Z',...extra})
 test('logical-file review reconciles recreated sources and reuses receipts without replaying uploads',async()=>{
   const db=new PGlite()
