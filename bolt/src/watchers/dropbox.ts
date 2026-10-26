@@ -35,8 +35,8 @@ import type { Json } from '../../../src/types/supabase'
 import { provesReadyReplacement } from './replacement-proof'
 import { assertExactSource, frameFileReadiness, sourceReadiness, verifySourceLink } from './upload-integrity'
 import { processingPollSeconds, renderReadiness } from './render-readiness'
-import { approvalMatches, type UploadApproval, type UploadSource } from '../../../src/lib/delivery/upload-approval'
-import { assertUploadReviewer, uploadApprovalsEnabled, createUploadApproval, getUploadApproval, updateUploadApproval, claimUploadPost } from '../../../src/lib/delivery/upload-approval-store'
+import { approvalMatches, approvedRenameMatches, type UploadApproval, type UploadSource } from '../../../src/lib/delivery/upload-approval'
+import { assertUploadReviewer, uploadApprovalsEnabled, createUploadApproval, getUploadApproval, updateUploadApproval, claimUploadPost, recordUploadRenameIntent, hasApprovedRename, completedUploadReceipt } from '../../../src/lib/delivery/upload-approval-store'
 
 type JsonRecord = { [key: string]: Json | undefined }
 
@@ -1035,6 +1035,7 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
     const current = await readReplacementDropboxMetadata(d.dropboxId) ?? await readReplacementDropboxMetadata(d.path)
     if (!current) throw new Error('Dropbox source missing; review this obsolete upload attempt')
     if (current.id !== d.dropboxId || current.rev !== d.rev) await handOffChangedSource(current, event, project.id)
+    if (await hasApprovedRename(project.id, current)) return
     if (sourceReadiness({ ...d, firstSeenAt: event.created_at }, current) !== 'ready') {
       deferFrameioProcessing(event.created_at, 'Dropbox source is not stable yet; inbox will retry', 60)
     }
@@ -1045,7 +1046,12 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
     if (!render.ready) deferFrameioProcessing(event.created_at, `Dropbox render not finalized: ${render.reason}; inbox will retry`, 60)
     const latest = await dbxPost('/files/get_metadata', { path: d.dropboxId })
     if (latest.rev !== d.rev) await handOffChangedSource(latest, event, project.id)
-    await createUploadApproval(project.id, d, size)
+    if (latest.id !== d.dropboxId || String(latest.path_display || '').toLowerCase() !== d.path.toLowerCase()) {
+      await handOffChangedSource(latest, event, project.id)
+    }
+    const source:UploadSource={ ...d, content_hash: latest.content_hash, source_modified_at: latest.server_modified, verified_frame_file_id: undefined }
+    source.verified_frame_file_id=await verifyCompletedUploadReceipt(project.id,source,size)
+    await createUploadApproval(project.id, source, size)
     return
   }
 
@@ -1054,7 +1060,7 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
     const current = await dbxPost('/files/get_metadata', { path: d.dropboxId })
     const originalParent = approval.source_path.slice(0, approval.source_path.lastIndexOf('/')).toLowerCase()
     const currentParent = String(current.path_display || '').slice(0, String(current.path_display || '').lastIndexOf('/')).toLowerCase()
-    if (current.rev !== d.rev || current.size !== approval.source_size || currentParent !== originalParent) {
+    if (!approvedRenameMatches(approval, current) && (current.id !== d.dropboxId || current.rev !== d.rev || current.size !== approval.source_size || currentParent !== originalParent)) {
       await updateUploadApproval(approval.id, { state: 'superseded', detail: 'The source changed or moved after review. No upload was started; review the new Dropbox revision.' })
       return
     }
@@ -1166,7 +1172,8 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
     const replaced = !currentById && current.id !== d.dropboxId &&
       typeof current.path_display === 'string' && current.path_display.toLowerCase() === d.path.toLowerCase()
     if (!currentById && !replaced) throw new Error('Dropbox source replacement could not be verified')
-    const sourceState = replaced ? 'superseded' : sourceReadiness({ ...d, firstSeenAt: event.created_at }, current)
+    const sourceState = approval && approvedRenameMatches(approval, current) ? 'ready'
+      : replaced ? 'superseded' : sourceReadiness({ ...d, firstSeenAt: event.created_at }, current)
     if (sourceState === 'superseded') {
       await handOffChangedSource(current, event, project.id)
     }
@@ -1187,7 +1194,7 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
     // A render may advance while headers are inspected. Keep the pinned old
     // revision out of Frame.io; the next sweep reconciles its durable successor.
     const latest = await dbxPost('/files/get_metadata', { path: d.dropboxId })
-    if (sourceReadiness({ ...d, firstSeenAt: event.created_at }, latest) !== 'ready') {
+    if (!(approval && approvedRenameMatches(approval, latest)) && sourceReadiness({ ...d, firstSeenAt: event.created_at }, latest) !== 'ready') {
       deferFrameioProcessing(event.created_at, 'Dropbox source changed during verification; inbox will retry', 60)
     }
     // Keep source evidence durable before the external write, including legacy
@@ -1215,8 +1222,9 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
       const latestPath = String(latest.path_display || '')
       const renamedPath = `${latestPath.slice(0, latestPath.lastIndexOf('/'))}/${fileName}`
       if (latestPath !== renamedPath) {
+        approval = await recordUploadRenameIntent(approval, latest)
         const renamed = await dbxPost('/files/move_v2', { from_path: d.dropboxId, to_path: renamedPath, autorename: false, allow_shared_folder: true })
-        assertExactSource(d, renamed.metadata)
+        if (!approvedRenameMatches(approval, renamed.metadata)) throw new Error('Dropbox rename did not preserve the approved content and destination')
       }
       await updateUploadApproval(approval.id, { renamed_path: renamedPath })
       if (!await claimUploadPost(approval)) return
@@ -1947,8 +1955,56 @@ export async function uploadApprovalConflicts(projectId: string, source: UploadS
 
 export async function verifyApprovalSource(row: UploadApproval): Promise<boolean> {
   const metadata = await dbxPost('/files/get_metadata', { path: row.source_file_id })
-  return metadata.id === row.source_file_id && metadata.rev === row.source_rev && metadata.size === row.source_size &&
-    String(metadata.path_display || '').toLowerCase() === row.source_path.toLowerCase()
+  return (metadata.id === row.source_file_id && metadata.rev === row.source_rev && metadata.size === row.source_size &&
+    String(metadata.path_display || '').toLowerCase() === row.source_path.toLowerCase()) ||
+    (row.state !== 'awaiting' && approvedRenameMatches(row, metadata))
+}
+
+/** Fresh source proof before retiring legacy same-path approvals. This changes
+ * only Kit's review state; it never renames a source or starts a Frame upload. */
+export async function reconcilePendingUploadApproval(row: UploadApproval): Promise<void> {
+  if (row.state !== 'awaiting') return
+  const metadata = await dbxPost('/files/get_metadata', { path: row.source_file_id })
+  assertExactSource({ dropboxId: row.source_file_id, rev: row.source_rev, sizeBytes: row.source_size }, metadata)
+  if (String(metadata.path_display || '').toLowerCase() !== row.source_path.toLowerCase()) throw new Error('Pending review source moved; reconciliation required')
+  const source:UploadSource={ ...(row.source_payload as unknown as UploadSource),
+    path: row.source_path, dropboxId: row.source_file_id, rev: row.source_rev,
+    content_hash: metadata.content_hash, source_modified_at: metadata.server_modified,
+    verified_frame_file_id:undefined,
+  }
+  source.verified_frame_file_id=await verifyCompletedUploadReceipt(row.project_id,source,row.source_size)
+  await createUploadApproval(row.project_id,source,row.source_size)
+}
+
+async function verifyCompletedUploadReceipt(projectId:string,source:UploadSource,size:number):Promise<string|undefined> {
+  const receipt=await completedUploadReceipt(projectId,source,size)
+  if(!receipt?.frame_file_id) return undefined
+  const {data:transfer,error}=await createAdminClient().from('frameio_delivery_transfers').select('*')
+    .eq('project_id',projectId).eq('dropbox_file_id',receipt.source_file_id).eq('dropbox_rev',receipt.source_rev)
+    .eq('frameio_file_id',receipt.frame_file_id).eq('state','ready').is('retired_at',null).maybeSingle()
+  if(error) throw new Error('Completed transfer receipt unavailable')
+  if(!transfer) return undefined
+  const account=process.env.FRAMEIO_ACCOUNT_ID
+  if(!account) throw new Error('Frame account required to verify prior delivery')
+  try {
+    const response=await frameioGet(`/accounts/${account}/files/${receipt.frame_file_id}`)
+    const ready=frameFileReadiness(response.data||response,{
+      id:receipt.frame_file_id,folderId:receipt.version_stack_id||transfer.frameio_folder_id,projectId:transfer.frameio_project_id,
+      name:receipt.approved_name||source.name,size,
+    })==='ready'
+    if(!ready) return undefined
+    if(receipt.version_stack_id) {
+      const stack=await frameioGet(`/accounts/${account}/version_stacks/${receipt.version_stack_id}`)
+      if((stack.data||stack).head_version?.id!==receipt.frame_file_id) return undefined
+    }
+    // Also resolve the CURRENT project/folder mapping read-only. A historical
+    // file in a moved folder or replaced Frame project is not this destination.
+    const children=await uploadApprovalConflicts(projectId,source)
+    return children.some(child=>child.id===(receipt.version_stack_id||receipt.frame_file_id))?receipt.frame_file_id:undefined
+  } catch(error) {
+    if(error instanceof FrameioApiError&&error.status===404) return undefined
+    throw error
+  }
 }
 
 async function findChildFile(

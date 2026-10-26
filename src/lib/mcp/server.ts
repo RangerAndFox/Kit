@@ -108,7 +108,7 @@ function listTools(principal: McpPrincipal) {
 
 const CallParamsSchema = z.object({
   name: z.string(),
-  arguments: z.record(z.any()).optional().default({}),
+  arguments: z.record(z.string(), z.any()).optional().default({}),
 })
 
 async function callTool(params: unknown, principal: McpPrincipal): Promise<ToolCallResult> {

@@ -86,7 +86,7 @@ export const askAgent: KitTool = {
   schema: z.object({
     agent_id: z.string().describe('The agent to call (e.g., "harvest", "dropbox", "frameio", "slack")'),
     action: z.string().describe('The action to perform (e.g., "log_time", "search", "get_comments", "send_message")'),
-    payload: z.record(z.any()).optional().default({}).describe('Action-specific parameters. Check the agent\'s capability descriptions for what each action expects.'),
+    payload: z.record(z.string(), z.any()).optional().default({}).describe('Action-specific parameters. Check the agent\'s capability descriptions for what each action expects.'),
     workspace_id: z.string().uuid().describe('Workspace ID for access control'),
   }),
   annotations: { readOnlyHint: false },

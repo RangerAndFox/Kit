@@ -13,14 +13,15 @@ export function decidedUploadMessage(row: UploadApproval): string {
   return `${decision} Your submission did not change the filename or queue another upload.`
 }
 
-export function uploadApprovalCard(row: UploadApproval, label: string): { text: string; blocks: KnownBlock[] } {
+export function uploadApprovalCard(row: UploadApproval, label: string, completed?:UploadApproval|null): { text: string; blocks: KnownBlock[] } {
   const source = row.source_payload as unknown as UploadSource
   const kind = /02_Delivery/i.test(source.subfolder) ? 'Delivery' : 'Client Progress'
-  const text = `${kind} — ${label}: ${row.state === 'awaiting' ? 'ready for review' : row.state.replace('_', ' ')}`
+  const replaced=completed&&completed.id!==row.id&&row.state==='awaiting'
+  const text = `${kind} — ${label}: ${replaced?'source change detected':row.state === 'awaiting' ? 'ready for review' : row.state.replace('_', ' ')}`
   const attribution = row.approved_by ? `\n${row.decision === 'skip' ? 'Skipped' : 'Approved'} by ${actor(row)}` : ''
   const nameLabel = row.approved_name ? 'Approved filename' : 'Suggested name'
   const blocks: KnownBlock[] = [
-    { type: 'section', text: { type: 'mrkdwn', text: `*${escape(text)}*\n${escape(row.source_path)}\n${nameLabel}: ${escape(row.approved_name || row.suggested_name)}${attribution}${row.detail ? `\n${escape(row.detail)}` : ''}` } },
+    { type: 'section', text: { type: 'mrkdwn', text: `*${escape(text)}*\n${escape(row.source_path)}\n${nameLabel}: ${escape(row.approved_name || row.suggested_name)}${attribution}${replaced?'\nThe previous approved upload remains complete. Dropbox reports a different source; this does not establish an intentional new edit. Nothing new has been approved or uploaded.':''}${row.detail ? `\n${escape(row.detail)}` : ''}` } },
   ]
   if (row.state === 'awaiting') blocks.push({ type: 'actions', elements: [
     { type: 'button', action_id: 'kit_frame_upload_review', value: row.id, text: { type: 'plain_text', text: 'Review & upload' }, style: 'primary' },

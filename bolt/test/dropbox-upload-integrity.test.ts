@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { App } from '@slack/bolt'
-const mocks = vi.hoisted(() => ({ from: vi.fn(), rpc: vi.fn(), fetch: vi.fn(), message: vi.fn(), createApproval: vi.fn(), getApproval: vi.fn(), updateApproval: vi.fn(), claimPost: vi.fn() }))
+const mocks = vi.hoisted(() => ({ from: vi.fn(), rpc: vi.fn(), fetch: vi.fn(), message: vi.fn(), createApproval: vi.fn(), getApproval: vi.fn(), updateApproval: vi.fn(), claimPost: vi.fn(), recordIntent: vi.fn(), renamed: vi.fn(), completed:vi.fn() }))
 vi.mock('../../src/lib/supabase/admin', () => ({ createAdminClient: () => ({ from: mocks.from, rpc: mocks.rpc }) }))
 vi.mock('../../src/lib/dropbox/client', () => ({ dropboxHeaders: async () => ({}) }))
 vi.mock('../../src/lib/frameio/auth', () => ({ frameioHeaders: async () => ({}) }))
@@ -9,9 +9,12 @@ vi.mock('../../src/lib/delivery/upload-approval-store', () => ({
   uploadApprovalsEnabled: () => process.env.FRAMEIO_UPLOAD_APPROVALS_ENABLED === 'true',
   createUploadApproval: mocks.createApproval, getUploadApproval: mocks.getApproval,
   updateUploadApproval: mocks.updateApproval, claimUploadPost: mocks.claimPost,
+  recordUploadRenameIntent: mocks.recordIntent, hasApprovedRename: mocks.renamed,
+  completedUploadReceipt:mocks.completed,
   assertUploadReviewer: async () => {},
 }))
-import { drainDropboxInbox, DropboxEventDeferred, handleNewDelivery } from '../src/watchers/dropbox'
+import { drainDropboxInbox, DropboxEventDeferred, handleNewDelivery, verifyApprovalSource } from '../src/watchers/dropbox'
+import { buildUploadRenameIntent, type UploadApproval } from '../../src/lib/delivery/upload-approval'
 
 const delivery = { path: '/production/2026/2629_Microsoft_MRA/09_Outgoing/01_Client Progress/video.mp4',
   name: 'video.mp4', safeName: '2629_Microsoft_MRA', subfolder: '01_Client Progress', year: '2026',
@@ -37,12 +40,18 @@ let sourceBytes: Buffer
 let changeAfterInspection: boolean
 let sourceMissing: boolean
 let replacementId: string
+let renameChangesRevision: boolean
+let sourceHash: string | undefined
+let completedTransfer: typeof transfer | null
 const writes: Array<{ table: string; value: Record<string, unknown> }> = []
 const queries: Array<{ table: string; filters: unknown[][] }> = []
 function json(body: unknown) { return new Response(JSON.stringify(body)) }
 beforeEach(() => {
   vi.clearAllMocks(); writes.length = 0; queries.length = 0
   mocks.rpc.mockResolvedValue({ data: true, error: null })
+  mocks.renamed.mockResolvedValue(false)
+  mocks.completed.mockResolvedValue(null)
+  mocks.recordIntent.mockImplementation(async (row, current) => ({...row, source_payload:{...row.source_payload,rename_intent:buildUploadRenameIntent(row,current)}}))
   vi.setSystemTime(new Date('2026-09-22T19:10:00Z'))
   vi.stubEnv('FRAMEIO_ACCOUNT_ID', 'account'); vi.stubGlobal('fetch', mocks.fetch)
   prior = { ...transfer }; sourceRev = delivery.rev; uploadComplete = true; leaseValid = true
@@ -57,6 +66,9 @@ beforeEach(() => {
   sourceBytes.writeUInt32BE(128, 128); sourceBytes.write('mdat', 132)
   changeAfterInspection = false
   sourceMissing = false; replacementId = delivery.dropboxId
+  renameChangesRevision = false
+  sourceHash = 'a'.repeat(64)
+  completedTransfer = null
   actualFile = { id: 'file', parent_id: 'folder', project_id: 'frame-project', file_size: 256, media_type: 'video/mp4', status: 'transcoding' }
   mocks.from.mockImplementation((table: string) => {
     let mutation = false
@@ -79,7 +91,7 @@ beforeEach(() => {
       : table === 'projects' ? projectResult()
         : table === 'frameio_delivery_transfers' ? retirementQuery()
           ? (retiredRevision && filters.some(f => f[0] === 'eq' && f[1] === 'dropbox_rev' && f[2] === retiredRevision) ? { id: 'retired' } : null)
-          : prior : successors() })
+          : filters.some(f=>f[0]==='eq'&&f[1]==='frameio_file_id')?completedTransfer:prior : successors() })
     const query = {
       then: <T>(resolve: (value: ReturnType<typeof result>) => T) => Promise.resolve(result()).then(resolve),
       select: vi.fn(), eq: vi.fn(), neq: vi.fn(), is: vi.fn(), not: vi.fn(), filter: vi.fn(), contains: vi.fn(), limit: vi.fn(), maybeSingle: vi.fn(), single: vi.fn(),
@@ -96,22 +108,26 @@ beforeEach(() => {
       if (changeAfterInspection) sourceRev = 'abcdef99999'
       return new Response(sourceBytes, { headers: { 'content-type': 'video/mp4', 'content-length': '256' } })
     }
-    const metadata = { '.tag': 'file', id: replacementId, rev: sourceRev, size: 256, path_display: sourcePath, server_modified: '2026-09-22T19:00:00Z' }
+    const metadata = { '.tag': 'file', id: replacementId, rev: sourceRev, size: 256, content_hash: sourceHash, path_display: sourcePath, server_modified: '2026-09-22T19:00:00Z' }
     if (url.endsWith('/files/get_metadata')) {
       if (sourceMissing && JSON.parse(String(options.body)).path === delivery.dropboxId) {
         return new Response(JSON.stringify({ error: { '.tag': 'path', path: { '.tag': 'not_found' } } }), { status: 409 })
       }
       return json(metadata)
     }
-    if (url.endsWith('/files/get_temporary_link')) return json({ metadata, link: 'https://uc123.dl.dropboxusercontent.com/file' })
+    if (url.endsWith('/files/get_temporary_link')) {
+      const pinned = JSON.parse(String(options.body)).path === `rev:${delivery.rev}`
+      return json({ metadata: pinned ? {...metadata,rev:delivery.rev,path_display:delivery.path,content_hash:'a'.repeat(64)} : metadata, link: 'https://uc123.dl.dropboxusercontent.com/file' })
+    }
     if (url.endsWith('/files/move_v2')) {
       sourcePath = JSON.parse(String(options.body)).to_path
-      return json({ metadata: {...metadata,path_display:sourcePath} })
+      if (renameChangesRevision) sourceRev = 'abcdef54321'
+      return json({ metadata: {...metadata,rev:sourceRev,path_display:sourcePath} })
     }
     if (url.endsWith('/projects/frame-project')) return json({ data: { root_folder_id: 'root' } })
     if (url.includes('/folders/root/children')) return json({ data: [{ id: 'out', name: '03_Outgoing', type: 'folder' }] })
     if (url.includes('/folders/out/children')) return json({ data: [{ id: 'folder', name: '01_Client Progress', type: 'folder' }] })
-    if (url.includes('/folders/folder/children')) return json({ data: [] })
+    if (url.includes('/folders/folder/children')) return json({ data: completedTransfer?[{id:'file',name:'R&F_Microsoft_MRA_Edit_V2.mp4',type:'file'}]:[] })
     if (url.endsWith('/remote_upload')) return json({ data: { id: 'file' }, links: { status: transfer.frameio_status_path } })
     if (url.endsWith('/status')) return json({ data: { upload_complete: uploadComplete, upload_failed: false } })
     if (url.endsWith('/files/file')) return json({ data: actualFile })
@@ -124,7 +140,7 @@ describe('upload pipeline integrity boundary', () => {
   it('requires human review before creating folders, renaming, uploading or announcing', async () => {
     prior = null; vi.stubEnv('FRAMEIO_UPLOAD_APPROVALS_ENABLED','true')
     await handleNewDelivery(app,{...delivery},{...event})
-    expect(mocks.createApproval).toHaveBeenCalledWith('project',delivery,256)
+    expect(mocks.createApproval).toHaveBeenCalledWith('project',expect.objectContaining(delivery),256)
     expect(mocks.fetch.mock.calls.some(([url]) => url.includes('api.frame.io'))).toBe(false)
     expect(mocks.fetch.mock.calls.some(([url]) => url.endsWith('/files/move_v2'))).toBe(false)
     expect(mocks.message).not.toHaveBeenCalled()
@@ -180,7 +196,7 @@ describe('upload pipeline integrity boundary', () => {
   })
   it('renames only an approved exact revision and checkpoints the upload before processing', async () => {
     prior = null; mocks.claimPost.mockResolvedValue(true)
-    mocks.getApproval.mockResolvedValue({id:'request',project_id:'project',source_file_id:delivery.dropboxId,source_rev:delivery.rev,
+    mocks.getApproval.mockResolvedValue({id:'request',project_id:'project',source_file_id:delivery.dropboxId,source_rev:delivery.rev,approved_by:'UPRODUCER',
       source_size:256,source_path:delivery.path,approved_name:'R&F_Microsoft_MRA_Edit_V2.mp4',decision:'new',approval_version:1,state:'approved'})
     await expect(handleNewDelivery(app,{...delivery,approvalRequestId:'request',approvalVersion:1},{...event})).rejects.toThrow(/still transcoding/)
     const move = mocks.fetch.mock.calls.find(([url])=>url.endsWith('/files/move_v2'))
@@ -189,6 +205,126 @@ describe('upload pipeline integrity boundary', () => {
     expect(mocks.fetch.mock.calls.filter(([url])=>url.endsWith('/remote_upload'))).toHaveLength(1)
     expect(mocks.updateApproval).toHaveBeenCalledWith('request',{frame_file_id:'file'})
     expect(mocks.message).not.toHaveBeenCalled()
+  })
+  it('does not ask again when the approved rename changes only the Dropbox revision', async () => {
+    prior = null; renameChangesRevision = true; mocks.claimPost.mockResolvedValue(true)
+    mocks.getApproval.mockResolvedValue({id:'request',project_id:'project',source_file_id:delivery.dropboxId,source_rev:delivery.rev,approved_by:'UPRODUCER',
+      source_size:256,source_path:delivery.path,approved_name:'R&F_Microsoft_MRA_Edit_V2.mp4',decision:'new',approval_version:1,state:'approved'})
+    await expect(handleNewDelivery(app,{...delivery,approvalRequestId:'request',approvalVersion:1},{...event})).rejects.toThrow(/still transcoding/)
+    expect(mocks.fetch.mock.calls.filter(([url])=>url.endsWith('/remote_upload'))).toHaveLength(1)
+    expect(mocks.createApproval).not.toHaveBeenCalled()
+    expect(mocks.updateApproval).not.toHaveBeenCalledWith('request',expect.objectContaining({state:'superseded'}))
+    expect(mocks.recordIntent.mock.invocationCallOrder[0]).toBeLessThan(mocks.claimPost.mock.invocationCallOrder[0])
+    const temporary=mocks.fetch.mock.calls.find(([url])=>url.endsWith('/files/get_temporary_link'))
+    expect(JSON.parse(String(temporary?.[1].body))).toEqual({path:`rev:${delivery.rev}`})
+  })
+  it('resumes a lost rename response from durable intent, then never repeats an accepted upload', async () => {
+    prior=null; renameChangesRevision=true; mocks.claimPost.mockResolvedValue(true)
+    let approval={id:'request',project_id:'project',source_file_id:delivery.dropboxId,source_rev:delivery.rev,
+      source_size:256,source_path:delivery.path,approved_name:'R&F_Microsoft_MRA_Edit_V2.mp4',approved_by:'UPRODUCER',decision:'new',approval_version:1,state:'approved',source_payload:{}} as UploadApproval
+    mocks.getApproval.mockImplementation(async()=>approval)
+    mocks.recordIntent.mockImplementation(async(row,current)=>{
+      approval={...row,source_payload:{rename_intent:buildUploadRenameIntent(row,current)}}
+      return approval
+    })
+    const provider=mocks.fetch.getMockImplementation()!
+    mocks.fetch.mockImplementation(async(url:string,options:RequestInit)=>{
+      const response=await provider(url,options)
+      if(url.endsWith('/files/move_v2')) throw new Error('Rename response lost')
+      return response
+    })
+    const approved={...delivery,approvalRequestId:'request',approvalVersion:1}
+    await expect(handleNewDelivery(app,{...approved},{...event})).rejects.toThrow('Rename response lost')
+    expect(mocks.fetch.mock.calls.some(([url])=>url.endsWith('/remote_upload'))).toBe(false)
+    mocks.fetch.mockImplementation(provider)
+    await expect(handleNewDelivery(app,{...approved},{...event})).rejects.toThrow(/still transcoding/)
+    prior={...transfer}
+    await expect(handleNewDelivery(app,{...approved},{...event})).rejects.toThrow(/still transcoding/)
+    expect(mocks.fetch.mock.calls.filter(([url])=>url.endsWith('/files/move_v2'))).toHaveLength(1)
+    expect(mocks.fetch.mock.calls.filter(([url])=>url.endsWith('/remote_upload'))).toHaveLength(1)
+    expect(mocks.createApproval).not.toHaveBeenCalled()
+    expect(mocks.updateApproval).not.toHaveBeenCalledWith('request',expect.objectContaining({state:'superseded'}))
+  })
+  it('does not create another approval for a verified own-rename detection event', async()=>{
+    prior=null; vi.stubEnv('FRAMEIO_UPLOAD_APPROVALS_ENABLED','true'); mocks.renamed.mockResolvedValue(true)
+    await handleNewDelivery(app,{...delivery},{...event})
+    expect(mocks.createApproval).not.toHaveBeenCalled()
+    expect(mocks.fetch.mock.calls.some(([url])=>url.includes('api.frame.io')||url.endsWith('/files/move_v2'))).toBe(false)
+  })
+  it('requires matching live Frame identity, exact size and readiness before reconciling identical bytes',async()=>{
+    prior=null;vi.stubEnv('FRAMEIO_UPLOAD_APPROVALS_ENABLED','true')
+    mocks.completed.mockResolvedValue({source_file_id:'id:prior',source_rev:'abcdef00000',frame_file_id:'file',approved_name:'R&F_Microsoft_MRA_Edit_V2.mp4'})
+    completedTransfer={...transfer,state:'ready'}
+    actualFile.status='transcoded'
+    await handleNewDelivery(app,{...delivery},{...event})
+    expect(mocks.createApproval).toHaveBeenCalledWith('project',expect.objectContaining({content_hash:'a'.repeat(64),verified_frame_file_id:'file'}),256)
+    expect(mocks.fetch.mock.calls.some(([url])=>url.endsWith('/remote_upload')||url.endsWith('/files/move_v2'))).toBe(false)
+    const provider=mocks.fetch.getMockImplementation()!
+    mocks.fetch.mockImplementation((url:string,options:RequestInit)=>url.includes('/folders/folder/children')?Promise.resolve(json({data:[]})):provider(url,options))
+    mocks.createApproval.mockClear()
+    await handleNewDelivery(app,{...delivery},{...event})
+    expect(mocks.createApproval).toHaveBeenCalledWith('project',expect.objectContaining({verified_frame_file_id:undefined}),256)
+    mocks.fetch.mockImplementation(provider)
+    actualFile.file_size=255;mocks.createApproval.mockClear()
+    await expect(handleNewDelivery(app,{...delivery},{...event})).rejects.toThrow(/size does not match/)
+    expect(mocks.createApproval).not.toHaveBeenCalled()
+  })
+  it('a missing prior Frame file cannot silently consume recreated Dropbox media',async()=>{
+    prior=null;vi.stubEnv('FRAMEIO_UPLOAD_APPROVALS_ENABLED','true')
+    mocks.completed.mockResolvedValue({source_file_id:'id:prior',source_rev:'abcdef00000',frame_file_id:'file',approved_name:'R&F_Microsoft_MRA_Edit_V2.mp4'})
+    completedTransfer={...transfer,state:'ready'}
+    const provider=mocks.fetch.getMockImplementation()!
+    mocks.fetch.mockImplementation((url:string,options:RequestInit)=>url.endsWith('/files/file')?Promise.resolve(new Response('{}',{status:404})):provider(url,options))
+    await handleNewDelivery(app,{...delivery},{...event})
+    expect(mocks.createApproval).toHaveBeenCalledWith('project',expect.objectContaining({verified_frame_file_id:undefined}),256)
+  })
+  it('a historical version that is no longer the displayed stack head cannot suppress a new review',async()=>{
+    prior=null;vi.stubEnv('FRAMEIO_UPLOAD_APPROVALS_ENABLED','true')
+    mocks.completed.mockResolvedValue({source_file_id:'id:prior',source_rev:'abcdef00000',frame_file_id:'file',version_stack_id:'stack',approved_name:'R&F_Microsoft_MRA_Edit_V2.mp4'})
+    completedTransfer={...transfer,state:'ready'};actualFile.status='transcoded';actualFile.parent_id='stack'
+    const provider=mocks.fetch.getMockImplementation()!
+    mocks.fetch.mockImplementation((url:string,options:RequestInit)=>url.endsWith('/version_stacks/stack')?Promise.resolve(json({data:{head_version:{id:'another-file'}}})):provider(url,options))
+    await handleNewDelivery(app,{...delivery},{...event})
+    expect(mocks.createApproval).toHaveBeenCalledWith('project',expect.objectContaining({verified_frame_file_id:undefined}),256)
+    expect(mocks.fetch.mock.calls.some(([url])=>url.endsWith('/remote_upload'))).toBe(false)
+  })
+  it('does not move or upload if the rename checkpoint fails',async()=>{
+    prior=null
+    mocks.getApproval.mockResolvedValue({id:'request',project_id:'project',source_file_id:delivery.dropboxId,source_rev:delivery.rev,
+      source_size:256,source_path:delivery.path,approved_name:'R&F_Microsoft_MRA_Edit_V2.mp4',decision:'new',approval_version:1,state:'approved'})
+    mocks.recordIntent.mockRejectedValueOnce(new Error('Rename checkpoint unavailable'))
+    await expect(handleNewDelivery(app,{...delivery,approvalRequestId:'request',approvalVersion:1},{...event})).rejects.toThrow(/checkpoint/)
+    expect(mocks.fetch.mock.calls.some(([url])=>url.endsWith('/files/move_v2')||url.endsWith('/remote_upload'))).toBe(false)
+  })
+  it('refuses a rename response whose contents differ even when ID and size match',async()=>{
+    prior=null
+    mocks.getApproval.mockResolvedValue({id:'request',project_id:'project',source_file_id:delivery.dropboxId,source_rev:delivery.rev,
+      source_size:256,source_path:delivery.path,approved_name:'R&F_Microsoft_MRA_Edit_V2.mp4',approved_by:'UPRODUCER',decision:'new',approval_version:1,state:'approved'})
+    const provider=mocks.fetch.getMockImplementation()!
+    mocks.fetch.mockImplementation(async(url:string,options:RequestInit)=>{
+      const response=await provider(url,options)
+      if(url.endsWith('/files/move_v2')) {
+        const body=await response.json()
+        body.metadata.content_hash='b'.repeat(64)
+        return json(body)
+      }
+      return response
+    })
+    await expect(handleNewDelivery(app,{...delivery,approvalRequestId:'request',approvalVersion:1},{...event})).rejects.toThrow(/did not preserve/)
+    expect(mocks.claimPost).not.toHaveBeenCalled()
+    expect(mocks.fetch.mock.calls.some(([url])=>url.endsWith('/remote_upload'))).toBe(false)
+  })
+  it('allows collision review after a journaled rename, never after a same-size content change',async()=>{
+    const row={source_file_id:delivery.dropboxId,source_rev:delivery.rev,source_size:256,source_path:delivery.path,
+      approved_name:'R&F_Microsoft_MRA_Edit_V2.mp4',approved_by:'UPRODUCER',approval_version:1,source_payload:{},state:'collision'} as UploadApproval
+    const intent=buildUploadRenameIntent(row,{id:delivery.dropboxId,rev:delivery.rev,size:256,path_display:delivery.path,content_hash:sourceHash})
+    row.source_payload={rename_intent:intent}
+    sourceRev='abcdef54321'; sourcePath=delivery.path.replace('video.mp4',row.approved_name!)
+    expect(await verifyApprovalSource(row)).toBe(true)
+    sourceHash='b'.repeat(64)
+    expect(await verifyApprovalSource(row)).toBe(false)
+    sourceHash=undefined
+    expect(await verifyApprovalSource(row)).toBe(false)
   })
   it('pauses for the same approver if a same-name Frame file exists after confirmation', async () => {
     prior = null
