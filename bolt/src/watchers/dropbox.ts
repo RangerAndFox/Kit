@@ -1977,7 +1977,7 @@ export async function reconcilePendingUploadApproval(row: UploadApproval): Promi
 }
 
 async function verifyCompletedUploadReceipt(projectId:string,source:UploadSource,size:number):Promise<string|undefined> {
-  const receipt=await completedUploadReceipt(projectId,source,size)
+  const receipt=await completedUploadReceipt(projectId,source,size,rev=>dbxPost('/files/get_metadata',{path:rev}))
   if(!receipt?.frame_file_id) return undefined
   const {data:transfer,error}=await createAdminClient().from('frameio_delivery_transfers').select('*')
     .eq('project_id',projectId).eq('dropbox_file_id',receipt.source_file_id).eq('dropbox_rev',receipt.source_rev)

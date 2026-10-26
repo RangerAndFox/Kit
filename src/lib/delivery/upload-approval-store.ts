@@ -73,13 +73,36 @@ export async function createUploadApproval(projectId: string, source: UploadSour
 
 /** A candidate receipt is not live provider proof. The caller must verify the
  * Frame identity/destination/exact bytes/readiness before treating it as seen. */
-export async function completedUploadReceipt(projectId:string,source:UploadSource,size:number):Promise<UploadApproval|null> {
+export async function completedUploadReceipt(projectId:string,source:UploadSource,size:number,readRevision?:(path:string)=>Promise<RenameMetadata>):Promise<UploadApproval|null> {
   if(!source.content_hash||!/^[a-f0-9]{64}$/i.test(source.content_hash)) return null
-  const {data,error}=await (createAdminClient() as unknown as SupabaseClient).rpc('find_completed_frame_upload_receipt',{
-    p_project:projectId,p_path:source.path,p_size:size,p_hash:source.content_hash.toLowerCase(),
+  const hash=source.content_hash.toLowerCase()
+  const db=createAdminClient() as unknown as SupabaseClient
+  const lookup=async()=>{
+  const {data,error}=await db.rpc('find_completed_frame_upload_receipt',{
+    p_project:projectId,p_path:source.path,p_size:size,p_hash:hash,
   })
   if(error) throw new Error('Completed upload receipt lookup unavailable')
   return data as UploadApproval|null
+  }
+  const receipt=await lookup()
+  if(receipt||!readRevision) return receipt
+  const {data,error}=await db.rpc('find_unhashed_frame_upload_receipt',{p_project:projectId,p_path:source.path,p_size:size})
+  if(error) throw new Error('Legacy upload receipt lookup unavailable')
+  const candidate=data as UploadApproval|null
+  if(!candidate) return null
+  if(candidate.project_id!==projectId||candidate.source_size!==size||candidate.state!=='complete'||!candidate.frame_file_id) return null
+  // Only the historical revision's identity can supply missing evidence.
+  // Never borrow a current/recreated file's hash or authorize by its name.
+  let metadata:RenameMetadata
+  try { metadata=await readRevision(`rev:${candidate.source_rev}`) } catch { return null }
+  if(metadata.id!==candidate.source_file_id||metadata.rev!==candidate.source_rev||metadata.size!==candidate.source_size||
+    !metadata.content_hash||!/^[a-f0-9]{64}$/i.test(metadata.content_hash)) return null
+  const saved=await db.rpc('save_frame_upload_receipt_hash',{
+    p_id:candidate.id,p_workspace:candidate.workspace_id,p_file:candidate.source_file_id,
+    p_rev:candidate.source_rev,p_size:candidate.source_size,p_hash:metadata.content_hash.toLowerCase(),
+  })
+  if(saved.error) throw new Error('Historical upload source proof checkpoint unavailable')
+  return lookup()
 }
 
 /** Fence the ambiguous external-write window. A retry may resume a persisted
