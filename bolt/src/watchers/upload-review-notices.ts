@@ -71,12 +71,22 @@ export async function syncUploadApprovalNotices(app:App,requestId?:string):Promi
       for(const legacy of context.legacy) {
         if(legacy.workspace_id!==slot.workspace_id||legacy.review_slot_id!==slot.id) throw new Error('Legacy review scope mismatch')
         if(legacy.slack_channel_id&&legacy.slack_message_ts) {
+          // An inaccessible old copy must not block the current card or the
+          // original approver's collision controls. Keep it unacknowledged so
+          // finish_frame_upload_review_notice retains the cleanup retry.
+          let edited=false
+          try {
           await app.client.chat.update({channel:legacy.slack_channel_id,ts:legacy.slack_message_ts,
             text:'Earlier upload request — use the shared review card.',blocks:[{type:'section',text:{type:'plain_text',text:
               `Earlier upload request. ${legacy.state==='complete'?'Its completed upload is retained.':'Its original record is retained.'} Use the current shared review card in this conversation. Nothing was re-uploaded.`}}]})
-          await requireReceipt('close_legacy_frame_upload_notice',{p_slot:slot.id,p_token:token,p_approval:legacy.id,p_ts:legacy.slack_message_ts})
+          edited=true
+          } catch {
+            console.warn('[upload-review] Legacy card cleanup deferred',legacy.id)
+          }
+          if(edited) await requireReceipt('close_legacy_frame_upload_notice',{p_slot:slot.id,p_token:token,p_approval:legacy.id,p_ts:legacy.slack_message_ts})
         }
       }
+      await requireReceipt('save_frame_upload_review_receipt',{p_id:slot.id,p_token:token,p_channel:channel,p_ts:ts})
       // Collision controls stay in the original approver's DM, never migrate
       // to a replacement source or the shared producer/CD card.
       const dirtyRows=await Promise.all(context.dirty_approvals.map(r=>r.id===row.id?Promise.resolve(row):getUploadApproval(r.id)))

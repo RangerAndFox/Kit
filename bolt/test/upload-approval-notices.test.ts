@@ -121,6 +121,27 @@ it('a lost lease prevents any subsequent Slack write or successful acknowledgmen
   expect(mocks.update).not.toHaveBeenCalled()
   expect(mocks.rpc).toHaveBeenCalledWith('finish_frame_upload_review_notice',expect.objectContaining({p_success:false}))
 })
+it('an inaccessible legacy card cannot block collision controls or current outcome acknowledgments',async()=>{
+  row.state='collision'
+  contexts.get('slot')!.legacy=[{...row,id:'old',slack_channel_id:'GSHARED',slack_message_ts:'200.1'}]
+  mocks.update.mockImplementation(async(args:{ts:string})=>{
+    if(args.ts==='200.1') throw new Error('message_not_found')
+    return {ok:true}
+  })
+  await syncUploadApprovalNotices(app)
+  expect(mocks.deliver).toHaveBeenCalledWith(expect.objectContaining({key:'frame-upload-collision:request',channel:'DAPPROVER'}))
+  expect(mocks.rpc).not.toHaveBeenCalledWith('close_legacy_frame_upload_notice',expect.anything())
+  expect(mocks.rpc).toHaveBeenCalledWith('finish_frame_upload_review_notice',expect.objectContaining({p_success:true}))
+  expect(mocks.update.mock.calls[0][0]).toMatchObject({channel:'GSHARED',ts:'100.1'})
+})
+it('a lost lease while closing a legacy card still prevents collision publication',async()=>{
+  row.state='collision'
+  contexts.get('slot')!.legacy=[{...row,id:'old',slack_channel_id:'GSHARED',slack_message_ts:'200.1'}]
+  mocks.rpc.mockImplementation(async(name:string,args:Record<string,unknown>)=>({data:name==='list_pending_frame_upload_reviews'?slots:name==='claim_frame_upload_review_slot'?contexts.get(String(args.p_id)):name==='close_legacy_frame_upload_notice'?false:true,error:null}))
+  await syncUploadApprovalNotices(app)
+  expect(mocks.deliver).not.toHaveBeenCalled()
+  expect(mocks.rpc).toHaveBeenCalledWith('finish_frame_upload_review_notice',expect.objectContaining({p_success:false}))
+})
 it('unknown provider state does not retire a pending source or send a new prompt',async()=>{
   mocks.reconcile.mockRejectedValue(new Error('Source proof unavailable'))
   await syncUploadApprovalNotices(app)
