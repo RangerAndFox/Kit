@@ -92,6 +92,7 @@ export async function registerProjectShare(input: {
   dropboxRev: string
   fileName: string
   shareUrl: string
+  notificationDisposition?: 'separate' | 'package'
 }): Promise<RegisteredProjectShare> {
   // Persist the outbox record FIRST. Previously the Google write happened
   // before this insert, so a transient 503 left no event for a retry sweep.
@@ -99,6 +100,7 @@ export async function registerProjectShare(input: {
     project_id: input.projectId, dropbox_file_id: input.dropboxFileId, dropbox_rev: input.dropboxRev,
     file_name: input.fileName, share_url: input.shareUrl, suggested_milestone: null,
     match_confidence: null, status: 'pending', updated_at: new Date().toISOString(),
+    notification_disposition: input.notificationDisposition || 'separate',
   }, { onConflict: 'project_id,dropbox_file_id,dropbox_rev', ignoreDuplicates: true }).select('id').maybeSingle()
   if (error) throw new Error(`registerProjectShare: ${error.message}`)
   let eventId = data?.id as string | undefined

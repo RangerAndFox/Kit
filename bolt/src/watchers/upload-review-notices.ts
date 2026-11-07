@@ -8,8 +8,9 @@ import { deliverSlackOnce } from '../../../src/lib/slack/durable-delivery'
 import { reconcilePendingUploadApproval } from './dropbox'
 import { uploadApprovalCard } from './upload-approval-card'
 import { collisionCard } from './upload-collision'
+import { syncUploadPackageNotices } from './upload-package-notices'
 
-type Slot = { id:string;workspace_id:string;project_id:string;current_approval_id:string;anchor_approval_id:string;generation:number;slack_channel_id:string|null;slack_message_ts:string|null }
+type Slot = { id:string;workspace_id:string;project_id:string;current_approval_id:string;anchor_approval_id:string;generation:number;slack_channel_id:string|null;slack_message_ts:string|null;package_id?:string|null;package_notice_closed?:boolean }
 type Context = {slot:Slot;current:UploadApproval;completed:UploadApproval|null;legacy:UploadApproval[];dirty_approvals:Array<{id:string;updated_at:string}>}
 
 /** Existing Railway outbox, coalesced by logical file. Registration/outcome
@@ -61,13 +62,35 @@ export async function syncUploadApprovalNotices(app:App,requestId?:string):Promi
       if(!users.length) throw new Error('No project reviewers configured')
       const channel=(await app.client.conversations.open({users:users.join(',')})).channel?.id
       if(!channel||(slot.slack_channel_id&&slot.slack_channel_id!==channel)) throw new Error('Review recipient group changed; private destination review required')
-      await requireReceipt('save_frame_upload_review_receipt',{p_id:slot.id,p_token:token,p_channel:channel})
-      const content=uploadApprovalCard(row,`${project.project_code} — ${project.name}`,context.completed)
       let ts=slot.slack_message_ts
-      if(ts) await app.client.chat.update({channel,ts,...content})
-      else ts=await deliverSlackOnce({key:`frame-upload-review:${slot.anchor_approval_id}`,channel,...content})
-      if(!ts) throw new Error('Slack returned no review receipt')
-      await requireReceipt('save_frame_upload_review_receipt',{p_id:slot.id,p_token:token,p_channel:channel,p_ts:ts})
+      // Delivery packages own the shared notification. Keep file leases and
+      // outcomes for execution/collisions, but never create a per-file ping.
+      if(!slot.package_id) {
+        await requireReceipt('save_frame_upload_review_receipt',{p_id:slot.id,p_token:token,p_channel:channel})
+        const content=uploadApprovalCard(row,`${project.project_code} — ${project.name}`,context.completed)
+        if(ts) await app.client.chat.update({channel,ts,...content})
+        else ts=await deliverSlackOnce({key:`frame-upload-review:${slot.anchor_approval_id}`,channel,...content})
+        if(!ts) throw new Error('Slack returned no review receipt')
+        await requireReceipt('save_frame_upload_review_receipt',{p_id:slot.id,p_token:token,p_channel:channel,p_ts:ts})
+      }
+      let packageCleanupPending=false
+      if(slot.package_id) {
+        await requireReceipt('renew_frame_upload_review_lease',{p_id:slot.id,p_token:token})
+        if(ts&&!slot.package_notice_closed) {
+          const {data:pack,error}=await db.from('frame_upload_review_packages')
+            .select('id,workspace_id,project_id,slack_channel_id,slack_message_ts,blocked_reason')
+            .eq('id',slot.package_id).eq('workspace_id',slot.workspace_id).eq('project_id',slot.project_id).single()
+          if(error||!pack||pack.blocked_reason||pack.slack_channel_id!==channel||!pack.slack_message_ts) packageCleanupPending=true
+          else if(pack.slack_message_ts!==ts) {
+            let edited=false
+            try {
+              await app.client.chat.update({channel,ts,text:'Upload review moved to the delivery folder card.',blocks:[{type:'section',text:{type:'plain_text',text:'Use the delivery folder review card in this conversation. This file and its approval history are retained. Nothing was re-uploaded.'}}]})
+              edited=true
+            } catch { packageCleanupPending=true }
+            if(edited) await requireReceipt('close_frame_upload_package_legacy_notice',{p_slot:slot.id,p_token:token,p_package:slot.package_id,p_channel:channel,p_ts:ts})
+          }
+        }
+      }
       for(const legacy of context.legacy) {
         if(legacy.workspace_id!==slot.workspace_id||legacy.review_slot_id!==slot.id) throw new Error('Legacy review scope mismatch')
         if(legacy.slack_channel_id&&legacy.slack_message_ts) {
@@ -86,7 +109,8 @@ export async function syncUploadApprovalNotices(app:App,requestId?:string):Promi
           if(edited) await requireReceipt('close_legacy_frame_upload_notice',{p_slot:slot.id,p_token:token,p_approval:legacy.id,p_ts:legacy.slack_message_ts})
         }
       }
-      await requireReceipt('save_frame_upload_review_receipt',{p_id:slot.id,p_token:token,p_channel:channel,p_ts:ts})
+      if(!slot.package_id) await requireReceipt('save_frame_upload_review_receipt',{p_id:slot.id,p_token:token,p_channel:channel,p_ts:ts})
+      else await requireReceipt('renew_frame_upload_review_lease',{p_id:slot.id,p_token:token})
       // Collision controls stay in the original approver's DM, never migrate
       // to a replacement source or the shared producer/CD card.
       const dirtyRows=await Promise.all(context.dirty_approvals.map(r=>r.id===row.id?Promise.resolve(row):getUploadApproval(r.id)))
@@ -106,7 +130,7 @@ export async function syncUploadApprovalNotices(app:App,requestId?:string):Promi
         if(error) throw new Error('Collision receipt checkpoint failed')
       }
       context.dirty_approvals=context.dirty_approvals.map(r=>r.id===row.id?{id:row.id,updated_at:row.updated_at}:r)
-      success=true
+      success=!packageCleanupPending
     } catch {
       deferred=true
       console.warn('[upload-review] Shared card refresh deferred',snapshot.id)
@@ -122,4 +146,5 @@ export async function syncUploadApprovalNotices(app:App,requestId?:string):Promi
       }
     }
   }
+  await syncUploadPackageNotices(app,requestId)
 }

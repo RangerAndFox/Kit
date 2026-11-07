@@ -5,7 +5,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 
 export const uploadApprovalsEnabled = () => process.env.FRAMEIO_UPLOAD_APPROVALS_ENABLED === 'true'
 
-export async function assertUploadReviewer(row: UploadApproval, user: string): Promise<void> {
+export async function assertUploadReviewer(row: Pick<UploadApproval, 'workspace_id' | 'project_id'>, user: string): Promise<void> {
   const db = createAdminClient()
   const { data: project, error } = await db.from('projects').select('project_manager_slack_id,external_ids,status')
     .eq('id', row.project_id).eq('workspace_id', row.workspace_id).single()

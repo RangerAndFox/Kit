@@ -1,14 +1,15 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { App } from '@slack/bolt'
 import type { UploadApproval } from '../../src/lib/delivery/upload-approval'
-const mocks=vi.hoisted(()=>({from:vi.fn(),rpc:vi.fn(),get:vi.fn(),reconcile:vi.fn(),update:vi.fn(),deliver:vi.fn(),open:vi.fn()}))
+const mocks=vi.hoisted(()=>({from:vi.fn(),rpc:vi.fn(),get:vi.fn(),reconcile:vi.fn(),update:vi.fn(),deliver:vi.fn(),open:vi.fn(),packages:vi.fn()}))
+vi.mock('../src/watchers/upload-package-notices',()=>({syncUploadPackageNotices:mocks.packages}))
 vi.mock('../../src/lib/supabase/admin',()=>({createAdminClient:()=>({from:mocks.from,rpc:mocks.rpc})}))
 vi.mock('../../src/lib/delivery/upload-approval-store',()=>({uploadApprovalsEnabled:()=>true,getUploadApproval:mocks.get}))
 vi.mock('../src/watchers/dropbox',()=>({reconcilePendingUploadApproval:mocks.reconcile}))
 vi.mock('../../src/lib/slack/durable-delivery',()=>({deliverSlackOnce:mocks.deliver}))
 import { syncUploadApprovalNotices } from '../src/watchers/upload-review-notices'
 
-type Slot={id:string;workspace_id:string;project_id:string;current_approval_id:string;anchor_approval_id:string;generation:number;slack_channel_id:string|null;slack_message_ts:string|null}
+type Slot={id:string;workspace_id:string;project_id:string;current_approval_id:string;anchor_approval_id:string;generation:number;slack_channel_id:string|null;slack_message_ts:string|null;package_id?:string|null;package_notice_closed?:boolean}
 type Context={slot:Slot;current:UploadApproval;completed:UploadApproval|null;legacy:UploadApproval[];dirty_approvals:Array<{id:string;updated_at:string}>}
 let row:UploadApproval,slot:Slot,contexts:Map<string,Context>,rows:Map<string,UploadApproval>,slots:Slot[]
 const app={client:{chat:{update:mocks.update},conversations:{open:mocks.open}}} as unknown as App
@@ -33,7 +34,7 @@ beforeEach(()=>{
     const filters:unknown[][]=[]
     const query={select:()=>query,eq:(...args:unknown[])=>{filters.push(args);return query},is:(...args:unknown[])=>{filters.push(args);return query},in:()=>query,order:()=>query,limit:()=>query,
       update:(value:Record<string,unknown>)=>{mutation=value;return query},
-      single:async()=>({data:{project_manager_slack_id:'UPRODUCER',external_ids:{creative_director_slack_id:'UCD'},project_code:'2645',name:'Cloud PC'},error:null}),
+      single:async()=>({data:table==='frame_upload_review_packages'?{id:'package',workspace_id:'workspace',project_id:'project',slack_channel_id:'GSHARED',slack_message_ts:'package.1',blocked_reason:null}:{project_manager_slack_id:'UPRODUCER',external_ids:{creative_director_slack_id:'UCD'},project_code:'2645',name:'Cloud PC'},error:null}),
       then:(resolve:(v:unknown)=>unknown)=>{
         if(mutation&&table==='frame_upload_approvals') {
           const id=filters.find(f=>f[0]==='id')?.[1]
@@ -147,4 +148,57 @@ it('unknown provider state does not retire a pending source or send a new prompt
   await syncUploadApprovalNotices(app)
   expect(mocks.rpc.mock.calls.some(([name])=>name==='claim_frame_upload_review_slot')).toBe(false)
   expect(mocks.update).not.toHaveBeenCalled();expect(mocks.deliver).not.toHaveBeenCalled()
+})
+
+it('delivery files keep their decisions but create only the independent package notification',async()=>{
+  slot.package_id='package';slot.slack_channel_id=null;slot.slack_message_ts=null
+  row.source_payload={subfolder:'02_Delivery'}
+  await syncUploadApprovalNotices(app)
+  expect(mocks.deliver).not.toHaveBeenCalled();expect(mocks.update).not.toHaveBeenCalled()
+  expect(mocks.rpc).not.toHaveBeenCalledWith('save_frame_upload_review_receipt',expect.anything())
+  expect(mocks.rpc).toHaveBeenCalledWith('finish_frame_upload_review_notice',expect.objectContaining({p_success:true}))
+  expect(mocks.packages).toHaveBeenCalledWith(app,undefined)
+})
+
+it('a grouped file collision still privately reaches only its original approver',async()=>{
+  slot.package_id='package';slot.slack_channel_id=null;slot.slack_message_ts=null;row.state='collision'
+  await syncUploadApprovalNotices(app,'request')
+  expect(mocks.deliver).toHaveBeenCalledTimes(1)
+  expect(mocks.deliver).toHaveBeenCalledWith(expect.objectContaining({key:'frame-upload-collision:request',channel:'DAPPROVER'}))
+  expect(mocks.packages).toHaveBeenCalledWith(app,'request')
+})
+it('retires historical per-file controls quietly while preserving their receipts',async()=>{
+  slot.package_id='package'
+  await syncUploadApprovalNotices(app)
+  expect(mocks.update).toHaveBeenCalledWith(expect.objectContaining({channel:'GSHARED',ts:'100.1',text:'Upload review moved to the delivery folder card.'}))
+  expect(mocks.rpc).toHaveBeenCalledWith('close_frame_upload_package_legacy_notice',expect.objectContaining({p_slot:'slot',p_package:'package',p_channel:'GSHARED',p_ts:'100.1'}))
+  expect(slot.slack_message_ts).toBe('100.1');expect(mocks.deliver).not.toHaveBeenCalled()
+})
+it('failed package legacy cleanup retains retry state without blocking the owner collision',async()=>{
+  slot.package_id='package';row.state='collision'
+  mocks.update.mockRejectedValue(new Error('message unavailable'))
+  await syncUploadApprovalNotices(app)
+  expect(mocks.rpc).not.toHaveBeenCalledWith('close_frame_upload_package_legacy_notice',expect.anything())
+  expect(mocks.deliver).toHaveBeenCalledWith(expect.objectContaining({channel:'DAPPROVER',key:'frame-upload-collision:request'}))
+  expect(mocks.rpc).toHaveBeenCalledWith('finish_frame_upload_review_notice',expect.objectContaining({p_success:false}))
+})
+it('lost package slot lease stops cleanup and collision writes',async()=>{
+  slot.package_id='package';row.state='collision'
+  mocks.rpc.mockImplementation(async(name:string,args:Record<string,unknown>)=>({data:name==='list_pending_frame_upload_reviews'?slots:name==='claim_frame_upload_review_slot'?contexts.get(String(args.p_id)):name==='renew_frame_upload_review_lease'?false:true,error:null}))
+  await syncUploadApprovalNotices(app)
+  expect(mocks.update).not.toHaveBeenCalled();expect(mocks.deliver).not.toHaveBeenCalled()
+  expect(mocks.rpc).toHaveBeenCalledWith('finish_frame_upload_review_notice',expect.objectContaining({p_success:false}))
+})
+it('blocked package routing defers old-card cleanup without withholding the owner collision',async()=>{
+  slot.package_id='package';row.state='collision'
+  const original=mocks.from.getMockImplementation()!
+  mocks.from.mockImplementation((table:string)=>{
+    const q=original(table)
+    if(table==='frame_upload_review_packages') q.single=async()=>({data:{blocked_reason:'Legacy Slack outcome uncertain'},error:null})
+    return q
+  })
+  await syncUploadApprovalNotices(app)
+  expect(mocks.update).not.toHaveBeenCalled()
+  expect(mocks.deliver).toHaveBeenCalledWith(expect.objectContaining({channel:'DAPPROVER',key:'frame-upload-collision:request'}))
+  expect(mocks.rpc).toHaveBeenCalledWith('finish_frame_upload_review_notice',expect.objectContaining({p_success:false}))
 })

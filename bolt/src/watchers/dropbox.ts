@@ -37,6 +37,7 @@ import { assertExactSource, frameFileReadiness, sourceReadiness, verifySourceLin
 import { processingPollSeconds, renderReadiness } from './render-readiness'
 import { approvalMatches, approvedRenameMatches, type UploadApproval, type UploadSource } from '../../../src/lib/delivery/upload-approval'
 import { assertUploadReviewer, uploadApprovalsEnabled, createUploadApproval, getUploadApproval, updateUploadApproval, claimUploadPost, recordUploadRenameIntent, hasApprovedRename, completedUploadReceipt } from '../../../src/lib/delivery/upload-approval-store'
+import { uploadApprovalUsesPackage } from '../../../src/lib/delivery/upload-package-store'
 
 type JsonRecord = { [key: string]: Json | undefined }
 
@@ -1386,6 +1387,7 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
   console.log(`[dropbox-watcher] folder share reused for ${folderPath}: ${reviewUrl}`)
 
   let progression: RegisteredProjectShare | null = null
+  const packageReview = approval ? await uploadApprovalUsesPackage(approval) : false
   const shouldNotify = shouldNotifyFrameioFolder(folderShare.lastNotifiedAt) &&
     !(await hasRecentFolderNotification(project.id, reviewUrl))
   try {
@@ -1399,6 +1401,7 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
       dropboxRev: d.rev,
       fileName: subfolderLine,
       shareUrl: reviewUrl,
+      notificationDisposition: packageReview ? 'package' : 'separate',
     })
   } catch (err: any) {
     if (err?.message === '__folder_notification_suppressed__') {
@@ -1413,7 +1416,7 @@ export async function handleNewDelivery(app: App, d: Delivery, event: ClaimedDro
   // A durable share event is the notification outbox. If its Sheet half is
   // temporarily unavailable, the recovery sweep will send exactly one post;
   // posting here without that event would create an untracked duplicate.
-  if (shouldNotify && progression?.eventId) {
+  if (shouldNotify && !packageReview && progression?.eventId) {
     await notifyProjectShare(app, {
       project,
       folderLabel: subfolderLine,
@@ -1435,10 +1438,11 @@ export async function reconcilePendingProjectShares(
   limit = 20,
 ): Promise<{ scanned: number; recovered: number; failed: number }> {
   const sb = createAdminClient()
-  const { data: events, error } = await sb.from('project_share_events')
-    .select('id,project_id,file_name,share_url,suggested_milestone,match_confidence,slack_message_ts')
+  const { data: events, error } = await (sb as unknown as import('@supabase/supabase-js').SupabaseClient).from('project_share_events')
+    .select('id,project_id,file_name,share_url,suggested_milestone,match_confidence,slack_message_ts,notification_disposition')
     .eq('status', 'pending')
     .is('slack_message_ts', null)
+    .or('notification_disposition.eq.separate,suggested_milestone.is.null')
     .order('created_at', { ascending: true })
     .limit(limit)
   if (error) throw new Error(`pending project share scan failed: ${error.message}`)
@@ -1447,6 +1451,9 @@ export async function reconcilePendingProjectShares(
   for (const event of events || []) {
     try {
       const progression = await syncProjectShareEvent(event.id)
+      // Package outcomes update the one existing card. Sheet failures still
+      // recover, without falling through to a second completion message.
+      if (event.notification_disposition === 'package') { tally.recovered++; continue }
       if (!progression.eventId) continue
       const { data: project, error: projectError } = await sb.from('projects')
         .select('id,name,client,project_manager_slack_id,external_links')

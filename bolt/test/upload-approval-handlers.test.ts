@@ -10,7 +10,7 @@ import { registerUploadApprovalHandlers, reviewModal } from '../src/watchers/upl
 const name='R&F_Client_Project_Edit_V1.mov'
 let row: UploadApproval
 const handlers=new Map<string,(payload:Record<string,unknown>)=>Promise<void>>()
-const client={views:{update:vi.fn(),open:vi.fn()},chat:{postMessage:vi.fn()}}
+const client={views:{update:vi.fn(),open:vi.fn(),push:vi.fn()},chat:{postMessage:vi.fn()}}
 beforeEach(()=>{
   vi.clearAllMocks(); handlers.clear()
   row={id:'request',workspace_id:'workspace',project_id:'project',state:'awaiting',source_path:'/test.mov',suggested_name:name,
@@ -26,8 +26,25 @@ beforeEach(()=>{
       single:async()=>({data:{id:'workspace'},error:null}),then:(resolve:(v:unknown)=>unknown)=>Promise.resolve({data:[],error:null}).then(resolve)}
     return query
   })
-  const register=(id:unknown,fn:unknown)=>{if(typeof id==='string'&&typeof fn==='function') handlers.set(id,fn as (payload:Record<string,unknown>)=>Promise<void>)}
+  const register=(id:unknown,fn:unknown)=>{if((typeof id==='string'||id instanceof RegExp)&&typeof fn==='function') handlers.set(String(id),fn as (payload:Record<string,unknown>)=>Promise<void>)}
   registerUploadApprovalHandlers({action:register,view:register,client} as unknown as App)
+})
+it('pushes individual review above the folder and does not approve on open or cancel',async()=>{
+  client.views.push.mockResolvedValue({view:{id:'child'}})
+  const handler=handlers.get('/^kit_frame_upload_(review|skip)$/')!
+  await handler({ack:vi.fn(),client,action:{action_id:'kit_frame_upload_review',value:'request'},
+    body:{trigger_id:'trigger',team:{id:'TTEAM'},user:{id:'UPRODUCER'},view:{id:'folder',callback_id:'kit_delivery_package_view'}}})
+  expect(client.views.push).toHaveBeenCalledTimes(1);expect(client.views.open).not.toHaveBeenCalled()
+  expect(client.views.update).toHaveBeenCalledWith(expect.objectContaining({view_id:'child',view:expect.objectContaining({callback_id:'kit_frame_upload_submit'})}))
+  expect(mocks.rpc).not.toHaveBeenCalled();expect(mocks.source).not.toHaveBeenCalled()
+})
+it('repeated package Skip shows the decided result in-place without a fresh DM',async()=>{
+  row.state='approved'
+  const handler=handlers.get('/^kit_frame_upload_(review|skip)$/')!
+  await handler({ack:vi.fn(),client,action:{action_id:'kit_frame_upload_skip',value:'request'},
+    body:{trigger_id:'trigger',team:{id:'TTEAM'},user:{id:'UPRODUCER'},view:{id:'folder',callback_id:'kit_delivery_package_view'}}})
+  expect(mocks.rpc).not.toHaveBeenCalled();expect(client.chat.postMessage).not.toHaveBeenCalled()
+  expect(client.views.update).toHaveBeenCalledWith(expect.objectContaining({view_id:'folder'}))
 })
 function invoke(id:string,metadata:unknown,values:Record<string,unknown>={},user='UPRODUCER') {
   return handlers.get(id)!({ack:vi.fn().mockResolvedValue(undefined),client,body:{team:{id:'TTEAM'},user:{id:user}},

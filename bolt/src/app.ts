@@ -40,6 +40,7 @@ import { scanMissingTime } from './checkins/missing-time'
 import { dispatchAllPendingApprovals } from './brain/approvals'
 import { reconcileBehanceDraftSlack, registerArchiveHandlers } from './archive/handlers'
 import { registerUploadApprovalHandlers, syncUploadApprovalNotices } from './watchers/upload-approval-handlers'
+import { registerUploadPackageHandlers } from './watchers/upload-package-handlers'
 import { enqueueArchiveMedia } from '../../src/lib/archive/media-worker'
 import { reconcileElevenLabsDraftSlack } from './storyboard/elevenlabs-notify'
 import { registerProjectDeletionHandlers } from './project-deletion/handlers'
@@ -153,6 +154,7 @@ const { runProjectControlRecoverySweep } = registerInteractionHandlers(app)
 registerBrainApprovalHandlers(app)
 registerArchiveHandlers(app)
 registerUploadApprovalHandlers(app)
+registerUploadPackageHandlers(app)
 registerProjectDeletionHandlers(app)
 registerOffboardingHandlers(app)
 // Publish actual runtime flags/timezone once at startup; timestamp enrollment is

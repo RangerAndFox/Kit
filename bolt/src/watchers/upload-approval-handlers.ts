@@ -8,6 +8,9 @@ import { decidedUploadMessage } from './upload-approval-card'
 import { assertCollisionOwner, collisionChoices, collisionModal, type CollisionChoice } from './upload-collision'
 import { syncUploadApprovalNotices } from './upload-review-notices'
 import { uploadReviewDiagnostic } from './upload-review-diagnostics'
+import { parseUploadPackageLocation } from '../../../src/lib/delivery/upload-package'
+import { getAuthorizedUploadPackagePage } from '../../../src/lib/delivery/upload-package-store'
+import { uploadPackageModal } from './upload-package-card'
 
 const escape = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
 
@@ -52,7 +55,7 @@ function confirmationModal(row: UploadApproval, choice: CollisionChoice, collisi
 }
 
 export function registerUploadApprovalHandlers(app: App): void {
-  app.action(/kit_frame_upload_(review|skip)/, async ({ ack, body, action, client }) => {
+  app.action(/^kit_frame_upload_(review|skip)$/, async ({ ack, body, action, client }) => {
     const diagnostic = { action: 'action_id' in action ? action.action_id : undefined,
       request: 'value' in action ? action.value : undefined, actor: body.user.id }
     uploadReviewDiagnostic('handler_received', diagnostic)
@@ -67,7 +70,8 @@ export function registerUploadApprovalHandlers(app: App): void {
       const skipping = 'action_id' in action && action.action_id === 'kit_frame_upload_skip'
       if (!skipping) {
         stage = 'open_form'
-        openedView = (await client.views.open({ trigger_id: body.trigger_id, view: {
+        const open = 'view' in body && body.view ? client.views.push.bind(client.views) : client.views.open.bind(client.views)
+        openedView = (await open({ trigger_id: body.trigger_id, view: {
           type: 'modal', title: { type: 'plain_text', text: 'Upload review' }, close: { type: 'plain_text', text: 'Close' },
           blocks: [{ type: 'section', text: { type: 'plain_text', text: 'Loading the request and checking your project access…' } }],
         } })).view?.id
@@ -83,6 +87,11 @@ export function registerUploadApprovalHandlers(app: App): void {
         if (error) throw error
         if (!data) throw new Error(decidedUploadMessage(await getUploadApproval(row.id)))
         await refreshDecisionCard(app, row.id)
+        if ('view' in body && body.view?.callback_id === 'kit_delivery_package_view') {
+          const where = parseUploadPackageLocation(body.view.private_metadata)
+          const page = await getAuthorizedUploadPackagePage(where.id, where.after, body.team?.id || '', body.user.id)
+          await client.views.update({ view_id: body.view.id, view: uploadPackageModal(page, where.after) })
+        }
       } else {
         stage = 'populate_form'
         await client.views.update({ view_id: openedView!, view: reviewModal(row) })
@@ -96,7 +105,12 @@ export function registerUploadApprovalHandlers(app: App): void {
         type: 'modal', title: { type: 'plain_text', text: 'Review needed' }, close: { type: 'plain_text', text: 'Close' },
         blocks: [{ type: 'section', text: { type: 'plain_text', text } }],
         } })
-        else await client.chat.postMessage({ channel: body.user.id, text })
+        else if ('view' in body && body.view?.callback_id === 'kit_delivery_package_view') {
+          await client.views.update({ view_id: body.view.id, view: {
+            type: 'modal', title: { type: 'plain_text', text: 'Review needed' }, close: { type: 'plain_text', text: 'Close' },
+            blocks: [{ type: 'section', text: { type: 'plain_text', text } }],
+          } })
+        } else await client.chat.postMessage({ channel: body.user.id, text })
       } catch (feedbackError) {
         uploadReviewDiagnostic('error_feedback_failed', { ...diagnostic, error: feedbackError })
       }
