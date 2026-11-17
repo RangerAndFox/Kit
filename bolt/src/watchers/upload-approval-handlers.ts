@@ -8,6 +8,8 @@ import { decidedUploadMessage } from './upload-approval-card'
 import { assertCollisionOwner, collisionChoices, collisionModal, type CollisionChoice } from './upload-collision'
 import { syncUploadApprovalNotices } from './upload-review-notices'
 import { uploadReviewDiagnostic } from './upload-review-diagnostics'
+import { folderUploadsEnabled } from '../../../src/lib/delivery/upload-folder'
+import { registerUploadFolderHandlers } from './upload-folder-handlers'
 
 const escape = (s: string) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
 
@@ -52,6 +54,7 @@ function confirmationModal(row: UploadApproval, choice: CollisionChoice, collisi
 }
 
 export function registerUploadApprovalHandlers(app: App): void {
+  registerUploadFolderHandlers(app)
   app.action(/kit_frame_upload_(review|skip)/, async ({ ack, body, action, client }) => {
     const diagnostic = { action: 'action_id' in action ? action.action_id : undefined,
       request: 'value' in action ? action.value : undefined, actor: body.user.id }
@@ -60,6 +63,7 @@ export function registerUploadApprovalHandlers(app: App): void {
     let stage = 'ack'
     try {
       await ack()
+      if (folderUploadsEnabled()) throw new Error('Use the shared folder request’s UPLOAD TO FRAME or CANCEL UPLOAD buttons. Individual-file approval is no longer needed.')
       if (!('value' in action) || !action.value || !('trigger_id' in body)) {
         stage = 'invalid_action'
         throw new Error('This button is missing its review context. Please reopen the original request.')
@@ -110,6 +114,7 @@ export function registerUploadApprovalHandlers(app: App): void {
       blocks: [{ type: 'section', text: { type: 'plain_text', text: 'Checking the source. Nothing has changed yet.' } }],
     } })
     try {
+      if (folderUploadsEnabled()) throw new Error('Use the latest shared folder request. This older individual-file form cannot approve an upload.')
       const row = await getUploadApproval(view.private_metadata)
       await authorize(row, body.team?.id || '', body.user.id)
       if (row.state !== 'awaiting') throw new Error(decidedUploadMessage(row))
@@ -214,6 +219,7 @@ export function registerUploadApprovalHandlers(app: App): void {
       await authorize(row, body.team?.id || '', body.user.id)
       if (input.collisionVersion !== undefined) assertCollisionOwner(row, body.user.id, input.collisionVersion)
       else {
+        if (folderUploadsEnabled()) throw new Error('Use the latest shared folder request. This older individual-file form cannot approve an upload.')
         if (row.state !== 'awaiting') throw new Error(decidedUploadMessage(row))
         if (input.decision !== 'new') throw new Error('This form is outdated. Reopen Review & upload; duplicate decisions are now requested after approval.')
       }

@@ -80,6 +80,12 @@ mechanism in code before assuming full compliance.
    Outcome timestamps and the slot generation fence card acknowledgments so
    replacements or approvals arriving during a send remain dirty for recovery.
    Railway's existing inbox sweep owns this flow; no second cursor or cron.
+   Folder review now owns the producer/CD Slack card and sender lease. A batch
+   is the first directory under Client Progress/Delivery, including nested
+   video/accessibility files. Exact ID/version manifests and a project-locked
+   atomic decision let only one reviewer win; later arrivals or changed sources
+   never inherit approval. Per-file receipts, rename proof and collision ownership
+   remain authoritative. Old individual controls are rejected after rollout.
    Same-name Frame collisions pause before source rename/upload and belong
    solely to the original approver. Resolution is actor/version-fenced; shared
    review cards cannot transfer ownership. Replace is an explicit version-add,

@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { App } from '@slack/bolt'
 import type { UploadApproval } from '../../src/lib/delivery/upload-approval'
 const mocks = vi.hoisted(()=>({from:vi.fn(),rpc:vi.fn(),get:vi.fn(),source:vi.fn(),conflicts:vi.fn(),authorize:vi.fn()}))
@@ -12,6 +12,7 @@ let row: UploadApproval
 const handlers=new Map<string,(payload:Record<string,unknown>)=>Promise<void>>()
 const client={views:{update:vi.fn(),open:vi.fn()},chat:{postMessage:vi.fn()}}
 beforeEach(()=>{
+  vi.stubEnv('FRAMEIO_FOLDER_UPLOADS_ENABLED','false')
   vi.clearAllMocks(); handlers.clear()
   row={id:'request',workspace_id:'workspace',project_id:'project',state:'awaiting',source_path:'/test.mov',suggested_name:name,
     approved_name:name,approved_by:'UPRODUCER',approval_version:1,
@@ -29,6 +30,7 @@ beforeEach(()=>{
   const register=(id:unknown,fn:unknown)=>{if(typeof id==='string'&&typeof fn==='function') handlers.set(id,fn as (payload:Record<string,unknown>)=>Promise<void>)}
   registerUploadApprovalHandlers({action:register,view:register,client} as unknown as App)
 })
+afterEach(()=>vi.unstubAllEnvs())
 function invoke(id:string,metadata:unknown,values:Record<string,unknown>={},user='UPRODUCER') {
   return handlers.get(id)!({ack:vi.fn().mockResolvedValue(undefined),client,body:{team:{id:'TTEAM'},user:{id:user}},
     view:{id:'view',private_metadata:typeof metadata==='string'?metadata:JSON.stringify(metadata),state:{values}}})
