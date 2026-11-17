@@ -12,6 +12,7 @@ const click = { ack: vi.fn(), body: { trigger_id: 'SECRET', team: { id: 'T1' }, 
   action: { action_id: 'kit_frame_upload_review', value: 'request' }, client }
 let handler: (input: typeof click) => Promise<void>
 beforeEach(() => {
+  vi.stubEnv('FRAMEIO_FOLDER_UPLOADS_ENABLED','false')
   vi.resetAllMocks()
   registerUploadApprovalHandlers({ action: (key: string | RegExp, callback: typeof handler) => {
     if (key instanceof RegExp && key.test(click.action.action_id)) handler = callback
@@ -22,8 +23,14 @@ beforeEach(() => {
   const query = { select: () => query, eq: () => query, single: async () => ({ data: { id: 'w1' } }) }
   mocks.db.mockReturnValue({ from: () => query })
 })
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => {vi.restoreAllMocks();vi.unstubAllEnvs()})
 describe('upload review button diagnostics', () => {
+  it('old file buttons cannot approve after the folder rollout', async () => {
+    vi.stubEnv('FRAMEIO_FOLDER_UPLOADS_ENABLED','true')
+    await handler(click)
+    expect(mocks.get).not.toHaveBeenCalled()
+    expect(client.chat.postMessage).toHaveBeenCalledWith(expect.objectContaining({text:expect.stringContaining('shared folder request')}))
+  })
   it('opens immediately before DB reads, then authorizes and populates without uploading', async () => {
     await handler(click)
     expect(click.ack).toHaveBeenCalledOnce()

@@ -8,6 +8,8 @@ import { deliverSlackOnce } from '../../../src/lib/slack/durable-delivery'
 import { reconcilePendingUploadApproval } from './dropbox'
 import { uploadApprovalCard } from './upload-approval-card'
 import { collisionCard } from './upload-collision'
+import { folderUploadsEnabled } from '../../../src/lib/delivery/upload-folder'
+import { syncUploadFolderNotices } from './upload-folder-notices'
 
 type Slot = { id:string;workspace_id:string;project_id:string;current_approval_id:string;anchor_approval_id:string;generation:number;slack_channel_id:string|null;slack_message_ts:string|null }
 type Context = {slot:Slot;current:UploadApproval;completed:UploadApproval|null;legacy:UploadApproval[];dirty_approvals:Array<{id:string;updated_at:string}>}
@@ -16,6 +18,7 @@ type Context = {slot:Slot;current:UploadApproval;completed:UploadApproval|null;l
  * rows stay immutable approval identities; only the shared card is replaced. */
 export async function syncUploadApprovalNotices(app:App,requestId?:string):Promise<void> {
   if(!uploadApprovalsEnabled()) return
+  if(folderUploadsEnabled()) return syncUploadFolderNotices(app,requestId)
   const db=createAdminClient() as unknown as SupabaseClient
   const rpc=async<T>(name:string,args:Record<string,unknown>):Promise<T>=>{
     const {data,error}=await db.rpc(name,args)

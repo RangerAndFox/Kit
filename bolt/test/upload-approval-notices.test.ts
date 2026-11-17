@@ -13,6 +13,7 @@ type Context={slot:Slot;current:UploadApproval;completed:UploadApproval|null;leg
 let row:UploadApproval,slot:Slot,contexts:Map<string,Context>,rows:Map<string,UploadApproval>,slots:Slot[]
 const app={client:{chat:{update:mocks.update},conversations:{open:mocks.open}}} as unknown as App
 beforeEach(()=>{
+  vi.stubEnv('FRAMEIO_FOLDER_UPLOADS_ENABLED','false')
   vi.resetAllMocks()
   row={id:'request',workspace_id:'workspace',project_id:'project',review_slot_id:'slot',state:'awaiting',
     source_path:'/edit.mp4',suggested_name:'R&F_A_B_Edit_V3.mp4',source_payload:{subfolder:'01_Client Progress'},
@@ -46,7 +47,7 @@ beforeEach(()=>{
   })
   vi.spyOn(console,'warn').mockImplementation(()=>{})
 })
-afterEach(()=>vi.restoreAllMocks())
+afterEach(()=>{vi.restoreAllMocks();vi.unstubAllEnvs()})
 
 it('updates the adopted card quietly; completed upload stays complete and changed source needs its own decision',async()=>{
   await syncUploadApprovalNotices(app)
