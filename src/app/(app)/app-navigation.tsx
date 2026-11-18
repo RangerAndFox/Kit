@@ -3,11 +3,12 @@
 import Image from 'next/image'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { FolderKanban, Gauge, LockKeyhole, Settings, Smile } from 'lucide-react'
+import { Building2, FolderKanban, Gauge, LockKeyhole, Settings, Smile } from 'lucide-react'
 import styles from './app-shell.module.css'
 
 const links = [
   { href: '/control-center', label: 'Control Center', icon: Gauge },
+  { href: '/working-world', label: 'Working World', icon: Building2 },
   { href: '/culture-center', label: 'Culture Center', icon: Smile },
   { href: '/projects', label: 'Projects', icon: FolderKanban },
   { href: '/settings', label: 'Settings', icon: Settings },
