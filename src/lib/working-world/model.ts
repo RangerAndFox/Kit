@@ -11,7 +11,7 @@ export function recordedState(status: string, at: string | null, now: number): W
   if (WAITING.has(status)) return 'waiting'
   if (ACTIVE.has(status)) {
     const stamp = at ? Date.parse(at) : NaN
-    return !Number.isFinite(stamp) || now - stamp > 30 * 60_000 ? 'unknown' : 'working'
+    return !Number.isFinite(stamp) || stamp > now + 60_000 || now - stamp > 30 * 60_000 ? 'unknown' : 'working'
   }
   return IDLE.has(status) ? 'idle' : 'unknown'
 }

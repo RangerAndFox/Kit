@@ -70,3 +70,11 @@ it('source errors are isolated and bounded queues report truncation honestly', a
   assert.equal(data.agents.find(a => a.id === 'delivery')?.tasks.length, 25)
   assert.ok(!JSON.stringify(data).includes('secret-raw-provider-output'))
 })
+it('missing health evidence is unknown and only relevant providers are queried', async () => {
+  const db = fake()
+  const data = await loadWorkingWorld(scope, db.client)
+  assert.equal(data.agents.find(a => a.id === 'delivery')?.state, 'unknown')
+  const health = db.calls.find(c => c.table === 'system_health')!
+  assert.ok(health.methods.some(m => m.name === 'in' && m.args[0] === 'key'))
+  assert.ok(health.methods.some(m => m.name === 'limit' && m.args[0] === 8))
+})

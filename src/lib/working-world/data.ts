@@ -8,6 +8,7 @@ type Result = { data: unknown; error: unknown }
 const LIMIT = 25
 const text = (row: Row, key: string) => typeof row[key] === 'string' ? row[key] as string : ''
 const terminal = '(complete,completed,cancelled,canceled,skipped,superseded,logged,synced,success)'
+const PROVIDER_AGENTS: Record<string, string> = { dropbox: 'delivery', frameio: 'delivery', 'dropbox-inbox': 'delivery', 'delivery-notifications': 'delivery', google: 'production', 'control-outbox': 'production', harvest: 'finance' }
 interface SourceSpec { id: string; agent: string; table: string; columns: string; status: string; order: string; scope: 'workspace' | 'project' | 'member' | 'studio'; history?: boolean }
 export const WORLD_SOURCE_SPECS: readonly SourceSpec[] = [
   { id: 'runs', agent: 'kit', table: 'agent_runs', columns: 'id,run_type,status,error,started_at,completed_at', status: 'status', order: 'started_at', scope: 'workspace' },
@@ -58,7 +59,7 @@ export async function loadWorkingWorld(args: { workspaceId: string; workspaceNam
   const projectMap = new Map((projects || []).map(p => [text(p, 'id'), `${text(p, 'project_code')} — ${text(p, 'name')}`]))
   const soleStudio = !studioResult.error && studioResult.data?.length === 1 && studioResult.data[0].id === args.workspaceId
   const slackTeam = studioResult.data?.find(row => row.id === args.workspaceId)?.slack_team_id
-  const healthPromise = soleStudio ? read('health', db.from('system_health').select('key,status,detail,checked_at').order('key').limit(100).abortSignal(AbortSignal.timeout(6000))) : Promise.resolve([] as Row[])
+  const healthPromise = soleStudio ? read('health', db.from('system_health').select('key,status,detail,checked_at').in('key', Object.keys(PROVIDER_AGENTS)).order('key').limit(8).abortSignal(AbortSignal.timeout(6000))) : Promise.resolve([] as Row[])
   const results = await Promise.all(WORLD_SOURCE_SPECS.map(async spec => {
     if ((spec.scope === 'project' && !projectScopeReady) || (spec.scope === 'member' && !memberScopeReady)) {
       sources.push({ id: spec.id, available: false, checkedAt: observedAt, truncated: false }); return { spec, rows: [] as Row[] }
@@ -106,13 +107,16 @@ export async function loadWorkingWorld(args: { workspaceId: string; workspaceNam
   if (!soleStudio) sources.push({ id: 'health', available: false, checkedAt: observedAt, truncated: false })
   const health = healthRows.flatMap(row => {
     const key = text(row, 'key')
-    const agentId = /^(dropbox|frameio|dropbox-inbox|delivery-notifications)$/.test(key) ? 'delivery' : key === 'google' || key === 'control-outbox' ? 'production' : key === 'harvest' ? 'finance' : null
+    const agentId = PROVIDER_AGENTS[key]
     if (!agentId) return []
     const at = text(row, 'checked_at') || null
-    const fresh = at && now - Date.parse(at) < 20 * 60_000
+    const fresh = at && Date.parse(at) <= now + 60_000 && now - Date.parse(at) < 20 * 60_000
     const state = !fresh || text(row, 'status') === 'unknown' ? 'unknown' as const : text(row, 'status') === 'down' ? 'blocked' as const : 'idle' as const
     return [{ agentId, state, detail: fresh ? `${key}: ${safeDetail(row.detail) || text(row, 'status')}` : `${key}: provider health evidence is stale.`, at }]
   })
+  if (sources.find(s => s.id === 'health')?.available) for (const [key, agentId] of Object.entries(PROVIDER_AGENTS)) {
+    if (!healthRows.some(row => row.key === key)) health.push({ agentId, state: 'unknown', detail: `${key}: no provider health evidence is recorded.`, at: null })
+  }
   if (!sources.find(s => s.id === 'health')?.available) for (const agentId of ['delivery', 'production', 'finance']) health.push({ agentId, state: 'unknown', detail: 'Provider health feed unavailable.', at: null })
   return buildWorldSnapshot({ workspaceName: args.workspaceName, observedAt, tasks: [...tasks.values()], sources, health })
 }

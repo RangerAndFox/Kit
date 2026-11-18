@@ -17,6 +17,7 @@ it('distinguishes approvals, failures, completions and stale running evidence', 
   assert.equal(recordedState('running', at, now), 'working')
   assert.equal(recordedState('running', '2026-11-17T00:00:00Z', now), 'unknown')
   assert.equal(recordedState('running', null, now), 'unknown')
+  assert.equal(recordedState('running', '2030-01-01T00:00:00Z', now), 'unknown')
   assert.equal(recordedState('unexpected', at, now), 'unknown')
 })
 it('quiet observed feeds are idle, not fabricated working agents', () => {
