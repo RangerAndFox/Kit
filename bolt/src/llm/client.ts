@@ -22,6 +22,6 @@ export const anthropic = new Anthropic({
 /** Hard ceiling for any single Anthropic call, used as a fallback timeout */
 export const LLM_TIMEOUT_MS = 30_000
 
-/** Models — pinned IDs per design doc */
-export const ORCHESTRATOR_MODEL = 'claude-opus-4-7' as const
+/** Default conversational/caption model; specialists remain independently pinned. */
+export const ORCHESTRATOR_MODEL = 'claude-opus-5-5' as const
 export const SPECIALIST_MODEL = 'claude-haiku-4-5-20251001' as const

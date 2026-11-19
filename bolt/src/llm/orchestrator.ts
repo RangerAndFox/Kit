@@ -6,7 +6,7 @@
  *
  * Loop:
  *   1. Build messages from conversation history + new user message.
- *   2. Call Sonnet with KIT_SYSTEM_PROMPT and orchestrator tools.
+ *   2. Call the default model with KIT_SYSTEM_PROMPT and orchestrator tools.
  *   3. If stop_reason is tool_use, run the specialist for that agent,
  *      append tool_result, and continue the loop.
  *   4. When stop_reason is end_turn, return the assistant text.
@@ -93,19 +93,19 @@ export async function runOrchestrator(
     }
   }
 
+  // Opus 5.5 binds thinking signatures to this prefix. Keep even the date
+  // stable across tool calls (including a run spanning studio midnight).
+  const system = [
+    { type: 'text' as const, text: KIT_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' as const } },
+    { type: 'text' as const, text: currentDateLine() },
+  ]
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const response = await anthropic.messages.create({
       model: ORCHESTRATOR_MODEL,
-      max_tokens: 1024,
-      system: [
-        {
-          type: 'text',
-          text: KIT_SYSTEM_PROMPT,
-          cache_control: { type: 'ephemeral' },
-        },
-        // Uncached (changes daily) so the static prompt above stays cacheable.
-        { type: 'text', text: currentDateLine() },
-      ],
+      // The cap includes adaptive thinking as well as the visible reply.
+      max_tokens: 4096,
+      output_config: { effort: 'medium' },
+      system,
       tools: tools as any,
       messages: messages as any,
     })

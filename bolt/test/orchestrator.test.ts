@@ -17,6 +17,8 @@ vi.mock('../src/llm/specialist', () => ({
 
 import { runOrchestrator } from '../src/llm/orchestrator'
 import { resetMemoryForTest } from '../src/llm/memory'
+import { ORCHESTRATOR_MODEL, SPECIALIST_MODEL } from '../src/llm/client'
+import * as dateContext from '../src/llm/date-context'
 
 const fakeUser = {
   teamMemberId: 'tm1',
@@ -34,6 +36,42 @@ beforeEach(() => {
 })
 
 describe('runOrchestrator', () => {
+  it('uses Opus 5.5 without changing the specialist model', () => {
+    expect(ORCHESTRATOR_MODEL).toBe('claude-opus-5-5')
+    expect(SPECIALIST_MODEL).toBe('claude-haiku-4-5-20251001')
+  })
+
+  it('preserves signed thinking and a stable prefix across tool calls', async () => {
+    const dateLine = vi.spyOn(dateContext, 'currentDateLine')
+      .mockReturnValueOnce('Current date: before midnight')
+      .mockReturnValue('Current date: after midnight')
+    const content = [
+      { type: 'thinking', thinking: '', signature: 'opaque-signature' },
+      { type: 'tool_use', id: 'toolu_a', name: 'ask_harvest', input: { query: 'budget' } },
+    ]
+    createMock.mockResolvedValueOnce({ stop_reason: 'tool_use', content })
+      .mockResolvedValueOnce({ stop_reason: 'end_turn', content: [
+        { type: 'thinking', thinking: 'private reasoning', signature: 'final-signature' },
+        { type: 'text', text: 'Budget ready.' },
+      ] })
+    runSpecialistMock.mockResolvedValueOnce('Budget ready.')
+    try {
+      const result = await runOrchestrator({ teamId: 'T1', channel: 'C1', userId: 'U1', user: fakeUser, message: 'Check our budget' })
+      expect(result.reply).toBe('Budget ready.')
+      expect(dateLine).toHaveBeenCalledOnce()
+      const [first, second] = createMock.mock.calls.map(call => call[0])
+      expect(first).toMatchObject({ model: 'claude-opus-5-5', max_tokens: 4096, output_config: { effort: 'medium' } })
+      expect(second.system).toBe(first.system)
+      expect(second.tools).toBe(first.tools)
+      expect(second.messages[1].content).toBe(content)
+      for (const request of [first, second]) {
+        for (const unsupported of ['thinking', 'temperature', 'top_p', 'top_k', 'tool_choice']) expect(request).not.toHaveProperty(unsupported)
+      }
+    } finally {
+      dateLine.mockRestore()
+    }
+  })
+
   it('explains onboarding before offering to start, without any model or action calls', async () => {
     const openCommand = vi.fn()
     const result = await runOrchestrator({ teamId: 'T1', channel: 'D1', userId: 'U1', user: fakeUser, message: 'How do I onboard an artist?', openCommand })

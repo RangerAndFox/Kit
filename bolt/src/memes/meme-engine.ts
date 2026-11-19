@@ -144,7 +144,9 @@ Rules:
 
   const res = await anthropic.messages.create({
     model: ORCHESTRATOR_MODEL,
-    max_tokens: 400,
+    // Opus 5.5 always thinks; leave room for the final caption JSON.
+    max_tokens: 2048,
+    output_config: { effort: 'low' },
     system,
     messages: [{ role: 'user', content: `Write the meme for: ${briefing}` }],
   }, { signal: AbortSignal.timeout(30_000) })

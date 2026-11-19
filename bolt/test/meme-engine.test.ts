@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { App } from '@slack/bolt'
 
 const { createCaption } = vi.hoisted(() => ({ createCaption: vi.fn() }))
-vi.mock('../src/llm/client', () => ({ anthropic: { messages: { create: createCaption } }, ORCHESTRATOR_MODEL: 'test' }))
+vi.mock('../src/llm/client', async importOriginal => ({
+  ...await importOriginal<typeof import('../src/llm/client')>(),
+  anthropic: { messages: { create: createCaption } },
+}))
 vi.mock('../src/culture/runner', () => ({ managedTimesheet: async () => null }))
 import { CELEBRATION_TEMPLATES, isMemeImageUrl, normalizeImageCaption, postMeme, renderMemeImage } from '../src/memes/meme-engine'
 import { postWeeklyTimesheetMeme } from '../src/memes/timesheet-meme'
@@ -62,6 +65,22 @@ describe('image caption boundary', () => {
 })
 
 describe('Slack delivery and public-image privacy', () => {
+  it.each(['celebration', 'timesheet'])('reads %s caption JSON after Opus thinking blocks', async kind => {
+    createCaption.mockResolvedValueOnce({ content: [
+      { type: 'thinking', thinking: '', signature: 'opaque-signature' },
+      { type: 'text', text: JSON.stringify({ boxes: ['Files ready', 'Teamwork wins'] }) },
+    ] })
+    const { app, postMessage } = slack()
+    const result = kind === 'celebration'
+      ? await postMeme(app, { channel: 'C_FIXTURE', headline: 'Files ready', briefing: '', publicOccasion: 'delivery_prepared', templateIndex: 1 })
+      : await postWeeklyTimesheetMeme(app, 1)
+    expect(result.posted).toBe(true)
+    expect(postMessage).toHaveBeenCalledOnce()
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(createCaption.mock.calls[0][0]).toMatchObject({ model: 'claude-opus-5-5', max_tokens: 2048, output_config: { effort: 'low' } })
+    expect(JSON.stringify(postMessage.mock.calls)).not.toContain('opaque-signature')
+  })
+
   it.each(['image', 'text', 'empty'] as const)('keeps the project beneath the %s meme in one acknowledged post', async mode => {
     if (mode === 'text') captions(['Files ready', 'Team says 🎉'])
     if (mode === 'empty') captions([])
