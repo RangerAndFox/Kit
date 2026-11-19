@@ -63,17 +63,20 @@ export async function runArchiveJob(jobId: string): Promise<any> {
 
   const results = { ...(job.results || {}) }
   const failures: string[] = []
+  let requiredStep = 'validate_source'
   try {
     await progress(jobId, jobClaimToken, 'validating', 'Validating the approved Dropbox source video…')
     const source = await durableStep(jobId, workerId, 'validate_source', () => validateDropboxVideo(job!.source_video_path))
 
     await progress(jobId, jobClaimToken, 'preparing_media', 'Creating the standardized Dropbox archive and copying the approved video…')
+    requiredStep = 'prepare_dropbox'
     const prepared = await durableStep(jobId, workerId, 'prepare_dropbox', async () => {
       const output = await prepareDropboxArchive(job!.project_snapshot, source)
       const folderUrl = await getDropboxSharedLink(output.folderPath)
       return { ...output, folderUrl }
     })
     results.dropbox = { status: 'prepared', folderPath: prepared.folderPath, folderUrl: prepared.folderUrl }
+    requiredStep = 'finalize_archive'
     job = await updateClaimedArchiveJob(jobId, jobClaimToken, { results } as any)
 
     let archiveMedia = prepared.media || []
@@ -161,7 +164,7 @@ export async function runArchiveJob(jobId: string): Promise<any> {
   } catch (error: any) {
     job = await updateClaimedArchiveJob(jobId, jobClaimToken, {
       status: 'failed', results, error: error?.message || String(error),
-      progress: { message: 'Archive preparation stopped before completion.' },
+      progress: { message: 'Archive preparation stopped before completion.', failed_step: requiredStep },
       completed_at: new Date().toISOString(),
       claim_token: null,
       claimed_by: null,
