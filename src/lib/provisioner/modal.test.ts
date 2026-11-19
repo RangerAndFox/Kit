@@ -50,6 +50,13 @@ describe('buildNewProjectModal — Client Contact input', () => {
     }
   })
 
+  it('retires Project Type without removing Workback Style', () => {
+    const byId = blocksById()
+    assert.equal(byId.project_type, undefined)
+    assert.ok(byId.workback_template)
+    assert.doesNotMatch(JSON.stringify(buildNewProjectModal('C123').blocks), /Project Type/)
+  })
+
   it('requires both schedule dates and explains producer approval', () => {
     const modal = buildNewProjectModal('D1') as any
     const byId = Object.fromEntries(modal.blocks.filter((block: any) => block.block_id).map((block: any) => [block.block_id, block]))
@@ -89,12 +96,12 @@ describe('buildUpdateProjectModal — pre-fill', () => {
   })
 
   it('shares the create modal block_ids so extraction is reusable', () => {
-    for (const id of ['project_number', 'client_name', 'client_contact', 'project_name', 'project_type', 'project_manager', 'creative_director', 'start_date', 'deadline', 'description']) {
+    for (const id of ['project_number', 'client_name', 'client_contact', 'project_name', 'project_manager', 'creative_director', 'start_date', 'deadline', 'description']) {
       assert.ok(byId[id], `${id} present`)
     }
   })
 
-  it('pre-fills text, user, date, and select fields from the snapshot', () => {
+  it('pre-fills text, user, and date fields from the snapshot', () => {
     assert.equal(byId.project_number.element.initial_value, '2601')
     assert.equal(byId.client_name.element.initial_value, 'Nike')
     assert.equal(byId.project_name.element.initial_value, 'Summer Campaign')
@@ -102,7 +109,7 @@ describe('buildUpdateProjectModal — pre-fill', () => {
     assert.equal(byId.creative_director.element.initial_user, 'U_CD')
     assert.equal(byId.start_date.element.initial_date, '2026-01-01')
     assert.equal(byId.deadline.element.initial_date, '2026-03-01')
-    assert.equal(byId.project_type.element.initial_option.value, 'Brand Video')
+    assert.equal(byId.project_type, undefined)
   })
 
   it('omits budget, services, and team_members inputs', () => {
@@ -116,15 +123,15 @@ describe('buildUpdateProjectModal — pre-fill', () => {
     const ids: Record<string, any> = {}
     for (const b of m.blocks as any[]) if (b.block_id) ids[b.block_id] = b
     assert.equal(ids.creative_director.element.initial_user, undefined) // no CD → no initial_user
-    assert.equal(ids.project_type.element.initial_option, undefined)
+    assert.equal(ids.project_type, undefined)
   })
 
-  it('marks Producer/Project Type/Client optional so a Harvest-synced (null-those-fields) project is still submittable', () => {
+  it('keeps optional identity/owner fields submittable for Harvest-synced projects', () => {
     // syncProjectsFromHarvest inserts active projects with null project_manager,
     // null project_type, and a possibly-null client; a required field with no
     // value would make Slack reject ANY edit to such a project.
     assert.equal(byId.project_manager.optional, true)
-    assert.equal(byId.project_type.optional, true)
+    assert.equal(byId.project_type, undefined)
     assert.equal(byId.client_name.optional, true)
     assert.equal(byId.project_number.optional, true)
   })

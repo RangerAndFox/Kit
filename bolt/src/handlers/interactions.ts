@@ -1032,7 +1032,6 @@ export function registerInteractionHandlers(app: App) {
       projectName: values.project_name?.val?.value || '',
       clientName: values.client_name?.val?.value || '',
       clientContact: values.client_contact?.val?.value || undefined,
-      projectType: values.project_type?.val?.selected_option?.value || 'Other',
       projectManager: values.project_manager?.val?.selected_user || userId,
       creativeDirector: values.creative_director?.val?.selected_user || undefined,
       teamMembers: values.team_members?.val?.selected_users || [],
@@ -1332,7 +1331,6 @@ export function registerInteractionHandlers(app: App) {
             name: form.projectName,
             client: form.clientName,
             project_code: projectCode,
-            project_type: form.projectType,
             status: 'provisioning',
             start_date: form.startDate || null,
             target_delivery: form.deadline || null,
@@ -1431,7 +1429,6 @@ export function registerInteractionHandlers(app: App) {
         clientName: form.clientName,
         projectNumber: form.projectNumber,
         projectCode,
-        projectType: form.projectType,
         workspaceId,
         // Identity + invitees so Slack channel auto-invites the requester + PM + team.
         slackUserId: userId,
@@ -1616,7 +1613,6 @@ export function registerInteractionHandlers(app: App) {
               dropboxUrl: serviceResults.dropbox?.url,
               harvestUrl: serviceResults.harvest?.url,
               boordsUrl: serviceResults.boords?.url,
-              projectType: form.projectType,
               workbackTemplate: form.workbackTemplate,
               scheduleStatus: 'Draft',
               milestoneCount: form.milestoneCount,
@@ -1775,7 +1771,6 @@ export function registerInteractionHandlers(app: App) {
       clientName: values.client_name?.val?.value || '',
       clientContact: values.client_contact?.val?.value || undefined,
       projectName: values.project_name?.val?.value || '',
-      projectType: values.project_type?.val?.selected_option?.value || undefined,
       projectManager: values.project_manager?.val?.selected_user || undefined,
       creativeDirector: values.creative_director?.val?.selected_user || undefined,
       startDate: values.start_date?.val?.selected_date || undefined,
@@ -2018,7 +2013,6 @@ export function registerInteractionHandlers(app: App) {
             if (changed.has('client')) ownedFields.clientName = f.clientName
             if (changed.has('client_contact')) ownedFields.clientContact = f.clientContact
             if (changed.has('project_name')) ownedFields.projectName = f.projectName
-            if (changed.has('project_type')) ownedFields.projectType = f.projectType
             if (changed.has('start_date')) ownedFields.startDate = f.startDate
             if (changed.has('deadline')) ownedFields.deadline = f.deadline
             // For a CD/Producer CHANGED to a real user, a failed display-name
@@ -2077,7 +2071,6 @@ export function registerInteractionHandlers(app: App) {
           if (changed.has('project_name')) patch.name = f.projectName
           if (changed.has('client')) patch.client = f.clientName || undefined
           if (changed.has('project_number') || changed.has('client')) patch.project_code = derived.projectCode
-          if (changed.has('project_type')) patch.project_type = f.projectType || null
           if (changed.has('start_date')) patch.start_date = f.startDate || null
           if (changed.has('deadline')) patch.target_delivery = f.deadline || null
           if (changed.has('description')) patch.brief_summary = f.description || null
@@ -2118,7 +2111,6 @@ export function registerInteractionHandlers(app: App) {
               clientName: fresh.clientName || f.clientName,
               clientContact: f.clientContact,
               projectName: fresh.projectName || f.projectName,
-              projectType: f.projectType,
               startDate: f.startDate,
               deadline: f.deadline,
             },

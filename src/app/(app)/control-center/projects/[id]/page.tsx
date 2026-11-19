@@ -24,7 +24,7 @@ export default async function ControlCenterProjectPage({ params }: { params: Pro
         <header className="border-b border-white/10 pb-6">
           <Link href="/control-center" className="mb-5 inline-flex items-center gap-2 text-sm text-indigo-300 hover:text-indigo-200"><ArrowLeft size={15} /> Control Center</Link>
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-            <div><p className="font-mono text-sm text-indigo-300">{p.code}</p><h1 className="mt-1 text-3xl font-semibold tracking-tight sm:text-4xl">{p.name}</h1><p className="mt-2 text-[#9098a8]">{p.client} · {p.projectType || 'Project'}</p></div>
+            <div><p className="font-mono text-sm text-indigo-300">{p.code}</p><h1 className="mt-1 text-3xl font-semibold tracking-tight sm:text-4xl">{p.name}</h1><p className="mt-2 text-[#9098a8]">{p.client}</p></div>
             <div className="flex flex-wrap items-center gap-3"><span className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${tone(p.status)}`}>{title(p.status)}</span><ProjectActions projectId={p.id} projectCode={p.code} canReconcile={data.actions.canReconcile} retryableBehanceJobId={data.actions.retryableBehanceJobId} /></div>
           </div>
         </header>

@@ -19,6 +19,8 @@ import {
   MASTER_HEADERS,
   headerToA1Column,
   GENERATED_VIEW_NOTICE,
+  RF_PRODUCTION_PROJECT_HEADERS,
+  withoutProjectTypeRows,
   type SheetCell,
 } from './render'
 
@@ -191,6 +193,32 @@ describe('headerToA1Column', () => {
     assert.equal(headerToA1Column('Frame.io'), 'R')
     assert.equal(headerToA1Column('Dropbox'), 'S')
     assert.equal(headerToA1Column('Delivery Link'), 'Y')
+  })
+  it('retains the retired column slot and every later physical sync address', () => {
+    assert.equal(RF_PRODUCTION_PROJECT_HEADERS[4], 'Project Type')
+    assert.equal(headerToA1Column('Status', 'rf-production-v1'), 'F')
+    assert.equal(headerToA1Column('Start Date', 'rf-production-v1'), 'K')
+    assert.equal(headerToA1Column('Producer', 'rf-production-v1'), 'N')
+    assert.equal(headerToA1Column('Last Share', 'rf-production-v1'), 'R')
+    const owned = kitOwnedCreationCells({
+      projectNumber: '2645', clientName: 'Microsoft', projectName: 'Cloud PC',
+      projectType: 'Motion Graphics', workbackTemplate: 'Standard Sizzle', scheduleStatus: 'Draft',
+    }, 'rf-production-v1')
+    assert.ok(!owned.some(cell => cell.column === 'E'))
+    assert.equal(owned.find(cell => cell.header === 'Workback Template')?.column, 'U')
+    assert.equal(owned.find(cell => cell.header === 'Schedule Status')?.column, 'V')
+  })
+})
+
+describe('retired Project Type metadata', () => {
+  it('strips empty and populated rows while preserving unrelated prose and table rows', () => {
+    const template = 'Notes about project type stay.\n| ### **Project Type** | Motion Graphics |\n| Project Type | |\n| Client | Microsoft |'
+    const expected = 'Notes about project type stay.\n| Client | Microsoft |'
+    assert.equal(withoutProjectTypeRows(template), expected)
+    assert.equal(withoutProjectTypeRows(expected), expected)
+    const rendered = renderProjectControlCanvas(template, normalizeRow(MASTER_HEADERS, []))
+    assert.doesNotMatch(rendered, /\|.*Project Type|Motion Graphics/)
+    assert.match(rendered, /Notes about project type stay/)
   })
 })
 

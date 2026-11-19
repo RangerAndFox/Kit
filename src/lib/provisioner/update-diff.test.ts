@@ -89,10 +89,11 @@ describe('computeUpdatePlan — non-identity scalar change', () => {
     assert.equal(plan.changes.some((c) => c.field === 'project_type'), false)
   })
 
-  it('picking a real project_type still flags it as a change', () => {
+  it('ignores Project Type from an old open modal without scheduling writes', () => {
     const plan = computeUpdatePlan(BASE, formFrom(BASE, { projectType: 'Explainer' }))
-    assert.deepEqual(plan.changes.map((c) => c.field), ['project_type'])
-    assert.equal(plan.services.supabase, true)
+    assert.deepEqual(plan.changes, [])
+    assert.equal(plan.services.supabase, false)
+    assert.equal(plan.services.sheet, false)
   })
 
   it('a blank client is a no-op (never a clear) — clearing it would wedge the Slack rename', () => {

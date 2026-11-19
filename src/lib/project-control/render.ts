@@ -44,7 +44,8 @@ export const MASTER_HEADERS = [
 export type MasterHeader = (typeof MASTER_HEADERS)[number]
 export type WorkbookLayout = 'legacy' | 'rf-production-v1'
 
-/** Physical columns on the Canvas Control Center's Projects tab (A:W). */
+/** Physical columns on the Canvas Control Center's Projects tab (A:W).
+ * Project Type is retired/hidden; retain its slot so existing mappings don't shift. */
 export const RF_PRODUCTION_PROJECT_HEADERS = [
   'Project ID', 'Client', 'Project Name', 'Client Contact', 'Project Type',
   'Lifecycle', 'Phase', 'Current Status', 'Next Milestone', 'Next Milestone Date',
@@ -261,12 +262,8 @@ export function kitOwnedCreationCells(
       out.push({ header, column: headerToA1Column(header, layout), kind: 'string', value: String(value) })
     }
   }
-  // Project Type exists only in the RF Production control-center schema. Keep
-  // it out of the legacy A:Y map, but treat it as a first-class Kit-owned field
-  // for both creation and the confirmed update-project ripple.
-  if (layout === 'rf-production-v1' && sub.projectType?.trim()) {
-    out.push({ header: 'Project Type', column: 'E', kind: 'string', value: sub.projectType.trim() })
-  }
+  // Project Type is historical data only. Even a replayed old submission must
+  // leave its hidden column E untouched.
   if (layout === 'rf-production-v1' && sub.workbackTemplate?.trim()) {
     out.push({ header: 'Workback Template', column: 'U', kind: 'string', value: sub.workbackTemplate.trim() })
   }
@@ -315,7 +312,7 @@ function normLabel(s: string): string {
 }
 
 // Canvas metadata label -> authoritative Master Project List header. Only the
-// unambiguous mappings are wired; ambiguous template rows (Project Type, Figma,
+// unambiguous mappings are wired; ambiguous template rows (Figma,
 // Milestones) have no Sheet column and are left as the template snapshot has
 // them — a deliberate non-guess (see mission field-ownership contract).
 const LABEL_TO_HEADER: Record<string, MasterHeader> = {
@@ -333,6 +330,16 @@ function renderCellValue(cell: NormalizedCell | undefined): string {
   return cell.display
 }
 
+/** Retire only the metadata row, not prose that happens to mention project type. */
+export function withoutProjectTypeRows(markdown: string): string {
+  return markdown.split('\n').filter((line) => {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('|') || !trimmed.endsWith('|')) return true
+    const cells = trimmed.slice(1, -1).split('|')
+    return cells.length < 2 || normLabel(cells[0]) !== 'project type'
+  }).join('\n')
+}
+
 /**
  * Render the entire managed Project Control Canvas from the stored template
  * snapshot and the authoritative normalized row. Fully replaces mapped value
@@ -344,7 +351,7 @@ export function renderProjectControlCanvas(templateMarkdown: string, row: Normal
   // (including accidental manual edits) is never an input, so it can never
   // become source data. A previously rendered notice is stripped first so the
   // banner is applied exactly once.
-  const filled = stripGeneratedViewNotice(templateMarkdown)
+  const filled = withoutProjectTypeRows(stripGeneratedViewNotice(templateMarkdown))
     .split('\n')
     .map((line) => {
       const trimmed = line.trim()

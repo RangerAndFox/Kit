@@ -39,7 +39,6 @@ export function composeProjectSummaryText(p: ProjectSummaryInput): { title: stri
   const lines: string[] = []
   lines.push(`# ${title}`)
   if (p.status) lines.push(`Status: ${p.status}`)
-  if (p.project_type) lines.push(`Type: ${p.project_type}`)
   if (p.start_date) lines.push(`Started: ${p.start_date}`)
   if (p.target_delivery) lines.push(`Target delivery: ${p.target_delivery}`)
   if (p.budget_total != null) {
@@ -75,7 +74,7 @@ import type { IngestOptions } from '../rag/ingest'
 export function teamProjectSummary(p: ProjectSummaryInput): IngestOptions {
   const title = `Project ${p.project_code || '—'} · ${p.client || '—'} · ${p.name || '(untitled project)'}`
   const fields = [
-    ['Status', p.status], ['Type', p.project_type], ['Started', p.start_date],
+    ['Status', p.status], ['Started', p.start_date],
     ['Target delivery', p.target_delivery], ['Producer (Slack user)', p.project_manager_slack_id],
   ]
   return {

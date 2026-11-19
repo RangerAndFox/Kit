@@ -53,8 +53,8 @@ describe('fillCanvasTemplate', () => {
   it('fills Client', () => {
     assert.match(out, /\|\s*### \*\*Client\*\*\s*\|\s*Nike\s*\|/)
   })
-  it('fills Project Type', () => {
-    assert.match(out, /\|\s*### \*\*Project Type\*\*\s*\|\s*Brand Video\s*\|/)
+  it('omits the retired Project Type metadata row', () => {
+    assert.doesNotMatch(out, /Project Type|Brand Video/)
   })
   it('fills Producer with a mention', () => {
     assert.match(out, /\|\s*### \*\*Producer\*\*\s*\|\s*<@U123>\s*\|/)
@@ -94,8 +94,8 @@ describe('fillCanvasTemplate', () => {
     assert.match(out, /\|\s*### \*\*VO\*\*\s*\|\s*\|/)
   })
 
-  it('is a no-op when no fields supplied', () => {
+  it('only removes the retired row when no fields supplied', () => {
     const same = fillCanvasTemplate(TEMPLATE, {})
-    assert.equal(same, TEMPLATE)
+    assert.equal(same, TEMPLATE.replace('| ### **Project Type** |  |\n', ''))
   })
 })

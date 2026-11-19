@@ -18,6 +18,8 @@ test('team summary excludes every financial/freeform source and its metadata', (
   assert.match(safe.content, /UPRODUCER/)
   assert.doesNotMatch(JSON.stringify(safe), /99991|88882|77773|PRIVATE|example.com|budget|sow|brief/i)
   assert.match(composeProjectSummaryText(project).content, /99991/)
+  assert.doesNotMatch(safe.content, /Type: Video/)
+  assert.doesNotMatch(composeProjectSummaryText(project).content, /Type: Video/)
 })
 
 test('summary metadata pagination reads past the first provider page and fails on errors or caps', async () => {
